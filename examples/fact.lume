@@ -1,0 +1,24 @@
+// Factorial / Fibonacci — end-to-end target (.lume -> .ll -> native).
+//
+//   make && bin/lume-llvm --compile examples/fact.lume && out/fact
+
+func fact(n: int): int {
+  if (n <= 1) { return 1; }
+  return n * fact(n - 1);
+}
+
+func fib(n: int): int {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+func sq(x: int): int {
+  return x * x;
+}
+
+func main(): int {
+  print(fact(5));
+  print(fib(10));
+  print(sq(7));
+  return 0;
+}

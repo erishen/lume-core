@@ -1,0 +1,5 @@
+# lume-llvm — build artifacts (regenerate with `make`)
+/build/
+/bin/
+/out/
+*.o

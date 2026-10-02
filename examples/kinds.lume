@@ -1,0 +1,18 @@
+// Every scalar kind the backend covers: int, float, bool, string.
+//
+//   make && bin/lume-llvm --compile examples/kinds.lume && out/kinds
+
+func main(): int {
+  print(42);
+  print(-7);
+  print(3.5);
+  print(true);
+  print(false);
+  print("hello from lume-llvm");
+  print(1 + 2 * 3);
+  print(10 / 4);
+  print(10 % 4);
+  let x: float = 9;
+  print(x / 2);
+  return 0;
+}
