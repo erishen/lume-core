@@ -179,7 +179,37 @@ import 同名、import 与用户声明（`let`/`func`）同名。注意：遮蔽
 
 ---
 
-## 8. 避坑优先级（新手先看这三条）
+## 8. 出站 HTTP（`http_get`，2026-10-04）
+
+这一组都是实现 `builtins_http.c` 时真踩过的，症状都长得像"网络不通"，实际
+全是参数/口径问题：
+
+1. **`getaddrinfo` 的 service 不能是 `NULL`，也不能图省事填 `"0"`。**
+   node 为空时 service 非空才不会 `EAI_NONAME`（否则 `127.0.0.1` 这种 IP
+   字面量形式直接解析失败）；但填 `"0"` 会让返回的 `sockaddr` 里
+   `sin_port = 0`，`connect()` 到端口 0 得到 `EADDRNOTAVAIL`（49）。
+    connect 前必须把**真实端口**当 service 传。
+2. **等待函数收的是绝对 deadline，不是相对毫秒。** `now_ms()` 从开机起算，
+   传 `15000` 表示"15 秒"立刻过期。给 TLS 握手单独设上限时要
+   `now_ms() + min(剩余, 上限)`。
+3. **`poll()` 返回 `EINTR` 要重来。** 原本 `if (r < 0) return -1;` 会把一个
+   定时/子进程信号当成"连不上"，表现是代理握手随机超时。
+4. **状态码不能硬编码下标。状态行 `"HTTP/1.1 200 OK"` 的状态第一位在下标
+   9**（`"HTTP/1.1"` 占 0..7，空格在 8）；CONNECT 的回包同理。
+5. **`sbuf` 释放要复位。** 只 `free(p)` 不置 NULL，下一跳或收尾再 free 一次
+   就是双重释放（`exit 134` / SIGABRT）；但也不能在拼结果 map 之前就复位
+   ——那时 `body.len` 已经清零，map 里的 body 会变成空串。
+   统一走 `body_done()`（free + 复位）一个出口。
+6. **默认发 `Accept-Encoding: identity`。** 本实现不解压；中间代理/服务端回
+   gzip 时 body 是一串二进制，看着像"拿不到内容"。
+7. **timeout 的单位是秒。** `{ timeout: 30 }` 内部转毫秒；当毫秒用会导致还没
+   握手完就超时。
+8. **`any` 不是类型。** `func f(r: any)` 报 `unknown type 'any'`；参数想接
+   任意值就不写标注（松散）。
+
+---
+
+## 9. 避坑优先级（新手先看这三条）
 
 1. 变量/函数命名：同名覆盖已编译期拦截，但**保持命名区分**（`crm_lock_path` vs `crm_lock()`）。
 2. 数据统一走 map（id → 记录），列表只做展示层现造。

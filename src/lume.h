@@ -353,6 +353,14 @@ struct VM {
      * write .env / report files outside the cwd. */
     bool no_fs;
 
+    /* Same idea as no_fs, for the outbound side: http_get() is opt-out here
+     * too (--no-net, LUME_NO_NET=1). A script that cannot read or write the
+     * filesystem should not be able to phone home to an attacker-hosted
+     * collector either — the SSRF guards below默认 deny private ranges, but
+     * they deliberately allow public ones, so the kill switch is the only
+     * total answer. */
+    bool no_net;
+
     /* module system (loader.c). The registry is populated once, before
      * agenthttpd_run forks workers; modules and their top-level envs are
      * immutable afterwards. */

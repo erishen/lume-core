@@ -1,0 +1,32 @@
+// 出站 HTTP(S) —— http_get(url, opts) -> { ok, status, body, err }
+//
+//   ./bin/lume examples/http-get.lume
+//
+// 这是纯脚本,没有 server {} 也没有 run()。三件事各看一眼:
+//   1. 私有地址默认被拒(SSRF 闸门),不连出去;
+//   2. 公开地址跟随 https_proxy / http_proxy(本机就是走代理出去的);
+//   3. 超时与 body 上限都可调。
+
+// r 不写类型标注:参数未标注即松散(any),http_get 的返回值也按 any 看待
+func report(label: string, r) {
+  print(label + ": ok=" + str(get(r, "ok", false)) +
+        " status=" + str(get(r, "status", 0)) +
+        " err=" + str(get(r, "err", "")));
+}
+
+// --- 1. 闸门:回环/链路本地/元数据地址一律拒绝,连 socket 都不会开 ---
+report("loopback  ", http_get("http://127.0.0.1/", { timeout: 5 }));
+report("localhost ", http_get("http://localhost/", { timeout: 5 }));
+report("cloud-meta", http_get("http://169.254.169.254/latest/meta-data/", { timeout: 5 }));
+// userinfo 藏真实目标的那招:okernt@169.254.169.254 会被看成 host=kernt(...)
+report("userinfo  ", http_get("http://ok@127.0.0.1/", { timeout: 5 }));
+
+// --- 2. 公开目标:直连不通就走代理( https_proxy / http_proxy ) ---
+let r = http_get("https://api.github.com/zen", { timeout: 30 });
+report("github    ", r);
+print("zen: " + str(get(r, "body", "")));
+
+// --- 3. 自定义请求头 + 上限 ---
+let h = http_get("https://api.github.com/", { headers: { "Accept": "application/vnd.github+json" } });
+print("github api: status=" + str(get(h, "status", 0)) +
+      " link=" + str(get(h, "err", "")));

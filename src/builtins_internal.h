@@ -78,6 +78,14 @@ void native_mcps(VM *vm, int argc, Value *args, Value *out);
 void native_discovery_endpoints(VM *vm, int argc, Value *args, Value *out);
 void native_catalog(VM *vm, int argc, Value *args, Value *out);
 
+/* ---- 出站 HTTP(builtins_http.c) ---- */
+/* http_get(url, {headers?, timeout?, max_bytes?, allow_private?}) ->
+   {ok, status, body, err}. Raw sockets on purpose: this tree only links libc
+   (plus the optional libLLVM and libssl), so there is no libcurl and the
+   agent-httpd fetch_url in the submodule cannot be reached from here. The
+   SSRF model mirrors the host one (public-only unless allow_private). */
+void native_http_get(VM *vm, int argc, Value *args, Value *out);
+
 /* ---- 高阶集合函数(builtins_hof.c) ---- */
 void native_range(VM *vm, int argc, Value *args, Value *out);
 void native_map(VM *vm, int argc, Value *args, Value *out);

@@ -105,6 +105,8 @@ static void reject(const char *name, const char *src, const char *want_sub) {
  * Declared here, above check_err, because check_err applies it to the VM it
  * sets up; the driving helper sits below check_err's definition. */
 static bool g_no_fs = false;
+static bool g_no_net = false;
+static bool g_http_lock_net = false;
 
 /* The snippet must fail AT RUNTIME with `want_sub` in the VM error. This is
  * the other half of `reject`: type errors are caught by the checker, but the
@@ -128,6 +130,7 @@ static void check_err(const char *name, const char *src, const char *want_sub) {
     }
     vm_init(&vm);
     vm.no_fs = g_no_fs;
+    vm.no_net = g_no_net;
     char path[256];
     int fd = capture_begin(path);
     exec_program(&vm, prog);
@@ -156,6 +159,58 @@ static void check_err_nofs(const char *name, const char *src, const char *want_s
     g_no_fs = true;
     check_err(name, src, want_sub);
     g_no_fs = false;
+}
+
+/* The --no-net lock (VM.no_net) for one check_err run, same discipline as the
+ * --no-fs one. */
+static void check_err_nonet(const char *name, const char *src, const char *want_sub) {
+    g_no_fs = false;
+    g_no_net = true;
+    check_err(name, src, want_sub);
+    g_no_net = false;
+}
+
+/* http_get 的离线可判定路径:完整跑一段脚本,拿到 print() 的stdout 逐字节比
+ * 对。两条用例都不需要出网:
+ *
+ *  - `--no-net` 总闸:http_get 第一件事就是查 no_net,直接给运行时错误。
+ *  - SSRF 闸门:私有地址在 open_conn 之前就被拒,socket 根本不开,
+ *    所以这条断言在无网/CI 里同样确定(不依赖 DNS 与出网)。
+ *
+ * 期望输出里只断言 err 的要点,别把整句贴进去(措辞会跟着改)。 */
+static void check_http_offline(const char *name, const char *src,
+                               const char *expect) {
+    tests_run++;
+    char err[512] = {0};
+    Node *prog = parse_program(src, err, sizeof(err));
+    if (!prog) {
+        fprintf(stderr, "FAIL %-32s parse: %s\n", name, err);
+        tests_failed++;
+        return;
+    }
+    if (!type_check_program(prog, err, sizeof(err))) {
+        fprintf(stderr, "FAIL %-32s typecheck: %s\n", name, err);
+        tests_failed++;
+        smoke_release(prog, NULL);
+        return;
+    }
+    VM vm;
+    vm_init(&vm);
+    vm.no_net = g_http_lock_net;  /* 由调用方决定这次是不是走总闸 */
+    char path[256];
+    int fd = capture_begin(path);
+    exec_program(&vm, prog);
+    char out[8192];
+    capture_end(fd, path, out, sizeof(out));
+    unlink(path);
+    if (vm.error || strcmp(out, expect) != 0) {
+        fprintf(stderr, "FAIL %-32s output%s\n  got: %s\n want: %s\n", name,
+                vm.error ? " (vm error)" : "", out, expect);
+        tests_failed++;
+    } else {
+        printf("ok   %s\n", name);
+    }
+    smoke_release(prog, &vm);
 }
 
 
@@ -808,6 +863,40 @@ int main(void) {
         };
         check_modules("modules missing file rejected", f, 1, "main.lume", "",
                       "cannot resolve import");
+    }
+
+    /* --- http_get:离线可判定的两个闸门 (2026-10-04) --- */
+    {
+        /* 总闸:--no-net / LUME_NO_NET=1 时 http_get 一个字都不发。 */
+        check_err_nonet(
+            "http_get no-net 总闸拒绝",
+            "let r = http_get(\"http://example.com/\", { timeout: 3 });\n",
+            "network access is disabled");
+        /* 总闸同样压住私有地址(先查锁再查闸门)。 */
+        check_err_nonet(
+            "http_get no-net 优先于 SSRF 闸门",
+            "let r = http_get(\"http://127.0.0.1/\", { timeout: 3 });\n",
+            "network access is disabled");
+    }
+    {
+        /* SSRF 闸门:socket 都没开就拒绝,所以 CI 无网也能跑。 */
+        check_http_offline(
+            "http_get 拒绝回环地址",
+            "let r = http_get(\"http://127.0.0.1/\", { timeout: 3 });\n"
+            "print(\"ok=\", get(r, \"ok\", false));\n"
+            "print(\"err=\", str(get(r, \"err\", \"\")));\n",
+            "ok= false\n"
+            "err= http_get(): refused — 127.0.0.1 resolves to a private/reserved "
+            "address\n");
+    }
+    {
+        /* 云元数据地址:这条最要紧,打了就可能被当成内网探测。 */
+        check_http_offline(
+            "http_get 拒绝云元数据地址",
+            "let r = http_get(\"http://169.254.169.254/latest/meta-data/\", {\n"
+            "  timeout: 3 });\n"
+            "print(\"ok=\", get(r, \"ok\", false));\n",
+            "ok= false\n");
     }
 
 

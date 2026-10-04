@@ -55,6 +55,57 @@ backend parity (28 `N_*` labels, read from both sides), `tests/native_backends.s
 (interp / text / llvm three-way), `native-consistency`, `native`,
 `native-text`; `make asan` is clean.
 
+### Added
+
+- **`http_get(url, opts) -> { ok, status, body, err }`** (`src/builtins_http.c`):
+  the outbound HTTP the host tree could only do from inside `agent-httpd`. Raw
+  sockets, no libcurl, so the builder stays at "libc + optional libLLVM +
+  optional libssl":
+  - **SSRF gate is on by default** — loopback, `localhost`, link-local
+    (`169.254/16`), RFC1918, CGNAT and friends are refused *before* any socket
+    is opened; `http://ok@127.0.0.1/` (real target hidden in userinfo) is
+    refused too; names are resolved and every returned IP is checked, so a
+    Round-Robin answer gets no second chance. `allow_private: true` opts out.
+  - **Proxy follows the environment**: `LUME_HTTP_PROXY` → `https_proxy` /
+    `http_proxy` → `HTTPS_PROXY` / `HTTP_PROXY`; `https://` targets get a
+    `CONNECT` tunnel and then a verified handshake (SNI set, system CAs).
+  - Redirects are followed up to 5 hops, re-checked at every hop; body is
+    capped (1 MiB default, `max_bytes`), everything is bounded by a `timeout`
+    **in seconds** (default 10, cap 60) that covers the whole request.
+  - The request always says `Accept-Encoding: identity` — this build does not
+    decompress, so anything else turns the body into binary.
+  - `--no-net` / `LUME_NO_NET=1` is the master switch: no packet leaves.
+  Example: `examples/http-get.lume`.
+- OpenSSL is now a *detected* optional dependency (`HAVE_OPENSSL`): the
+  `Makefile` tries `pkg-config` and falls back to `brew --prefix openssl`
+  (then `openssl@3`), and only links `-lssl -lcrypto` when
+  `<prefix>/include/openssl/ssl.h` exists. Without it, `https://` targets
+  return `needs libssl` instead of failing to compile.
+
+### Fixed
+
+- `host_resolves_private()` returned "private" whenever `getaddrinfo` produced
+  *any* address — every public host was rejected as an SSRF attempt. Only a
+  genuinely private answer refuses, now.
+- `getaddrinfo(host, NULL, …)` never resolved an IP-literal host (the proxy
+  address), and when patched to `"0"` it returned a `sin_port == 0` sockaddr,
+  so `connect()` failed with `EADDRNOTAVAIL`. The service argument is now the
+  real port.
+- `poll()` returning `EINTR` aborted the connection wait, which looked like
+  "proxy sent no CONNECT reply". `EINTR` now retries; so does the handshake.
+- The CONNECT response status was read at a hardcoded offset; it now parses the
+  three digits after `HTTP/x.y `, which also holds for `HTTP/1.0`.
+- `body` was `free()`d twice on the success path (`exit 134`, SIGABRT). All
+  releases now go through `body_done()`, which frees *and* resets, and the
+  buffer is only released after the result string has copied it.
+- `tls_attach` handed a relative 15000 ms to waiters that expect an absolute
+  deadline, so every TLS handshake timed out immediately.
+- `tests/smoke-bin` had **no build rule** after the agent-httpd detach:
+  `make test` referenced it but nothing ever compiled it, so the interpreter
+  unit tests ran whatever stale binary was on disk. Restored
+  (`CORE_OBJS` + `build/tests`) and added four offline assertions for the
+  `http_get` gates (110 tests, 0 failed).
+
 ### Changed
 
 - The text backend's 2782-line `src/codegen.c` is cut along the section

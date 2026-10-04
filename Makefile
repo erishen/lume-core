@@ -71,7 +71,7 @@ MODULE_APP := examples/modules/app.lume
 # here too: they are the two scripts that exercise the --compile-* emitters,
 # and without them a type error in a native example (a struct field, a member
 # assignment) only showed up when someone hand-ran `make native-bench`.
-EXAMPLES := $(HELLO) examples/lang-basics.lume $(MODULE_APP) examples/native-fact.lume examples/native-bench.lume
+EXAMPLES := $(HELLO) examples/lang-basics.lume $(MODULE_APP) examples/native-fact.lume examples/native-bench.lume examples/http-get.lume
 # make native / make native-llvm 的靶子: 纯计算脚本(不含 server/route/tool),
 # 原生后端覆盖得到。make native-bench 换成长循环的那个(显优化差别)。
 NATIVE_EX := examples/native-fact.lume
@@ -97,7 +97,7 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/value.c src/typecheck.c src/typecheck_expr.c src/typecheck_stmt.c \
             src/interp.c src/builtins.c src/builtins_fs.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
-            src/token.c src/bridge_stub.c \
+            src/token.c src/bridge_stub.c src/builtins_http.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/irbuf.c src/backend.c
 # --- 第二个原生后端:libLLVM C API(可选) ---------------------------------
 # 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume 保持 ~2MB。
@@ -106,6 +106,34 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
 # 探测到 llvm-config 就额外编 src/llvm_codegen.c + src/backend_llvm.c, 用 LLVM
 # 的 C API 建 IR、用 LLVMTargetMachineEmitToFile 自己出目标文件(--compile-llvm,
 # 见 native-llvm)。探测不到就当它不存在, --compile 照旧可用。
+# --- 出站 TLS(可选):http_get() 的 https:// --------------------------------
+# 与 libLLVM 同款「有就用、没有只是缺」的口径:探测到 openssl 就把
+# src/builtins_http.c 里 TLS 那段编进去(-DHAVE_OPENSSL=1 + -lssl -lcrypto);
+# 探测不到时本树照样能编,http_get 对 https:// 直接报 "needs libssl" 而不是
+# 悄悄退化成明文。传输层仍是裸 socket —— libssl 只负责 TLS 那一段。
+# 与 LLVM 段一样用 +=,且必须待在 SRCS := 之后。
+# pkg-config 在 macOS 上默认不存在(这台机器上 command -v pkg-config 是空),
+# 所以不能只认它:没有它时退回 brew 的 openssl 前缀,再按前缀落盘地查头文件。
+# 两条路都查不到就 HAVE_OPENSSL=0 —— build 照旧,只是 https:// 报 needs libssl。
+OPENSSL_PKG := $(shell command -v pkg-config 2>/dev/null)
+ifeq ($(strip $(OPENSSL_PKG)),)
+    OPENSSL_PREFIX := $(shell brew --prefix openssl 2>/dev/null)
+    ifeq ($(strip $(OPENSSL_PREFIX)),)
+        OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
+    endif
+else
+    OPENSSL_PREFIX := $(shell pkg-config --variable=prefix openssl 2>/dev/null)
+endif
+HAVE_OPENSSL := $(if $(and $(strip $(OPENSSL_PREFIX)),\
+    $(wildcard $(OPENSSL_PREFIX)/include/openssl/ssl.h)),1,0)
+ifeq ($(HAVE_OPENSSL),1)
+    CFLAGS   += -I$(OPENSSL_PREFIX)/include -DHAVE_OPENSSL=1
+    LDFLAGS  += -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
+    # brew 的 dylib 在 opt/ 里,运行时 dyld 未必找得到:${prefix}/lib 显式加 rpath,
+    # 免得链接过了、跑起来才 "image not found"。
+    LDFLAGS  += -Wl,-rpath,$(OPENSSL_PREFIX)/lib
+endif
+
 # 注意:这段必须在 SRCS := 之后 —— 这里用的是 +=,提前写会被上面的 := 盖掉。
 ifeq ($(HAVE_LLVM),1)
     SRCS     += src/llvm_codegen.c src/backend_llvm.c
@@ -113,6 +141,8 @@ ifeq ($(HAVE_LLVM),1)
     LDFLAGS  += $(shell $(LLVM_CONFIG) --ldflags) $(shell $(LLVM_CONFIG) --libs core)
 endif
 OBJS     := $(SRCS:src/%.c=build/%.o)
+# everything except main.o: the headless smoke driver calls the VM directly
+CORE_OBJS := $(filter-out build/main.o, $(OBJS))
 
 # 内部头:任一 * 片的共享声明变化,所有依赖它的 .o 都要重建
 INT_HDRS := $(wildcard src/*_internal.h)
@@ -312,6 +342,9 @@ ASAN_CORE_OBJS := $(filter-out build-asan/main.o, $(ASAN_OBJS))
 build-asan:
 	mkdir -p build-asan
 
+build/tests:
+	mkdir -p build/tests
+
 build-asan/tests:
 	mkdir -p build-asan/tests
 
@@ -320,6 +353,13 @@ build-asan/%.o: src/%.c src/lume.h $(INT_HDRS) | build-asan $(AH_LIB)
 
 $(ASAN_TARGET): $(ASAN_OBJS) $(AH_LIB) | build-asan bin
 	$(CC) $(CFLAGS) $(ASAN_CFLAGS) -o $@ $(ASAN_OBJS) $(AH_LIB) $(LDFLAGS) $(ASAN_LDFLAGS) -lm
+
+# was missing in the agent-httpd detach: `test:` referenced tests/smoke-bin
+# but nothing ever compiled it, so the interpreter unit tests kept running
+# whatever stale binary happened to be on disk. Rebuilt whenever smoke.c
+# changes now.
+tests/smoke-bin: tests/smoke.c $(CORE_OBJS) build/tests | $(AH_LIB)
+	$(CC) $(CFLAGS) -o $@ tests/smoke.c $(CORE_OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
 tests/smoke-bin-asan: tests/smoke.c $(ASAN_CORE_OBJS) build-asan/tests | $(AH_LIB)
 	$(CC) $(CFLAGS) $(ASAN_CFLAGS) -o $@ tests/smoke.c $(ASAN_CORE_OBJS) $(AH_LIB) $(LDFLAGS) $(ASAN_LDFLAGS) -lm

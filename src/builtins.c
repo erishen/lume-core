@@ -363,4 +363,5 @@ Value b_mcps(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, ar
 Value b_discovery_endpoints(VM *vm, int argc, Value *args)
 { return vm_native(vm, argc, args, native_discovery_endpoints); }
 Value b_catalog(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_catalog); }
+Value b_http_get(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_http_get); }
 Value b_default_route(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_default_route); }
