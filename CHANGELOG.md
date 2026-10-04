@@ -105,6 +105,12 @@ backend parity (28 `N_*` labels, read from both sides), `tests/native_backends.s
   unit tests ran whatever stale binary was on disk. Restored
   (`CORE_OBJS` + `build/tests`) and added four offline assertions for the
   `http_get` gates (110 tests, 0 failed).
+- `examples/hello.lume` was still the host tree's server example — `server {}`
+  with a `docroot`, routes, a `tool` and `run()`. `make check` only ran
+  `--check` on it, so it stayed green while `lume examples/hello.lume` exited
+  **2** on `run() needs the agent-httpd host build`. Rewritten as a plain
+  script (function + `print` + `get()` map reads), which is also what
+  `docs/LUME.md` always promised it was.
 
 ### Changed
 
