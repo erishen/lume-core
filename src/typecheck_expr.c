@@ -160,6 +160,16 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             Type *ot = ck_expr(c, n->as.member.obj, NULL);
             ot = resolve(c, ot, n->line);
             if (ot->kind == TY_ANY) return any_type();
+            /* `.len` / `.length` is a property of the container, not a field:
+             * a string, a list, and an anonymous struct (a runtime map) all
+             * answer it. Checked *before* the struct walk because both native
+             * backends dispatch it the same way; a *named* struct that really
+             * declares a `len` field still reads its field below. */
+            if ((ot->kind == TY_STRING || ot->kind == TY_LIST ||
+                 (ot->kind == TY_STRUCT && !ot->name)) &&
+                (strcmp(n->as.member.name, "len") == 0 ||
+                 strcmp(n->as.member.name, "length") == 0))
+                return type_prim(TY_INT);
             if (ot->kind == TY_STRUCT) {
                 for (int i = 0; i < ot->count; i++)
                     if (strcmp(n->as.member.name, ot->names[i]) == 0) {
@@ -172,10 +182,6 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                         n->as.member.name);
                 return any_type();
             }
-            if ((ot->kind == TY_STRING || ot->kind == TY_LIST) &&
-                (strcmp(n->as.member.name, "len") == 0 ||
-                 strcmp(n->as.member.name, "length") == 0))
-                return type_prim(TY_INT);
             ck_fail(c, n->line, "cannot read field '%s' on this type",
                     n->as.member.name);
             return any_type();

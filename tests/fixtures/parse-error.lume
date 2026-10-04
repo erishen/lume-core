@@ -1,0 +1,10 @@
+// A failing parse has to report where it failed, not abort the process.
+// The first two statements parse; the third does not, so the orphan sweep
+// at the end of the failed parse owns a tree that is already half freed.
+//
+// Guard: `let y = xs[0];` is not subscript syntax in this language, so it is
+// a plain syntax error. `bin/lume` used to die with SIGABRT (exit 134) and no
+// diagnostic at all, which made the error message unreachable.
+let xs = [1, 2, 3];
+print(xs.len);
+let y = xs[0];

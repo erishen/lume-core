@@ -1,0 +1,27 @@
+// tax.lume — 税务策略库(多文件模块演示:库侧)
+//
+// 模块只导出显式标记的绑定:`export let / export func / export type`;
+// 未标记的顶层变量对入口不可见(命名空间隔离)。
+
+export let BASE_RATE = 0.13;          // 标准税率
+export let PREFERENTIAL_RATE = 0.06;  // 自贸区优惠税率
+
+let internal_note = "module-private"; // 不导出:入口读取会报错
+
+export type Order = { amount: float, zone: string };
+
+export func rate_for(zone: string): float {
+    if (zone == "free-trade") { return PREFERENTIAL_RATE; }
+    return BASE_RATE;
+}
+
+export func apply(order: Order): float {
+    if (order.zone == "free-trade") {
+        return order.amount * PREFERENTIAL_RATE;
+    }
+    return order.amount * BASE_RATE;
+}
+
+export func describe(): string {
+    return "rates: " + str(BASE_RATE) + " / " + str(PREFERENTIAL_RATE);
+}

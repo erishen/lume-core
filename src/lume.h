@@ -20,7 +20,7 @@
  * GC root (clox-style) — a Value returned by eval is held by the caller,
  * so an allocation later in the same expression can never reclaim it.
  *
- * Host language is C11, no third-party deps beyond libc.
+ * Host language is C11, no third-party deps beyond libagenthttpd.a + libc.
  */
 
 #include <stdbool.h>
@@ -32,11 +32,17 @@
 #include <string.h>
 #include <setjmp.h>
 
-/* [lume-llvm] Original upstream had `#include "agenthttpd.h"` here. This
- * project only reuses the frontend (lexer/parser/typecheck + the Node/Type
- * AST), which never touches libagenthttpd — the include was stripped so the
- * vendored tree links with libc only. Keep this file in sync with
- * ../lume/src/lume.h when bumping the vendored frontend. */
+/* This tree is the standalone-language build. The host build (work/research/lume)
+ * pulls in agenthttpd.h here, which is what brought tools.h / skills.h /
+ * sqlite_tool.h / minijson.h along with it; this tree links nothing but libc,
+ * so there is no agent-httpd include to make.
+ *
+ * The one thing that used to ride in on minijson.h is the sbuf string buffer
+ * (json_append_value and friends take a `void *sbuf`). sbuf.h is the fork-local
+ * stand-in: same struct, same always-NUL-terminated + sticky-oom contract,
+ * only the append half, inlined. */
+
+#include "sbuf.h"
 
 /* ===================== tokens ===================== */
 
@@ -99,6 +105,8 @@ typedef struct Type {
     int count;
     int cap;
     Type *ret;              /* TY_FUNC return type */
+    struct Type *tnext;     /* type_release_all()'s reclaim list — internal,
+                             * not part of any type's meaning */
 } Type;
 
 Type *type_prim(TypeKind kind);
@@ -109,6 +117,17 @@ Type *type_func(int arity, Type **params, Type *ret);
 Type *type_result(void);
 void type_add_member(Type *t, const char *name, Type *ty);
 void type_print(Type *t);              /* type text into stdout (debug) */
+/* Reclaim every Type the checker allocated, in one pass.
+ *
+ * Types form a shared graph: the AST fields, the checker's scope entries and
+ * the module export table all point at the same Type blocks, and resolve()
+ * hands out definitions that outlive the check that built them. So there is
+ * no ownership to walk here — every Type ever allocated since the last call
+ * is dead the moment the loader finishes. calloc'd *Type objects, their
+ * strdup'd names and their Type** shells all go in this one sweep. The
+ * static ANY_TYPE singleton returned by any_type() is never on the list.
+ * Must run after the interpreter is done with annotated/ret fields. */
+void type_release_all(void);
 
 /* Static type checking pass (compile-time). Returns false + errbuf on the
  * first error. Runs after parsing, before execution. */
@@ -310,6 +329,13 @@ struct VM {
 
     Value call_result;        /* `return expr` target, set before unwind */
 
+    /* The value of a top-level `main()` call, i.e. the status the process
+     * exits with. Both native backends forward this same call out of their C
+     * entry, so the interpreter records it here to report the same exit code
+     * as the three legs. Set only by exec_program, and only for the entry
+     * module — a `main()` called from inside a function is an ordinary call. */
+    int main_status;
+
     /* bridge state */
     RouteRec routes[MAX_AL_ROUTES];
     int route_count;
@@ -318,6 +344,14 @@ struct VM {
     int tool_count;
     Obj *server_config;       /* `server { ... }` results (GC root) */
     bool run_called;
+    /* Opt-in filesystem lock for untrusted scripts. Default is OFF, i.e. the
+     * interpreter is NOT a sandbox: read_file/write_file/files/mkdir still
+     * reach any path the process can open. Turn it on (--no-fs, or
+     * LUME_NO_FS=1) and the path-taking builtins fail at runtime instead.
+     * Deliberately a runtime flag rather than a root allowlist: locks the
+     * language surface without breaking the product tools that legitimately
+     * write .env / report files outside the cwd. */
+    bool no_fs;
 
     /* module system (loader.c). The registry is populated once, before
      * agenthttpd_run forks workers; modules and their top-level envs are
@@ -345,6 +379,8 @@ typedef struct Module {
     bool loading;             /* on the load stack (cycle detect) */
     bool typechecked;
     bool executed;
+    bool is_entry;            /* the script the process is running: only its
+                               * top level decides the exit status         */
 } Module;
 
 /* Load the entry script and every module it transitively imports. Modules are
@@ -356,12 +392,17 @@ int loader_run(VM *vm, const char *entry_path, bool check_only,
                char *errbuf, size_t errbuf_size);
 /* Registry lookup by canonical path; NULL if not loaded. */
 Module *loader_find(VM *vm, const char *canon_path);
+/* Tear the loader down: every module, its AST, its export table and the
+ * registry array. Safe to call twice; run it before vm_free() (modules and
+ * the AST they own can still be reached through VM roots). */
+void loader_free(VM *vm);
 
 /* ===================== parser ===================== */
 
-/* AST node. One struct, union-tagged; nodes are malloc'd for the process
- * lifetime (the program is parsed once before agenthttpd_run forks workers,
- * so per-request evaluation reuses the same immutable tree). */
+/* AST node. One struct, union-tagged; the tree is built once, before
+ * agenthttpd_run forks workers, and per-request evaluation reuses the same
+ * immutable tree. It used to live for the process lifetime — node_free() now
+ * releases it, so a reload or a test case can drop a whole program. */
 typedef enum {
     N_PROGRAM, N_BLOCK, N_LET, N_IF, N_WHILE, N_FOR, N_BREAK, N_CONTINUE,
     N_RETURN, N_EXPR_STMT,
@@ -445,10 +486,23 @@ Token *al_lex(const char *source, char *errbuf, size_t errbuf_size,
               int *out_count);
 
 void node_print(Node *n, int indent);   /* debugging dump */
+/* Free a whole AST subtree. Reclaims the nodes themselves, every
+ * ident_name()/path string inside them and the char**, Node** and Type**
+ * array shells,
+ * but NOT the Type objects behind those pointers — those belong to
+ * type_release_all(). Safe to call only once nothing can walk the tree
+ * again: ObjFunc.body keeps a Node*, so free the VM heap first if you free
+ * the AST through it. */
+void node_free(Node *n);
 
 /* ===================== interpreter / bridge ===================== */
 
 void vm_init(VM *vm);
+/* Tear the VM down: the GC heap with every Obj it still holds (and the
+ * strdup'd map/env keys copied into those), the strdup'd route records
+ * and the load stack. Does NOT free the AST or the Type graph — those are
+ * loader_free()'s and type_release_all()'s. Idempotent. */
+void vm_free(VM *vm);
 /* Execute the top-level of a parsed program (routes/tools registered here,
  * before run() is ever called). Sets vm.error on failure. */
 void exec_program(VM *vm, Node *prog);

@@ -30,6 +30,17 @@ bool is_method_keyword(TokenType t);
 const char *method_keyword_name(TokenType t);
 bool is_field_token(TokenType t);
 
+/* Release one node the parser abandoned mid-statement: children are NOT
+ * walked (the caller frees every node of the batch itself). */
+void node_free_orphan(Node *n);
+
+/* Take a node back out of the orphan batch. Every nalloc() node sits in that
+ * batch, so a parser file that discards a node of its own -- free()ing just
+ * the shell, after moving whatever the node owned over to a node that outlives
+ * it -- has to call this first: otherwise the sweep at the end of a failed
+ * parse frees the same pointer a second time. */
+void node_unjournal(Node *n);
+
 /* ---- 类型 / 块 / 函数声明(parser.c) ---- */
 Type *parse_type(Parser *p);
 bool parse_params(Parser *p, char ***names_out, Type ***types_out,

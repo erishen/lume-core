@@ -27,6 +27,8 @@ typedef struct CScope {
     struct CScope *parent;
     CSym *syms;
     CNS *nss;
+    struct CScope *all_next; /* Checker->all_scopes chain, for ck_free();
+                              * parent only points the other way */
 } CScope;
 
 typedef struct StructDef {
@@ -37,6 +39,7 @@ typedef struct StructDef {
 
 typedef struct {
     CScope *scope;
+    CScope *all_scopes;      /* every scope created during this check */
     StructDef *structs;
     Type *cur_ret;       /* enclosing function return type; NULL outside func */
     bool in_func;        /* inside a function body */

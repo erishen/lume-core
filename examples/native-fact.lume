@@ -1,0 +1,29 @@
+// Factorial / Fibonacci — end-to-end target for the native backend.
+//
+//   make native            compile + run, compared against tests/native-fact.expected
+//   make bin && bin/lume --compile examples/native-fact.lume && ./out/native-fact
+
+func fact(n: int): int {
+  if (n <= 1) { return 1; }
+  return n * fact(n - 1);
+}
+
+func fib(n: int): int {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+func sq(x: int): int {
+  return x * x;
+}
+
+func main(): int {
+  print(fact(5));
+  print(fib(10));
+  print(sq(7));
+  return 0;
+}
+
+// native backend gives the entry point no special treatment for main(): the
+// entry runs the top level, and main() is just a function the top level calls.
+main();

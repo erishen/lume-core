@@ -1,0 +1,221 @@
+// Cross-backend consistency fixture — integer core plus struct fields.
+//
+// The native compiler has two completely independent IR emitters: hand-written
+// IR text (--compile-text) and LLVM C API calls (--compile-llvm). Nothing else
+// in the suite compares them, so the two drifting apart would surface only as
+// a wrong answer somewhere else (this is how "mul i64 %v1, undef" and the
+// half-typed struct GEP got in). tests/native_backends.sh compiles and runs
+// this script both ways and diffs the outputs.
+//
+// Deliberately narrow, because the native emitters' covered surface is narrow:
+// only integers, floats, an explicit `let` type, struct fields and a function
+// signature the source fully annotates *or* fully leaves to inference.
+// string concatenation, mixed string/number arithmetic, nested and heterogeneous
+// lists and map fields holding lists are still rejected by one backend or the
+// other, so adding them here would make the suite red for reasons that have
+// nothing to do with the two emitters agreeing.
+//
+// Adding coverage is fine once a backend actually implements a construct —
+// never before, otherwise the consistency suite goes red and hides its signal.
+
+type Point = { x: int, y: int };
+
+func classify(n: int): int {
+    if (n > 100) { return 1; }
+    if (n > 0) { return 2; }
+    if (n == 0) { return 3; }
+    return 4;
+}
+
+func fib(n: int): int {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+func loop_sum(n: int): int {
+    let acc: int = 0;
+    for (let i = 0; i < n; i = i + 1) { acc = acc + i; }
+    return acc;
+}
+
+func while_sum(n: int): int {
+    let acc: int = 0;
+    let i: int = 0;
+    while (i < n) { acc = acc + i * i; i = i + 1; }
+    return acc;
+}
+
+func sq_dist(a: Point, b: Point): int {
+    let dx: int = a.x - b.x;
+    let dy: int = a.y - b.y;
+    return dx * dx + dy * dy;
+}
+
+func make_point(x: int, y: int): Point {
+    return { x: x, y: y };
+}
+
+func bump(p: Point, d: int): int {
+    p.x = p.x + d;
+    return p.x;
+}
+
+func loop_points(): int {
+    let acc: int = 0;
+    let i: int = 0;
+    while (i < 3) {
+        let q: Point = { x: i, y: i + 1 };
+        acc = acc + q.x + q.y;
+        i = i + 1;
+    }
+    return acc;
+}
+
+func main(): int {
+    print(classify(170));
+    print(classify(1));
+    print(classify(0));
+    print(classify(-5));
+    print(fib(12));
+    print(loop_sum(10));
+    print(while_sum(6));
+    print(sq_dist({ x: 3, y: 4 }, { x: 0, y: 0 }));
+    print(sq_dist({ x: 3, y: 4 }, make_point(1, 1)));
+    print(make_point(7, 8).x);
+    print({ x: 5, y: 9 }.y);
+    let p: Point = { x: 3, y: 4 };
+    p.x = 10;
+    print(p.x);
+    print(p.y);
+    print(bump(p, 5));
+    print(p.x);
+    print(loop_points());
+    return 0;
+}
+
+// A top-level statement: the entry point has to run the module's own statements
+// before main(), which is a shape worth keeping under the consistency net
+// because it took a segfault to find out.
+func warmup() {
+    print(classify(170));
+}
+
+// ---- list / map / for-in ----
+//
+// Added only once both emitters implemented them: in native code a list and a
+// map are heap objects behind an opaque pointer, and a backend that passes the
+// variable's *slot* instead of loading the pointer reads its length out of the
+// stack frame. That failure is silent in exactly one leg, which is the drift
+// this script exists to catch.
+let xs = [1, 2, 3];
+print(xs);
+print(len(xs));
+print(xs.len);
+print(xs.length);
+print([]);
+print(["a", "b"]);
+print([1.5, 2.0]);
+for (x in xs) { print(x); }
+
+let ys = [1];
+print(push(ys, 7));
+print(ys.len);
+
+let m = {"a": 1, "b": 2};
+print(m);
+print(m.len);
+print(get(m, "a"));
+print(get(m, "zz", 9));
+print(put(m, "c", 3));
+print(keys(m));
+for (k in m) { print(k); }
+print({});
+
+// and/or short-circuit: the right operand must not be evaluated at all, and
+// the result must be the constant on the short path (`true or 1/0` is true
+// even though the division never runs).
+let d: int = 0;
+print(d != 0 and 10 / d > 1);
+print(d == 0 or 10 / d > 1);
+
+// `/` is float division even on two integers. A native `sdiv` answers 2 for
+// `10 / 4` where the interpreter answers 2.5 — a wrong answer rather than an
+// error, so it has to be under the consistency net too, not just the
+// short-circuit above that never evaluates the division.
+print(10 / 4);
+print(10 / 4.0);
+print(10 % 4);
+
+// Strings: concatenation and `.len`. Both used to be unimplemented on the
+// libLLVM side only — the same script compiled with --compile-text and failed
+// to compile at all with --compile-llvm, because `s.len` fell through the
+// member emitter's `.len` branches and print() got a value it could not name.
+print("ab" + "cd");
+let s = "hello";
+print(s.len);
+print(s.length);
+
+// float arithmetic, the other half of the core subset.
+let a: float = 1.5;
+let b: float = 2.0;
+print(a + b);
+print(a * b);
+print(a - b);
+
+// `continue` used to jump back to the *condition* block, which is where a
+// loop re-tests but not where it advances: the index never moved and any
+// loop containing a `continue` spun forever (both emitters, both loop
+// shapes). It now lands on the increment block, which branches to the
+// condition; `while` has no increment so its target stays the condition.
+for (let i = 0; i < 5; i = i + 1) {
+    if (i == 1) { continue; }
+    if (i == 4) { break; }
+    print(i);
+}
+
+let xi = [1, 2, 3, 4];
+for (e in xi) {
+    if (e == 2) { continue; }
+    if (e == 4) { break; }
+    print(e);
+}
+
+// A named struct whose *field* holds a list. The field is a heap object
+// behind an opaque pointer, so this also covers the struct GEP path for
+// something that is not a scalar.
+type Bag = { xs: int[] };
+let bag: Bag = { xs: [4, 5] };
+print(bag.xs);
+print(bag.xs.len);
+for (v in bag.xs) { print(v); }
+
+// ---- function signatures left to inference --------------------------------
+// One signature pass runs over the AST before either emitter, so an
+// unannotated parameter and an unannotated return type are resolved the same
+// way in both. The order matters: `v` is pinned by the first call, and
+// `inner`'s parameter is only knowable from a call made inside `outer`'s body,
+// which is what the fixed-point iteration is for.
+func dbl(v) { return v * 2; }
+print(dbl(21));
+
+func halve(v) { return v / 2; }        /* `/` widens to float, so 9 / 2 = 4.5 */
+print(halve(9));
+
+func sum3(a, b, c) { return a + b + c; }
+print(sum3(1, 2, 3));
+
+func pick(c) { if (c) { return 1; } return 2; }
+print(pick(true));
+print(pick(false));
+
+func outer(x) { return inner(x) + 1; }
+func inner(x) { return x * 3; }
+print(outer(4));
+
+/* An int handed back through a float slot: the return has to widen it, or the
+ * IR reads `ret double %t0` for an i64 register. */
+func as_float(v: int): float { return v; }
+print(as_float(7));
+
+warmup();
+main();

@@ -1,0 +1,26 @@
+// lume —— crypt_sha512 单测（tests/test-crypt.lume）
+//
+// 跨平台行为：
+//   glibc (Linux/docker)：生成 $6$ 强哈希（长度 ~106，agent-httpd 可校验）。
+//   macOS：crypt(3) 无 SHA-512 → vm_set_error（开发机认证关闭，不需哈希）。
+// 两条路径都算 PASS；输出 PASS/FAIL，make crypt-test grep FAIL 判定。
+// 运行：make crypt-test（并入 make check）。
+
+func check(name, cond) {
+  if (cond) {
+    print("PASS " + name);
+  } else {
+    print("FAIL " + name);
+  }
+}
+
+// 平台支持 → 生成非空长哈希（native 已保证 $6$ 前缀）；不支持 → 平台报错。
+let h = try(() => crypt_sha512("s3cret"));
+let err = get(h, "err", null);
+let v = get(h, "ok", "");
+check("crypt_sha512 生成或平台报错",
+      (err == null and len(v) > 60) or (err != null));
+
+// 错误路径：非字符串参数 → err
+let bad = try(() => crypt_sha512(42));
+check("crypt_sha512 非字符串参数报错", get(bad, "err", null) != null);

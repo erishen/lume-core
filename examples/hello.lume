@@ -1,0 +1,108 @@
+// Lume getting started — the shortest HTTP server that does something.
+// Read docs/LUME.md for the language; this mirrors its "最小服务器" example.
+//
+//   make dev-minimal              → http://localhost:8082
+//   curl localhost:8082/          plain text
+//   curl localhost:8082/hello     JSON
+//   curl -X POST   localhost:8082/items  (put/patch/delete too)
+//   open localhost:8082/items      → a small React page driving those verbs
+//                                    (extensionless /items maps to items.html)
+//   open localhost:8082/chat       → agent chat UI; the `add` tool below is
+//                                    callable by the model there; the page also
+//                                    shows a discovery strip (tools/skills/mcps)
+//   curl -N -X POST localhost:8082/react/api/chat  → same agent, raw (SSE)
+
+server {
+  port = 8082;         // ports must stay under 10000
+  workers = 2;
+  docroot = "./www";   // serves the shared layer built by `make ui`
+  views = "hello";     // page shell + /items bundle live in www/hello/:
+                       // URL 仍 /items、/items.html、/items.js、/items.css
+}
+
+// A plain string result is served as text/html. now() is the server time.
+// `get "path", handler` is shorthand for `route "GET", "path", handler`
+// (post/put/patch/delete/head/options work the same way); `(req) => {...}`
+// is arrow-function sugar for `func(req) {...}`.
+get "/", (req) => {
+  return "hello from Lume, it is " + str(now());
+};
+
+// A map with no `body` key is served as-is: 200 + application/json — no
+// stringify()/status/type needed.
+get "/hello", (req) => {
+  return {
+    message: "hello, world",
+    path: req.path,
+    method: req.method,
+  };
+};
+
+// ------------------------------------------------ agent chat UI
+// The /chat page lives entirely in the frontend (see examples/invest.lume,
+// which owns www/invest/): the shell is the static www/invest/chat.html and
+// the client is the shared React bundle ./www/invest/app.js, which mounts into
+// #chat-root because <body data-page="chat">. No Lume route is needed — the
+// framework's static handler falls back from the extensionless /chat to
+// chat.html. The chat itself is the framework-native POST /react/api/chat
+// SSE loop; it needs a real model in .env to actually call tools (empty
+// LLM_API_KEY = offline canned replies, no tools).
+// See frontend/src/invest/app.tsx for the Chat component.
+
+// The /items.html page is a real React app: the shell is the static
+// ./www/hello/items.html, the component is frontend/src/hello/items.tsx
+// bundled by esbuild
+// to ./www/hello/items.js, and the styles are ./www/hello/items.css — all
+// served via views = "hello" at the same URLs (/items, /items.js, …).
+// The list lives in React state because write requests run in forked
+// workers (fresh VM copy each time) and the server keeps no state.
+
+// Non-GET verbs have the same shorthand. They run on a forked worker (each
+// request gets its own copy of the VM), so keep them stateless: echo req.body
+// instead of mutating globals.
+//
+// `write` is a built-in method group: `write "path";` registers
+// POST/PUT/PATCH/DELETE in one statement and replies with a default JSON
+// acknowledgement `{ action, method, got }` — `action` is the group's
+// conventional label for the method (created/replaced/patched/deleted), `got`
+// echoes the request body. Pass a handler to customize: `write "path", fn;`.
+// (Declare your own group with `verbs name = [...]` or `{ METHOD: "label" }`;
+// `read "path";` is the built-in GET/HEAD group.)
+write "/items";
+
+// ------------------------------------------------ agent tool
+// A `tool` is a plain Lume function exposed to the embedded LLM agent. The
+// agent loop itself is native to the framework at POST /react/api/chat (SSE) —
+// `tool` just registers the callable. Params use the { name: "type" } sugar;
+// the bridge upgrades them to a JSON schema at registration. Tools run on a
+// forked worker, so keep them stateless.
+//
+// Try it (needs a model in .env — `cp .env.example .env`; an empty LLM_API_KEY
+// gives the offline demo engine):
+//   curl -N -X POST -d '{"message":"add 2 and 3"}' localhost:8082/react/api/chat
+// Inside the tool, get(arg, "session") is the conversation id. The handler's
+// `arg` is automatically typed by the tool's param schema, so `arg.a` reads a
+// declared field directly, and a key the model omits reads as the type's zero
+// (int -> 0, string -> "", bool -> false, float -> 0.0) instead of erroring.
+// For untyped maps, `int(m, "a")` is cast-and-get sugar for `int(get(m, "a"))`
+// (add a third arg for a custom default). Params use bare type keywords
+// (`a: int`); the quoted `a: "int"` form works too. `(arg) => {...}` is arrow
+// sugar for `func(arg) {...}` — either form works here.
+tool "add", "Add two integers", { a: int, b: int }, (arg) => {
+  return { sum: arg.a + arg.b };
+};
+
+// ------------------------------------------------ /discovery
+// What LLM-router integration discovered at boot, in one glance. GET only,
+// so it runs on the master VM. `mcps()` reads the router catalog
+// (only present after a sync ran; null otherwise).
+get "/discovery", (req) => {
+  return {
+    endpoints: discovery_endpoints(),   // 只报配置状态与模型名, 不暴露内网 URL,
+    skills: skills(),
+    tools: tools(),
+    mcps: mcps(),
+  };
+};
+
+run();   // start the server and block

@@ -1,5 +1,16 @@
 # lume-llvm — build artifacts (regenerate with `make`)
 /build/
+/build-asan/
 /bin/
 /out/
 *.o
+*.a
+
+# C test binaries + their macOS debug symbols
+/tests/smoke-bin
+/tests/smoke-bin-asan
+*.dSYM/
+
+# local runtime state (the host tree owns the server; this tree keeps none,
+# but .data/ is the shared convention if a script happens to create it)
+/.data/

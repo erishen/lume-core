@@ -1,0 +1,56 @@
+// Lume language basics — a pure script: no server, no run(). It computes,
+// prints and exits. Run with:  make && bin/lume examples/lang-basics.lume
+// (or `bin/lume --check examples/lang-basics.lume` to only type-check it.)
+
+type Point = { x: int, y: int };
+
+func sq_dist(a: Point, b: Point): int {
+  let dx = a.x - b.x;                     // inferred int
+  let dy = a.y - b.y;                     // inferred int
+  return dx * dx + dy * dy;
+}
+
+func describe(n: int): string {
+  if (n > 100) { return "big"; }
+  if (n > 0) { return "positive"; }
+  return "non-positive";
+}
+
+// Result + `?` error propagation, only legal inside a function.
+func divide(a: int, b: int): Result {
+  if (b == 0) { return { err: "division by zero" }; }
+  return { ok: a / b };
+}
+
+func report(): Result {
+  let q = divide(21, 7)?;                 // unwraps ok; err would propagate
+  print("21 / 7 = " + str(q));
+  return { ok: 1 };
+}
+
+func strict_bools(): string {
+  let b: bool = true;
+  if (b and not false) { return "strict bools ok"; }
+  return "never";
+}
+
+func widened(): float {
+  return 7;                               // int literal widens to float
+}
+
+let p: Point = { x: 3, y: 4 };
+let q: Point = { x: 0, y: 0 };
+let code = describe(170);                 // type inferred: string
+
+print("sq_dist(3,4) = " + str(sq_dist(p, q)));
+print("describe(170) = " + code);
+print("float arithmetic = " + str(2 * (1.5 + 2.25)));
+print("int->float widening = " + str(widened()));
+print(strict_bools());
+report();                                  // prints 21 / 7 = 3
+
+// cast-and-get sugar: str/int/float accept (map, key, default?) and read +
+// convert in one step, equivalent to str(get(m, "k", default)). Missing key
+// falls back to the default; found value is converted to the cast's type.
+let acc = { name: "ACME", n: "42", amt: 3.5 };
+print("accessor = " + str(acc, "name", "") + "|" + str(acc, "missing", "D") + "|" + str(int(acc, "n", 0)) + "|" + str(float(acc, "amt", 0.0)));

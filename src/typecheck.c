@@ -29,9 +29,21 @@ static Type ANY_TYPE = {.kind = TY_ANY};
 
 Type *any_type(void) { return &ANY_TYPE; }
 
+/* Every Type this file allocates lands on one reclaim list (see
+ * type_release_all). The parser builds them too, through the same
+ * constructors, which is why the list is file-wide rather than per-Checker:
+ * a Type produced while parsing is still a Type nobody owns in turn. */
+static Type *ty_allocs;
+
+static void ty_keep(Type *t) {
+    t->tnext = ty_allocs;
+    ty_allocs = t;
+}
+
 Type *type_prim(TypeKind kind) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = kind;
+    ty_keep(t);
     return t;
 }
 
@@ -39,6 +51,7 @@ Type *type_list(Type *elem) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_LIST;
     t->elem = elem;
+    ty_keep(t);
     return t;
 }
 
@@ -46,6 +59,7 @@ Type *type_struct(const char *name) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_STRUCT;
     t->name = strdup(name);
+    ty_keep(t);
     return t;
 }
 
@@ -53,6 +67,7 @@ Type *type_anon_struct(void) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_STRUCT;
     t->name = NULL;
+    ty_keep(t);
     return t;
 }
 
@@ -62,13 +77,34 @@ Type *type_func(int arity, Type **params, Type *ret) {
     t->types = params;
     t->count = arity;
     t->ret = ret;
+    ty_keep(t);
     return t;
 }
 
 Type *type_result(void) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_RESULT;
+    ty_keep(t);
     return t;
+}
+
+void type_release_all(void) {
+    Type *t = ty_allocs;
+    ty_allocs = NULL; /* so a second call is a no-op, not a double free */
+    while (t) {
+        Type *next = t->tnext;
+        free(t->name);
+        if (t->names) {
+            for (int i = 0; i < t->count; i++) free(t->names[i]);
+            free(t->names);
+        }
+        /* types[] holds Type* (members or params) that are part of this same
+         * graph -- including the param vector calloc'd by the checker's Pass
+         * C -- so the whole shell goes here, not block by block. */
+        free(t->types);
+        free(t);
+        t = next;
+    }
 }
 
 void type_add_member(Type *t, const char *name, Type *ty) {
@@ -177,10 +213,45 @@ void export_add(Checker *c, const char *name, Type *t) {
     c->self->export_types.count++;
 }
 
+/* Set while a module is being checked. scope_new() chains every scope it
+ * creates onto the active Checker: the parent pointer only runs from an inner
+ * scope outwards, so without this list the inner scopes would be unreachable
+ * once the outermost check returns and could never be freed. */
+static Checker *g_ck_scopes;
+
 CScope *scope_new(CScope *parent) {
     CScope *s = calloc(1, sizeof(CScope));
     s->parent = parent;
+    if (g_ck_scopes) {
+        s->all_next = g_ck_scopes->all_scopes;
+        g_ck_scopes->all_scopes = s;
+    }
     return s;
+}
+
+/* Release the checker's own bookkeeping: the scope list with its symbol and
+ * namespace chains, and the struct table. The Type* those point at is not
+ * ours to free here — that is type_release_all()'s sweep. */
+static void ck_free(Checker *c) {
+    CScope *s = c->all_scopes;
+    while (s) {
+        CScope *sn = s->all_next;   /* read before s dies */
+        CSym *it = s->syms;
+        while (it) { CSym *nxt = it->next; free(it->name); free(it); it = nxt; }
+        CNS *ns = s->nss;
+        while (ns) { CNS *nxt = ns->next; free(ns->name); free(ns); ns = nxt; }
+        free(s);
+        s = sn;
+    }
+    StructDef *d = c->structs;
+    while (d) {
+        StructDef *dn = d->next;
+        free(d->name);
+        free(d);
+        d = dn;
+    }
+    c->all_scopes = NULL;
+    c->structs = NULL;
 }
 
 void scope_put(CScope *s, const char *name, Type *t) {
@@ -200,27 +271,32 @@ void scope_put(CScope *s, const char *name, Type *t) {
  * (最坏一类 bug)。只查当前层不沿 parent 链, 内层遮蔽(shadowing)照常
  * 允许; 与内置函数重名也放行(用户声明遮蔽内置名是既有合法用法, 如
  * `let type = "x"`)。 */
+/* Single source of truth for the builtin name list. The two consumers below —
+ * the is_builtin_name() guard and the loose scope seeding in type_check_init —
+ * each used to carry their own copy, so adding a builtin meant editing two
+ * lists that nobody checked against each other. */
+static const char *const LUME_BUILTIN_NAMES[] = {
+    "run", "print", "str", "int", "len", "keys", "get",
+    "json", "stringify", "now", "el", "render", "html",
+    "float", "bool", "string", "type", "Result", /* type words usable as idents */
+    "write", "read", /* built-in verb groups (see seed_verb_groups) */
+    "env", "files", "read_file", "write_file", "mkdir", "strftime", "put",
+    "range", "map", "filter", "reduce", /* collection tools */
+    /* sql_query / sql_write: host build only. */
+    "lock_file", "unlock_file", /* flock advisory lock (invest ledger) */
+    "tools", "skills", "mcps",
+    "discovery_endpoints", "catalog", /* discovery builtins */
+    "push", "try", /* collection / error handling (2026-09-27) */
+    "replace", /* string builtins (2026-09-27) */
+    "crypt_sha512", /* sha512 crypt hash (2026-09-29) */
+    /* math builtins (2026-09-28, builtins_math.c) */
+    "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
+    "min", "max", "pi", "e",
+};
+
 bool is_builtin_name(const char *name) {
-    static const char *const BUILTINS[] = {
-        "run", "print", "str", "int", "len", "keys", "get",
-        "json", "stringify", "now", "el", "render", "html",
-        "float", "bool", "string", "type", "Result", /* type words usable as idents */
-        "write", "read", /* built-in verb groups (see seed_verb_groups) */
-        "env", "files", "read_file", "write_file", "mkdir", "strftime", "put",
-        "range", "map", "filter", "reduce", /* collection tools */
-        "sql_query", "sql_write", /* sqlite builtins (DSL-level) */
-        "lock_file", "unlock_file", /* flock advisory lock (invest ledger) */
-        "tools", "skills", "mcps",
-        "discovery_endpoints", "catalog", /* discovery builtins */
-        "push", "try", /* collection / error handling (2026-09-27) */
-        "replace", /* string builtins (2026-09-27) */
-        "crypt_sha512", /* sha512 crypt hash (2026-09-29) */
-        /* math builtins (2026-09-28, builtins_math.c) */
-        "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
-        "min", "max", "pi", "e",
-    };
-    for (size_t i = 0; i < sizeof(BUILTINS) / sizeof(BUILTINS[0]); i++)
-        if (strcmp(BUILTINS[i], name) == 0) return true;
+    for (size_t i = 0; i < sizeof(LUME_BUILTIN_NAMES) / sizeof(LUME_BUILTIN_NAMES[0]); i++)
+        if (strcmp(LUME_BUILTIN_NAMES[i], name) == 0) return true;
     return false;
 }
 
@@ -378,34 +454,19 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
     if (errbuf && errbuf_size) errbuf[0] = '\0';
     c.errbuf = errbuf;
     c.errbuf_size = errbuf_size;
+    /* Up first: scope_new() links onto this Checker, and the very first scope
+     * is created two lines below. Setting g_ck_scopes afterwards would leave
+     * the root scope off c->all_scopes, so ck_free() would skip the symbols
+     * declared at the top level of the script. */
+    g_ck_scopes = &c; /* scope_new() chains onto this Checker */
     c.scope = scope_new(NULL);
     c.self = self;
     c.mods = mods;
     c.mod_count = mod_count;
 
     /* builtins are loose */
-    {
-        static const char *BUILTINS[] = {
-            "run", "print", "str", "int", "len", "keys", "get",
-            "json", "stringify", "now", "el", "render", "html",
-            "float", "bool", "string", "type", "Result", /* type words usable as idents */
-            "write", "read", /* built-in verb groups (see seed_verb_groups) */
-            "env", "files", "read_file", "write_file", "mkdir", "strftime", "put",
-            "range", "map", "filter", "reduce", /* collection tools */
-            "sql_query", "sql_write", /* sqlite builtins (DSL-level) */
-            "lock_file", "unlock_file", /* flock advisory lock (invest ledger) */
-            "push", "try", /* 列表追加 / 错误捕获 (2026-09-27) */
-            "replace", /* 字符串内建 (2026-09-27) */
-            "crypt_sha512", /* sha512 crypt hash (2026-09-29) */
-            /* math builtins (2026-09-28) */
-            "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
-            "min", "max", "pi", "e",
-            "tools", "skills", "mcps",
-            "discovery_endpoints", "catalog", /* discovery builtins */
-        };
-        for (size_t i = 0; i < sizeof(BUILTINS) / sizeof(BUILTINS[0]); i++)
-            scope_put(c.scope, BUILTINS[i], any_type());
-    }
+    for (size_t i = 0; i < sizeof(LUME_BUILTIN_NAMES) / sizeof(LUME_BUILTIN_NAMES[0]); i++)
+        scope_put(c.scope, LUME_BUILTIN_NAMES[i], any_type());
 
     /* Pass A: register every struct name before resolving any body, so
      * forward references between structs work. The def Type keeps the name:
@@ -462,6 +523,8 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
     for (int i = 0; i < prog->as.program.count && !c.failed; i++)
         ck_stmt(&c, prog->as.program.stmts[i]);
 
+    g_ck_scopes = NULL;
+    ck_free(&c);
     return !c.failed;
 }
 

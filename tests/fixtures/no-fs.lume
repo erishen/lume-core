@@ -1,0 +1,6 @@
+// Fixture for the --no-fs runtime switch, exercised by tests/run_all.sh.
+// Deliberately one statement: it must trip the guard and nothing else, and the
+// trailing print is the control that proves the file really is reachable when
+// the switch is off.
+let leaked = read_file("/etc/hostname");
+print("still here");

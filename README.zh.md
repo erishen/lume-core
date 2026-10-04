@@ -1,125 +1,187 @@
-# lume-llvm
+# Lume
 
-把 [Lume](https://github.com/erishen) 语言编译到原生机器码的研究型编译器：
-**`.lume` → AST → LLVM IR（文本）→ 原生可执行文件**。
+[English](README.md) | [简体中文](README.zh.md)
 
-```
-examples/hello.lume
-        │
-        │   vendored frontend（词法/语法/类型检查）        upstream/
-        ▼
-      AST（Node* / Type*）
-        │
-        │   手写的后端                                     src/codegen.c
-        ▼
-      LLVM IR 文本（.ll）
-        │
-        │   clang / cc                                     src/main.c
-        ▼
-      ./out/hello（可直接运行）
-```
+> 读音：**lu-mé**（/luˈmeɪ/，两音节，重音在后）。
 
-前端不是重写的：`upstream/` 放的是 Lume 真实的词法、语法与类型检查器，只是把它
-从 Lume 运行时里剥了出来（原本 `lume.h` 里唯一的耦合就是那句
-`#include "agenthttpd.h"`，已经删掉）。所以语法错误和类型错误都是上游编译器
-报的，不是我们再实现一套。
+**这是「脱离宿主」的那棵语言树。** 它是 Lume 的语言部分：前端（词法/语法/类型
+检查）+ 两个原生发射器（手写 LLVM IR 文本、libLLVM C API）+ 一棵树遍历解释器。
+除了 libc（以及探测到 `llvm-config` 时的 libLLVM）什么也不链——这里没有 HTTP
+服务器、没有 agent 运行时、没有 Docker 镜像。
 
-## 构建与运行
+把 Lume **嵌进** agent 宿主（`libagenthttpd.a`、活体 HTTP、聊天、工具派发、原生
+SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `work/research/lume`：同一门语言，
+不同的部署形态；语言侧改动先落在这棵，宿主树从这边带过去。
 
-宿主机工具链只要 **C11 + libc** —— 不需要 LLVM 开发包，也不需要 CMake：
+| | 本树（`work/research/lume-llvm`） | 宿主树（`work/research/lume`） |
+|---|---|---|
+| 定位 | 独立语言 + libLLVM 原生路线 | 语言嵌进 agent-httpd |
+| 链接 | libc、libLLVM（可选） | 再加 `libagenthttpd.a` |
+| `make test` | 解释器单测、crypt、两条原生后端、双发射器一致性 | 再加 HTTP/e2e 套件（`tests/run_all.sh`） |
+| server/demo 目标 | 无 | `make dev` / `hub` / `invest` / `image` 等 |
 
-```sh
-make                                    # -> bin/lume-llvm
-make check                              # 对每个示例做类型检查
-make test                               # 编译+运行每个示例，并比对输出
-make examples                           # 编译+运行每个示例，打印输出
-make dump f=examples/fact.lume          # 打印 AST
+单二进制 **C11 编译器**：业务逻辑写在 `.lume` 脚本里，`lume --compile a.lume`
+经 libLLVM 直接产出原生可执行文件。有意保留两个发射器并互相校验（见
+[docs/NATIVE.md](docs/NATIVE.md)）；`--no-pass` 用来跳过优化流水线，直看某条
+发射器下探出来的 IR。
+
+> ℹ️ 与 [lumeland/lume](https://github.com/lumeland/lume)（Deno 静态站点生成器）
+> 及 [lume/lume](https://github.com/lume/lume)（CSS3D/WebGL UI 工具包）**无关联**
+> ——只是恰好同名的不同项目。
+
+## ⚠️ 安全
+
+**本树不带服务、不监听端口、没有 agent 运行时** —— 它是编译器和命令行工具。
+下面那些关于 HTTP 端口的注意事项描述的是**宿主树**（`work/research/lume`）
+的运行面，只有你跑那棵树时才需要读。
+
+本树的攻击面就是 `lume` 这个二进制本身，规则也就是本地编译器的常规规则：
+
+- `--compile` / `--compile-llvm` 会外面调 `cc` 或 libLLVM；不可信的源码以你的
+  权限执行，别编译（也别 `run()`）你不信任的脚本。
+- `fs` 内建按脚本所在目录解析相对路径，请保证脚本放在你可控的目录里。
+- DSL 里的 `run()` 语句在本树直接 `exit(2)`——脚本要求起宿主服务器，而这棵
+  构建里没有。
+
+## 快速开始
+
+```bash
+make             # 构建 bin/lume（只要 cc；libLLVM 仅在 llvm-config 存在时才编）
+make check       # 对内置示例做类型检查，不产出
+make test        # parity + 单测 + crypt + 两条原生后端 + 一致性
+make asan        # 用 ASan/UBSan 重编并跑单测
+make dump        # 打印 examples/hello.lume 的 IR 文本后端产物
+make native      # 默认（libLLVM）后端跑 native-bench
+make native-text # 手写 IR 文本后端跑同一份靶子
+make native-bench # 两条后端同脚本对比
 make clean
 ```
 
-单个文件：
+解释执行，或者编出来直接跑：
 
-```sh
-./bin/lume-llvm --compile examples/fact.lume && ./out/fact
-./bin/lume-llvm --emit-ir  examples/fact.lume  # 只生成 out/fact.ll，不链接
-./bin/lume-llvm --check    examples/fact.lume  # 只做解析 + 类型检查
+```bash
+./bin/lume examples/hello.lume                  # 解释器
+./bin/lume --compile examples/native-fact.lume  # -> native-fact（libLLVM）
+./bin/lume --compile-text examples/native-fact.lume   # 手写 IR 文本
+./bin/lume --no-pass --compile examples/native-fact.lume  # 跳过 -O
 ```
 
-`make test` 会把每个示例的 stdout 和 `tests/<stem>.expected` 做 diff，所以后端
-一旦回归（GEP 下标写错、`alloca` 漏插、类型提升没做），看到的是一条 diff，而不是
-一个悄悄算错的数。
+依赖：一个 C11 编译器（`cc`）；走 libLLVM 那条路还需要 `PATH` 里有
+`llvm-config`（此时按 `llvm-config --libs` 链接；探不到照样出 `bin/lume`，
+只是 `--compile-llvm` 不可用）。没有别的——不需要 `node`、不需要 `pnpm`、
+不需要服务运行时、不需要 SQLite。
 
-## 为什么 IR 是文本而不是调 LLVM C API
+## 安装
 
-* **零链接依赖。** 为了「其实就是在拼字符串」这件事去链一个巨大的 libLLVM 不值。
-  `clang` 每台开发机都有，而且能直接吃 `.ll` 文件。
-* **IR 保持可读**——研究型编译器最要紧的就是这个，每个阶段都能停下来看中间产物，
-  `.ll` 可以直接读明白某个语法结构降成了什么。
-* **可替换。** 哪天真要换成 MLIR 或 LLVM 官方 IRBuilder，只需要换掉
-  `src/irbuf.c` 这一个文件。
+没有要装的东西——不需要 npm registry、不需要包管理器、这棵树也没有发布
+tarball。拉下来编就好：
 
-代价是 IR 的正确性只有 clang 会校验，所以后端**绝不吐半成品模块**：凡是降不下去的
-构造，直接报一个能定位的错误
-（`line 26: for (this construct) is not supported by the native backend yet`），
-而不是让 clang 对着一段残缺 IR 报一句莫名其妙的 opcode 错误。
+```bash
+git clone <本仓库> lume-llvm && cd lume-llvm
+make                                  # -> bin/lume（约 270 KB，其中大半是 LLVM 胶水）
+make check                            # 自检：内置示例都能过类型检查
+sudo cp bin/lume /usr/local/bin/lume  # 可选
+```
 
-## 目录结构
+上面那套 `LUME_VERSION` / `LUME_PREFIX` / `LUME_SHA256` 覆盖项，以及那个
+`install.sh` 一行安装、React SSR 演示，全都是**宿主树**的发布流程；本树只产出
+编译器，所以 `make && cp bin/lume` 就是安装动作本身。
+
+构建时可覆盖的变量：
+
+- `CC=` —— 换编译器
+- `LLVM_PREFIX=` / `LLVM_CONFIG=` —— `llvm-config` 不在 `PATH` 时指定它
+- `CFLAGS=` / `LDFLAGS=` —— 追加，例如 `CFLAGS=-O2` 或额外头文件路径
+
+## 目录
 
 | 路径 | 内容 |
-| --- | --- |
-| `src/main.c` | 驱动：命令行、解析、类型检查、IR → 原生二进制 |
-| `src/codegen.c` | AST → LLVM IR 文本（后端本体） |
-| `src/irbuf.c` | 可增长文本缓冲 + IR 字符串字面量转义 |
-| `src/rt.c` | 生成的 IR 调用的运行时 helper（`print`） |
-| `upstream/` | vendored 的 Lume 前端（token/lexer/parser/typecheck） |
-| `examples/` | `.lume` 示例程序 |
-| `tests/` | 每个示例的期望输出，`make test` 用 |
+|---|---|
+| `src/` | 词法/语法/类型检查/树遍历解释器 + **本树自持的桥接替身**（`bridge_stub.c`）+ 原生后端（IR 文本走 `codegen.c` 及拆分出去的 `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c`，可选的 libLLVM 路走 `llvm_codegen.c` / `backend_llvm.c`），共约 6.2k 行 C11；另有 fork-local 的 `sbuf.h` 替掉宿主的 minijson 字符串缓冲 |
+| `examples/` | 纯语言脚本：`hello`、`lang-basics`、`modules/app`、`native-fact`、`native-bench` |
+| `tests/` | C 单测（`smoke.c`，106 项）+ `test-crypt.lume` + `native_backends.sh`（解释/文本/libLLVM 三路比对）+ 一致性期望文件 |
+| `scripts/` | `check-backend-parity.sh` —— 两条发射器的 AST 标签覆盖 parity 检查 |
+| `docs/` | 完整文档，见下 |
 
-## 当前支持的子集
+> 宿主树另有 `frontend/`（React 客户端）、`www/`（docroot）、`docker/`
+> （镜像 + compose）、`editor/lume-vscode/` 以及一堆 server/demo 的 `.lume`
+> 脚本——本树按设计全都没有。
 
-类型：`int`、`float`、`bool`、`string`，以及 `type Name = { f: T, ... }`。
+## 文档
 
-* 顶层 `func`、递归、多参数、有返回类型
-* `let`（带标注或不带）、赋值、成员赋值
-* `if` / `else`、`while`、C 风格 `for`、`break`、`continue`
-* 数字（int/float）、布尔、字符串字面量
-* `+ - * / %`（int）与 `+ - * /`（float）、`== != < <= > >=`、`! -`
-* `&& ||` —— 直接降成 `and`/`or` 位运算，**是急切求值、不短路**（语法分析阶段
-  两侧操作数就已经求完值了）。研究子集够用，要真短路得改成分支。
-* 字段访问与结构体值（`{ w: 3, h: 4 }`、返回结构体的函数）
-* 字符串不参与算术（字符串算术是报错，不是崩）
+- [docs/LUME.md](docs/LUME.md) —— **用户指南**：语言速览（类型/控制流/Result）、
+  内建函数、路由与工具注册、`el()`/`html()` 两套页面写法、模块序列化细节、
+  多文件 `import` / `export`。
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) —— **开发文档**：目录结构、
+  解释器核心约定（改代码前必读）、怎么加内建函数/新语句/新类型、测试约定
+  （本树 `make test` 没有 HTTP/e2e 那条腿）、渲染类内建、已知约定与坑。
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— **架构文档**：系统全景与
+  设计决策、进程/内存模型、分层、编译/执行时序、部署形态与安全边界。
+- [docs/STYLE.md](docs/STYLE.md) —— **写法指南**：用当前能力集怎么写 `.lume`
+  （箭头表达式体、`try` 固定键、`"` 引号 map 字面量、`spa`、写路径纪律），附
+  提交前自查清单。
+- [docs/PITFALLS.md](docs/PITFALLS.md) —— **坑位台账**：真实踩过的坑与修复
+  状态，写业务 `.lume` 前先读。
+- [docs/NATIVE.md](docs/NATIVE.md) —— **原生后端（实验，`--compile` 默认走
+  libLLVM，`--compile-text` 退到手写 IR 文本）**：两条路把 Lume 编成可执行文件
+  （libLLVM C API vs 手写 IR 文本）、为什么 `print` 不调 `printf`、覆盖到哪些
+  内建、哪些还没覆盖，以及两条路的横向实测对比。
 
-暂不支持、但会给出可定位错误的：闭包 / 函数字面量、列表字面量、`import`，以及
-Lume 只为 HTTP server 保留的那几个（`server`、`route`、`tool`、`verbs`）。
+## 原生后端（实验）
 
-## 后端笔记（有意思的部分）
+`--compile` 把 `.lume` 脚本编成一个真正的可执行文件。两条后端共用同一套前端
+（词法 → 语法 → 类型检查）：
 
-局部变量用 `alloca` + `load`/`store`，而不是 SSA + `phi`，这样发射器写起来极简；
-`clang -O2` 会跑 mem2reg，自动把它变成正经 SSA。IR 是按源码顺序往一个缓冲里追加
-的，所以每个函数体在发射 entry block 之前会先整体扫一遍，把 `alloca` 全部提到
-entry。
+- **默认（`--compile`，等价于 `--compile-llvm`）**：类型检查后的 AST 交给
+  `src/llvm_codegen.c`，用 **libLLVM C API** 把 IR 建出来 —— 即 IR 是 LLVM
+  **value**，LLVM 当场（`LLVMVerifyModule`）校验形状，目标文件也由
+  `LLVMTargetMachineEmitToFile` 自己出。IR 长错就错在刚生成的地方，不是拖到
+  clang 那步才炸。
+- **`--compile-text`**：交给 `src/codegen*.c`（按区段拆成几个文件：类型拼写 /
+  表达式 / 扫描 / 签名推断 / 语句，见 `src/codegen.c` 头部说明）产出 **LLVM IR
+  文本**，clang 收尾。
 
-几个真正踩过坑、且很容易写错的点：
+```bash
+make native                     # 默认后端: 编译 + 跑 + 与 tests/native-fact.expected 比对
+make native-text                # 同一份期望基线, 强制走文本路
+make native-llvm                # 同一份期望基线, 强制走 libLLVM
+bin/lume --compile examples/native-fact.lume && ./out/native-fact
+bin/lume --compile script.lume -o mybin     # IR 落在 out/mybin.ll
+```
 
-* **在 macOS/arm64 上，手写 IR 不能调 `printf`。** 变参的参数保存区必须由**调用方**
-  搭好，而 clang 不会替手写调用搭一个。所以 `print` 走 `src/rt.c` 里的非变参
-  helper（`lume_print_i64`、`lume_print_double`、`lume_print_bool`、
-  `lume_print_str`），IR 里只发普通非变参 call。
-* **`.ll` 必须声明 `target triple`。** 不写的话 LLVM 按通用目标降级，ABI 对不上，
-  打印出来是一堆垃圾字符。triple 取自宿主机工具链（`$(CC) -print-target-triple`），
-  同时也会传给 C 编译器，保证运行时目标文件和 IR 用的是同一个 triple。
-* **结构体字段访问是「双下标 GEP」**：
-  `getelementptr inbounds %Rect, %Rect* %obj, i32 0, i32 <字段>`。只写一个下标
-  被当成**数组**下标，会静默地读到 offset 16 上的错误字段。
-* **具名结构体类型有两套拼写**（值用 `%Rect`、指针用 `%Rect*`），而且必须 intern
-  保存：把它们写进同一个临时缓冲区，只要同一次格式化里同时要值类型和指针类型就会
-  互相覆盖。
-* **读一个结构体变量拿到的是它的槽位指针**；结构体形参本身就是指针；结构体字面量
-  是 `insertvalue` 链；返回结构体又不能写成 `ret %Rect 0`。
+目前覆盖 core subset：标量、结构体、函数、`if`/`while`/`for`、算术与比较，
+以及一批内建（`print`/`abs`/`min`/`max`/`sqrt`/`pow`/`floor`/`ceil`/`round`/
+`str`/`int`/`float`，以及字符串 `+`）。`server {}`/`route`/`tool` 的注册在本树
+会进 VM 自带的表，但 `run()` 直接停在本树没有宿主的信号上；原生路径覆盖的是
+语言核心，宿主相关的语句不在范围内。设计与取舍见
+[NATIVE.md](docs/NATIVE.md)。
 
-## 路线图
+`llvm-config` 找得到就编译进 `bin/lume`（Makefile 自动探测，否则这个二进制
+根本没有 libLLVM 那条路，`--compile` 自动落到文本后端并在 stderr 说明）。
 
-* 函数字面量 / 闭包、列表字面量
-* 覆盖前端更多语法（`import`、高阶调用）
-* 交给 clang 之前先在 `.ll` 上跑一层 `--opt`
-* IR 形态稳定后，从文本发射切到 LLVM C API
+已知代价：**优化 pass 是 2026-10-03 才接上的**。此前一直记着「`LLVMRunPasses`
+从纯 C TU 里调会崩」，于是产物正确但没 mem2reg，循环密集的靶子上比
+`--compile-text` 慢一到两个数量级。重测发现那个结论前提错了两次（入口头文件
+`llvm-c/Transforms/PassBuilder.h` 本来就已经 include 进来，崩是因为
+`LLVMRunPasses` 被隐式声明成返回 `int` 再塞进 `LLVMErrorRef` 这个指针；
+真正会死的是 opt level `None` 而不是 `Default`）。现在 libLLVM 这条路在 emit
+前跑 `default<O2>`，和文本路的 `clang -O2` 同一档：
+
+```
+backend   compile-ms   ir-KiB  obj-KiB  bin-KiB    run-ms  nopass-ms
+text            446        3        1       35         9          -
+llvm            184        2        1       35         9        215
+```
+
+正确性与各体积列两边打平，运行侧落在同一档（1e8 次迭代里的局部变量被 promote
+成寄存器，不再是内存槽），**编译侧 libLLVM 更快**（它的 IR 不用再被 clang 解析
+和 codegen 一遍）。末列 `nopass-ms` 是哨兵：`lume --no-pass`（等价的环境变量
+`LUME_NO_PASS=1`）跳过优化 pipeline 再编一次同一份源码，llvm 腿会从个位数掉到
+200ms 上下 —— 想看实测就跑
+`make native-bench`（双层循环靶子 + 无 pass 对照）。细节见
+[NATIVE.md](docs/NATIVE.md)。
+
+## 相关资料
+
+- 宿主树那篇介绍讲的是**服务器形态**的 Lume（agent-httpd、聊天、SQL 工具）：
+  [Lume：C11 单二进制的 Agent DSL 服务器](https://erishen.cn/lume/)

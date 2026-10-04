@@ -1,0 +1,23 @@
+# LeakSanitizer suppressions for lume.
+#
+# One entry, and it is not a leak of ours:
+#
+#   leak:LLVMVerifyModule
+#
+# libLLVM strands one empty strdup inside LLVMVerifyModule. LLVMReturnStatusAction
+# hands back a *separate* copy of the message in the char** that was passed in,
+# and lume disposes that one; the stranded copy has no pointer that any C API
+# returns, so it cannot be freed from here.
+#
+# Two things pinned this down as upstream rather than lume's:
+#   - a standalone program that calls nothing but the C API (context, module,
+#     one function, LLVMVerifyModule, dispose everything in the order module
+#     then context) reproduces it on LLVM 14 and on LLVM 16;
+#   - dropping the out-message argument (passing NULL instead of a char**)
+#     changes nothing, so the stranded allocation is not the out-message copy.
+#
+# It is suppressed by function name, not by library name, so a real leak in
+# lume's own --compile-llvm path still gets reported: everything else in
+# llvm_codegen.c / backend_llvm.c is expected to stay at zero.
+
+leak:LLVMVerifyModule

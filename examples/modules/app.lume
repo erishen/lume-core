@@ -1,0 +1,14 @@
+// app.lume — 入口:导入策略库并使用(多文件模块演示:入口侧)
+//
+//   import "相对路径" as 命名空间;  路径相对本文件目录解析
+//   ns.exported 调用/读取模块导出;模块顶层只执行一次(依赖图缓存)
+
+import "tax.lume" as tax;
+
+let o1 = { amount: 1000.0, zone: "mainland" };
+let o2 = { amount: 1000.0, zone: "free-trade" };
+
+print("order1 tax =", tax.apply(o1));
+print("order2 tax =", tax.apply(o2));
+print("base rate   =", tax.BASE_RATE);
+print("describe    =", tax.describe());

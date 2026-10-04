@@ -192,6 +192,10 @@ static Node *parse_postfix(Parser *p) {
             call->as.call.args = args->as.list.items;
             call->as.call.argc = args->as.list.count;
             call->as.call.propagate = false;
+            /* The items array now belongs to call; only the shell goes away
+             * here, and it has to leave the orphan batch first (node_free()
+             * would reach the items array a second time via node_free_own). */
+            node_unjournal(args);
             free(args);
             if (match(p, TOK_QUESTION))
                 call->as.call.propagate = true;
@@ -344,6 +348,7 @@ Node *parse_expression(Parser *p) {
             Node *n = nalloc(N_ASSIGN, previous_line(p));
             n->as.assign.name = expr->as.var.name;
             n->as.assign.value = value;
+            node_unjournal(expr); /* shell only: name and value moved over */
             free(expr);
             return n;
         }
@@ -352,6 +357,7 @@ Node *parse_expression(Parser *p) {
             n->as.assign_mem.obj = expr->as.member.obj;
             n->as.assign_mem.name = expr->as.member.name;
             n->as.assign_mem.value = value;
+            node_unjournal(expr); /* shell only: obj and name moved over */
             free(expr);
             return n;
         }
