@@ -51,3 +51,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev
       - run: make pack
+      # `pack` already runs the same script inline; the standalone target is
+      # run again so it is exercised too - it is what would fail if the
+      # inline guard were dropped, since packcheck does not depend on pack
+      # self-checking, only on the tarball existing.
+      - run: make packcheck
