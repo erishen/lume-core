@@ -111,12 +111,13 @@ a trusted, loopback-only surface:
 ## Quick start
 
 ```bash
-make            # build bin/lume (needs cc; libLLVM only if llvm-config exists)
-make check      # type-check the bundled examples, no output artifacts
-make test       # parity + unit tests + crypto + both native emitters + consistency
-make asan       # rebuild with ASan/UBSan and run the unit tests
-make dump       # print the IR text backend produces for examples/hello.lume
-make native     # native-bench through the default (libLLVM) backend
+make             # build bin/lume-core (needs cc; libLLVM only if llvm-config exists)
+make check       # type-check the bundled examples, no output artifacts
+make test        # parity + unit tests + crypto + both native emitters + consistency
+make asan        # rebuild with ASan/UBSan and run the unit tests
+make pack        # dist/lume-core-<os>-<arch>.tar.gz (binary + README + CHANGELOG)
+make dump        # print the IR text backend produces for examples/hello.lume
+make native      # native-bench through the default (libLLVM) backend
 make native-text # native-bench through the hand-written IR text backend
 make native-bench # compare the two backends on the same script
 make clean
@@ -125,15 +126,15 @@ make clean
 Run a script with the interpreter, or emit and run native code:
 
 ```bash
-./bin/lume examples/hello.lume                  # interpret
-./bin/lume --compile examples/native-fact.lume  # -> native-fact via libLLVM
-./bin/lume --compile-text examples/native-fact.lume   # hand-written IR text
-./bin/lume --no-pass --compile examples/native-fact.lume  # skip -O passes
+./bin/lume-core examples/hello.lume                  # interpret
+./bin/lume-core --compile examples/native-fact.lume  # -> native-fact via libLLVM
+./bin/lume-core --compile-text examples/native-fact.lume   # hand-written IR text
+./bin/lume-core --no-pass --compile examples/native-fact.lume  # skip -O passes
 ```
 
 Dependencies: a C11 compiler (`cc`) and, for the libLLVM path, `llvm-config`
 on `PATH` (the build then links `llvm-config --libs`; without it you still get
-`bin/lume`, just with `--compile-llvm` unavailable). Nothing else — no
+`bin/lume-core`, just with `--compile-llvm` unavailable). Nothing else — no
 `node`, no `pnpm`, no server runtime, no SQLite.
 
 ## Install
@@ -143,15 +144,15 @@ tarball for this tree. Clone and build:
 
 ```bash
 git clone <this-repo> lume-lang && cd lume-lang
-make                 # -> bin/lume (~270 KB, two-thirds of it the LLVM glue)
+make                 # -> bin/lume-core (~270 KB, two-thirds of it the LLVM glue)
 make check           # sanity: the bundled examples type-check
-sudo cp bin/lume /usr/local/bin/lume    # optional
+sudo cp bin/lume-core /usr/local/bin/lume-core    # optional
 ```
 
 The install-time overrides below (`LUME_VERSION`, `LUME_PREFIX`,
 `LUME_SHA256`, the `install.sh` one-liner and the `react-ssr` demo) all
 belong to the **host tree**'s release pipeline; this tree produces just the
-compiler, so `make && cp bin/lume` *is* the install.
+compiler, so `make && cp bin/lume-core` *is* the install.
 
 Build variables worth knowing:
 
@@ -219,13 +220,13 @@ the same front end (lexer → parser → type checker):
 make native                     # default back end: compile + run + diff vs tests/native-fact.expected
 make native-text                # same expected baseline, forced through the text path
 make native-llvm                # same expected baseline, forced through libLLVM
-bin/lume --compile examples/native-fact.lume && ./out/native-fact
-bin/lume --compile script.lume -o mybin       # IR lands in out/mybin.ll
+bin/lume-core --compile examples/native-fact.lume && ./out/native-fact
+bin/lume-core --compile script.lume -o mybin       # IR lands in out/mybin.ll
 ```
 
-The default is libLLVM whenever `bin/lume` was built with it: a malformed IR
+The default is libLLVM whenever `bin/lume-core` was built with it: a malformed IR
 shape is rejected at the point it is produced, instead of surfacing later at the
-clang step. The back ends are compiled into one `bin/lume` — the Makefile looks
+clang step. The back ends are compiled into one `bin/lume-core` — the Makefile looks
 for `llvm-config`, and when it is missing the binary simply has no libLLVM path
 and `--compile` uses the text one (stderr says so).
 
@@ -331,7 +332,7 @@ stays git-ignored.
   a one-time WARNING (stderr) that /chat, /dsl and the SQL data behind them
   are reachable by any host that can reach the port.
 - `examples/invest.lume` must be started via `make invest` — the allow-list
-  env is only injected there; running `./bin/lume` directly prints a warning
+  env is only injected there; running `./bin/lume-core` directly prints a warning
   and exposes the full capability catalog.
 - To make the invest settings page actually gate the paid review models, point
   `IQUEST_ENV_FILE` at the same `autogen-pse/.env` file `pse-review` reads

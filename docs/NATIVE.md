@@ -12,9 +12,9 @@
 
 ```bash
 make native                                  # 编译 + 跑 + 比对期望输出
-make && bin/lume --compile examples/native-fact.lume && ./out/native-fact
-bin/lume --compile script.lume -o mybin      # 指定输出名
-bin/lume --compile script.lume               # 默认 out/<文件名>,IR 落在 out/<文件名>.ll
+make && bin/lume-core --compile examples/native-fact.lume && ./out/native-fact
+bin/lume-core --compile script.lume -o mybin      # 指定输出名
+bin/lume-core --compile script.lume               # 默认 out/<文件名>,IR 落在 out/<文件名>.ll
 ```
 
 ## 宿主机工具链要什么
@@ -25,10 +25,10 @@ native-text`」的依赖不一样):
 | 你跑什么 | 需要什么 |
 |---|---|
 | 解释器 / `make dev` / `--check` | 一个 C11 编译器 + libc(就是 `cc`),别的都不用 |
-| `--compile`(默认 = libLLVM 后端) | LLVM **开发包**:`llvm-config` 在 PATH 上或在 `/opt/homebrew/opt/llvm/bin/`。Makefile 找到它才多编 `llvm_codegen.c` + `backend_llvm.c` 并链 `-lLLVM`;找不到就编译出一个**没有 libLLVM 的 `bin/lume`**,`--compile` 自动落到文本路(stderr 会 note 一行)。**注意** `llvm-config` 的路径非空不等于它能用(brew 升级会把 `opt/` 下的符号链接换掉),所以 Makefile 真的去问 `--version`;问不出来就当没有,而不是让 `llvm-c/Core.h` 那一记 fatal error 冒出来 |
+| `--compile`(默认 = libLLVM 后端) | LLVM **开发包**:`llvm-config` 在 PATH 上或在 `/opt/homebrew/opt/llvm/bin/`。Makefile 找到它才多编 `llvm_codegen.c` + `backend_llvm.c` 并链 `-lLLVM`;找不到就编译出一个**没有 libLLVM 的 `bin/lume-core`**,`--compile` 自动落到文本路(stderr 会 note 一行)。**注意** `llvm-config` 的路径非空不等于它能用(brew 升级会把 `opt/` 下的符号链接换掉),所以 Makefile 真的去问 `--version`;问不出来就当没有,而不是让 `llvm-c/Core.h` 那一记 fatal error 冒出来 |
 | `--compile-text` | 上面那个 `cc` **再加运行时 PATH 里的 `clang`** —— IR 文本是吐给**子进程**的(`src/backend.c` 的 `pick_cc()` 依次取 `$CC` / `clang` / `cc`),所以构建图里不进任何 LLVM 头文件与库 |
 
-所以「宿主机只要 C11 + libc」这句话的精确版是:**编 `bin/lume` 和跑解释器
+所以「宿主机只要 C11 + libc」这句话的精确版是:**编 `bin/lume-core` 和跑解释器
 不需要 LLVM 开发包**。默认 `--compile` 会被 libLLVM 接管,那确实要装开发包
 (程序里要**调 LLVM 的 API**、链 dylib);退到 `--compile-text` 只需要一个现成
 的 clang 命令行,而 clang 内部虽然是 LLVM,但那是子进程的事,不进 lume 的
@@ -36,7 +36,7 @@ native-text`」的依赖不一样):
 起来即可(或者 `make native-text`,产物照样跑)。
 
 也没有 CMake 什么事。lume 只有一条 Makefile、约 30 个固定翻译单元、一个产物
-(`bin/lume`),依赖**只有 libc / `-lm`(Linux 加 `-lcrypt`)**,外加 PATH 上的
+(`bin/lume-core`),依赖**只有 libc / `-lm`(Linux 加 `-lcrypt`)**,外加 PATH 上的
 `llvm-config`(找到才多编 libLLVM 那路)和文本路收尾用的 `clang`。没有
 `-lsqlite3`、没有 `libagenthttpd.a`、没有 git submodule——本树是脱离宿主的
 独立语言树,链进来的只有 libc 和(可选)libLLVM。CMake 是 **LLVM 自己的**构建
@@ -61,10 +61,10 @@ LLVM 源码。
 
 ```bash
 make native-llvm                             # 同一份期望基线的第二条回归
-bin/lume --compile-llvm examples/native-fact.lume
+bin/lume-core --compile-llvm examples/native-fact.lume
 ```
 
-两个后端**同时编进一个 `bin/lume`**:Makefile 找得到 `llvm-config` 就多编
+两个后端**同时编进一个 `bin/lume-core`**:Makefile 找得到 `llvm-config` 就多编
 `src/llvm_codegen.c` + `src/backend_llvm.c` 并链 `-lLLVM-23`,找不到就当它
 不存在(所以这个后端是**可选依赖**,不是硬要求 —— 那时 `--compile` 默认就走
 文本路)。
@@ -195,7 +195,7 @@ libLLVM 顺手解决掉了文本后端最坑的两件事:
   现在 libLLVM 这条路在 emit 前跑 `default<O2>`,和文本路交给 clang 的 `-O2` 同一档。
   🔴以后再看到「C API 跑不了 pass」这类结论,先确认头文件 include 了**再**下判断 ——
   隐式声明不报错(C 里只是个 warning),崩了也说不清是谁的错。
-- `bin/lume` 从此依赖 libLLVM 的 dylib(二进制本身不大,链接时拉 23 的
+- `bin/lume-core` 从此依赖 libLLVM 的 dylib(二进制本身不大,链接时拉 23 的
   公共库)。
 
 ## 两条路的横向对比
@@ -252,9 +252,9 @@ llvm 184–264ms / text 355–446ms,libLLVM 快一到两倍半。体积列两边
 `--compile` 走的是**默认后端**,而默认后端 = **有 libLLVM 就用 libLLVM**:
 
 ```bash
-bin/lume --compile foo.lume          # libLLVM(本机的 bin/lume 编进 libLLVM 时)
-bin/lume --compile-llvm foo.lume     # 同上;显式写出来也是它
-bin/lume --compile-text foo.lume     # 强制文本路(clang -O2 带 mem2reg)
+bin/lume-core --compile foo.lume          # libLLVM(本机的 bin/lume-core 编进 libLLVM 时)
+bin/lume-core --compile-llvm foo.lume     # 同上;显式写出来也是它
+bin/lume-core --compile-text foo.lume     # 强制文本路(clang -O2 带 mem2reg)
 ```
 
 判据就在 `src/main.c`:`HAVE_LIBLLVM` 编进去时 `use_llvm = (native_choice !=
@@ -293,7 +293,7 @@ NAT_TEXT)`,否则一律文本后端并在 stderr 打一行 note。make 侧的对
 ## 为什么 IR 是文本,不是 libLLVM
 
 `codegen*.c` 拼的是 LLVM IR 的**文本**,再由 clang 收尾 —— 文本路(`--compile-text`)
-是「不链 libLLVM 时的那条路」:代价是 IR 合法性得自己保证,收益是 `bin/lume`
+是「不链 libLLVM 时的那条路」:代价是 IR 合法性得自己保证,收益是 `bin/lume-core`
 在任何机器上都能零 LLVM 依赖编出来。默认路(`--compile`)走 libLLVM C API,
 所以这条不是主路了,但它解释了不少只有手写 IR 才会踩的点。
 

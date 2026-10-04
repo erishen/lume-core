@@ -46,7 +46,7 @@ SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `work/research/lume`
 ## 快速开始
 
 ```bash
-make             # 构建 bin/lume（只要 cc；libLLVM 仅在 llvm-config 存在时才编）
+make             # 构建 bin/lume-core（只要 cc；libLLVM 仅在 llvm-config 存在时才编）
 make check       # 对内置示例做类型检查，不产出
 make test        # parity + 单测 + crypt + 两条原生后端 + 一致性
 make asan        # 用 ASan/UBSan 重编并跑单测
@@ -60,14 +60,14 @@ make clean
 解释执行，或者编出来直接跑：
 
 ```bash
-./bin/lume examples/hello.lume                  # 解释器
-./bin/lume --compile examples/native-fact.lume  # -> native-fact（libLLVM）
-./bin/lume --compile-text examples/native-fact.lume   # 手写 IR 文本
-./bin/lume --no-pass --compile examples/native-fact.lume  # 跳过 -O
+./bin/lume-core examples/hello.lume                  # 解释器
+./bin/lume-core --compile examples/native-fact.lume  # -> native-fact（libLLVM）
+./bin/lume-core --compile-text examples/native-fact.lume   # 手写 IR 文本
+./bin/lume-core --no-pass --compile examples/native-fact.lume  # 跳过 -O
 ```
 
 依赖：一个 C11 编译器（`cc`）；走 libLLVM 那条路还需要 `PATH` 里有
-`llvm-config`（此时按 `llvm-config --libs` 链接；探不到照样出 `bin/lume`，
+`llvm-config`（此时按 `llvm-config --libs` 链接；探不到照样出 `bin/lume-core`，
 只是 `--compile-llvm` 不可用）。没有别的——不需要 `node`、不需要 `pnpm`、
 不需要服务运行时、不需要 SQLite。
 
@@ -78,14 +78,14 @@ tarball。拉下来编就好：
 
 ```bash
 git clone <本仓库> lume-lang && cd lume-lang
-make                                  # -> bin/lume（约 270 KB，其中大半是 LLVM 胶水）
+make                                  # -> bin/lume-core（约 270 KB，其中大半是 LLVM 胶水）
 make check                            # 自检：内置示例都能过类型检查
-sudo cp bin/lume /usr/local/bin/lume  # 可选
+sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 ```
 
 上面那套 `LUME_VERSION` / `LUME_PREFIX` / `LUME_SHA256` 覆盖项，以及那个
 `install.sh` 一行安装、React SSR 演示，全都是**宿主树**的发布流程；本树只产出
-编译器，所以 `make && cp bin/lume` 就是安装动作本身。
+编译器，所以 `make && cp bin/lume-core` 就是安装动作本身。
 
 构建时可覆盖的变量：
 
@@ -145,8 +145,8 @@ sudo cp bin/lume /usr/local/bin/lume  # 可选
 make native                     # 默认后端: 编译 + 跑 + 与 tests/native-fact.expected 比对
 make native-text                # 同一份期望基线, 强制走文本路
 make native-llvm                # 同一份期望基线, 强制走 libLLVM
-bin/lume --compile examples/native-fact.lume && ./out/native-fact
-bin/lume --compile script.lume -o mybin     # IR 落在 out/mybin.ll
+bin/lume-core --compile examples/native-fact.lume && ./out/native-fact
+bin/lume-core --compile script.lume -o mybin     # IR 落在 out/mybin.ll
 ```
 
 目前覆盖 core subset：标量、结构体、函数、`if`/`while`/`for`、算术与比较，
@@ -156,7 +156,7 @@ bin/lume --compile script.lume -o mybin     # IR 落在 out/mybin.ll
 语言核心，宿主相关的语句不在范围内。设计与取舍见
 [NATIVE.md](docs/NATIVE.md)。
 
-`llvm-config` 找得到就编译进 `bin/lume`（Makefile 自动探测，否则这个二进制
+`llvm-config` 找得到就编译进 `bin/lume-core`（Makefile 自动探测，否则这个二进制
 根本没有 libLLVM 那条路，`--compile` 自动落到文本后端并在 stderr 说明）。
 
 已知代价：**优化 pass 是 2026-10-03 才接上的**。此前一直记着「`LLVMRunPasses`

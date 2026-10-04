@@ -61,7 +61,12 @@ HAVE_LLVM := $(if $(strip $(shell $(LLVM_CONFIG) --version 2>/dev/null)),1,0)
 # 直接挂, 比不重编还糟。先归一成一个落地路径(存在的优先, 其次 PATH 解析)。
 LLVM_CONFIG_PATH := $(or $(wildcard $(LLVM_CONFIG)),$(shell command -v $(LLVM_CONFIG) 2>/dev/null))
 
-TARGET   := bin/lume
+# 产物名刻意不叫 lume: 宿主 work/research/lume 编出来的也叫 bin/lume, 两棵树摆
+# 在同一台机器上时能撞成「分不清哪个是哪个」(旧事故: PATH 上那个 lume 是旧产物、
+# 不认新语法, 报错却怪到新代码头上)。这里统一加 -core 后缀, 宿主与语言本体一眼
+# 分得开。另: 只改链接产物名, 不动 Makefile:17 那两个编译期 -D, 所以普通 make
+# 就够, 不必 make -B —— 全量重建只在改目录名/改宏/改源文件时才必要。
+TARGET   := bin/lume-core
 # The fork ships the language-only examples. The server/demo examples from the
 # host tree (hub.lume, invest.lume, react-ssr, abac, the sqlite demos) live in
 # work/research/lume and are deliberately not carried over.
@@ -100,7 +105,7 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/token.c src/bridge_stub.c src/builtins_http.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/irbuf.c src/backend.c
 # --- 第二个原生后端:libLLVM C API(可选) ---------------------------------
-# 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume 保持 ~2MB。
+# 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume-core 保持 ~2MB。
 # codegen.c 只是入口,发射器按区段拆在 codegen_{types,expr,scan,sig,stmt}.c,
 # 共享面在 src/codegen_internal.h(Makefile 的 INT_HDRS 会通配到它)。
 # 探测到 llvm-config 就额外编 src/llvm_codegen.c + src/backend_llvm.c, 用 LLVM
@@ -206,8 +211,12 @@ native-text: all
 # 基线比对, 再互比, 并且把编译器任何 stderr 都当失败 —— 让校验器抱怨的 IR 不算
 # 「编译通过」。挂在 make test 上, 分叉就会被套件拦住而不是以后以错答案的形式
 # 冒出来。
+# LUME_BIN 必须显式注入: native_backends.sh 里那个默认值还是宿主的产物名
+# bin/lume, 不传就会拿一个根本不存在的文件当编译器, 报 "bin/lume missing — run
+# make first" —— 看着像没先 make, 其实是路径没对上。asan 那条腿早就这么传了,
+# 这里把口径补齐; 以后再改产物名, 这条腿不会跟着哑掉。
 native-consistency: all
-	@chmod +x tests/native_backends.sh && ./tests/native_backends.sh
+	@chmod +x tests/native_backends.sh && LUME_BIN=./$(TARGET) ./tests/native_backends.sh
 
 # libLLVM 后端端到端(--compile-llvm): IR 由 LLVM 的 C API 建出来, 目标文件
 # 也由 LLVM 自己出。回归口径与 native 一致 —— 同一份期望基线, 两个后端都得对。
@@ -298,6 +307,27 @@ vscode-cpp:
 test: all backend-parity tests/smoke-bin crypt-test native-consistency \
       native native-text
 
+# --- 发布面 (make pack) ---------------------------------------------------
+# 这条路以前根本不存在: 没有任何 pack/release/tar 目标, .gitignore 连 /bin/ 都
+# 忽略, 于是「发一个语言包」只能手工 cp —— 没有清单、没有版本、发完也复现不了。
+# 产物名先改成 lume-core 就是为了跟宿主的 lume 分开, 现在顺手把通路补上。
+# 包里带 README / README.zh / CHANGELOG: 解开就能看懂这是什么, 而不是一个裸
+# 二进制加一句「用吧」。os/arch 从 uname 推, 要别的口径就 make pack PKG_NAME=…
+# 覆盖。注意不要在这里用 tar 的 --transform/-s 做改名: macOS 是 bsdtar(认 -s)、
+# 容器里是 GNU tar(不认 -s), 跨平台脚本会一条腿挂掉。
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_S),Darwin)
+    PKG_OS := darwin
+else
+    PKG_OS := linux
+endif
+PKG_NAME ?= lume-core-$(PKG_OS)-$(UNAME_M)
+pack: all
+	@mkdir -p dist
+	tar -czf dist/$(PKG_NAME).tar.gz -C . \
+	    README.md README.zh.md CHANGELOG.md $(TARGET)
+	@echo "==> packed dist/$(PKG_NAME).tar.gz (bin/lume-core + docs)"
+
 clean:
 	rm -rf build bin build-asan
 
@@ -330,7 +360,8 @@ ASAN_BASE_OPTS ?=
 # one byte and fails.
 LSAN_OPTIONS ?= $(if $(wildcard tests/lsan-suppressions.txt),suppressions=$(CURDIR)/tests/lsan-suppressions.txt print_suppressions=0)
 export LSAN_OPTIONS
-ASAN_TARGET   := bin/lume-asan
+# 与主产物同款后缀, 免得 bin/lume-asan 和 bin/lume-core 混着看不出配套关系。
+ASAN_TARGET   := bin/lume-core-asan
 ASAN_OBJS     := $(SRCS:src/%.c=build-asan/%.o)
 # Same reason as the $(OBJS) prerequisite above: swapping llvm-config in or
 # changing its version changes -DHAVE_LIBLLVM, which main.o has to be rebuilt
@@ -444,7 +475,7 @@ endif
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan check dump vscode-cpp test clean asan native native-text \
-         native-llvm native-bench native-consistency crypt-test backend-parity
+         native-llvm native-bench native-consistency crypt-test backend-parity pack
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \

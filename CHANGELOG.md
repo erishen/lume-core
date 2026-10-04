@@ -6,6 +6,26 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — a real release path
+
+- **The artifact has its own name.** `make` now links **`bin/lume-core`**
+  (previously `bin/lume`, as in the host tree). Two trees that both emit
+  `bin/lume` on one machine could not be told apart — that is how a stale PATH
+  binary ended up answering for a fresh tree once already. The sanitizer build
+  follows suit: `bin/lume-core-asan`. Only the link line changed, so a plain
+  `make` suffices (`make -B` is for directory moves / macro changes, not this).
+- **`make pack`.** There was previously *no* packaging target and `.gitignore`
+  ignored `/bin/`, so "ship a language build" meant a hand `cp` with no manifest
+  and no way to reproduce the bytes. `make pack` now writes
+  `dist/lume-core-<os>-<arch>.tar.gz` with the binary plus `README.md` /
+  `README.zh.md` / `CHANGELOG.md`. Override the name with `make pack PKG_NAME=…`.
+- **Fixed a latent break exposed by the rename.** `tests/native_backends.sh`
+  defaulted its compiler to `bin/lume` and `make native-consistency` never
+  passed `LUME_BIN`, so the leg died on `bin/lume missing — run make first`
+  while looking like "you forgot to run make". The Makefile now injects
+  `LUME_BIN=./$(TARGET)` (what the `asan` leg already did), and the script's
+  default follows the artifact name.
+
 ### Changed — this tree is the host-independent standalone compiler
 
 `work/research/lume-lang` starts as a two-file research sketch and now carries
@@ -21,7 +41,7 @@ HTTP server, no agent runtime, no Docker, no submodules:
   `agent-httpd` gitlink and `-lsqlite3` are out of the `Makefile`; so are every
   demo/server/container target (`dev`, `invest`, `demo-sqlite`, `query-demo`,
   `modules`, `abac`, `react-ssr`, `hub`, `run`, `ui`, `vsix`, `image`, …) and
-  the `docker`/compose frontend layers. `bin/lume` is ~270 KB here against
+  the `docker`/compose frontend layers. `bin/lume-core` is ~270 KB here against
   ~1.7–2 MB in the host tree — the difference is `libagenthttpd.a`.
 - **`src/sbuf.h` is a fork-local stand-in for the `sbuf` half of the host's
   `minijson.h`.** Same contract on the append side (`p` is NULL before the

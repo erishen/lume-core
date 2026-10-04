@@ -1,7 +1,7 @@
 # Lume 用户指南
 
 本树(`work/research/lume-lang`)是 **语言本体**:一份 `.lume` 脚本 + 一个编译器
-(`bin/lume`)。这里**没有 HTTP 服务器、没有前端构建、没有 Agent 运行时**——
+(`bin/lume-core`)。这里**没有 HTTP 服务器、没有前端构建、没有 Agent 运行时**——
 宿主树 `work/research/lume` 才有那套东西。
 
 - 想知道"这两个仓库分别是什么":见 [README.md](../README.md) 开头的对照表。
@@ -14,9 +14,9 @@
 ## 快速开始
 
 ```bash
-make                  # 编出 bin/lume(只需要 cc;libLLVM 只在 llvm-config 存在时才用)
-./bin/lume examples/hello.lume         # 跑一个脚本
-./bin/lume --check examples/hello.lume # 只做解析 + 类型检查
+make                  # 编出 bin/lume-core(只需要 cc;libLLVM 只在 llvm-config 存在时才用)
+./bin/lume-core examples/hello.lume         # 跑一个脚本
+./bin/lume-core --check examples/hello.lume # 只做解析 + 类型检查
 make test             # 全套:parity + 单测 + 加密 + 两个原生后端 + 一致性
 make asan             # 用 ASan/UBSan 重编并跑单测
 ```
@@ -131,7 +131,7 @@ print(str(get(r, "status", 0)) + " " + get(r, "body", ""));
 ## 命令行开关
 
 ```
-bin/lume [选项] <脚本.lume>
+bin/lume-core [选项] <脚本.lume>
   --check          只解析 + 类型检查,不执行
   --dump           打印 AST
   --compile        编译到原生二进制(默认;走 libLLVM)
@@ -162,6 +162,31 @@ make check   # 对自带示例逐个 --check
 > **漏了构建规则**:`test:` 里引用它、却从来没人编译它,于是单测一直在跑磁盘上
 > 上一次留下的旧二进制。规则已补(`CORE_OBJS` + `build/tests`)。以后改
 > `tests/smoke.c` 先 `make tests/smoke-bin` 再跑,别拿旧二进制的结果当数。
+
+---
+
+## 不承诺什么
+
+这一节写的是**边界**, 不是缺陷清单。配合 [README.md](../README.md) 开头的
+两树对照表一起读。
+
+- **宿主专属内建一概没有。** 本树摘掉了 `bridge.c` / `iquest.*` /
+  `builtins_sql.c`, 换成 78 行的 `bridge_stub.c` —— 它的 `bridge_run()` 直接
+  `exit(2)`。宿主的 VS Code 语法扩展会把 `sql_query` / `sql_schema` /
+  `sql_tables` / `sql_write` / `recall` / `remember` / `skill-run` /
+  `discovery_endpoints` 那一组高亮成内建函数, 那些是 host-only。**本树的可用内
+  建以本文档上面的清单为唯一准绳**, 清单之外的一律不存在 —— 不是「有但行为不
+  同」, 是根本没有。写脚本前先对着清单确认名字。
+  (顺带: 拿一个不存在的名字调用时, 报错并不是 "unknown function", 而是 parser
+  层的 "expected ;, got identifier" —— 位置会跳到下一行, 别照着行号找。)
+- **标准库是薄的。** 排序、正则、随机数、JSON 反序列化这一类都没有;`json` 只
+  覆盖序列化方向。
+- **没有语言规格。** 求值顺序、整数溢出与边界、模块导入的解析口径, 目前都落在
+  实现里, 没有独立的 spec 文本。实现改了就是改了, 不欠一份兼容性承诺: 破坏性
+  变更会进 CHANGELOG, 但不预告。
+- **发布面是新的, 没有版本承诺。** `make pack` 是 2026-10-04 才补上的目标(之前
+  没有任何打包通路, 只能手工 `cp`)。没有 tag、没有语义版本 —— 打出来的
+  `lume-core-<os>-<arch>.tar.gz` 就是当前 HEAD 的产物, 不代表某个「已发布版本」。
 
 ---
 

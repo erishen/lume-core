@@ -58,7 +58,7 @@ lume-lang/
 │   └── lsan-suppressions.txt
 ├── scripts/check-backend-parity.sh   # 两侧后端的 AST 标签覆盖一致性
 ├── Makefile                # make / check / dump / test / asan / native*
-└── bin/lume                # 编译产物
+└── bin/lume-core            # 编译产物
 ```
 
 > `src/rt.c` 是早期原型的残留（未进 `SRCS`，不参与构建），已知孤儿，别照着它
@@ -92,7 +92,7 @@ brew 升级 llvm 后重跑一次即可，别手改 JSON。生成后若红色报�
 ## 常规操作
 
 ```bash
-make                  # 构建 bin/lume（探测 llvm-config，有就多编 libLLVM 路）
+make                  # 构建 bin/lume-core（探测 llvm-config，有就多编 libLLVM 路）
 make check            # 类型检查全部语言示例（make 依赖）
 make dump             # 打印 hello 示例的 AST
 make vscode-cpp       # 生成 .vscode/c_cpp_properties.json（libLLVM 的 includePath）

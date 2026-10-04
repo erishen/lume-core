@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 # The binary under test follows the same env convention the rest of the suite
 # uses (see tests/run_all.sh): make asan drives it with the sanitized binary,
 # make test with the plain one, and a bare run defaults to the plain build.
-TARGET="${LUME_BIN:-bin/lume}"
+TARGET="${LUME_BIN:-bin/lume-core}"
 SCRIPT=tests/native-consistency.lume
 EXPECTED=tests/native-consistency.expected
 WORK=$(mktemp -d)

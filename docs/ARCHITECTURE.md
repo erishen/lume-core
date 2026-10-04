@@ -30,7 +30,7 @@ Lume 是**一个 C11 单二进制**：内嵌一门可强类型脚本 DSL（`src/
 没有 Docker、没有 git submodule。链进来的只有 libc 和（可选）libLLVM。
 
 ```
-┌──────────────────────── lume-lang 单二进制 (bin/lume) ─────────────────────────┐
+┌──────────────────────── lume-lang 单二进制 (bin/lume-core) ─────────────────────────┐
 │                                                                                │
 │  .lume 源码                                                                    │
 │    │                                                                           │
@@ -90,7 +90,7 @@ main.c: parse_program ──> type_check_program ──┬──> interp 解释�
 
 | 参数 | 行为 |
 |---|---|
-| `bin/lume x.lume` | 解析 → 类型检查（永远执行）→ 解释执行 |
+| `bin/lume-core x.lume` | 解析 → 类型检查（永远执行）→ 解释执行 |
 | `--check` | 类型检查后即退出，零副作用（`make check` 遍历全部示例） |
 | `--dump` | 打印 AST 后退出（`make dump` 用 hello 示例） |
 | `--watch` | 编辑热重载：校验新编辑有效才重启子进程；无效编辑保留旧进程（父子进程 + SIGUSR1/SIGINT/SIGTERM） |
@@ -215,7 +215,7 @@ else
 
 ## 4. 关键路径时序
 
-### 4.1 一次解释执行（`bin/lume x.lume`）
+### 4.1 一次解释执行（`bin/lume-core x.lume`）
 
 ```
 main ──> lex ──> parse ──> typecheck（首错即停）
@@ -274,7 +274,7 @@ react-ssr/abac/modules-server 示例**不迁**（它们跑在服务器里）。
 ### 5.4 容器部署：本树不做
 
 宿主树出一个自带 docroot 的镜像；本树没有 Dockerfile、没有 compose、没有
-`make image`。想跑容器就跑宿主树那份——本树的 `bin/lume` 就是一个静态语言工具。
+`make image`。想跑容器就跑宿主树那份——本树的 `bin/lume-core` 就是一个静态语言工具。
 
 ---
 

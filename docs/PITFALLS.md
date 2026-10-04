@@ -170,7 +170,7 @@ import 同名、import 与用户声明（`let`/`func`）同名。注意：遮蔽
 ## 7. 运维成熟度（本树现状）
 
 - **无嵌入式宿主库**：本树不链 `libagenthttpd.a`、没有 git submodule、没有服务
-  器要守护，构建与分发就是一个 `bin/lume`（外加文本路需要的 `clang`）。
+  器要守护，构建与分发就是一个 `bin/lume-core`（外加文本路需要的 `clang`）。
   宿主树那边才有「子模块提交 → push → Lume 根 bump → 独立项目 pull」那四步。
 - **数据规模**：JSON + flock 是目标形态，适合个人/小团队内部工具；
   多人多租户、大数据量请另选型。**本树没有 `sql_query`/`sql_write`**——

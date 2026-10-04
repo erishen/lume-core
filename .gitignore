@@ -3,6 +3,8 @@
 /build-asan/
 /bin/
 /out/
+# make pack 的产物 (lume-core-<os>-<arch>.tar.gz)
+/dist/
 *.o
 *.a
 
