@@ -72,6 +72,21 @@ VS Code 扩展（`editor/lume-vscode/`：TextMate 高亮、括号配对、跳转
 内建函数文档）**只存在于宿主树**；本树没有它。语言面两边一致，所以宿主树那份
 扩展可以直接用在本树上。
 
+C/C++ 扩展（IntelliSense）要从 `.vscode/c_cpp_properties.json` 取 include 路径，
+而它不会读 Makefile —— 所以 libLLVM 那条路的头（`llvm-c/*.h`，被
+`src/backend_llvm.h`、`src/llvm_codegen.c` 引用）会报
+
+```
+cannot find source file "llvm-c/Core.h"  → 检测到 #include 错误。
+请更新你的 includePath … C/C++(1696)
+```
+
+`make vscode-cpp` 用 `llvm-config --includedir` 生成这个文件（需要 `python3`），
+顺带把 libLLVM C API 必需的三个 `__STDC_*_MACROS` 和 `HAVE_LIBLLVM=1` 写进 `defines`。
+路径带 LLVM 版本号（`Cellar/23.1.2/` 这种），所以**不入库、由目标生成**；
+brew 升级 llvm 后重跑一次即可，别手改 JSON。生成后若红色报错还在，跑一次
+「C/C++: 重置 IntelliSense」或重载窗口。
+
 ---
 
 ## 常规操作
@@ -80,6 +95,7 @@ VS Code 扩展（`editor/lume-vscode/`：TextMate 高亮、括号配对、跳转
 make                  # 构建 bin/lume（探测 llvm-config，有就多编 libLLVM 路）
 make check            # 类型检查全部语言示例（make 依赖）
 make dump             # 打印 hello 示例的 AST
+make vscode-cpp       # 生成 .vscode/c_cpp_properties.json（libLLVM 的 includePath）
 make asan             # sanitized 构建 + smoke（ASan/UBSan）
 make test             # 全部测试：backend-parity / smoke-bin / crypt-test /
                       # native-consistency / native / native-text

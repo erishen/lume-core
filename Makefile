@@ -247,6 +247,17 @@ native-bench: all
 dump: all
 	./$(TARGET) --dump $(HELLO)
 
+# The VS Code C/C++ extension reads its include path from
+# .vscode/c_cpp_properties.json, not from this Makefile — so without it
+# src/backend_llvm.h and src/llvm_codegen.c show
+# "cannot find source file llvm-c/Core.h ... (1696)". The path is
+# version-stamped, so it is generated, not hardcoded: re-run this after a brew
+# upgrade of llvm (or on a fresh clone where LLVM lives elsewhere) instead of
+# hand-editing the JSON. Needs python3.
+vscode-cpp:
+	@mkdir -p .vscode
+	@python3 scripts/gen_c_cpp_properties.py "$(LLVM_CONFIG)"
+
 
 # tests/tools-bin (tests/tools_driver.c) is not carried into this fork: that
 # driver links the agent-httpd tool tables. The interpreter unit tests, the
@@ -392,7 +403,7 @@ endif
 # directory names: their recipe is just `mkdir -p`, so claiming them phony
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
-.PHONY: all build bin build-asan check dump test clean asan native native-text \
+.PHONY: all build bin build-asan check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test backend-parity
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
