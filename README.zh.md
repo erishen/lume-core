@@ -13,7 +13,7 @@
 SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `work/research/lume`：同一门语言，
 不同的部署形态；语言侧改动先落在这棵，宿主树从这边带过去。
 
-| | 本树（`work/research/lume-llvm`） | 宿主树（`work/research/lume`） |
+| | 本树（`work/research/lume-lang`） | 宿主树（`work/research/lume`） |
 |---|---|---|
 | 定位 | 独立语言 + libLLVM 原生路线 | 语言嵌进 agent-httpd |
 | 链接 | libc、libLLVM（可选） | 再加 `libagenthttpd.a` |
@@ -77,7 +77,7 @@ make clean
 tarball。拉下来编就好：
 
 ```bash
-git clone <本仓库> lume-llvm && cd lume-llvm
+git clone <本仓库> lume-lang && cd lume-lang
 make                                  # -> bin/lume（约 270 KB，其中大半是 LLVM 胶水）
 make check                            # 自检：内置示例都能过类型检查
 sudo cp bin/lume /usr/local/bin/lume  # 可选

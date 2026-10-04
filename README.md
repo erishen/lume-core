@@ -17,12 +17,35 @@ chat, tool dispatch, SQLite tools, Docker image) is the sibling project
 the language belong in this tree first, and the host tree carries them from
 here.
 
-| | this tree (`work/research/lume-llvm`) | host tree (`work/research/lume`) |
+| | this tree (`work/research/lume-lang`) | host tree (`work/research/lume`) |
 |---|---|---|
 | purpose | standalone language + libLLVM native path | language embedded in agent-httpd |
 | links | libc, libLLVM (optional) | + `libagenthttpd.a` |
 | `make test` | interpreter tests, crypto, both native emitters, parity | + HTTP/e2e suite (`tests/run_all.sh`) |
 | server/demo targets | none | `make dev` / `hub` / `invest` / `image` / … |
+
+### Keeping the two trees in sync
+
+The front end here (`lexer.c`, `parser*.c`, `interp.c`, `value.c`,
+`typecheck*.c`, `loader.c`, `vdom.c`) is a **hand-maintained copy** of the same
+files in the host tree — not a fork that tracks automatically. They have drifted
+already: `lexer.c` / `parser_stmt.c` / `typecheck_stmt.c` / `vdom.c` / `token.c`
+are still byte-for-byte identical, while `parser.c` is 386 lines in the host and
+675 here (the host splits `parser_stmt.c` + `parser_expr.c`, this tree keeps one
+`parser.c`), and `interp.c`, `value.c`, `typecheck.c`, `loader.c` differ too.
+
+Rules that follow from that:
+
+1. **A language change lands here first**, then the host tree carries it.
+2. Changing any of the shared files means **editing both copies** in the same
+   working session — there is no automatic propagation.
+3. **Prove the sync instead of assuming it.** After editing, compare the two
+   copies (`diff work/research/lume/src/lexer.c work/research/lume-lang/src/lexer.c`
+   and the rest of the front-end files). Identical line counts alone are not
+   proof; diff the files.
+4. Host-only capabilities (HTTP/agent surface such as `cache_control`) must
+   never be expected here: this tree has no `agent-httpd`, and `run()` calls
+   `bridge_run()`, which exits `2`.
 
 A single-binary **C11 compiler**: business logic lives in `.lume` scripts, and
 `lume --compile script.lume` turns one into a native executable via libLLVM.
@@ -119,7 +142,7 @@ There is nothing to install — no npm registry, no package manager, no release
 tarball for this tree. Clone and build:
 
 ```bash
-git clone <this-repo> lume-llvm && cd lume-llvm
+git clone <this-repo> lume-lang && cd lume-lang
 make                 # -> bin/lume (~270 KB, two-thirds of it the LLVM glue)
 make check           # sanity: the bundled examples type-check
 sudo cp bin/lume /usr/local/bin/lume    # optional

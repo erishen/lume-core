@@ -1,6 +1,6 @@
 /* irbuf.h — growable text buffer used for emitting LLVM IR as text.
  *
- * [lume-llvm] We emit LLVM IR text (.ll) instead of linking libLLVM through
+ * [lume-lang] We emit LLVM IR text (.ll) instead of linking libLLVM through
  * its C API. Rationale (see README.md): zero third-party link deps, and the
  * IR stays readable — which is the whole point of a research compiler. Any
  * later switch to the LLVM C API or MLIR can be done by swapping this file

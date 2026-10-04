@@ -1,6 +1,6 @@
 # Lume 用户指南
 
-本树(`work/research/lume-llvm`)是 **语言本体**:一份 `.lume` 脚本 + 一个编译器
+本树(`work/research/lume-lang`)是 **语言本体**:一份 `.lume` 脚本 + 一个编译器
 (`bin/lume`)。这里**没有 HTTP 服务器、没有前端构建、没有 Agent 运行时**——
 宿主树 `work/research/lume` 才有那套东西。
 

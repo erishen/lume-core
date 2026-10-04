@@ -1,4 +1,4 @@
-# lume-llvm — build artifacts (regenerate with `make`)
+# lume-lang — build artifacts (regenerate with `make`)
 /build/
 /build-asan/
 /bin/

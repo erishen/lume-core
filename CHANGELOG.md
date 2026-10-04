@@ -8,7 +8,7 @@ All notable changes to Lume are documented here. The format follows
 
 ### Changed — this tree is the host-independent standalone compiler
 
-`work/research/lume-llvm` starts as a two-file research sketch and now carries
+`work/research/lume-lang` starts as a two-file research sketch and now carries
 the language itself (moved over **without** the host's history, on top of the
 existing `594648b` initial commit). The host tree `work/research/lume` keeps
 the `agent-httpd` embedding and is untouched; this fork is the tree that owns
