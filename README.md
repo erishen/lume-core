@@ -17,7 +17,7 @@ chat, tool dispatch, SQLite tools, Docker image) is the sibling project
 the language belong in this tree first, and the host tree carries them from
 here.
 
-| | this tree (`work/research/lume-lang`) | host tree (`work/research/lume`) |
+| | this tree (`work/research/lume-core`) | host tree (`work/research/lume`) |
 |---|---|---|
 | purpose | standalone language + libLLVM native path | language embedded in agent-httpd |
 | links | libc, libLLVM (optional) | + `libagenthttpd.a` |
@@ -40,7 +40,7 @@ Rules that follow from that:
 2. Changing any of the shared files means **editing both copies** in the same
    working session — there is no automatic propagation.
 3. **Prove the sync instead of assuming it.** After editing, compare the two
-   copies (`diff work/research/lume/src/lexer.c work/research/lume-lang/src/lexer.c`
+   copies (`diff work/research/lume/src/lexer.c work/research/lume-core/src/lexer.c`
    and the rest of the front-end files). Identical line counts alone are not
    proof; diff the files.
 4. Host-only capabilities (HTTP/agent surface such as `cache_control`) must
@@ -143,7 +143,7 @@ There is nothing to install — no npm registry, no package manager, no release
 tarball for this tree. Clone and build:
 
 ```bash
-git clone <this-repo> lume-lang && cd lume-lang
+git clone <this-repo> lume-core && cd lume-core
 make                 # -> bin/lume-core (~270 KB, two-thirds of it the LLVM glue)
 make check           # sanity: the bundled examples type-check
 sudo cp bin/lume-core /usr/local/bin/lume-core    # optional

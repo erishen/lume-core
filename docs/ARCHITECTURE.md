@@ -1,10 +1,10 @@
 # Lume 架构文档（本树：脱离宿主的独立语言树）
 
-本文描述 `work/research/lume-lang` 这棵 fork 树：它是**一门自研语言的编译器
+本文描述 `work/research/lume-core` 这棵 fork 树：它是**一门自研语言的编译器
 + 解释器**，只依赖 libc（外加可选链 libLLVM）。
 
 > 同一份语言在仓库里还有两处：
-> - 本树 `work/research/lume-lang` —— 独立语言树，语言改动**先落在这里**；
+> - 本树 `work/research/lume-core` —— 独立语言树，语言改动**先落在这里**；
 > - `work/research/lume` —— 宿主树，把 Lume 嵌进 agent-httpd（HTTP 服务器 /
 >   agent 运行时 / 前端 / Docker），**保留原样、继续依赖 agent-httpd**。
 >
@@ -30,7 +30,7 @@ Lume 是**一个 C11 单二进制**：内嵌一门可强类型脚本 DSL（`src/
 没有 Docker、没有 git submodule。链进来的只有 libc 和（可选）libLLVM。
 
 ```
-┌──────────────────────── lume-lang 单二进制 (bin/lume-core) ─────────────────────────┐
+┌──────────────────────── lume-core 单二进制 (bin/lume-core) ────────────────────┐
 │                                                                                │
 │  .lume 源码                                                                    │
 │    │                                                                           │

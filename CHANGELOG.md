@@ -6,6 +6,23 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed — the tree itself is named lume-core
+
+- **The directory is now `work/research/lume-core`** (previously `lume-lang`).
+  The artifact, the PATH entry and the package name had already become
+  `lume-core`, so the tree, its binary and its tarball went by two different
+  names and every doc had to spell out which was which. `core` also reads
+  truer than `lang` while there is no spec, no tag and a thin standard
+  library: this is the language's reference core, not a finished language.
+  It also settles the submodule name in advance, should the tree ever be
+  nested under the host.
+- **Everything was rebuilt with `make -B`.** `Makefile` bakes `$(CURDIR)` into
+  `-DLUME_RT_SRC="$(CURDIR)/src/rt.c"`, so a plain `make` leaves binaries
+  pointing at a `.../lume-lang/src/rt.c` that no longer exists — the paths sit
+  in the DWARF of all 33 `build-asan/*.o` and in both `smoke-bin` targets.
+  This also caught a stale `bin/lume-asan` surviving from the previous rename,
+  and the PATH binary was reinstalled for the same reason.
+
 ### Added — a real release path
 
 - **The artifact has its own name.** `make` now links **`bin/lume-core`**
@@ -28,7 +45,7 @@ All notable changes to Lume are documented here. The format follows
 
 ### Changed — this tree is the host-independent standalone compiler
 
-`work/research/lume-lang` starts as a two-file research sketch and now carries
+`work/research/lume-core` starts as a two-file research sketch and now carries
 the language itself (moved over **without** the host's history, on top of the
 existing `594648b` initial commit). The host tree `work/research/lume` keeps
 the `agent-httpd` embedding and is untouched; this fork is the tree that owns

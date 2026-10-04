@@ -22,7 +22,7 @@ lexer -> parser(AST) -> type checker(compile-time)
 ## 目录结构
 
 ```
-lume-lang/
+lume-core/
 ├── src/
 │   ├── lume.h               # 全部公共头：tokens、Type、Node、Value/Obj/GC、VM、桥接原型
 │   ├── sbuf.h               # fork-local 可增长字符串缓冲（替宿主 minijson 的 sbuf 半边）
