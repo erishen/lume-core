@@ -97,15 +97,40 @@ sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 
 | 路径 | 内容 |
 |---|---|
-| `src/` | 词法/语法/类型检查/树遍历解释器 + **本树自持的桥接替身**（`bridge_stub.c`）+ 原生后端（IR 文本走 `codegen.c` 及拆分出去的 `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c`，可选的 libLLVM 路走 `llvm_codegen.c` / `backend_llvm.c`），共约 6.2k 行 C11；另有 fork-local 的 `sbuf.h` 替掉宿主的 minijson 字符串缓冲 |
-| `examples/` | 纯语言脚本：`hello`、`lang-basics`、`modules/app`、`native-fact`、`native-bench` |
-| `tests/` | C 单测（`smoke.c`，106 项）+ `test-crypt.lume` + `native_backends.sh`（解释/文本/libLLVM 三路比对）+ 一致性期望文件 |
+| `src/` | 词法/语法/类型检查/树遍历解释器 + **本树自持的桥接替身**（`bridge_stub.c`）+ 原生后端（IR 文本走 `codegen.c` 及拆分出去的 `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c`，可选的 libLLVM 路走 `llvm_codegen.c` / `backend_llvm.c`），45 个文件、约 15k 行 C11；另有 fork-local 的 `sbuf.h` 替掉宿主的 minijson 字符串缓冲 |
+| `examples/` | 纯语言脚本：`hello`、`lang-basics`、`modules/app`、`native-fact`、`native-bench`、`http-get` |
+| `tests/` | C 单测（`smoke.c`，113 项）+ `test-crypt.lume` + `native_backends.sh`（解释/文本/libLLVM 三路比对）+ 一致性期望文件 |
 | `scripts/` | `check-backend-parity.sh` —— 两条发射器的 AST 标签覆盖 parity 检查 |
 | `docs/` | 完整文档，见下 |
 
 > 宿主树另有 `frontend/`（React 客户端）、`www/`（docroot）、`docker/`
 > （镜像 + compose）、`editor/lume-vscode/` 以及一堆 server/demo 的 `.lume`
 > 脚本——本树按设计全都没有。
+
+### 本树是上游，宿主是下游
+
+同仓兄弟目录 `work/research/lume` 是**服务器产品**。它把本树以 **vendor+pin**
+的方式持有在 `lang/`：`lang/PIN` 记着上游 `sha` + 宿主叠在其上的文件清单
+（`host_owned`）；那边 `make sync-lang` 推进 pin、`make check-sync` 报告漂移。
+因此：
+
+- 属于**语言本体**的改动应该落在这里，宿主靠 bump pin 拿到，**不是手抄**；
+- 宿主自持的文件（`interp.c`、`main.c`、`typecheck.*`、`lume.h`、`builtins*` …
+  注意它有自己的 `builtins.c`、且没有 `builtins_http.c`）**故意分叉**，
+  `sync` 永不覆盖；
+- 宿主不编 `builtins_http.c`，于是用 `-DLUME_HAS_HTTP=0` 编本树的 `interp.c`
+  （见 `docs/ARCHITECTURE.md` 5.1）。
+
+### 发布打包
+
+```sh
+make pack        # 用 pack CFLAGS 重编 + strip + 打 dist/.pack -> lume-core-<os>-<arch>.tar.gz
+make packcheck   # 在成品 tarball 里扫构建机绝对路径；扫到就非 0 退出
+```
+
+tarball 曾在两处漏出 `/Users/…`：`-g` 留下的 DWARF，以及 `LUME_RT_SRC` 被
+`backend.o` 当字符串字面量烤进去（`strip` 去不掉，只有用包内相对路径重编才行）。
+`packcheck` 就是这道闸，CI 在 `pack` 之后跑它，回归会失败而不是被发出去。
 
 ## 文档
 

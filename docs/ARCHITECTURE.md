@@ -138,8 +138,10 @@ main.c: parse_program ──> type_check_program ──┬──> interp 解释�
 | `codegen_scan.c` | 表达式静态类型；块扫描 |
 | `codegen_sig.c` | 签名推断 |
 | `codegen_stmt.c` | 语句、循环、函数体 |
-| `irbuf.c` | IR 文本缓冲（文本后端专用） |
+| `irbuf.c` / `irbuf.h` | IR 文本缓冲（文本后端专用） |
 | `backend.c` / `backend_llvm.c` | 两条原生后端的编排与链接收尾 |
+| `rt.c` | **孤儿文件，代码不参与构建**（不在 `SRCS`），早期原生后端的残留，别照着它写新代码。它唯一的作用是被 `RT_DEFS` / `PACK_RT_DEFS` 当**路径字符串**塞进 `LUME_RT_SRC` 宏（错误信息里指路用）——也因此成了发布包漏 `/Users/…` 的两个源之一，见 README 的「发布打包 /
+Release packaging」与 `make packcheck` |
 
 原生后端那条 2782 行的 `codegen.c` 已按原注释区段切成上表六个 tu（纯搬移，
 14 个样本脚本的 `.ll` / rc / stderr 指纹逐字节一致）。
@@ -256,6 +258,14 @@ Makefile（探测 llvm-config）> 平台默认
 不在 → 只编文本后端，`--compile-llvm` 在运行时被拒。没有别的东西要装：
 macOS 只需要 clang，Linux 再加 `-lm` / `-lcrypt`。
 
+#### 编译期开关：`-DLUME_HAS_HTTP`
+
+`http_get` 定义在 `builtins_http.c`，**不是每个下游都编这个文件**。所以注册点
+（`interp.c`）被 `#if LUME_HAS_HTTP` 包住，默认 `1`（`interp.c` 内有兜底
+`#ifndef`）。下游若没有 `builtins_http.c`，可以 `-DLUME_HAS_HTTP=0` 直接吃这份
+`interp.c`，**不必再 fork 一份自己的副本** —— 宿主树的 `lang/` 就是这么用的
+（它 `-I lang` 编上游 `interp.c`，同时自己不提供 `builtins_http.c`）。
+
 ### 5.2 环境变量族
 
 | 变量 | 用途 |
@@ -268,8 +278,10 @@ macOS 只需要 clang，Linux 再加 `-lm` / `-lcrypt`。
 
 `Makefile` 的 `EXAMPLES` 只剩语言本体示例：`examples/hello.lume`、
 `examples/lang-basics.lume`、`examples/modules/app.lume`、`examples/native-fact.lume`、
-`examples/native-bench.lume`。宿主树的 demo/invest/hub/sqlite-write/query-demo/
-react-ssr/abac/modules-server 示例**不迁**（它们跑在服务器里）。
+`examples/native-bench.lume`、`examples/http-get.lume`（只在本树编了
+`builtins_http.c` 时才有意义，见 5.1 的 `LUME_HAS_HTTP`）。宿主树的
+demo/invest/hub/sqlite-write/query-demo/react-ssr/abac/modules-server 示例**不迁**
+（它们跑在服务器里）。
 
 ### 5.4 容器部署：本树不做
 

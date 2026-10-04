@@ -165,15 +165,43 @@ Build variables worth knowing:
 
 | Path | Contents |
 |---|---|
-| `src/` | Lexer / parser / type-checker / tree-walking interpreter + the **fork-local bridge stub** (`bridge_stub.c`) + native backend (`codegen.c` + `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c` for IR text, `llvm_codegen.c` / `backend_llvm.c` for the optional libLLVM path), ~6.2k lines of C11 |
-| `examples/` | Language-only scripts: `hello`, `lang-basics`, `modules/app`, `native-fact`, `native-bench` |
-| `tests/` | C unit tests (`smoke.c`, 106 checks) + `test-crypt.lume` + `native_backends.sh` (three-way interp / text / llvm comparison) + the consistency expectations |
+| `src/` | Lexer / parser / type-checker / tree-walking interpreter + the **fork-local bridge stub** (`bridge_stub.c`) + native backend (`codegen.c` + `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c` for IR text, `llvm_codegen.c` / `backend_llvm.c` for the optional libLLVM path) - 45 files, ~15k lines of C11 |
+| `examples/` | Language-only scripts: `hello`, `lang-basics`, `modules/app`, `native-fact`, `native-bench`, `http-get` |
+| `tests/` | C unit tests (`smoke.c`, 113 checks) + `test-crypt.lume` + `native_backends.sh` (three-way interp / text / llvm comparison) + the consistency expectations |
 | `scripts/` | `check-backend-parity.sh` — AST-label coverage parity between the two emitters |
 | `docs/` | Full docs, see below |
 
 > The host tree additionally has `frontend/` (React client), `www/` (docroot),
 > `docker/` (image + compose), `editor/lume-vscode/` and the server/demo
 > `.lume` scripts — this tree has none of those, by design.
+
+### This tree is the upstream, the host is downstream
+
+`work/research/lume` (same repo, sibling directory) is the **server product**.
+It holds `lang/` as a **vendor+pin copy** of this tree: `lang/PIN` records the
+upstream `sha` plus the file list the host owns on top (`host_owned`). In that
+tree `make sync-lang` advances the pin, `make check-sync` reports what has
+drifted. So:
+
+- a change here that belongs to the **language** should land here, and the
+  host picks it up by bumping its pin — not by hand-copying;
+- files the host owns (`interp.c`, `main.c`, `typecheck.*`, `lume.h`,
+  `builtins*` … note it keeps its own `builtins.c`, and has no
+  `builtins_http.c`) **diverge on purpose** and are never overwritten by sync;
+- dropping `builtins_http.c` means the host compiles this `interp.c` with
+  `-DLUME_HAS_HTTP=0` (see `docs/ARCHITECTURE.md` 5.1).
+
+### Release packaging
+
+```sh
+make pack        # rebuild with pack CFLAGS, strip, tar up dist/.pack -> lume-core-<os>-<arch>.tar.gz
+make packcheck   # grep the finished tarball for build-machine paths; non-zero on success
+```
+
+The tarball used to leak `/Users/…` in two places: DWARF from `-g`, and
+`LUME_RT_SRC` baked into `backend.o` as a string literal (which `strip` cannot
+remove — only a rebuild with a package-relative path can). `packcheck` is the
+guard, and CI runs it after `pack`, so a regression fails rather than shipping.
 
 ## Documentation
 
@@ -350,7 +378,8 @@ stays git-ignored.
 ## SQLite support (native)
 
 SQLite is built into the server: `agent-httpd` links libsqlite3 directly
-(`src/agent/sqlite_tool.c`) and registers three native tools whenever
+(`agent-httpd/src/agent/sqlite_tool.c` — that file belongs to the host tree,
+**not** to this one) and registers three native tools whenever
 `SQLITE_DB` points at a database — no Python, no MCP stdio process, and the
 static container image works too:
 

@@ -37,6 +37,7 @@ lume-core/
 │   ├── builtins*.c          # 内建函数族（见下）
 │   ├── loader.c             # 多文件模块加载链（import/export）
 │   ├── vdom.c               # vdom 值：el()/render() 的构造与序列化
+│   ├── rt.c                 # 孤儿文件：代码不参与构建（不在 SRCS），早期原生后端残留；只被 RT_DEFS 当路径字符串塞进 LUME_RT_SRC
 │   ├── codegen.c + codegen_internal.h  # 原生发射入口（CG context、容器助手、codegen_emit_ir）
 │   ├── codegen_{types,expr,scan,sig,stmt}.c   # 按原注释区段切分（纯搬移）
 │   ├── irbuf.c              # IR 文本缓冲（文本后端专用）
@@ -50,7 +51,7 @@ lume-core/
 │   ├── native-fact.lume         # 原生编译冒烟（递归）
 │   └── native-bench.lume        # 文本路 vs libLLVM 路跑分
 ├── tests/
-│   ├── smoke.c              # 解释器 + 类型检查单测（106 项：输出逐字节比对 / 类型拒绝 / 运行时错误 / 多文件模块）
+│   ├── smoke.c              # 解释器 + 类型检查单测（113 项：输出逐字节比对 / 类型拒绝 / 运行时错误 / 多文件模块）
 │   ├── test-crypt.lume      # crypt 内建样例（ crypt-test 用）
 │   ├── native_backends.sh   # interp / text / llvm 三腿互比
 │   ├── native-consistency.lume + .expected
@@ -338,7 +339,7 @@ React 客户端（`frontend/` + `www/` docroot + pnpm）**本树没有**。
   1. `make`（构建）
   2. `backend-parity`：`scripts/check-backend-parity.sh` 逐个比对两个后端各 28 个
      `N_*` AST 标签的覆盖；
-  3. `tests/smoke-bin`：106 项单测（解析 + 类型检查 + 执行，stdout 逐字节比对）；
+  3. `tests/smoke-bin`：113 项单测（解析 + 类型检查 + 执行，stdout 逐字节比对）；
   4. `crypt-test`：`tests/test-crypt.lume`；
   5. `native-consistency`：`tests/native-consistency.lume` 三腿（interp / text /
      llvm）输出与 `tests/native-consistency.expected` 一致；
