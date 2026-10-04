@@ -863,6 +863,15 @@ static void seed_verb_groups(VM *vm) {
     vm_pop(vm);
 }
 
+/* http_get() 的实现在 builtins_http.c, 而它并不在所有下游里。下游换用
+ * 本文件(而不是自己 pin 一份)时, 注册这一行会留下一个未定义的 b_http_get,
+ * 链接直接失败。做成开关而不是硬注册, 下游就能用 -DLUME_HAS_HTTP=0 显式
+ * 声明「我没有这个内建」—— 这样 host 的 lang/interp.c 才有脱离 host_owned
+ * 的可能。默认开, 本树照旧。 */
+#ifndef LUME_HAS_HTTP
+#define LUME_HAS_HTTP 1
+#endif
+
 void bridge_seed_builtins(VM *vm) {
     struct { const char *name; NativeFn fn; } built[] = {
         {"run", b_run},
@@ -898,7 +907,9 @@ void bridge_seed_builtins(VM *vm) {
         {"try", b_try}, /* 捕获 VM error -> {ok}/{err} (2026-09-27) */
         /* 出站 HTTP (2026-10-04, builtins_http.c): raw socket, no libcurl.
          * 私有地址默认拒绝,--no-net / LUME_NO_NET=1 整体关掉。 */
+#if LUME_HAS_HTTP
         {"http_get", b_http_get},
+#endif
         /* 数值内建 (2026-09-28, builtins_math.c) */
         {"abs", b_abs},
         {"sqrt", b_sqrt},

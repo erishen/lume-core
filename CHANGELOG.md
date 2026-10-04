@@ -42,6 +42,17 @@ All notable changes to Lume are documented here. The format follows
   while looking like "you forgot to run make". The Makefile now injects
   `LUME_BIN=./$(TARGET)` (what the `asan` leg already did), and the script's
   default follows the artifact name.
+- **`make packcheck`.** The tarball was leaking the build machine, in two
+  copies: `CFLAGS` keeps `-g`, so DWARF records the working directory, *and*
+  the Makefile passes `-DLUME_RT_SRC="$(CURDIR)/src/rt.c"`, which bakes the
+  same path into `.rodata` as a string literal. `strip` only removes the
+  first. `make pack` now removes both (relink with a package-relative
+  runtime path, then strip) and `packcheck` greps the finished tarball, so a
+  future change cannot quietly re-introduce either one.
+- **`LUME_HAS_HTTP` gates the `http_get` registration.** The builtin lives in
+  `builtins_http.c`, which not every downstream compiles. A downstream that
+  lacks it can now pass `-DLUME_HAS_HTTP=0` and take this `interp.c` as-is
+  instead of pinning its own copy.
 
 ### Changed — this tree is the host-independent standalone compiler
 

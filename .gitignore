@@ -1,6 +1,8 @@
 # lume-core — build artifacts (regenerate with `make`)
 /build/
 /build-asan/
+# 发布构建 (make pack 重编这套, 见 Makefile 的 PACK_CFLAGS)
+/build-pack/
 /bin/
 /out/
 # make pack 的产物 (lume-core-<os>-<arch>.tar.gz)

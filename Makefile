@@ -14,7 +14,13 @@ CFLAGS   += -I src
 #  - LUME_RT_SRC:runtime helper 的源码绝对路径。它只在 --compile 时被 clang
 #    单独编译,不会进 build/,所以不能写成相对路径(运行时 cwd 不可知)。
 TARGET_TRIPLE := $(shell $(CC) -print-target-triple 2>/dev/null)
-CFLAGS   += -DTARGET_TRIPLE=\"$(TARGET_TRIPLE)\" -DLUME_RT_SRC=\"$(CURDIR)/src/rt.c\"
+TARGET_TRIPLE_DEFS := -DTARGET_TRIPLE=\"$(TARGET_TRIPLE)\"
+# RT_DEFS 必须单独拎成一个变量, 不能跟上一行挤在一起: make pack 要靠
+# filter-out 把它摘掉、换成一个不含本机路径的字面量再重链(见 PACK_RT_DEFS)。
+# 字面量是 strip 去不掉的 —— DWARF 里的编译目录能被 strip 抹掉, 但 -D 烤进
+# 代码段的那串 "/Users/<redacted>" 不会。
+RT_DEFS            := -DLUME_RT_SRC=\"$(CURDIR)/src/rt.c\"
+CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 
 # --- 平台 feature-test: 与宿主版/agent-httpd/Makefile:8-22 同口径, 但这里不 ---
 # main.c 用 sigaction/sigemptyset (--watch 热重载的信号处理), 它们是 POSIX
@@ -322,14 +328,53 @@ else
     PKG_OS := linux
 endif
 PKG_NAME ?= lume-core-$(PKG_OS)-$(UNAME_M)
-pack: all
+# 发布口径跟开发口径不是同一套, 差别只有一处: PACK_CFLAGS 把 rt.c 的绝对
+# 路径摘掉了(filter-out RT_DEFS), backend.c 于是走它自己的 fallback 值
+# "src/rt.c"。而且必须**整批重编**到 build-pack/, 光重链没用 ——
+#   - 那个绝对路径先是 -DLUME_RT_SRC 在**编译期**烤进 backend.o rodata 的
+#     字符串字面量(-g 又另存了一份在 DWARF 里)。重链换不掉字面量,
+#     strip 也剥不掉字面量; 只有让 backend.c 带着新值重新编译才行。
+#     strip 能剥掉的是 DWARF 那份, 不是字面量那份。
+# 所以 strip 和 PACK_CFLAGS 都得在, packcheck 是唯一能证明两条都办到了的
+# 东西: 只 strip 的包照样带着字面量。
+# 不往 bin/lume-core 上重链: 那是开发产物, 得留着本机那份 rt 路径。
+PACK_RT_DEFS  := -DLUME_RT_SRC=\"src/rt.c\"
+PACK_CFLAGS   := $(filter-out $(RT_DEFS),$(CFLAGS)) $(PACK_RT_DEFS)
+PACK_BIN      := build-pack/bin/lume-core
+PACK_OBJS     := $(SRCS:src/%.c=build-pack/%.o)
+
+build-pack:
+	mkdir -p build-pack
+
+build-pack/%.o: src/%.c src/lume.h $(INT_HDRS) | build-pack
+	$(CC) $(PACK_CFLAGS) -c $< -o $@
+
+$(PACK_BIN): $(PACK_OBJS) | bin
+	@mkdir -p $(dir $@)   # 输出在 build-pack/bin/ 下, | bin 管不到它
+	$(CC) $(PACK_CFLAGS) -o $@ $(PACK_OBJS) $(AH_LIB) $(LDFLAGS) -lm
+	@strip -u -r $@
+
+pack: all $(PACK_BIN)
 	@mkdir -p dist
-	tar -czf dist/$(PKG_NAME).tar.gz -C . \
-	    README.md README.zh.md CHANGELOG.md $(TARGET)
+	# tar 只能有一个 -C, 而文档在仓库根、产物在 build-pack/, 先归拢到同一处
+	@cp README.md README.zh.md CHANGELOG.md build-pack/
+	tar -czf dist/$(PKG_NAME).tar.gz -C build-pack \
+	    README.md README.zh.md CHANGELOG.md bin/lume-core
 	@echo "==> packed dist/$(PKG_NAME).tar.gz (bin/lume-core + docs)"
+	@./scripts/check-pack-privacy.sh dist/$(PKG_NAME).tar.gz
+	@echo "==> packcheck passed: no build-machine paths in dist/$(PKG_NAME).tar.gz"
+
+# 单独跑: 检查打好的包里没有构建机路径 (dist/ 被 gitignore, 日常构建不产包,
+# 所以这条平时只在 make pack 之后、或 CI 里有意义)。
+packcheck:
+	@pkg="dist/$(PKG_NAME).tar.gz"; \
+	if [ ! -f "$$pkg" ]; then \
+	    echo "==> FAIL $$pkg not found, run 'make pack' first"; exit 1; \
+	fi; \
+	./scripts/check-pack-privacy.sh "$$pkg"
 
 clean:
-	rm -rf build bin build-asan
+	rm -rf build build-pack bin build-asan
 
 # --- ASan/UBSan 构建 (make asan) ------------------------------------------
 # 独立构建目录 build-asan/,不污染正常 build/。检出 lume 侧代码的
@@ -474,8 +519,8 @@ endif
 # directory names: their recipe is just `mkdir -p`, so claiming them phony
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
-.PHONY: all build bin build-asan check dump vscode-cpp test clean asan native native-text \
-         native-llvm native-bench native-consistency crypt-test backend-parity pack
+.PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
+         native-llvm native-bench native-consistency crypt-test backend-parity pack packcheck
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \

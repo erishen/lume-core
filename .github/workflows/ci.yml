@@ -1,0 +1,53 @@
+name: ci
+
+# Nothing runs here until this file lands, so the first run is the one that
+# proves the tree builds from a clean checkout. That is also why the two
+# `apt-get` lines are explicit: `-lcrypt` and libLLVM are both optional to
+# the Makefile (it probes for them) but the regression suite here wants them
+# present, so the libLLVM leg and the crypto unit test are real legs and not
+# skips.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux deps (libcrypt for -lcrypt, libLLVM for the second emitter)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
+
+      # `make check` is the fast leg: the parser/type checker against every
+      # example. `make test` adds the interpreter unit tests, the crypto unit
+      # test, both native emitters and the backend parity check.
+      - run: make check
+      - run: make test
+
+  # Leak detection only works here: LSan is unavailable on macOS (ASan says
+  # "detect_leaks is not supported on this platform"), so this is the only
+  # job that can actually see leaks. llvm-dev is installed on purpose so the
+  # libLLVM leg runs for real rather than reporting a skip.
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
+      - run: make -j4 asan
+
+  # The privacy guard lives inside `make pack`; running it here keeps the
+  # tarball honest without anyone having to remember `make packcheck`.
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev
+      - run: make pack
