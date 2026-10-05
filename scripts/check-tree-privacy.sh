@@ -9,10 +9,12 @@
 #
 #   A development binary makes neither promise: CFLAGS keeps -g, so DWARF
 #   records the compile-time working directory. That is exactly how
-#   backups/lume-core.bak-2026* (65 hits each, all pointing at
-#   /Users/<user>/<workspace>/<project>/work/research/lume-core)
-#   got committed in 93150d2/de190f8 — packcheck was green the whole time,
-#   because packcheck only ever looks at dist/.
+#   backups/lume-core.bak-2026* (65 hits each, every one pointing into the
+#   tree's own compile dir under /Users/<user>/...) got committed in
+#   93150d2/de190f8 — packcheck was green the whole time, because packcheck
+#   only ever looks at dist/. (Note the shape of that sentence: it cannot
+#   name the directory it points at. This file trips its own guard if it
+#   does.)
 #
 # So there are two exits for a build-machine path, and this is the one the
 # other guard cannot see.
