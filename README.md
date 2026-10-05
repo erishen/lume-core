@@ -289,11 +289,11 @@ in [docs/NATIVE.md](docs/NATIVE.md).
 
 ## Containers
 
-> ⚠️ **本段描述的是宿主 `lume` 树,不是本树。** 上游本树没有 `docker/`
-> 目录、没有 `Dockerfile`、没有 `make invest`/`make demo-sqlite`
-> (见 `docs/ARCHITECTURE.md` §5.4「容器部署:本树不做」)。容器、compose、
-> k8s、Basic Auth 那套只属于宿主 `lume/`,请移步宿主树自己的 README。
-> 本树要部署就是一个静态语言工具:`bin/lume-core`。
+> ⚠️ **This section describes the host `lume` tree, not this one.** Upstream,
+> this tree has no `docker/` directory, no `Dockerfile` and no
+> `make invest` / `make demo-sqlite` (see `docs/ARCHITECTURE.md` §5.4,
+> "container deployment: not for this tree"). Containers, compose and k8s
+> belong to the host `lume/` tree; this tree ships one static tool: `bin/lume-core`.
 
 ```bash
 cd lume && docker compose -f docker/docker-compose.yml up -d --build
@@ -315,11 +315,11 @@ stays git-ignored.
 
 ## Security notes
 
-> ⚠️ **本段描述的是宿主 `lume` 树,不是本树。** 下面的 Basic Auth、会话
-> TTL、`/api/reports` 同源保护、`portfolio.json` 账本、SQLite 镜像、Text2SQL
-> 全都属于宿主(agent-httpd 那层),宿主树自己才有这些。上游本树是纯语言
-> 运行时,安全边界只有三条:`--no-fs` / `--no-net` / SSRF 闸门(见
-> [LUME.md](docs/LUME.md))。
+> ⚠️ **This section describes the host `lume` tree, not this one.** Basic
+> Auth, session TTL, `/api/reports` origin guard, the `portfolio.json` ledger
+> and the SQLite mirror all belong to the host (agent-httpd layer) -- only
+> that tree has them. Upstream, this tree is a pure language runtime whose
+> three boundaries are `--no-fs` / `--no-net` / the SSRF gate [LUME.md](docs/LUME.md).
 
 - **Two-layer access control**: the Lume server itself has no auth module —
   `/api/reports`, `/react/api/chat`, `/discovery` are all plain endpoints, and
@@ -390,10 +390,10 @@ stays git-ignored.
 
 ## SQLite support (native)
 
-> ⚠️ **本段描述的是宿主 `lume` 树,不是本树。** `sql_query` / `sql_write` /
-> `sql_tables` / `sql_schema` 这组内建由宿主的 agent-httpd 经 `SQLITE_DB`
-> 注册,上游本树的解释器里**没有**这组内建(`src/interp.c` 的注册表里查不到)。
-> 本树的数据库能力只有一个 CSV/JSON 解析函数 `json()`。
+> ⚠️ **This section describes the host `lume` tree, not this one.** The
+> `sql_query` / `sql_write` / `sql_tables` / `sql_schema` family is registered
+> by the host's agent-httpd through `SQLITE_DB`; upstream, this tree's
+> interpreter has **no** such builtins -- its only data capability is `json()`.
 
 SQLite is built into the server: `agent-httpd` links libsqlite3 directly
 (`agent-httpd/src/agent/sqlite_tool.c` — that file belongs to the host tree,
@@ -442,9 +442,9 @@ static container image works too:
 
 ## Text2SQL
 
-> ⚠️ **本段描述的是宿主 `lume` 树,不是本树。** 这是宿主 invest 服务器在
-> `SQLITE_DB` 设好时把库表结构塞进 chat system prompt 的那套逻辑
-> (`sqlite_system_extra()`);上游本树没有 chat,也没有这步注入。
+> ⚠️ **This section describes the host `lume` tree, not this one.** It is the
+> host invest server injecting the schema into the chat system prompt when
+> `SQLITE_DB` is set (`sqlite_system_extra()`); this tree has no chat.
 
 DataPulse-style natural-language-to-SQL for the invest server: whenever
 `SQLITE_DB` is set, the server introspects the database (the same `describe()`

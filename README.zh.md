@@ -117,10 +117,16 @@ sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 
 - 属于**语言本体**的改动应该落在这里，宿主靠 bump pin 拿到，**不是手抄**；
 - 宿主自持的文件（`interp.c`、`main.c`、`typecheck.*`、`lume.h`、`builtins*` …
-  注意它有自己的 `builtins.c`、且没有 `builtins_http.c`）**故意分叉**，
+  注意它有自己的 `builtins.c` 和 `builtins_http.c`）**故意分叉**，
   `sync` 永不覆盖；
-- 宿主不编 `builtins_http.c`，于是用 `-DLUME_HAS_HTTP=0` 编本树的 `interp.c`
-  （见 `docs/ARCHITECTURE.md` 5.1）。
+- 宿主后来从本树 port 了 `builtins_http.c`，`LUME_HAS_HTTP` 默认 1（Makefile 里显式 `-D`），
+  注册挂在本树 `interp.c` 的 `#if` 上（见 `docs/ARCHITECTURE.md` 5.1）。
+
+> ⚠️ **英文 README 里有四节（`## Containers`、`## Security notes`、
+> `## SQLite support (native)`、`## Text2SQL`）写的是宿主 `lume` 树的
+> 东西，本树一个都不实现。** 本 README 不收录它们——本树要部署的就是一个
+> 静态语言工具 `bin/lume-core`，安全边界只有 `--no-fs` / `--no-net` /
+> SSRF 闸门这三样。
 
 ### 发布打包
 
