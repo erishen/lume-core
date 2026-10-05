@@ -167,7 +167,7 @@ Build variables worth knowing:
 |---|---|
 | `src/` | Lexer / parser / type-checker / tree-walking interpreter + the **fork-local bridge stub** (`bridge_stub.c`) + native backend (`codegen.c` + `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c` for IR text, `llvm_codegen.c` / `backend_llvm.c` for the optional libLLVM path) - 45 files, ~15k lines of C11 |
 | `examples/` | Language-only scripts: `hello`, `lang-basics`, `modules/app`, `native-fact`, `native-bench`, `http-get` |
-| `tests/` | C unit tests (`smoke.c`, 120 checks) + `test-crypt.lume` + `native_backends.sh` (three-way interp / text / llvm comparison) + the consistency expectations |
+| `tests/` | C unit tests (`smoke.c`, 128 checks) + `test-crypt.lume` + `native_backends.sh` (three-way interp / text / llvm comparison) + the consistency expectations |
 | `scripts/` | `check-backend-parity.sh` — AST-label coverage parity between the two emitters |
 | `docs/` | Full docs, see below |
 

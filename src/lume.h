@@ -264,8 +264,11 @@ void map_set(VM *vm, Obj *map, const char *key, Value v);
 Value env_get(Env *env, const char *name, int *found);
 void env_set(VM *vm, Env *env, const char *name, Value v);
 
-/* String helpers on GC string objects. */
-const char *obj_string(Obj *o);
+/* String helpers on GC string objects. `obj_string` returns `char *`, not
+ * `const char *`: a string's bytes live inline behind the Obj and are mutable
+ * (see value.c:make_string). Read-only callers bind it to a `const char *`
+ * themselves; writing through it is exactly what the type is now honest about. */
+char *obj_string(Obj *o);
 size_t obj_string_len(Obj *o);
 
 /* Truthiness for `if` / `and` / `or`. */

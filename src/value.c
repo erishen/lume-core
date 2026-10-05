@@ -9,7 +9,12 @@
  * duration of their own allocations. The heap is a singly-linked list of Obj
  * blocks; strings keep their bytes inline (Obj + payload). */
 
-const char *obj_string(Obj *o) { return (const char *)(o + 1); }
+/* 返回类型必须是 char * 而不是 const char *:字符串字节内联在 Obj 后面,
+ * 那一块是可写的(make_string 就地写 len 个字节再补一个 NUL)。早先写成
+ * const 返回,唯一的写入点 make_string 就得靠两处强制转换绕过 —— -Wcast-qual
+ * 直接报在上面,而且这种「为了过编译而加的转换」会掩盖真正的 const 违规:
+ * 谁哪天真把某个不可变常量塞进 OBJ_STRING,那两处转换不会替他报错。 */
+char *obj_string(Obj *o) { return (char *)(o + 1); }
 size_t obj_string_len(Obj *o) { return o->as.str.len; }
 
 /* ---------- GC ---------- */
@@ -186,8 +191,8 @@ void vm_free(VM *vm) {
 Value make_string(VM *vm, const char *s, size_t n) {
     Obj *obj = gc_alloc(vm, OBJ_STRING, n + 1);
     obj->as.str.len = n;
-    if (n) memcpy((void *)obj_string(obj), s, n);
-    ((char *)obj_string(obj))[n] = '\0';
+    if (n) memcpy(obj_string(obj), s, n);
+    obj_string(obj)[n] = '\0';
     return val_obj(obj);
 }
 

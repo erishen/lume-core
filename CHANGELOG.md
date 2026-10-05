@@ -105,6 +105,61 @@ backend parity (28 `N_*` labels, read from both sides), `tests/native_backends.s
 
 ### Added
 
+- **The other four HTTP verbs.** `http_post` / `http_put` / `http_patch` /
+  `http_delete` now sit beside `http_get`, all five with the same shape —
+  `verb(url, opts) -> { ok, status, body, err }` — so a script that writes
+  needs a different call and not a different error handling. They share one
+  implementation (`http_call()` in `src/builtins_http.c`); what differs is the
+  verb and whether the call may carry a body: `post` / `put` / `patch` read
+  `opts.body` (a string, capped at 1 MiB) and emit `Content-Length`, the
+  others do not take a body at all. Every gate the first verb introduced
+  covers all five — the SSRF check, the proxy chain, `--no-net`, the per-hop
+  redirect re-check, the timeout.
+  `typecheck.c`'s name table lists them, which is what makes the type checker
+  accept them; a verb added without that entry compiles and then fails on the
+  first call.
+- **Eight offline cases pin the malformed-URL branch** all five verbs share.
+  `"not a url"`, `""`, `"http://"` and a non-HTTP scheme each answer with
+  `ok: false` and a message naming the URL, on every verb — reachable without
+  a socket, so the suite holds on a host with no network. Three of the eight
+  assert the exact message; the rest assert the `ok:false` shape only, so a
+  wording change reports a failure instead of a red build.
+
+### Fixed
+
+- `resolve_redirect()` dropped a **root-relative `Location`**. The
+  "same scheme and host, new path" branch took the first `/` of the base as
+  the separator, but that is the *second* slash of `http://`, so it rebuilt
+  `http:/final` and threw it away — a `Location: /anything` hop never
+  followed, with no diagnostic, on `http_get` and on every verb since. The
+  host boundary is now located after `//`. Covered: a `POST` that answers
+  `301` with a root-relative `Location` now reaches the target and comes back
+  `200`.
+- A request whose caller supplied `Content-Length` in `headers` sent it
+  **twice** — once by the caller, once by the automatic emitter — which a
+  server may read as request smuggling. The automatic header now only appears
+  when the caller has not set it.
+- `obj_string()` was declared `const char *` although the bytes it returns are
+  inline in the object and writable, which forced every caller that releases
+  or reinterprets them to cast the const away first. One of those casts was
+  `memcpy()` from `as.str.data`, which is always `NULL` — the string body
+  lives at `obj_string(o)`, so `http_call()` dereferenced null on its first
+  `http_post` and died with SIGSEGV before ASan was brought in. The
+  declaration is `char *` now, matching the object layout, and the two casts
+  it had been provoking are gone.
+- `files()` collected its `strdup()`ed names into a `const char *[]`, so
+  releasing them needed `free((void *)…)`. They are `char *[]` now.
+
+### Changed
+
+- **`tests/smoke.c`: 120 → 128 checks**, and the three counts in
+  `README.md` / `docs/DEVELOPMENT.md` follow (they said 110/120 while the
+  binary printed 128 — a stale number in a green build is a worse signal than
+  no number). `make test` and `make asan` are clean; the sanitizer build
+  still reports `SUMMARY: 0 byte`.
+
+### Added
+
 - **`http_get(url, opts) -> { ok, status, body, err }`** (`src/builtins_http.c`):
   the outbound HTTP the host tree could only do from inside `agent-httpd`. Raw
   sockets, no libcurl, so the builder stays at "libc + optional libLLVM +

@@ -108,7 +108,11 @@ void native_files(VM *vm, int argc, Value *args, Value *out) {
     vm_push(vm, val_obj((Obj *)list)); /* root while filling */
     DIR *d = opendir(dir);
     if (d) {
-        const char *names[1024];
+        /* 必须是 char * 而不是 const char *:这些是 strdup 出来的、本函数
+         * 负责 free 的指针。写成 const 就逼出下面 free((void *)names[i])
+         * 那记丢 const 的转换 —— 而把一个「待释放的指针」标成 const 是在说
+         * 「这东西不属于我」,自相矛盾。 */
+        char *names[1024];
         int n = 0;
         struct dirent *e;
         while ((e = readdir(d)) && n < 1024) {
@@ -138,7 +142,7 @@ void native_files(VM *vm, int argc, Value *args, Value *out) {
             } else {
                 list_push(vm, list, make_string_cstr(vm, names[i]));
             }
-            free((void *)names[i]);
+            free(names[i]);
         }
     }
     *out = vm_pop(vm);

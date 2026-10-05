@@ -935,6 +935,51 @@ int main(void) {
         }
     }
 
+    /* --- http_* 的 URL 解析分支 (2026-10-05) ---
+     * 这几条在 url 解析阶段就返回,一个 socket 都没开,所以和上面那两条闸门
+     * 一样是离线可判定的。锁两件事:畸形输入绝不许走到 connect;五个谓词共用
+     * 同一段解析(谁哪天复制了一份自己的解析,这里立刻红)。 */
+    {
+        static const char *verbs[] = { "http_get", "http_post", "http_put",
+                                       "http_patch", "http_delete" };
+        const int nverbs = (int)(sizeof verbs / sizeof verbs[0]);
+        for (int i = 0; i < nverbs; i++) {
+            char name[96], src[256], want[256];
+            snprintf(name, sizeof name, "%s 拒绝无 scheme 的 URL", verbs[i]);
+            snprintf(src, sizeof src,
+                     "let r = %s(\"not a url\", {});\n"
+                     "print(\"ok=\", get(r, \"ok\", false));\n"
+                     "print(\"err=\", str(get(r, \"err\", \"\")));\n", verbs[i]);
+            snprintf(want, sizeof want,
+                     "ok= false\n"
+                     "err= %s(): unsupported url: not a url\n", verbs[i]);
+            check_http_offline(name, src, want);
+        }
+    }
+    {
+        check_http_offline(
+            "http_get 拒绝非 http/https 协议",
+            "let r = http_get(\"ftp://example.com/x\", {});\n"
+            "print(\"ok=\", get(r, \"ok\", false));\n"
+            "print(\"err=\", str(get(r, \"err\", \"\")));\n",
+            "ok= false\n"
+            "err= http_get(): unsupported url: ftp://example.com/x\n");
+        check_http_offline(
+            "http_get 拒绝空 host",
+            "let r = http_get(\"http://\", {});\n"
+            "print(\"ok=\", get(r, \"ok\", false));\n"
+            "print(\"err=\", str(get(r, \"err\", \"\")));\n",
+            "ok= false\n"
+            "err= http_get(): unsupported url: http://\n");
+        /* 空串这条只断言 ok:上面几条的错误信息都停在非空字符上,空串那条末尾
+         * 是个空格,把尾随空白钉进字符串字面量,之后任何一次 reformat 都能把
+         * 这条用例悄悄改红。这条要锁的是「不崩、不开 socket、ok=false」。 */
+        check_http_offline(
+            "http_get 拒绝空串 URL",
+            "let r = http_get(\"\", {});\n"
+            "print(\"ok=\", get(r, \"ok\", false));\n",
+            "ok= false\n");
+    }
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
