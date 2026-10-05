@@ -369,7 +369,9 @@ struct VM {
      * immutable afterwards. */
     struct Module **modules;
     int module_count;
-    char **load_stack;        /* paths currently being loaded (cycle check) */
+    /* Only ever strcmp'd and realloc'd wholesale, never written to, so the
+     * entries keep the const the caller declared. */
+    const char **load_stack;  /* paths currently being loaded (cycle check) */
     int load_depth;
     Env *export_env;          /* export table of the module being executed */
 };
@@ -469,7 +471,14 @@ typedef struct Node {
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
         struct { struct Node *obj; char *name; struct Node *value; } assign_mem;
-        struct { LitKind kind; double num; const char *text; int len;
+        /* lit.text: `char *`, NOT `const char *`. Only LIT_STR sets it
+         * (parser_expr.c:parse_primary mallocs a quote-including copy and
+         * reallocs it while merging adjacent literals), so the field owns
+         * heap memory and node_free_own() frees it — the `const` was a stale
+         * claim from when it borrowed into the source buffer, and it forced
+         * that free() site to lie with a cast. The other kinds leave it
+         * unset; every reader is gated on `kind`. */
+        struct { LitKind kind; double num; char *text; int len;
                  bool is_float; } lit; /* is_float: LIT_NUM came from `1.5` */
         struct { char **keys; struct Node **vals; int count; } map;
         struct { struct Node **items; int count; } list;

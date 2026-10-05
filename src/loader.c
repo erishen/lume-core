@@ -90,9 +90,9 @@ static int loader_register(VM *vm, Module *m) {
 
 static int push_stack(VM *vm, const char *path) {
     vm->load_stack = realloc(vm->load_stack,
-                             sizeof(char *) * ((size_t)vm->load_depth + 1));
+                             sizeof(vm->load_stack[0]) * ((size_t)vm->load_depth + 1));
     if (!vm->load_stack) return -1;
-    vm->load_stack[vm->load_depth++] = (char *)path;
+    vm->load_stack[vm->load_depth++] = path;
     return 0;
 }
 

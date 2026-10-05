@@ -160,6 +160,35 @@ backend parity (28 `N_*` labels, read from both sides), `tests/native_backends.s
 
 ### Added
 
+- **`make lint`.** The project's own `CFLAGS` stop at `-Wall -Wextra`, and
+  `src/rt.c` is not even compiled with warnings — `src/backend.c` shells out
+  to a bare `cc -O2 -c` to build it, so that file's signatures have never
+  been checked against anything. `make lint` now runs `-fsyntax-only` over
+  `rt.c` plus every source but the optional `llvm_codegen.c` with a stricter
+  set (the project flags plus `-Wshadow -Wstrict-prototypes`): 32 files,
+  clean today. The two exclusions are deliberate — `rt.c` sits outside the
+  normal build, `llvm_codegen.c` needs the LLVM headers.
+- The flags carry **`-Werror`**, which is the point and not a matter of
+  taste: `cc` exits 0 when it has only printed warnings (`cc -fsyntax-only
+  -Wall` on a file with one unused variable returns 0), so a lint target
+  without `-Werror` stays green no matter what accumulates. Checked both
+  ways — a clean tree exits 0, and injecting one warning makes the target
+  fail with `Error 1`.
+
+### Fixed
+
+- **Two more field declarations were lying about ownership.** `Node`'s
+  `lit.text` was `const char *` with a comment saying it points into the
+  source buffer and is never owned; the only place it is ever assigned is
+  `parser_expr.c`, from a `strdup`, and `parser.c` frees it — so the type
+  forced `free((char *)…)` and the comment was simply wrong. `VM.load_stack`
+  was `char **` although it only ever holds a `const char *` path, which
+  needed a cast at its one assignment. Both are honest types now and the
+  casts that depended on them are gone; `node_free_own()` and the import
+  cycle check behave the same.
+
+### Added
+
 - **`http_get(url, opts) -> { ok, status, body, err }`** (`src/builtins_http.c`):
   the outbound HTTP the host tree could only do from inside `agent-httpd`. Raw
   sockets, no libcurl, so the builder stays at "libc + optional libLLVM +

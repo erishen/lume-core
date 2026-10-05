@@ -408,7 +408,8 @@ static void free_name_array(char **a, int n) {
  *     scope and the module export table all point at the same blocks — and
  *     one type_release_all() sweep owns them. Only the array shells are
  *     touched here, never the Type behind them;
- *   - lit.text points into the source buffer (const char*), never owned.
+ *   - lit.text is owned exactly when kind == LIT_STR (it is unset otherwise,
+ *     and every reader is gated on kind);
  *
  * Call it when nothing walks the tree any more. ObjFunc.body keeps a Node*
  * into the tree, so free the VM heap before this if the interpreter might
@@ -550,7 +551,9 @@ static void node_free_own(Node *n) {
          * quote-including copy for LIT_STR (and reallocs it while merging
          * adjacent literals). The other kinds keep a borrowed pointer into
          * the source buffer, so freeing those would be a double free. */
-        if (n->as.lit.kind == LIT_STR) free((char *)n->as.lit.text);
+        /* The field owns this one (see the note on Node.lit in lume.h) — no
+         * cast, unlike every other free() here. */
+        if (n->as.lit.kind == LIT_STR) free(n->as.lit.text);
         break;
     case N_BREAK:
     case N_CONTINUE:

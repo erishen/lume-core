@@ -364,6 +364,26 @@ pack: all $(PACK_BIN)
 	@./scripts/check-pack-privacy.sh dist/$(PKG_NAME).tar.gz
 	@echo "==> packcheck passed: no build-machine paths in dist/$(PKG_NAME).tar.gz"
 
+# --- 严格静态检查 (make lint) ------------------------------------------------
+# 项目自己的 CFLAGS 只到 -Wall -Wextra。lint 再往上加一层「诚实度」开关: 它们
+# 不查逻辑 bug, 查的是**类型有没有撒谎** —— 字段声明成 const 却被写/被 free,
+# 或者一个非 static 函数从来没被原型声明过(签名改了没人拦)。
+# 现在刻意不含 -Wcast-qual / -Wwrite-strings: 全树只剩一处(codegen.c 与
+# llvm_codegen.c 给合成的顶层函数赋 `as.func.name = "top"`), 而那个字段正是
+# node_free_own() 会 free 的 —— 想消掉它只能再补一次「诚实地说这是谎」的强转,
+# 那比留着一条告警更糟。等 parser 把 node_free_own 导出成可跨 TU 调用, 这里再补。
+# -Werror 不是洁癖: cc 即使打了告警也返 0(实测 `cc -fsyntax-only -Wall` 撞一条
+# unused-variable 退出码仍是 0),不加它这条 lint 永远绿 —— 等于没守。
+LINT_FLAGS := -Wall -Wextra -Wshadow -Wstrict-prototypes -Wno-unused-parameter -Werror
+# rt.c 平时是 backend.c 用裸 `cc -O2 -c`(零开关)在构建期单独编的, 所以它的签名
+# 漂移从来没人查; 这里补上。llvm_codegen.c 要 LLVM 头文件, 不在 lint 范围内 ——
+# 它本来也不在这个 fork 的默认构建里, 走 --compile-llvm 的人才编得到。
+LINT_SRCS  := src/rt.c $(filter-out src/llvm_codegen.c,$(SRCS))
+
+lint:
+	@echo "==> lint $(words $(LINT_SRCS)) source file(s)"
+	@$(CC) $(CFLAGS) $(LINT_FLAGS) $(LINT_SRCS) -fsyntax-only
+
 # 单独跑: 检查打好的包里没有构建机路径 (dist/ 被 gitignore, 日常构建不产包,
 # 所以这条平时只在 make pack 之后、或 CI 里有意义)。
 packcheck:
