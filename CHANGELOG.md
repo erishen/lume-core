@@ -49,6 +49,19 @@ All notable changes to Lume are documented here. The format follows
   first. `make pack` now removes both (relink with a package-relative
   runtime path, then strip) and `packcheck` greps the finished tarball, so a
   future change cannot quietly re-introduce either one.
+- **`make treecheck`** (also part of `make test`). `packcheck` only ever
+  looked at the tarball, and a packed binary is stripped and relinked first,
+  so it structurally cannot see an *unstripped* build product — and two
+  `backups/lume-core.bak-*` blobs (each holding the compile path 65 times,
+  as DWARF) were committed while every guard stayed green, because
+  `.gitignore` never covered them. `scripts/check-tree-privacy.sh` closes
+  that gap by scanning the blobs reachable from HEAD, which is the question
+  the pack guard cannot ask. Those two blobs are now untracked (moved to
+  `~/.lume-core-backups/`, outside any repo) and `/backups/` is ignored.
+  `--history` additionally walks the object database; it stays red until the
+  repo is pushed and rewritten, which is deliberate. Note that the guard
+  flags prose too, so comments must write `/Users/<user>/...` in placeholder
+  form — it failed on its own header the first time it ran.
 - **`LUME_HAS_HTTP` gates the `http_get` registration.** The builtin lives in
   `builtins_http.c`, which not every downstream compiles. A downstream that
   lacks it can now pass `-DLUME_HAS_HTTP=0` and take this `interp.c` as-is

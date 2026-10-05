@@ -49,6 +49,7 @@ SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `work/research/lume`
 make             # 构建 bin/lume-core（只要 cc；libLLVM 仅在 llvm-config 存在时才编）
 make check       # 对内置示例做类型检查，不产出
 make test        # parity + 单测 + crypt + 两条原生后端 + 一致性
+make treecheck   # 同一套检查加一道闸：仓库里跟踪的 blob 不含构建机绝对路径
 make asan        # 用 ASan/UBSan 重编并跑单测
 make dump        # 打印 examples/hello.lume 的 IR 文本后端产物
 make native      # 默认（libLLVM）后端跑 native-bench

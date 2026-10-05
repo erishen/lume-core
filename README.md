@@ -114,6 +114,7 @@ a trusted, loopback-only surface:
 make             # build bin/lume-core (needs cc; libLLVM only if llvm-config exists)
 make check       # type-check the bundled examples, no output artifacts
 make test        # parity + unit tests + crypto + both native emitters + consistency
+make treecheck   # same thing as a privacy gate: no build-machine path tracked in HEAD
 make asan        # rebuild with ASan/UBSan and run the unit tests
 make pack        # dist/lume-core-<os>-<arch>.tar.gz (binary + README + CHANGELOG)
 make dump        # print the IR text backend produces for examples/hello.lume
