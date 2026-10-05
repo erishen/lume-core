@@ -35,7 +35,25 @@
 # and it is why the cleanup below (`git rm --cached`) is enough *today* —
 # but -H is one flag away if it ever gets pushed.
 #
+# --remote <sha> [<sha>...] asks GitHub whether those blobs are *still in the
+# remote object database* — the question that decides "may I flip this repo back
+# to public?". A force-push only makes an object unreachable; GitHub keeps it
+# readable until its own GC runs (no API to trigger that, no SLA on it).
+#
+# 🔴 The trap this exists for: while the repo is private, an *unauthenticated*
+# 404 proves nothing (a private repo 404s for everyone anyway). Only an
+# authenticated probe can tell "gone" from "still there but hidden", so this
+# checks has("content") on the blobs that used to leak:
+#
+#     ./scripts/check-tree-privacy.sh --remote \
+#        61b9c23a732d6b86ece3eed0417ac00a98056464 \
+#        7fac20dba69d72925433561a906dd20aa1ff84b1
+#
+# Every blob gone  => exit 0, safe to flip back to public.
+# Any blob present => exit 1, stay private, poll again later.
+#
 # Usage: scripts/check-tree-privacy.sh [--history]
+#        scripts/check-tree-privacy.sh --remote <blob-sha> [<blob-sha>...]
 #
 # --history is on-demand, not wired into any target: those two backup blobs
 # stay reachable until this repo is pushed somewhere and rewritten, so the
@@ -52,11 +70,34 @@ fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 PATTERN='/(Users|home)/[A-Za-z0-9._-]+'
 
 history=0
-if [ "${1:-}" = "--history" ]; then
-    history=1
-    shift
+remote=0
+remote_shas=()
+argc=$#          # before any shift: "$#" counts *all* argv, not the remainder
+case "${1:-}" in
+    --remote)
+        remote=1
+        shift
+        remote_shas=("$@")
+        ;;
+    --history)
+        history=1
+        shift
+        ;;
+esac
+# 🔴 Careful: after `shift`, "$#" is "argv minus the flag", *not* "unexpected
+# arguments". The first cut at this script compared "$#" against 0 after
+# shifting --remote and the two perfectly good blob shas read as "extra args",
+# so --remote failed its own usage check.
+if [ "$history" -eq 1 ]; then
+    [ "$#" -eq 0 ] || fail "usage: check-tree-privacy.sh [--history]"
+elif [ "$remote" -eq 1 ]; then
+    [ "${#remote_shas[@]}" -gt 0 ] \
+        || fail "usage: check-tree-privacy.sh --remote <blob-sha> [<blob-sha>...]"
+    [ "$#" -eq $((argc - 1)) ] \
+        || fail "usage: check-tree-privacy.sh --remote <blob-sha> [<blob-sha>...] ($# stray arg(s))"
+else
+    [ "$#" -eq 0 ] || fail "usage: check-tree-privacy.sh [--history]|--remote <sha> [<sha>...]"
 fi
-[ "$#" -eq 0 ] || fail "usage: check-tree-privacy.sh [--history]"
 
 # Deliberately not `set -e`: a blob is fed through a pipe and the count comes
 # back from the other end, so the interesting failures are exit statuses of
@@ -82,6 +123,53 @@ scan() {
     printf '        ... and %s more match(es) in this blob\n' "$((total - 3))" >&2
     leaks=$((leaks + 1))
 }
+
+# --remote: ask GitHub whether each blob is still in its object database.
+# `has("content")` is the whole question — a blob that is unreachable but not
+# yet GC-ed still answers true, and that is exactly the window where flipping
+# the repo back to public would expose it.
+remote_check() {
+    local origin_repo blob_state
+    origin_repo=$(git remote get-url origin 2>/dev/null) \
+        || fail "no origin remote; --remote needs one"
+    remote_repo=${origin_repo#https://github.com/}
+    remote_repo=${remote_repo%.git}
+    [ "$remote_repo" != "$origin_repo" ] \
+        || fail "cannot parse owner/repo out of origin '$origin_repo'"
+
+    # Pre-flight: if the repo itself cannot be read, every blob probe below
+    # would come back empty, and "empty" must never be allowed to read as
+    # "gone" (that would green-light a public flip on a broken probe).
+    gh api "repos/$remote_repo" --jq '.name' >/dev/null 2>&1 \
+        || fail "cannot read repos/$remote_repo (gh not authenticated?): refusing to guess"
+
+    present=0
+    unknown=0
+    for blob in "$@"; do
+        blob_state=$(gh api "repos/$remote_repo/git/blobs/$blob" --jq 'has("content")' 2>/dev/null)
+        case "$blob_state" in
+            true)
+                printf 'FAIL  %s is still in the remote object database (unreachable, not GC-ed)\n' "$blob" >&2
+                present=$((present + 1)) ;;
+            false)
+                printf 'ok    %s gone from remote\n' "$blob" ;;
+            *)
+                # %.60s: on a 404 gh prints the whole error JSON; only the
+                # message matters, and a 90-char dump buries the verdict.
+                printf 'warn  %s unreadable, probe inconclusive (answer: %.60s)\n' \
+                    "$blob" "${blob_state:-<empty>}" >&2
+                unknown=$((unknown + 1)) ;;
+        esac
+    done
+    [ "$present" -eq 0 ] || fail "$present blob(s) still readable on remote; stay private until GitHub GCs them"
+    [ "$unknown" -eq 0 ] || fail "$unknown blob(s) could not be probed; decide by hand"
+    printf 'ok    all %s blob(s) gone from remote: safe to flip back to public\n' "$#"
+    exit 0
+}
+
+if [ "$remote" -eq 1 ]; then
+    remote_check "${remote_shas[@]}"
+fi
 
 if [ "$history" -eq 1 ]; then
     git rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
