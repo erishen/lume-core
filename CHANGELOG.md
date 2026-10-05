@@ -881,6 +881,45 @@ backend parity (28 `N_*` labels, read from both sides), `tests/native_backends.s
   `push`/`put` return the container itself, `strftime` takes the format
   first, and `try` takes a function and hands back `{ ok, err }`.
 
+### Added — the privacy guard can now ask the remote
+
+- **`scripts/check-tree-privacy.sh --remote <sha> [<sha>...]`.** A force-push
+  only makes a leaked blob *unreachable*; GitHub keeps it readable in its
+  object database until its own GC runs, and there is no probe that separates
+  "gone" from "private repo" — an unauthenticated request answers 404 for both,
+  which is a false negative, not a clean verdict. The new mode asks with a
+  token and looks at `has("content")`: every probe gone is rc=0 ("may flip
+  back to public"), any probe still present is rc=1 ("stay private"), and a
+  probe that cannot be read downgrades to a warning **and still fails**, so
+  "could not tell" is never read as "clean". It pre-flights
+  `gh api repos/<owner>/<repo>` first, so a dead `gh` fails loudly instead of
+  being mistaken for a passing check.
+
+### Fixed — the filesystem unit test depended on the working directory
+
+- `tests/smoke.c` probed `files("docs")` and `read_file("docs/LUME.md")`,
+  which pinned the case to the repository root: started from anywhere else the
+  listing is empty and the suite reported "128 tests, 1 failed" even though
+  the builtins were fine. CI stayed green only because it runs from the
+  checkout root. The fixture is now built under `/tmp/lume-smoke-files` (the
+  way the other filesystem cases already do) and addressed by absolute path,
+  so the verdict holds from any cwd — verified from the repo root, from
+  `tests/`, and from `/tmp`.
+- `.gitignore` ignored `/.data/` but not `tests/.data/`, which `smoke.c`
+  leaves behind whenever it runs from anywhere but the root, so `git status`
+  grew a stray untracked directory right after a test run.
+
+### Changed — the README no longer claims the host tree's capabilities
+
+- `## SQLite support` and `## Text2SQL` read as features of this tree while
+  both in fact describe the host `lume` tree. The warnings were already there,
+  but the headings themselves carried the wrong claim. They are now
+  `## SQLite support (host tree only — not in this one)` and
+  `## Text2SQL (host tree only — not in this one)`.
+- `README.zh.md` gained the Chinese versions of `## Containers`,
+  `## SQLite support` and `## Text2SQL`, so the two READMEs carry the same
+  sections again.
+
 ## [0.2.0] - 2026-09-25
 
 ### Security

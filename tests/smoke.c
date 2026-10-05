@@ -294,6 +294,51 @@ done:
     type_release_all();
 }
 
+/* Recreate the files()/read_file() fixture under /tmp and return 0, or -1
+ * if the directory or the file could not be made.
+ *
+ * This used to probe the repo's own `docs/` and `docs/LUME.md`, which
+ * pinned the whole check to the repository root: started from anywhere else,
+ * `files("docs")` is an empty list and the case reported
+ * "128 tests, 1 failed" even though the builtins were fine — CI stayed green
+ * only because it runs from the checkout root. Every other filesystem case
+ * here already builds its fixture under /tmp, so this one does too and the
+ * verdict stops depending on the cwd.
+ *
+ * The payload is deliberately longer than the 1000 bytes the case asserts on,
+ * so the length edge is preserved rather than lowered. */
+static int smk_fs_fixture(void) {
+    const char *dir = "/tmp/lume-smoke-files";
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dir, dir);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "FAIL %-32s cannot create fixture dir\n",
+                "files: sorted listing");
+        tests_failed++;
+        return -1;
+    }
+    char path[320];
+    snprintf(path, sizeof(path), "%s/LUME.md", dir);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "FAIL %-32s cannot create fixture file\n",
+                "files: sorted listing");
+        tests_failed++;
+        return -1;
+    }
+    for (int i = 0; i < 2048; i++) {
+        if (fputc('x', f) == EOF) {
+            fclose(f);
+            fprintf(stderr, "FAIL %-32s cannot fill fixture file\n",
+                    "files: sorted listing");
+            tests_failed++;
+            return -1;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
 int main(void) {
     /* The fork has no agent-httpd tool/skill tables, so tools() and skills()
      * were never seeded here. mcps() below resets its own catalog instead. */
@@ -552,18 +597,23 @@ int main(void) {
           "print(str(len(env(\"PATH\")) > 0));",
           "null\ntrue\n");
 
-    check("files: sorted listing + read_file success/missing path",
-          "let fs = files(\"docs\");\n"
-          "let found = false;\n"
-          "let i = 0;\n"
-          "while (i < len(fs)) {\n"
-          "  if (get(fs, i) == \"LUME.md\") { found = true; }\n"
-          "  i = i + 1;\n"
-          "}\n"
-          "print(str(found));\n"
-          "print(str(len(read_file(\"docs/LUME.md\")) > 1000));\n"
-          "print(str(read_file(\"no/such-file.md\") == null));",
-          "true\ntrue\ntrue\n");
+    /* Built before the check, and addressed by absolute /tmp path: the case
+     * used to read the repo's `docs/` and only passed when the binary was
+     * started from the checkout root. */
+    if (smk_fs_fixture() == 0) {
+        check("files: sorted listing + read_file success/missing path",
+              "let fs = files(\"/tmp/lume-smoke-files\");\n"
+              "let found = false;\n"
+              "let i = 0;\n"
+              "while (i < len(fs)) {\n"
+              "  if (get(fs, i) == \"LUME.md\") { found = true; }\n"
+              "  i = i + 1;\n"
+              "}\n"
+              "print(str(found));\n"
+              "print(str(len(read_file(\"/tmp/lume-smoke-files/LUME.md\")) > 1000));\n"
+              "print(str(read_file(\"/tmp/lume-smoke-files/no-such-file.md\") == null));",
+              "true\ntrue\ntrue\n");
+    }
 
     /* Missing sync file is "no MCP servers", which is an empty list, not null.
      * Publishing null here made /discovery return "mcps": null and the hub

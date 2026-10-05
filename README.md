@@ -388,7 +388,7 @@ stays git-ignored.
   (DNS-rebinding style theft). Origin-less callers (curl, local scripts) keep
   working.
 
-## SQLite support (native)
+## SQLite support (host tree only — not in this one)
 
 > ⚠️ **This section describes the host `lume` tree, not this one.** The
 > `sql_query` / `sql_write` / `sql_tables` / `sql_schema` family is registered
@@ -440,7 +440,7 @@ static container image works too:
   restore its `.data/mcp-servers.json` entry to use it; the default profile is
   native read-only.
 
-## Text2SQL
+## Text2SQL (host tree only — not in this one)
 
 > ⚠️ **This section describes the host `lume` tree, not this one.** It is the
 > host invest server injecting the schema into the chat system prompt when

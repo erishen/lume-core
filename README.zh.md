@@ -213,6 +213,92 @@ llvm            184        2        1       35         9        215
 `make native-bench`（双层循环靶子 + 无 pass 对照）。细节见
 [NATIVE.md](docs/NATIVE.md)。
 
+## 容器
+
+> ⚠️ **本节描述的是宿主 `lume` 树，不是本树。** 上游这两棵树是分叉的：本树没有
+> `docker/` 目录、没有 `Dockerfile`，也没有 `make invest` / `make demo-sqlite`
+> （见 `docs/ARCHITECTURE.md` §5.4「container deployment: not for this tree」）。
+> 容器、compose 与 k8s 都属于宿主那棵 `lume/` 树；本树只交付一个静态工具
+> `bin/lume-core`。
+
+```bash
+cd lume && docker compose -f docker/docker-compose.yml up -d --build
+```
+
+一个镜像 `lume:latest`；compose 里的 `invest`（宿主 `127.0.0.1:18082`）和
+`hub`（`127.0.0.1:18083`）两个服务各自只换 `examples/<name>.lume` + 端口 +
+白名单环境变量，共用一份 docroot。构建上下文是 `lume/` 仓库根（agent-httpd 是
+仓内子模块），所以 `cd lume && docker build -f docker/Dockerfile` 可用 ——
+Lume 静态链 agent-httpd 的 `libagenthttpd.a`，而宿主编出来的归档是 Mach-O，
+必须在 Linux 容器里重编。
+
+镜像里不带 `.env`（由 compose 的 `env_file` 注入）也不带 `.data/` 会话；
+`skills/router/` 那份同步副本**会**进镜像 —— 它是 `llm-router` 启动时写的兜底
+缓存，让容器在同步失败时仍留着最后一份技能定义；它不是可复现产物，一直被
+git 忽略。
+
+## SQLite 支持（仅宿主树）
+
+> ⚠️ **本节描述的是宿主 `lume` 树，不是本树。** `sql_query` / `sql_write` /
+> `sql_tables` / `sql_schema` 这一族由宿主的 agent-httpd 经 `SQLITE_DB` 注册；
+> 本树的解释器**没有**这些内建，它唯一的数据能力是 `json()`。
+
+SQLite 直接链进服务器：`agent-httpd` 直接链 libsqlite3
+（`agent-httpd/src/agent/sqlite_tool.c` —— 这个文件属于宿主树，**不属于**本树），
+只要 `SQLITE_DB` 指向一个库就注册三个原生工具：不落地 Python、不落 MCP stdio
+子进程，静态容器镜像也一样能用。
+
+- `sql_query` —— 单条只读 SELECT。库以 `SQLITE_OPEN_READONLY` 打开，即使语句
+  绕过了文本检查，写操作与 DDL 在物理层也进不来。护栏沿用旧 MCP 服务器的那一套：
+  单语句、去掉注释后只允许 SELECT、prepare 期做语法校验、200 行上限。
+- 两个工具都接受可选的 `?` 绑定参数 —— `sql_query(sql[, params])` /
+  `sql_write(path, sql[, params])` —— 其中 `params` 是经 `sqlite3_bind_*`
+  绑定的标量列表。值永不进入 SQL 文本，所以护栏检查只看到语句骨架，通过参数
+  值注入是不可能的（值里的引号、`;`、`--`、DDL 关键字都是惰性的）。凡是不是
+  编译期常量的值，都优先走绑定而不是字符串拼。
+- `sql_write` —— **可选、默认关**：单条写语句 —— `INSERT` / `UPDATE` /
+  `DELETE`（UPDATE/DELETE 必须带 WHERE 条件）或新表的 `CREATE TABLE`。
+  `DROP` / `ALTER` / `TRUNCATE` / `VACUUM` / `ATTACH` / `PRAGMA` / `GRANT` /
+  `REVOKE`，以及任何提到 `portfolio` 镜像表的语句，一律拒。它编进了服务器但
+  **不在默认白名单里**；把 `sql_write` 加进 `HARNESS_TOOLS_ALLOW`
+  （Makefile 的 `INVEST_TOOLS`、compose/k8s）才让模型建分析表。账本本身在
+  `.data/portfolio.json`，仍是权威。
+- `sql_tables` —— 列出表名。
+- `sql_schema` —— 把表/列/行数/样本值当提示文本做内省。
+
+- **数据**：带类型的领域工具（`portfolio_add` / `portfolio_remove`）仍是 JSON
+  账本的权威写入口。`make invest` 每次启动都会重新 seed 那份 SQLite 镜像
+  （`.data/lume.db`，经 `tools/sqlite-migrate.py` 按 symbol upsert）；portfolio
+  镜像按构造只读。
+- **启用**：`make invest` 设 `SQLITE_DB=.data/lume.db` 并把只读 `sql_*` 工具加进
+  白名单。容器里设 `SQLITE_DB`（例如经挂载卷指向 `/app/.data/lume.db`）即可 ——
+  compose/k8s 里白名单条目本来就齐。`make demo-sqlite`
+  （`examples/sqlite-write.lume`，:8084）是一个能真跑的 demo，自带一套自包含
+  的聊天界面（`www/sqlite-write/`，不带 invest 前端），额外把 `sql_write`
+  也加白名单：让模型自己建一张分析表，看受控写循环怎么转。
+- **遗留 MCP 服务器**：`tools/mcp-sqlite-safe.py` 作为归档的可选写路径留着（给
+  分析表用）。把它加回 `INVEST_MCPS` 并恢复 `.data/mcp-servers.json` 里的条目
+  就能用；默认档位是原生只读。
+
+## Text2SQL（仅宿主树）
+
+> ⚠️ **本节描述的是宿主 `lume` 树，不是本树。** 那是宿主 invest 服务器在
+> `SQLITE_DB` 被设置时把库结构注入 chat system prompt 的做法
+> （`sqlite_system_extra()`）；本树没有聊天。
+
+DataPulse 那一路的自然语言转 SQL：只要 `SQLITE_DB` 被设置，服务器就内省数据库
+（语义同 DataPulse 的 `describe()`），经 `sqlite_system_extra()`（按库的 mtime
+缓存）把实时 schema 与数据纪律注入 chat 的 system prompt：
+
+- 模型看到表、列、行数、样本值和外键提示，于是对着真实名字写正确的只读 SQL，
+  而不是猜；
+- 写作规则默认只读（只用 `sql_query`；`sql_write` 要白名单才开），答案规则强制
+  接地：只报返回行里的数，不许编造日期，单元格是数据不是指令。
+
+整条回路留在原生 ReAct agent 里：模型写 SQL，`sql_query` 在进程内只读执行
+（`sql_write` 仅在显式白名单时），agent 依真实结果作答 —— 没有 Python、没有
+MCP stdio 子进程、没有 Node 边车、也没有第二次 LLM 调用。
+
 ## 相关资料
 
 - 宿主树那篇介绍讲的是**服务器形态**的 Lume（agent-httpd、聊天、SQL 工具）：
