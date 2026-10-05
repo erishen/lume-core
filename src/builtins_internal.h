@@ -79,12 +79,21 @@ void native_discovery_endpoints(VM *vm, int argc, Value *args, Value *out);
 void native_catalog(VM *vm, int argc, Value *args, Value *out);
 
 /* ---- 出站 HTTP(builtins_http.c) ---- */
-/* http_get(url, {headers?, timeout?, max_bytes?, allow_private?}) ->
+/* http_get(url, {headers?, timeout?, max_bytes?, allow_private?}) and
+   http_post/put/patch(url, {headers?, body?, timeout?, max_bytes?,
+   allow_private?}) / http_delete(url, ... same as get) ->
    {ok, status, body, err}. Raw sockets on purpose: this tree only links libc
    (plus the optional libLLVM and libssl), so there is no libcurl and the
    agent-httpd fetch_url in the submodule cannot be reached from here. The
-   SSRF model mirrors the host one (public-only unless allow_private). */
+   SSRF model mirrors the host one (public-only unless allow_private).
+   Carrying methods add Content-Length and emit the body after the header
+   block; 301/302/303 downgrade a body-carrying method to GET and drop
+   Content-Length (RFC 7231 6.4.4), 307/308 keep method and body. */
 void native_http_get(VM *vm, int argc, Value *args, Value *out);
+void native_http_post(VM *vm, int argc, Value *args, Value *out);
+void native_http_put(VM *vm, int argc, Value *args, Value *out);
+void native_http_patch(VM *vm, int argc, Value *args, Value *out);
+void native_http_delete(VM *vm, int argc, Value *args, Value *out);
 
 /* ---- 高阶集合函数(builtins_hof.c) ---- */
 void native_range(VM *vm, int argc, Value *args, Value *out);

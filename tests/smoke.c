@@ -899,6 +899,42 @@ int main(void) {
             "ok= false\n");
     }
 
+    /* --- http_post/put/patch/delete(2026-10-05):五个谓词必须走同一套闸门 ---
+     * 复制实现最容易漏掉的正是 no_net 与 host_blocked 这两处检查 —— 漏一个
+     * 就等于给出站通道开个新口子。所以这里按动词表逐条跑过去,谁漏了谁红。 */
+    {
+        static const char *verbs[] = { "http_get", "http_post", "http_put",
+                                       "http_patch", "http_delete" };
+        const int nverbs = (int)(sizeof verbs / sizeof verbs[0]);
+        for (int i = 0; i < nverbs; i++) {
+            char name[64], src[192];
+            snprintf(name, sizeof name, "%s no-net 总闸拒绝", verbs[i]);
+            snprintf(src, sizeof src,
+                     "let r = %s(\"http://example.com/\", { timeout: 3 });\n",
+                     verbs[i]);
+            check_err_nonet(name, src, "network access is disabled");
+        }
+    }
+    {
+        static const char *verbs[] = { "http_get", "http_post", "http_put",
+                                       "http_patch", "http_delete" };
+        const int nverbs = (int)(sizeof verbs / sizeof verbs[0]);
+        for (int i = 0; i < nverbs; i++) {
+            char name[96], src[256], want[256];
+            snprintf(name, sizeof name, "%s 拒绝回环地址", verbs[i]);
+            snprintf(src, sizeof src,
+                     "let r = %s(\"http://127.0.0.1/\", { timeout: 3 });\n"
+                     "print(\"ok=\", get(r, \"ok\", false));\n"
+                     "print(\"err=\", str(get(r, \"err\", \"\")));\n", verbs[i]);
+            /* 错误前缀跟着动词走(内建要报自己那个名字),其余文案完全一致。 */
+            snprintf(want, sizeof want,
+                     "ok= false\n"
+                     "err= %s(): refused — 127.0.0.1 resolves to a private/reserved "
+                     "address\n", verbs[i]);
+            check_http_offline(name, src, want);
+        }
+    }
+
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;

@@ -1,10 +1,14 @@
-/* 出站 HTTP(S) 内建 —— http_get()。
+/* 出站 HTTP(S) 内建 —— http_get / http_post / http_put / http_patch / http_delete()。
  *
  * 本树是脱离 agent-httpd 的独立编译器,只链 libc(+ 可选 libLLVM),既没有
  * libcurl,也用不了 agent-httpd 那份 fork-curl 的 fetch_url(它落在子模块
  * 里、跨不过来)。所以传输层是裸 socket + 手写 HTTP/1.1:
  *
- *   http_get(url, {headers?, timeout?, max_bytes?, allow_private?})
+ *   http_get(url,    {headers?, timeout?, max_bytes?, allow_private?})
+ *   http_post(url,   {headers?, body?, timeout?, max_bytes?, allow_private?})
+ *   http_put(url,    ... 同 post,带 body)
+ *   http_patch(url,  ... 同 post,带 body)
+ *   http_delete(url, ... 同 get,不接受 body(给了也忽略))
  *     -> {ok: bool, status: int, body: string, err: string}
  *
  * 安全模型,与 agent 侧 fetch_url 同款(本树自己实现一遍,因为原版在子模块):
@@ -14,6 +18,8 @@
  *     (命中任意一个即拒 —— 只查"第一个"的话,Round-Robin DNS 换个答案
  *     就绕过去了);
  *   - 重定向逐跳再校验(最多 5 跳),代理隧道和 TLS 都不能跳过这一步;
+ *     301/302/303 会把带 body 的方法降级成 GET 并丢掉 Content-Length
+ *     (RFC 7231 §6.4.4),307/308 保持原方法与 body;
  *   - body 上限(默认 16 KiB,与 fetch_url 一致)、整体超时(默认 10 s)。
  *
  * 默认**拒绝**私有/回环/链路本地/云元数据地址。allow_private 只给测试与
@@ -58,6 +64,7 @@
 #define HTTP_DFLT_MAX_BYTES  (16u * 1024u)
 #define HTTP_MAX_MAX_BYTES   (8u << 20) /* 上限本身也要封顶 */
 #define HTTP_MAX_REDIRECTS   5
+#define HTTP_MAX_BODY_BYTES  (1u << 20) /* 请求体上限,与 fetch_url 的 16 KiB 读取上限同量级 */
 #define HTTP_MAX_HEADER_SZ   (8u * 1024u)
 
 /* ---- 私有地址判定(SSRF 闸门的地基) ---- */
@@ -224,10 +231,16 @@ static int resolve_redirect(const char *base, const char *loc, char *out, size_t
         out[strlen(scheme) + hl] = '\0';
         return 1;
     }
-    if (loc[0] == '/') { /* 只换路径 */
-        const char *slash = strchr(base, '/');
+    if (loc[0] == '/') { /* 只换路径:保住 scheme://host,别把 '//' 里的斜杠当分隔符 */
+        /* 早先这里写的是 strchr(base, '/'),命中的是 "http://" 的第二个
+         * 斜杠(下标 5),于是 blen=5、拼出 "http:/final" —— 结果任何
+         * Location: /xxx 形式的重定向都解析不出来,静默变成一次失败。 */
+        const char *slash = strstr(base, "//");
         if (!slash) return 0;
-        size_t blen = (size_t)(slash - base);
+        const char *after = slash + 2;
+        const char *host_end = strchr(after, '/');
+        if (!host_end) host_end = base + strlen(base);
+        size_t blen = (size_t)(host_end - base); /* "http://host" 的长度 */
         if (blen + strlen(loc) >= outsz) return 0;
         memcpy(out, base, blen);
         memcpy(out + blen, loc, strlen(loc) + 1);
@@ -565,10 +578,25 @@ static void append_host_header(sbuf *b, Url *u) {
     sb_str(b, "\r\n");
 }
 
-static int build_request(sbuf *b, Url *u, const char *proxy, Obj *hdrs) {
+/* headers 里有没有这个头(忽略大小写)。 */
+static bool hdrs_has(Obj *hdrs, const char *key) {
+    if (!hdrs || hdrs->type != OBJ_MAP) return false;
+    for (int i = 0; i < hdrs->as.map.count; i++) {
+        const char *k = hdrs->as.map.keys[i];
+        if (k && k[0] && strcasecmp(k, key) == 0) return true;
+    }
+    return false;
+}
+
+/* 拼一个请求报文。method 是 "GET"/"POST"/… ,body 是带 body 的方法的请求体
+ * (GET/DELETE 传 NULL)。skip_hdr 用来在降级成 GET 之后挡掉
+ * Content-Length —— 留着一个说「后面还有 N 字节」的头而实际不发,服务端会
+ * 一直读到超时。 */
+static int build_request(sbuf *b, Url *u, const char *proxy, Obj *hdrs,
+                         const char *method, sbuf *body, const char *skip_hdr) {
     int via_proxy = (proxy && proxy[0] && !u->https) ? 1 : 0;
-    if (via_proxy) { sb_str(b, "GET "); sb_str(b, "http://"); sb_str(b, u->host); sb_str(b, u->path); }
-    else           { sb_str(b, "GET "); sb_str(b, u->path); }
+    if (via_proxy) { sb_str(b, method); sb_str(b, " "); sb_str(b, "http://"); sb_str(b, u->host); sb_str(b, u->path); }
+    else           { sb_str(b, method); sb_str(b, " "); sb_str(b, u->path); }
     sb_str(b, " HTTP/1.1\r\n");
 
     append_host_header(b, u);
@@ -578,11 +606,21 @@ static int build_request(sbuf *b, Url *u, const char *proxy, Obj *hdrs) {
      * body 里就是一串二进制,脚本侧拿到的是乱码而非内容。 */
     sb_str(b, "Accept-Encoding: identity\r\n");
     sb_str(b, "Connection: close\r\n"); /* 无 keep-alive:响应读完即收工 */
+    /* 带 body 的方法必须带 Content-Length:靠 Connection: close 结尾收尾的
+     * 隐式长度对 POST/PUT/PATCH 不成立,服务端会当请求还没发完。
+     * 但用户自己在 headers 里给了就别再补一个 —— 报文里出现两个
+     * Content-Length 是请求走私的经典诱饵,合规的客户端只会报错。 */
+    if (body && body->len > 0 && !hdrs_has(hdrs, "Content-Length")) {
+        char cl[64];
+        int n = snprintf(cl, sizeof cl, "Content-Length: %zu\r\n", body->len);
+        if (n > 0 && (size_t)n < sizeof cl) sb_mem(b, cl, (size_t)n);
+    }
 
     if (hdrs && hdrs->type == OBJ_MAP) {
         for (int i = 0; i < hdrs->as.map.count; i++) {
             const char *k = hdrs->as.map.keys[i];
             if (!k || !k[0]) continue;
+            if (skip_hdr && strcasecmp(k, skip_hdr) == 0) continue;
             Value v = hdrs->as.map.vals[i];
             char line[1024];
             if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING) {
@@ -598,6 +636,8 @@ static int build_request(sbuf *b, Url *u, const char *proxy, Obj *hdrs) {
         }
     }
     sb_str(b, "\r\n");
+    /* body 跟在空行之后 —— 顺序错了就是「头部里混着正文」。 */
+    if (body && body->len > 0) sb_mem(b, body->p, body->len);
     return b->oom ? -1 : 0;
 }
 
@@ -685,13 +725,19 @@ static int read_body(Conn *c, sbuf *b, size_t max_bytes, const char *hdr,
 
 /* ---- 内建 ---- */
 
-void native_http_get(VM *vm, int argc, Value *args, Value *out) {
+/* 五个谓词共用一份实现。复制五遍只会让「哪天补一条 307 的语义」这类改动
+ * 漏掉其中四个 —— curl 的坑几乎都长在报文拼装上。
+ *   name          脚本里看到的名字,也用作错误前缀
+ *   method        HTTP 方法
+ *   carries_body  是否读 opts.body(GET/DELETE 不给,传了也当没传) */
+static void http_call(VM *vm, int argc, Value *args, Value *out,
+                      const char *name, const char *method, int carries_body) {
     if (vm->no_net) {
-        vm_set_error(vm, "http_get(): network access is disabled in this run "
-                         "(--no-net / LUME_NO_NET=1)");
+        vm_set_error(vm, "%s(): network access is disabled in this run "
+                         "(--no-net / LUME_NO_NET=1)", name);
         return;
     }
-    if (argc < 1) { vm_set_error(vm, "http_get() needs a url"); return; }
+    if (argc < 1) { vm_set_error(vm, "%s() needs a url", name); return; }
     const char *url0 = NULL;
     if (!arg_string(vm, args[0], &url0)) return;
 
@@ -699,6 +745,7 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
     size_t max_bytes = HTTP_DFLT_MAX_BYTES;
     int allow_private = 0;
     Obj *hdrs = NULL;
+    sbuf body = {0}; /* 请求体;GET/DELETE 恒为空 */
     if (argc >= 2 && IS_OBJ(args[1]) && AS_OBJ(args[1])->type == OBJ_MAP) {
         Obj *o = AS_OBJ(args[1]);
         int f = 0;
@@ -709,10 +756,36 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
         v = map_get(vm, o, "allow_private", &f); if (f && IS_BOOL(v)) allow_private = AS_BOOL(v) ? 1 : 0;
         v = map_get(vm, o, "headers", &f);
         if (f && IS_OBJ(v) && AS_OBJ(v)->type == OBJ_MAP) hdrs = AS_OBJ(v);
+        if (carries_body) {
+            v = map_get(vm, o, "body", &f);
+            if (f && IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING) {
+                Obj *s = AS_OBJ(v);
+                size_t n = s->as.str.len;
+                if (n > HTTP_MAX_BODY_BYTES) {
+                    vm_set_error(vm, "%s(): body too large (%zu bytes, cap %u)",
+                                 name, n, (unsigned)HTTP_MAX_BODY_BYTES);
+                    return;
+                }
+                if (n > 0) {
+                    /* 拷一份而不是借字符串对象的指针:opts 的解析过程会分配,
+                     * 借指针就得赌 args[1] 在整个调用期间一直被栈扎根。 */
+                    body.p = malloc(n);
+                    if (!body.p) { vm_set_error(vm, "%s(): out of memory for body", name); return; }
+                    /* 字符串体是内联在 Obj 后面的(obj_string() == obj + 1),
+                     * as.str.data 恒为 NULL —— 拿它当源指针就是空指针解引用。 */
+                    memcpy(body.p, obj_string(s), n);
+                    body.len = n;
+                    body.cap = n;
+                }
+            }
+        }
     }
 
     char cur[1024];
     snprintf(cur, sizeof cur, "%s", url0);
+    /* cur_method 会被 301/302/303 降级成 GET;skip_hdr 是降级后要挡掉的头。 */
+    const char *cur_method = method;
+    const char *skip_hdr = NULL;
     char hostbuf[512];
     char next[1024];
     char hdr[HTTP_MAX_HEADER_SZ];
@@ -720,18 +793,18 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
     bool ok = false;
     bool truncated = false;
     char err[256] = "";
-    sbuf body = {0}; /* 跨循环复用:结果 map 要读最后一跳的 body */
+    sbuf resp = {0}; /* 跨循环复用:结果 map 要读最后一跳的 body */
 
     for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
         Url u;
         memset(&u, 0, sizeof u);
         if (url_parse(cur, hostbuf, sizeof hostbuf, &u) != 0) {
-            snprintf(err, sizeof err, "http_get(): unsupported url: %s", cur);
+            snprintf(err, sizeof err, "%s(): unsupported url: %s", name, cur);
             break;
         }
         if (!allow_private && host_blocked(u.host)) {
-            snprintf(err, sizeof err, "http_get(): refused — %s resolves to a "
-                                      "private/reserved address", u.host);
+            snprintf(err, sizeof err, "%s(): refused — %s resolves to a "
+                                      "private/reserved address", name, u.host);
             break;
         }
         Conn c = { -1, NULL, { 0 } };
@@ -739,21 +812,22 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
         int rc = open_conn(&u, proxy_for(u.https), &c, deadline);
         if (rc != 0) {
             conn_close(&c);
-            if (rc == 1) snprintf(err, sizeof err, "http_get(): https:// needs "
-                                                   "libssl (rebuild with openssl)");
-            else snprintf(err, sizeof err, "http_get(): cannot reach %s (%s)",
-                          u.host, c.why[0] ? c.why : "connection refused");
+            if (rc == 1) snprintf(err, sizeof err, "%s(): https:// needs "
+                                                   "libssl (rebuild with openssl)", name);
+            else snprintf(err, sizeof err, "%s(): cannot reach %s (%s)",
+                          name, u.host, c.why[0] ? c.why : "connection refused");
             break;
         }
         sbuf req = {0};
-        int brc = build_request(&req, &u, proxy_for(u.https), hdrs);
+        int brc = build_request(&req, &u, proxy_for(u.https), hdrs,
+                                cur_method, &body, skip_hdr);
         if (brc == 0) brc = conn_write(&c, req.p, req.len, deadline);
         free(req.p);
         if (brc != 0) {
             conn_close(&c);
             snprintf(err, sizeof err, brc == -2
-                     ? "http_get(): request timed out after %ld ms"
-                     : "http_get(): send failed", timeout_ms);
+                     ? "%s(): request timed out after %ld ms"
+                     : "%s(): send failed", name, timeout_ms);
             break;
         }
         memset(hdr, 0, sizeof hdr);
@@ -761,18 +835,18 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
         if (rrc != 0) {
             conn_close(&c);
             snprintf(err, sizeof err, rrc == -2
-                     ? "http_get(): response timed out after %ld ms"
-                     : "http_get(): malformed response head", timeout_ms);
+                     ? "%s(): response timed out after %ld ms"
+                     : "%s(): malformed response head", name, timeout_ms);
             break;
         }
-        int drc = read_body(&c, &body, max_bytes, hdr, deadline);
+        int drc = read_body(&c, &resp, max_bytes, hdr, deadline);
         if (drc == -2) {
-            body_done(&body);
+            body_done(&resp);
             conn_close(&c);
-            snprintf(err, sizeof err, "http_get(): body timed out after %ld ms", timeout_ms);
+            snprintf(err, sizeof err, "%s(): body timed out after %ld ms", name, timeout_ms);
             break;
         }
-        if (body.len >= max_bytes && max_bytes > 0) truncated = true;
+        if (resp.len >= max_bytes && max_bytes > 0) truncated = true;
 
         /* 3xx 且给了 Location:逐跳再校验后继续(循环开头会再走一遍闸门)。 */
         const char *loc = strstr(hdr, "\r\nLocation:");
@@ -784,12 +858,21 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
             char *cr = strpbrk(lb, "\r\n");
             if (cr) *cr = '\0';
             conn_close(&c);
-            body_done(&body); /* 这一跳作废:不带着上一跳的缓冲进下一跳 */
+            body_done(&resp); /* 这一跳作废:不带着上一跳的缓冲进下一跳 */
+            /* RFC 7231 §6.4.4:301/302/303 对带 body 的请求应当改成 GET 重发;
+             * 307/308 原样保留(§6.4.7)。降级时必须连 Content-Length 一起丢 ——
+             * 留着一个「后面还有 N 字节」的头却不再发 body,服务端会一直读到超时。 */
+            if ((status == 301 || status == 302 || status == 303) &&
+                strcmp(cur_method, "GET") != 0) {
+                cur_method = "GET";
+                skip_hdr = "Content-Length";
+                body.len = 0;
+            }
             if (resolve_redirect(cur, lb, next, sizeof next)) {
                 snprintf(cur, sizeof cur, "%s", next);
                 continue;
             }
-            snprintf(err, sizeof err, "http_get(): unsupported redirect target: %s", lb);
+            snprintf(err, sizeof err, "%s(): unsupported redirect target: %s", name, lb);
             break;
         }
         conn_close(&c);
@@ -798,7 +881,10 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
     }
 
     if (truncated && !err[0])
-        snprintf(err, sizeof err, "http_get(): body truncated at %zu bytes", max_bytes);
+        snprintf(err, sizeof err, "%s(): body truncated at %zu bytes", name, max_bytes);
+
+    free(body.p);
+    body.p = NULL; body.len = 0; body.cap = 0;
 
     /* 结果 map 要先 vm_push 再 make_string:make_string 可能触发 GC,
      * 没扎根的话 r 会在这一瞬间被回收。 */
@@ -807,9 +893,29 @@ void native_http_get(VM *vm, int argc, Value *args, Value *out) {
     map_set(vm, r, "ok", val_bool(ok));
     map_set(vm, r, "status", val_int((long long)status));
     /* 顺序要紧:make_string 已经把 body 拷成字符串对象了(body 可能是二进制,
-     * length 用 body.len 而非 strlen),这之后才能释放并复位缓冲区。 */
-    map_set(vm, r, "body", make_string(vm, body.p ? body.p : "", body.len));
+     * length 用 resp.len 而非 strlen),这之后才能释放并复位缓冲区。 */
+    map_set(vm, r, "body", make_string(vm, resp.p ? resp.p : "", resp.len));
     map_set(vm, r, "err", make_string_cstr(vm, err[0] ? err : ""));
-    body_done(&body);
+    body_done(&resp);
     *out = vm_pop(vm);
+}
+
+void native_http_get(VM *vm, int argc, Value *args, Value *out) {
+    http_call(vm, argc, args, out, "http_get", "GET", 0);
+}
+
+void native_http_post(VM *vm, int argc, Value *args, Value *out) {
+    http_call(vm, argc, args, out, "http_post", "POST", 1);
+}
+
+void native_http_put(VM *vm, int argc, Value *args, Value *out) {
+    http_call(vm, argc, args, out, "http_put", "PUT", 1);
+}
+
+void native_http_patch(VM *vm, int argc, Value *args, Value *out) {
+    http_call(vm, argc, args, out, "http_patch", "PATCH", 1);
+}
+
+void native_http_delete(VM *vm, int argc, Value *args, Value *out) {
+    http_call(vm, argc, args, out, "http_delete", "DELETE", 0);
 }

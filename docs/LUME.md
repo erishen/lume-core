@@ -117,7 +117,30 @@ print(str(get(r, "status", 0)) + " " + get(r, "body", ""));
 - 恒定发 `Accept-Encoding: identity`,不做解压;想要 gzip 自己接。
 - 超时与 body 上限都会体现在 `err` 里,`ok` 保持 `false`。
 - **总闸**:`--no-net` 或 `LUME_NO_NET=1`(非 `0/off/false`)时,任何
-  `http_get` 直接报错,一个包都不会发出去。
+  HTTP 内建直接报错,一个包都不会发出去。
+
+#### HTTP 谓词
+
+```lume
+let r = http_get(url,    { headers?, timeout?, max_bytes?, allow_private? });
+let r = http_delete(url, { ...同上 });
+let r = http_post(url,   { headers?, body?, timeout?, max_bytes?, allow_private? });
+let r = http_put(url,    ... 同 post,带 body);
+let r = http_patch(url,  ... 同 post,带 body);
+```
+
+五个谓词共用一条实现,除方法名之外行为一致,返回的都是
+`{ok, status, body, err}`:
+
+- `body` 只被 `post` / `put` / `patch` 读,`get` / `delete` 传了也当没传。
+  单个 body 上限 1 MiB(`HTTP_MAX_BODY_BYTES`),超了直接报错,不截断。
+- 带 body 的方法**自动补 `Content-Length`**;如果你在 `headers` 里自己给了
+  `Content-Length`,就只发你那一个 —— 报文里出现两个同名头是请求走私的
+  经典诱饵。
+- **重定向的语义差异**:`301` / `302` / `303` 会把带 body 的方法降级成
+  `GET` 并丢掉 `Content-Length`(RFC 7231 §6.4.4);`307` / `308` 原样保留
+  方法与 body(§6.4.7)。降级那条路最容易漏的就是 `Content-Length`,漏了
+  服务端会守着一个再也不来的 body 读到超时。
 
 完整可跑样例见 `examples/http-get.lume`。
 
@@ -138,7 +161,7 @@ bin/lume-core [选项] <脚本.lume>
   --compile-llvm   强制走 libLLVM 后端
   --compile-text   强制走手写 IR 文本后端(不依赖 libLLVM)
   --no-fs          禁用文件读写
-  --no-net         禁用 http_get(等价于 LUME_NO_NET=1)
+  --no-net         禁用所有 http_* 内建(等价于 LUME_NO_NET=1)
   --no-pass        跳过优化 pass(有些 LLVM 版本在这步会崩)
 ```
 

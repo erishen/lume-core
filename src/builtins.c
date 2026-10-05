@@ -364,4 +364,8 @@ Value b_discovery_endpoints(VM *vm, int argc, Value *args)
 { return vm_native(vm, argc, args, native_discovery_endpoints); }
 Value b_catalog(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_catalog); }
 Value b_http_get(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_http_get); }
+Value b_http_post(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_http_post); }
+Value b_http_put(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_http_put); }
+Value b_http_patch(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_http_patch); }
+Value b_http_delete(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_http_delete); }
 Value b_default_route(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_default_route); }

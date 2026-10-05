@@ -294,6 +294,9 @@ static const char *const LUME_BUILTIN_NAMES[] = {
     "min", "max", "pi", "e",
     /* outbound HTTP (2026-10-04, builtins_http.c) */
     "http_get",
+    /* HTTP verbs that carry a body (2026-10-05) */
+    "http_post", "http_put", "http_patch",
+    "http_delete", /* same as http_get: no body */
 };
 
 bool is_builtin_name(const char *name) {

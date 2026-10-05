@@ -909,6 +909,10 @@ void bridge_seed_builtins(VM *vm) {
          * 私有地址默认拒绝,--no-net / LUME_NO_NET=1 整体关掉。 */
 #if LUME_HAS_HTTP
         {"http_get", b_http_get},
+        {"http_post", b_http_post},
+        {"http_put", b_http_put},
+        {"http_patch", b_http_patch},
+        {"http_delete", b_http_delete},
 #endif
         /* 数值内建 (2026-09-28, builtins_math.c) */
         {"abs", b_abs},
