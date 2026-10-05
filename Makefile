@@ -18,7 +18,9 @@ TARGET_TRIPLE_DEFS := -DTARGET_TRIPLE=\"$(TARGET_TRIPLE)\"
 # RT_DEFS 必须单独拎成一个变量, 不能跟上一行挤在一起: make pack 要靠
 # filter-out 把它摘掉、换成一个不含本机路径的字面量再重链(见 PACK_RT_DEFS)。
 # 字面量是 strip 去不掉的 —— DWARF 里的编译目录能被 strip 抹掉, 但 -D 烤进
-# 代码段的那串 "/Users/<redacted>" 不会。
+# 代码段的那串 /Users/<user>/... 不会。
+# (注释里一律写 /Users/<user> 这种占位写法: scripts/check-tree-privacy.sh
+#  会把注释中的真实字面量也判成泄漏, 守卫生效时这里必须是绿的。)
 RT_DEFS            := -DLUME_RT_SRC=\"$(CURDIR)/src/rt.c\"
 CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 
@@ -311,7 +313,7 @@ vscode-cpp:
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in work/research/lume.
 test: all backend-parity tests/smoke-bin crypt-test native-consistency \
-      native native-text
+      native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
 # 这条路以前根本不存在: 没有任何 pack/release/tar 目标, .gitignore 连 /bin/ 都
@@ -392,6 +394,15 @@ packcheck:
 	    echo "==> FAIL $$pkg not found, run 'make pack' first"; exit 1; \
 	fi; \
 	./scripts/check-pack-privacy.sh "$$pkg"
+
+# 仓库自身(不是发布包)也不能带构建机路径。make pack 那条只覆盖 dist/, 而一个
+# 未 strip 的开发二进制(packcheck 根本不看它)能把 /Users/<user>/... 直接 commit
+# 进仓库 —— 2026-10-05 的 backups/*.bak 就是这么进来的。挂进 test, 挡在
+# 「误把产物 commit 进来」这一层上。
+treecheck:
+	@chmod +x scripts/check-tree-privacy.sh
+	@./scripts/check-tree-privacy.sh
+	@echo "==> treecheck passed: no build-machine path tracked in HEAD"
 
 clean:
 	rm -rf build build-pack bin build-asan
@@ -540,7 +551,8 @@ endif
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
-         native-llvm native-bench native-consistency crypt-test backend-parity pack packcheck
+         native-llvm native-bench native-consistency crypt-test backend-parity pack packcheck \
+         treecheck
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \

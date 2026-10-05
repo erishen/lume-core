@@ -32,7 +32,7 @@ pkg=$1
 # Any absolute path under a home directory (macOS /Users/<name>, Linux
 # /home/<name>). Deliberately not anchored to a trailing slash: a leaked
 # prefix is already the leak, and requiring the slash would let a bare
-# "/Users/<user>" through.
+# a bare /Users/<user> through.
 PATTERN='/(Users|home)/[A-Za-z0-9._-]+'
 
 tmp=$(mktemp -d)

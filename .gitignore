@@ -15,6 +15,12 @@
 /tests/smoke-bin-asan
 *.dSYM/
 
+# 开发期手抄的整份二进制副本 (make 产物, 带 -g ⇒ DWARF 里记着编译时的
+# /Users/<name>/... 绝对路径)。2026-10-05 之前这两个文件被 commit 进来过,
+# 是仓库里唯二的构建机路径泄漏; 现在移到 ~/.lume-core-backups/ 并在这里挡住,
+# 免得 `git add -A` 再把它们捞回来。scripts/check-tree-privacy.sh 是第二道闸。
+/backups/
+
 # local runtime state (the host tree owns the server; this tree keeps none,
 # but .data/ is the shared convention if a script happens to create it)
 /.data/
