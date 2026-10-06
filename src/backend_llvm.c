@@ -41,7 +41,16 @@ static const char *pick_cc(void)
 {
     const char *cc = getenv("CC");
     if (cc && *cc) return cc;
+#ifdef _WIN32
+    /* system() goes through cmd.exe on Windows, where `command` is not a
+     * valid command, so the POSIX probe below always fails there and we'd
+     * silently fall back to gcc (which cannot parse LLVM IR -> no .o ->
+     * link fails). clang ships with the mingw-w64 toolchain and is exactly
+     * what we need, so probe it directly with a version check cmd.exe gets. */
+    if (system("clang --version >nul 2>&1") == 0) return "clang";
+#else
     if (system("command -v clang >/dev/null 2>&1") == 0) return "clang";
+#endif
     return "cc";
 }
 
