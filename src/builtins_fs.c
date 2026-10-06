@@ -11,29 +11,19 @@
  * same source builds a native .exe. LOCK_* are the POSIX <sys/file.h> values,
  * defined here for the Windows branch. */
 #ifdef _WIN32
+/* Windows implementations live in os_win32.c (compiled only on Windows) so
+ * this TU can include lume.h's TokenType without colliding with the
+ * TokenType enumerator that <windows.h> pulls in via winnt.h. */
 #include <io.h>
-#include <windows.h>
+#include <fcntl.h>
 #ifndef LOCK_SH
 #define LOCK_SH 1
 #define LOCK_EX 2
 #define LOCK_UN 8
 #define LOCK_NB 4
 #endif
-static int lume_mkdir(const char *p) { return _mkdir(p); }
-static int lume_flock(int fd, int op) {
-    HANDLE h = (HANDLE)_get_osfhandle(fd);
-    if (h == INVALID_HANDLE_VALUE) return -1;
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof ov);
-    if (op & LOCK_UN)
-        return UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov) ? 0 : -1;
-    DWORD flags = (op & LOCK_EX) ? LOCKFILE_EXCLUSIVE_LOCK : 0;
-    if (op & LOCK_NB) flags |= LOCKFILE_FAIL_IMMEDIATELY;
-    if (LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &ov)) return 0;
-    if ((op & LOCK_NB) && GetLastError() == ERROR_LOCK_VIOLATION)
-        errno = EAGAIN;
-    return -1;
-}
+int lume_mkdir(const char *p);
+int lume_flock(int fd, int op);
 #else
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -246,7 +236,9 @@ void native_write_file(VM *vm, int argc, Value *args, Value *out) {
     if (!f) { *out = val_bool(false); return; }
     /* 数据文件默认 0600(账本/周报/设置 .env 都经此写;即使用户把
      * IQUEST_REPORTS_DIR 指到 .data 之外,报告也不会随 umask 落成 0644) */
+#ifndef _WIN32
     fchmod(fileno(f), 0600);
+#endif
     size_t wrote = data && len ? fwrite(data, 1, len, f) : 0;
     int ok = (fclose(f) == 0) && (wrote == len);
     if (ok) ok = rename(tmp, p) == 0;
@@ -307,7 +299,11 @@ void native_lock_file(VM *vm, int argc, Value *args, Value *out) {
         close(g_lock_fd);
         g_lock_fd = -1;
     }
+#ifdef _WIN32
+    int fd = open(p, _O_CREAT | _O_RDWR, _S_IREAD | _S_IWRITE);
+#else
     int fd = open(p, O_CREAT | O_RDWR, 0600);
+#endif
     if (fd < 0) { *out = val_bool(false); return; }
     struct timeval t0;
     gettimeofday(&t0, NULL);
@@ -360,7 +356,11 @@ void native_strftime(VM *vm, int argc, Value *args, Value *out) {
     time_t t = (time_t)AS_NUM(args[1]);
     struct tm tm;
     char buf[160];
+#ifdef _WIN32
+    if (localtime_s(&tm, &t) == 0 && strftime(buf, sizeof buf, fmt, &tm) > 0)
+#else
     if (localtime_r(&t, &tm) && strftime(buf, sizeof buf, fmt, &tm) > 0)
+#endif
         *out = make_string_cstr(vm, buf);
     else
         *out = make_string_cstr(vm, "");

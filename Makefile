@@ -127,7 +127,7 @@ define KILL_SERVER
 endef
 SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_expr.c \
             src/value.c src/typecheck.c src/typecheck_expr.c src/typecheck_stmt.c \
-            src/interp.c src/builtins.c src/builtins_fs.c \
+            src/interp.c src/builtins.c src/builtins_fs.c src/os_win32.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
             src/token.c src/bridge_stub.c src/builtins_http.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/irbuf.c src/backend.c
@@ -156,8 +156,8 @@ ifeq ($(strip $(OPENSSL_PKG)),)
 else
     OPENSSL_PREFIX := $(shell pkg-config --variable=prefix openssl 2>/dev/null)
 endif
-HAVE_OPENSSL := $(if $(and $(strip $(OPENSSL_PREFIX)),\
-    $(wildcard $(OPENSSL_PREFIX)/include/openssl/ssl.h)),1,0)
+HAVE_OPENSSL := $(if $(IS_WINDOWS),0,$(if $(and $(strip $(OPENSSL_PREFIX)),\
+    $(wildcard $(OPENSSL_PREFIX)/include/openssl/ssl.h)),1,0))
 ifeq ($(HAVE_OPENSSL),1)
     CFLAGS   += -I$(OPENSSL_PREFIX)/include -DHAVE_OPENSSL=1
     LDFLAGS  += -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
