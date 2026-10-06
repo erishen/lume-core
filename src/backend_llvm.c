@@ -87,9 +87,23 @@ static LLVMTargetMachineRef make_target_machine(char *err, size_t err_size)
 
     char *cpu  = LLVMGetHostCPUName();
     char *feat = LLVMGetHostCPUFeatures();
+    /* PIC + default code model, not the large code model this used to ask for.
+     * On x86-64 a large code model cannot be combined with PIC — the backend
+     * falls back to absolute addressing, which puts relocations in the
+     * read-only text section. GNU ld reports that as
+     *   `warning: relocation in read-only section '.ltext'`
+     * plus `creating DT_TEXTREL in a PIE`, and native_backends.sh treats any
+     * stderr from --compile-llvm as a failed emit, so the ubuntu leg went red
+     * on a binary that ran correctly. ld64 never says anything, which is why
+     * the darwin leg and every local run stayed green.
+     *
+     * PIC is also the honest choice here: the emitted object is linked by
+     * clang, which builds a PIE by default on Linux, so static relocations
+     * would be wrong even without the warning. The text backend goes through
+     * clang with its own defaults and was never affected. */
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
         t, triple, cpu ? cpu : "generic", feat ? feat : "",
-        LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelLarge);
+        LLVMCodeGenLevelDefault, LLVMRelocPIC, LLVMCodeModelDefault);
     if (cpu)  LLVMDisposeMessage(cpu);
     if (feat) LLVMDisposeMessage(feat);
     LLVMDisposeMessage(triple);

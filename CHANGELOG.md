@@ -920,6 +920,32 @@ backend parity (28 `N_*` labels, read from both sides), `tests/native_backends.s
   `## SQLite support` and `## Text2SQL`, so the two READMEs carry the same
   sections again.
 
+### Fixed — the Linux CI legs, which had never passed
+
+- **`--compile-llvm` asked for a large code model on a PIE link.** On x86-64 a
+  large code model cannot be combined with PIC, so the backend fell back to
+  absolute addressing and the relocations landed in the read-only text section.
+  GNU ld says so —
+  `warning: relocation in read-only section '.ltext'` plus
+  `warning: creating DT_TEXTREL in a PIE` — and `tests/native_backends.sh`
+  reads *any* stderr from an emitter as a failed emit, so `test (ubuntu-latest)`
+  and `asan (ubuntu)` went red on objects that linked and ran correctly. ld64
+  is silent, which is why `test (macos-latest)` and every local run stayed
+  green on the same source. `make_target_machine` now asks for
+  `LLVMRelocPIC` + `LLVMCodeModelDefault`: PIC because clang links that object
+  into a PIE by default on Linux, so a static relocation model would be the
+  wrong answer even without the warning.
+- **`make pack` shelled out to `strip -u -r`, which is an ld64 spelling.**
+  GNU binutils has no `-u`; it printed its usage and exited 1, so
+  `pack (ubuntu)` died at the strip step and `packcheck` never ran. The flags
+  are now chosen per platform — `-u -r` on darwin, `--strip-debug` elsewhere.
+  Both mean "drop the DWARF that carries the build directory, keep a loadable
+  binary", and `packcheck` is what proves it either way.
+- The smoke-suite size quoted in `README.md` (128), `README.zh.md` (113) and
+  `docs/DEVELOPMENT.md` (128) had drifted from the suite's actual 134. All
+  three say 134 now, and `docs/DEVELOPMENT.md` records where the number comes
+  from, since nothing tests it.
+
 ## [0.2.0] - 2026-09-25
 
 ### Security

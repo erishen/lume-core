@@ -345,6 +345,22 @@ PACK_CFLAGS   := $(filter-out $(RT_DEFS),$(CFLAGS)) $(PACK_RT_DEFS)
 PACK_BIN      := build-pack/bin/lume-core
 PACK_OBJS     := $(SRCS:src/%.c=build-pack/%.o)
 
+# strip 的口径按平台分。ld64(cctools)的 `-u -r` 在 GNU binutils 上根本不存在
+# ——`-u` 只有 cctools 有(实测 `strip --help` 里既无 `-u` 也无 `--keep-undefined`),
+# GNU strip 见到它直接打 usage 退出(make 报 Error 1),而 CI 的 pack 腿就跑在
+# ubuntu 上:一条 macOS 专用的开关让整条发布腿常年红。
+# 两边要的东西是同一件:剥掉带编译目录的 DWARF,同时留下能正常加载的二进制。
+#   - darwin: `-u -r` 保住未定义符号与重定位(裸 strip 会把动态链接要用的东西
+#     一起削掉);被剥掉的仍是调试段那份路径。
+#   - 其余: `--strip-debug` 就是「只去调试段」,语义与上面一一对应。用长选项
+#     而不是 `-g`:GNU strip 与 llvm-strip 都认 `--strip-debug`(实测两家
+#     `--help` 都在),写全名就不必赌哪家有哪些短别名。
+ifeq ($(UNAME_S),Darwin)
+    STRIP_FLAGS := -u -r
+else
+    STRIP_FLAGS := --strip-debug
+endif
+
 build-pack:
 	mkdir -p build-pack
 
@@ -354,7 +370,7 @@ build-pack/%.o: src/%.c src/lume.h $(INT_HDRS) | build-pack
 $(PACK_BIN): $(PACK_OBJS) | bin
 	@mkdir -p $(dir $@)   # 输出在 build-pack/bin/ 下, | bin 管不到它
 	$(CC) $(PACK_CFLAGS) -o $@ $(PACK_OBJS) $(AH_LIB) $(LDFLAGS) -lm
-	@strip -u -r $@
+	@strip $(STRIP_FLAGS) $@
 
 pack: all $(PACK_BIN)
 	@mkdir -p dist

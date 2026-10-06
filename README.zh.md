@@ -100,7 +100,7 @@ sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 |---|---|
 | `src/` | 词法/语法/类型检查/树遍历解释器 + **本树自持的桥接替身**（`bridge_stub.c`）+ 原生后端（IR 文本走 `codegen.c` 及拆分出去的 `codegen_{types,expr,scan,sig,stmt}.c` / `irbuf.c` / `backend.c`，可选的 libLLVM 路走 `llvm_codegen.c` / `backend_llvm.c`），45 个文件、约 15k 行 C11；另有 fork-local 的 `sbuf.h` 替掉宿主的 minijson 字符串缓冲 |
 | `examples/` | 纯语言脚本：`hello`、`lang-basics`、`modules/app`、`native-fact`、`native-bench`、`http-get` |
-| `tests/` | C 单测（`smoke.c`，113 项）+ `test-crypt.lume` + `native_backends.sh`（解释/文本/libLLVM 三路比对）+ 一致性期望文件 |
+| `tests/` | C 单测（`smoke.c`，134 项）+ `test-crypt.lume` + `native_backends.sh`（解释/文本/libLLVM 三路比对）+ 一致性期望文件 |
 | `scripts/` | `check-backend-parity.sh` —— 两条发射器的 AST 标签覆盖 parity 检查 |
 | `docs/` | 完整文档，见下 |
 

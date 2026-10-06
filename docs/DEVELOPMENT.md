@@ -51,7 +51,7 @@ lume-core/
 │   ├── native-fact.lume         # 原生编译冒烟（递归）
 │   └── native-bench.lume        # 文本路 vs libLLVM 路跑分
 ├── tests/
-│   ├── smoke.c              # 解释器 + 类型检查单测（128 项：输出逐字节比对 / 类型拒绝 / 运行时错误 / 多文件模块）
+│   ├── smoke.c              # 解释器 + 类型检查单测（134 项：输出逐字节比对 / 类型拒绝 / 运行时错误 / 多文件模块）
 │   ├── test-crypt.lume      # crypt 内建样例（ crypt-test 用）
 │   ├── native_backends.sh   # interp / text / llvm 三腿互比
 │   ├── native-consistency.lume + .expected
@@ -277,6 +277,11 @@ native 值，`N_TOOL` 求值前会把 map 里 native/函数值 rewrite 成其名
    **两条原生后端也要接**（`codegen*.c` 与 `llvm_codegen.c` 各一个 `case N_X`）。
 6. `tests/smoke.c` 补一条 `check(...)`（正常路径）和必要时 `reject(...)`
    （类型错误路径）。
+
+> 新增/删除用例后顺手同步那三处**手写**的用例数：本文件的目录树注释、以及
+> `README.md` / `README.zh.md` 的 `tests/` 行。准确值就是 `./tests/smoke-bin`
+> 最后那行 `N tests, M failed` 的 `N` —— 三处都只是文案，没有测试守着，
+> 所以它曾经一路漂到 128（实际 134）、113（实际 134）。
 
 ### 多文件模块（import / export）约定
 
