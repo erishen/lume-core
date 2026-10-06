@@ -31,6 +31,25 @@ CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 # 编出的 bin/lume 与容器内重编的 bin/lume 都要能编, 所以两家都带, 而不是
 # 只在镜像侧补 (镜像侧补 = macOS 宿主永远测不到这条平台差异)。
 UNAME_S := $(shell uname -s)
+# Windows (MSYS2 / mingw-w64 / Cygwin) is detected by substring because
+# `uname -s` reports MINGW64_NT-..., MSYS_NT-... or CYGWIN_NT-.... The native
+# Windows port targets mingw-w64: the source carries #ifdef _WIN32 shims for
+# the platform-specific spots, and HTTP/TLS is opted out (see below).
+IS_WINDOWS :=
+ifneq ($(findstring MINGW,$(UNAME_S)),)
+IS_WINDOWS := 1
+endif
+ifneq ($(findstring MSYS,$(UNAME_S)),)
+IS_WINDOWS := 1
+endif
+ifneq ($(findstring CYGWIN,$(UNAME_S)),)
+IS_WINDOWS := 1
+endif
+# HTTP/TLS is on by default; the Windows/mingw port turns it off and excludes
+# src/builtins_http.c (the always-compiled b_http_* wrappers then bind to the
+# native_http_unavailable stubs in builtins.c). Defining it globally (not just
+# inside interp.c) lets every TU agree on whether the real http builtins exist.
+LUME_HAS_HTTP := 1
 ifeq ($(UNAME_S),Linux)
     CFLAGS_EXTRA += -D_GNU_SOURCE
     # glibc fortify 与 agent-httpd 同开: Ubuntu 默认注入, 显式开启使本地
@@ -146,6 +165,23 @@ ifeq ($(HAVE_OPENSSL),1)
     # 免得链接过了、跑起来才 "image not found"。
     LDFLAGS  += -Wl,-rpath,$(OPENSSL_PREFIX)/lib
 endif
+
+# --- Windows / mingw-w64 native port -----------------------------------
+# HTTP/TLS is opted out: builtins_http.c is excluded and LUME_HAS_HTTP is
+# forced off, so the always-compiled b_http_* wrappers bind to the
+# native_http_unavailable stubs in builtins.c instead of the (excluded)
+# real implementation. --watch is already compiled out by #ifdef _WIN32 in
+# main.c. The remaining platform spots (mkdir/flock/realpath) are handled
+# with shims in the source, so a plain `make` in an MSYS2 mingw64 shell
+# builds bin/lume-core.exe.
+ifeq ($(IS_WINDOWS),1)
+    SRCS := $(filter-out src/builtins_http.c,$(SRCS))
+    HAVE_OPENSSL := 0
+    LUME_HAS_HTTP := 0
+endif
+# Propagate the http flag to every TU so builtins.c emits the native_http_*
+# stubs exactly when builtins_http.c is excluded (Windows) and not otherwise.
+CFLAGS += -DLUME_HAS_HTTP=$(LUME_HAS_HTTP)
 
 # 注意:这段必须在 SRCS := 之后 —— 这里用的是 +=,提前写会被上面的 := 盖掉。
 ifeq ($(HAVE_LLVM),1)
@@ -324,7 +360,9 @@ test: all backend-parity tests/smoke-bin crypt-test native-consistency \
 # 覆盖。注意不要在这里用 tar 的 --transform/-s 做改名: macOS 是 bsdtar(认 -s)、
 # 容器里是 GNU tar(不认 -s), 跨平台脚本会一条腿挂掉。
 UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_S),Darwin)
+ifeq ($(IS_WINDOWS),1)
+    PKG_OS := windows
+else ifeq ($(UNAME_S),Darwin)
     PKG_OS := darwin
 else
     PKG_OS := linux

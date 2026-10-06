@@ -6,7 +6,9 @@
 #include <limits.h>
 #include <signal.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 #if defined(__APPLE__)
@@ -24,6 +26,15 @@
  * the libLLVM one when the binary was built with libLLVM (LLVM then verifies
  * the IR shape while it is built); --compile-text is the opt-out. */
 enum { NAT_DEFAULT = 0, NAT_LLVM = 1, NAT_TEXT = 2 };
+
+/* Portable directory creation. POSIX mkdir takes a mode; Windows _mkdir takes
+ * only the path (mode is ignored). Used by the --compile output dir. */
+#ifdef _WIN32
+#include <direct.h>
+#define lume_mkdir(p) _mkdir(p)
+#else
+#define lume_mkdir(p) mkdir(p, 0755)
+#endif
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -100,6 +111,8 @@ static char *read_file(const char *path, size_t *len_out) {
  * Invalid edits are reported and the old child keeps serving; a valid edit
  * restarts the child (port is freed by the child's graceful shutdown
  * before the next child binds). SIGUSR1 forces the same restart path. */
+
+#ifndef _WIN32   /* --watch needs fork/exec/kqueue, unavailable on Windows */
 
 #define WATCH_POLL_MS       500
 #define WATCH_DEBOUNCE_MS   350
@@ -342,6 +355,18 @@ static int run_watch(const char *argv0, const char *script) {
     return 0;
 }
 
+#endif /* _WIN32 guard around --watch */
+
+#ifdef _WIN32
+/* Windows has no fork/exec/kqueue, so --watch is compiled out; but the
+ * normal run/check/compile paths still tear the VM down here. */
+static void vm_teardown(VM *vm) {
+    loader_free(vm);
+    vm_free(vm);
+    type_release_all();
+}
+#endif
+
 int main(int argc, char **argv) {
     bool do_check = false;
     bool do_dump = false;
@@ -402,7 +427,14 @@ int main(int argc, char **argv) {
         no_net = true;
     }
 
+#ifndef _WIN32
     if (do_watch) return run_watch(argv[0], script);
+#else
+    if (do_watch) {
+        fprintf(stderr, "lume: --watch is not supported on Windows\n");
+        return 2;
+    }
+#endif
 
     if (do_dump) {
         /* single-file AST dump (imports are resolved by the loader, which is
@@ -481,7 +513,7 @@ int main(int argc, char **argv) {
             if (tl >= 5 && strcmp(tail + tl - 5, ".lume") == 0)
                 tl -= 5;                  /* ".lume" is five characters */
             snprintf(bin, sizeof bin, "out/%.*s", (int)tl, tail);
-            mkdir("out", 0755);
+            lume_mkdir("out");
         }
         char berr[512] = {0};
         /* Default is the libLLVM backend when this binary has it: the IR is

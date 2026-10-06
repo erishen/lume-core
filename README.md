@@ -138,6 +138,31 @@ on `PATH` (the build then links `llvm-config --libs`; without it you still get
 `bin/lume-core`, just with `--compile-llvm` unavailable). Nothing else — no
 `node`, no `pnpm`, no server runtime, no SQLite.
 
+### Windows (MSYS2 / mingw-w64)
+
+The port targets **mingw-w64**, not MSVC. In an MSYS2 MINGW64 shell:
+
+```bash
+pacman -S base-devel mingw-w64-x86_64-toolchain mingw-w64-x86_64-clang
+make             # builds bin/lume-core.exe
+make check
+./bin/lume-core.exe examples/hello.lume
+```
+
+What is and isn't supported on Windows:
+
+- **Works:** the interpreter, type checker, both native backends
+  (`--compile` / `--compile-text`, lowered by clang), `mkdir` / `lock_file`
+  / file I/O builtins, module import resolution.
+- **Not on Windows:** `--watch` (dev hot reload — it relies on
+  `fork` / `exec` / `kqueue`, unavailable on Windows; passing it prints an
+  error and exits), and outbound HTTP (`http_get` / `http_post` / … — the
+  build excludes `src/builtins_http.c` and compiles with `LUME_HAS_HTTP=0`,
+  so the builtins still type-check but fail at runtime with a clear message).
+- Native compilation (`--compile`) needs `clang` on `PATH`; install
+  `mingw-w64-x86_64-clang`. HTTP/TLS is omitted because Winsock wiring is not
+  wired up in this first port.
+
 ## Install
 
 There is nothing to install — no npm registry, no package manager, no release

@@ -22,6 +22,9 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <stdlib.h>   /* _fullpath */
+#endif
 
 /* ---------- file io ---------- */
 
@@ -129,7 +132,11 @@ static char *resolve_import(const char *from_dir, const char *rel,
         snprintf(joined, sizeof(joined), "%s/%s", from_dir, rel);
     }
     char canon[PATH_MAX];
+#ifdef _WIN32
+    if (!_fullpath(canon, joined, sizeof(canon))) {
+#else
     if (!realpath(joined, canon)) {
+#endif
         if (errbuf && errbuf_size)
             snprintf(errbuf, errbuf_size, "cannot resolve import '%s': %s",
                      rel, strerror(errno));
@@ -342,7 +349,11 @@ int loader_run(VM *vm, const char *entry_path, bool check_only,
     vm->load_depth = 0;
 
     char canon[PATH_MAX];
+#ifdef _WIN32
+    if (!_fullpath(canon, entry_path, sizeof(canon))) {
+#else
     if (!realpath(entry_path, canon)) {
+#endif
         if (errbuf && errbuf_size)
             snprintf(errbuf, errbuf_size, "cannot resolve %s: %s", entry_path,
                      strerror(errno));

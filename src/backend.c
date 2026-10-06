@@ -21,6 +21,14 @@
 #include "backend.h"
 #include "codegen.h"
 
+/* Portable directory creation for the `build/` object dir (mirrors main.c). */
+#ifdef _WIN32
+#include <direct.h>
+#define lume_mkdir(p) _mkdir(p)
+#else
+#define lume_mkdir(p) mkdir(p, 0755)
+#endif
+
 #ifndef LUME_RT_SRC
 #define LUME_RT_SRC "src/rt.c"          /* fallback when built without -D */
 #endif
@@ -72,7 +80,7 @@ int backend_build_rt(char *err, size_t err_size)
     if (have && ost.st_mtime >= st.st_mtime && rt_last.st.st_mtime >= st.st_mtime)
         return 0;                        /* already up to date */
 
-    mkdir("build", 0755);                /* no -p guarantee beyond this one */
+    lume_mkdir("build");                /* no -p guarantee beyond this one */
 
     char cmd[PATH_MAX * 2];
     snprintf(cmd, sizeof cmd, "%s -O2 -c -o %s %s", pick_cc(), RT_OBJ, LUME_RT_SRC);

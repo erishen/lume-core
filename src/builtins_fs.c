@@ -6,7 +6,40 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+/* Advisory file lock + mkdir portability. On POSIX these wrap flock(2) and
+ * mkdir(2); on Windows (mingw-w64) they map to LockFileEx / _mkdir so the
+ * same source builds a native .exe. LOCK_* are the POSIX <sys/file.h> values,
+ * defined here for the Windows branch. */
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#ifndef LOCK_SH
+#define LOCK_SH 1
+#define LOCK_EX 2
+#define LOCK_UN 8
+#define LOCK_NB 4
+#endif
+static int lume_mkdir(const char *p) { return _mkdir(p); }
+static int lume_flock(int fd, int op) {
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    if (op & LOCK_UN)
+        return UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov) ? 0 : -1;
+    DWORD flags = (op & LOCK_EX) ? LOCKFILE_EXCLUSIVE_LOCK : 0;
+    if (op & LOCK_NB) flags |= LOCKFILE_FAIL_IMMEDIATELY;
+    if (LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &ov)) return 0;
+    if ((op & LOCK_NB) && GetLastError() == ERROR_LOCK_VIOLATION)
+        errno = EAGAIN;
+    return -1;
+}
+#else
 #include <sys/file.h>
+#include <sys/stat.h>
+static int lume_mkdir(const char *p) { return mkdir(p, 0700); }
+static int lume_flock(int fd, int op) { return flock(fd, op); }
+#endif
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
@@ -239,11 +272,11 @@ void native_mkdir(VM *vm, int argc, Value *args, Value *out) {
     for (char *c = tmp + 1; *c; c++) {
         if (*c == '/') {
             *c = '\0';
-            if (mkdir(tmp, 0700) != 0 && errno != EEXIST) { *out = val_bool(false); return; }
+            if (lume_mkdir(tmp) != 0 && errno != EEXIST) { *out = val_bool(false); return; }
             *c = '/';
         }
     }
-    if (mkdir(tmp, 0700) != 0 && errno != EEXIST) { *out = val_bool(false); return; }
+    if (lume_mkdir(tmp) != 0 && errno != EEXIST) { *out = val_bool(false); return; }
     struct stat st;
     *out = val_bool(stat(tmp, &st) == 0 && S_ISDIR(st.st_mode));
 }
@@ -270,7 +303,7 @@ void native_lock_file(VM *vm, int argc, Value *args, Value *out) {
         if (wait_ms > 30000) wait_ms = 30000;
     }
     if (g_lock_fd >= 0) {
-        flock(g_lock_fd, LOCK_UN);
+        lume_flock(g_lock_fd, LOCK_UN);
         close(g_lock_fd);
         g_lock_fd = -1;
     }
@@ -279,7 +312,7 @@ void native_lock_file(VM *vm, int argc, Value *args, Value *out) {
     struct timeval t0;
     gettimeofday(&t0, NULL);
     for (;;) {
-        if (flock(fd, LOCK_EX | LOCK_NB) == 0) break;
+        if (lume_flock(fd, LOCK_EX | LOCK_NB) == 0) break;
         if (errno == EINTR) continue;
         if (errno != EWOULDBLOCK && errno != EAGAIN) {
             close(fd);
@@ -304,7 +337,7 @@ void native_lock_file(VM *vm, int argc, Value *args, Value *out) {
 void native_unlock_file(VM *vm, int argc, Value *args, Value *out) {
     (void)vm; (void)argc; (void)args;
     if (g_lock_fd >= 0) {
-        flock(g_lock_fd, LOCK_UN);
+        lume_flock(g_lock_fd, LOCK_UN);
         close(g_lock_fd);
         g_lock_fd = -1;
     }

@@ -36,6 +36,26 @@ All notable changes to Lume are documented here. The format follows
   and no way to reproduce the bytes. `make pack` now writes
   `dist/lume-core-<os>-<arch>.tar.gz` with the binary plus `README.md` /
   `README.zh.md` / `CHANGELOG.md`. Override the name with `make pack PKG_NAME=…`.
+
+### Added — Windows / mingw-w64 native port
+
+- **lume-core now builds as a native Windows executable** under MSYS2 /
+  mingw-w64 (a `.github/workflows/windows.yml` CI job compiles and tests it on
+  `windows-latest`). The five platform-specific spots are guarded with
+  `#ifdef _WIN32` shims rather than dropping the platform:
+  - `--watch` (dev hot reload) is compiled out — it depends on `fork` / `exec`
+    / `kqueue`, which Windows lacks; passing `--watch` prints an error and
+    exits instead of crashing.
+  - `mkdir` / `flock` map to `_mkdir` / `LockFileEx`; `realpath` maps to
+    `_fullpath`.
+  - Outbound HTTP (`http_get` / `http_post` / …) is **opted out** on Windows:
+    `src/builtins_http.c` is excluded from the build and `LUME_HAS_HTTP=0` is
+    compiled in, so the `b_http_*` wrappers bind to `native_http_unavailable`
+    stubs in `builtins.c` (they still type-check, but fail at runtime with a
+    clear message). Winsock wiring is not wired up in this first port.
+  - `Makefile` detects Windows via `uname -s` (`MINGW*` / `MSYS*` / `CYGWIN*`)
+    and sets `PKG_OS := windows`; a `make pack` on Windows therefore names the
+    tarball `lume-core-windows-<arch>`.
 - **Fixed a latent break exposed by the rename.** `tests/native_backends.sh`
   defaulted its compiler to `bin/lume` and `make native-consistency` never
   passed `LUME_BIN`, so the leg died on `bin/lume missing — run make first`

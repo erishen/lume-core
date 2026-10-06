@@ -72,6 +72,30 @@ make clean
 只是 `--compile-llvm` 不可用）。没有别的——不需要 `node`、不需要 `pnpm`、
 不需要服务运行时、不需要 SQLite。
 
+### Windows（MSYS2 / mingw-w64）
+
+这套移植瞄准的是 **mingw-w64**，不是 MSVC。在 MSYS2 的 MINGW64 shell 里：
+
+```bash
+pacman -S base-devel mingw-w64-x86_64-toolchain mingw-w64-x86_64-clang
+make             # 编出 bin/lume-core.exe
+make check
+./bin/lume-core.exe examples/hello.lume
+```
+
+Windows 上什么能用、什么不能用：
+
+- **能用**：解释器、类型检查器、两条原生后端（`--compile` / `--compile-text`，
+  由 clang 降级）、`mkdir` / `lock_file` / 文件 I/O 内建、模块导入解析。
+- **Windows 上不可用**：`--watch`（开发热重载——依赖 `fork` / `exec` /
+  `kqueue`，Windows 没有这些；传了它会打印错误并退出）；以及出站 HTTP
+  （`http_get` / `http_post` / …——构建时排除 `src/builtins_http.c` 并以
+  `LUME_HAS_HTTP=0` 编译，所以这些内建仍能过类型检查，但运行时会以清晰的错误
+  告终）。
+- 原生编译（`--compile`）需要 `PATH` 里有 `clang`；装
+  `mingw-w64-x86_64-clang`。HTTP/TLS 没接进来是因为这个首版端口还没把 Winsock
+  那层接上。
+
 ## 安装
 
 没有要装的东西——不需要 npm registry、不需要包管理器、这棵树也没有发布
