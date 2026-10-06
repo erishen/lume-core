@@ -217,5 +217,18 @@ print(outer(4));
 func as_float(v: int): float { return v; }
 print(as_float(7));
 
+// ---- `.len` on a named struct reads the declared field --------------------
+//
+// Both emitters resolve `.len` from the struct's field table and never from a
+// key count, so the interpreter has to read it the same way once a map literal
+// is bound to a named type. The field value (7) deliberately differs from the
+// member count (2), so an interpreter that counts members cannot hide here.
+// The anonymous-map half of the rule — `.len` *is* the key count there — is
+// pinned in the smoke suite instead; the emitters' map support is narrower.
+type Sized = { len: int, w: int };
+let sized: Sized = { len: 7, w: 2 };
+print(sized.len);
+print(sized.w);
+
 warmup();
 main();

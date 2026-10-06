@@ -520,6 +520,28 @@ int main(void) {
           "let m = { a: { b: 1 } };\nm.a.b = 99;\nprint(str(m.a.b));",
           "99\n");
 
+    /* `.len` on a map that is bound to a named struct is the field the user
+     * declared — that is what both native backends emit — so the interpreter
+     * must not answer with the key count here. Regression: the OBJ_MAP branch
+     * used to count unconditionally, and `pn.len` returned 2 while a compiled
+     * run returned 7. */
+    check("named struct: .len reads the declared field",
+          "type P = { len: int, w: int };\n"
+          "let pn: P = { len: 7, w: 3 };\n"
+          "print(str(pn.len));",
+          "7\n");
+
+    /* The next two pin the other side of the same rule: only a map that
+     * carries a static struct name reads a field. A plain anonymous map keeps
+     * answering `.len` with its key count — including the awkward case where
+     * one of those keys is literally called "len". */
+    check("anonymous map: .len stays the key count",
+          "let m = { a: 1, b: 2 };\n"
+          "print(str(m.len));\n"
+          "let k = { len: 5, a: 1 };\n"
+          "print(str(k.len));",
+          "2\n2\n");
+
     /* ---- Lume typed-language coverage ---- */
 
     check("inference: int stays int, float widens",

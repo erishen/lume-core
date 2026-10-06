@@ -205,6 +205,14 @@ struct Obj {
             Env *parent;   /* lexical scope */
         } env;             /* OBJ_ENV */
     } as;
+    /* Static struct name for a map that is really a value of a named type
+     * (`let p: P = {...}` stamps it). NULL for an anonymous map. Only the
+     * interpreter needs it: both native backends carry the type on their own
+     * value record, and it is what keeps `p.len` on `type P = { len: int }`
+     * from collapsing to the member count on the interpreter side. Not a
+     * GC root and not freed — it points into the type table, which outlives
+     * every value built from it. */
+    const char *sname;
 };
 
 struct Value {

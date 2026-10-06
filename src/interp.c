@@ -320,16 +320,23 @@ static void eval_expr_member(VM *vm, Node *n, Env *env) {
     if (IS_OBJ(objv)) {
         Obj *o = AS_OBJ(objv);
         if (o->type == OBJ_MAP) {
-            /* A map answers `.len` / `.length` with its key count. The list and
-             * the string below do the same, and both native backends already
-             * route `.len` to lume_map_len — the interpreter must not be the
-             * one leg that refuses it. */
-            if (strcmp(n->as.member.name, "len") == 0 ||
-                strcmp(n->as.member.name, "length") == 0) {
+            /* An anonymous map answers `.len` / `.length` with its key count.
+             * The list and the string below do the same, and both native
+             * backends already route `.len` to lume_map_len — the interpreter
+             * must not be the one leg that refuses it. */
+            if (!o->sname &&
+                (strcmp(n->as.member.name, "len") == 0 ||
+                 strcmp(n->as.member.name, "length") == 0)) {
                 vm_pop(vm);
                 vm_push(vm, val_int((long long)o->as.map.count));
                 return;
             }
+            /* A map carrying a static struct name (sname, set when a literal
+             * is bound to a named type) is not a bare bag of keys: `.len` is
+             * the field the user declared, which is what both native backends
+             * read. The lookup below answers it, and a struct with no such
+             * field fails the way the compiler fails — it must not quietly
+             * hand back a member count. */
             int found = 0;
             Value v = map_get(vm, o, n->as.member.name, &found);
             if (!found) {
@@ -520,6 +527,14 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
             eval_expr(vm, n->as.let.init, env);
             if (vm->error) return;
             Value v = vm_pop(vm);
+            /* Keep the named struct type on the object when a map literal is
+             * bound to it: `.len` then reads the declared field (which is
+             * what the compiler emits) instead of answering with the key
+             * count, so the interpreter and the native backends agree. */
+            Type *at = n->as.let.annot;
+            if (at && at->kind == TY_STRUCT && at->name &&
+                IS_OBJ(v) && AS_OBJ(v)->type == OBJ_MAP)
+                AS_OBJ(v)->sname = at->name;
             env_set(vm, env, n->as.let.name, v);
             if (n->is_export && vm->export_env)
                 env_set(vm, vm->export_env, n->as.let.name, v);
