@@ -47,5 +47,9 @@ jobs:
       - name: Run hello
         run: ./bin/lume-core examples/hello.lume
 
-      - name: Full test suite
-        run: make test
+      # The full regression suite (`make test`) is POSIX-only: it exercises
+      # HTTP/TLS builtins (http_get/http_post/...) that are deliberately
+      # excluded from the Windows port (LUME_HAS_HTTP=0) and uses POSIX
+      # mkdir(2)/rm -f shell calls. It runs on the Linux `ci` job instead.
+      # Windows verification here is build + interpreter + module loading
+      # (Check) + both native backends (text / default) + a hello run.
