@@ -111,10 +111,19 @@ static bool on_stack(VM *vm, const char *path) {
 
 /* dirname of a canonical absolute path (malloc'd). */
 static char *path_dirname(const char *path) {
-    char *slash = strrchr(path, '/');
-    if (!slash) return strdup(".");
-    if (slash == path) return strdup("/");
-    size_t n = (size_t)(slash - path);
+    /* Accept BOTH '/' (POSIX, and the joined paths we build with snprintf)
+     * and '\' — because on Windows _fullpath() returns a backslash-separated
+     * canonical path. A naive strrchr(path, '/') returned "." on Windows,
+     * which made every relative import resolve against the CWD instead of
+     * the importing file's directory, so `import "tax.lume"` from
+     * examples/modules/app.lume looked in the repo root and failed with
+     * "cannot read <root>/tax.lume". */
+    const char *sep = NULL;
+    for (const char *p = path; *p; p++)
+        if (*p == '/' || *p == '\\') sep = p;
+    if (!sep) return strdup(".");
+    if (sep == path) return strdup("/");
+    size_t n = (size_t)(sep - path);
     char *dir = malloc(n + 1);
     memcpy(dir, path, n);
     dir[n] = '\0';
@@ -126,7 +135,17 @@ static char *path_dirname(const char *path) {
 static char *resolve_import(const char *from_dir, const char *rel,
                             char *errbuf, size_t errbuf_size) {
     char joined[PATH_MAX];
-    if (rel[0] == '/') {
+    /* An import is absolute if it starts with '/', or (on Windows) with
+     * '\' or a drive letter "X:". Without the Windows branch a "C:\..."
+     * import would be treated as relative and joined onto from_dir. */
+    int abs = (rel[0] == '/')
+#ifdef _WIN32
+        || (rel[0] == '\\')
+        || (((rel[0] >= 'A' && rel[0] <= 'Z') || (rel[0] >= 'a' && rel[0] <= 'z'))
+            && rel[1] == ':')
+#endif
+        ;
+    if (abs) {
         snprintf(joined, sizeof(joined), "%s", rel);
     } else {
         snprintf(joined, sizeof(joined), "%s/%s", from_dir, rel);
