@@ -209,7 +209,61 @@ import 同名、import 与用户声明（`let`/`func`）同名。注意：遮蔽
 
 ---
 
-## 9. 避坑优先级（新手先看这三条）
+## 9. C 层：`switch` 分支漏 `return` —— `!x` 的类型被静默吞成 `any`（2026-10-06 已修复）
+
+**坑**：类型检查器的 `case N_UNARY` 里，`OP_NOT`（`!b` 与 `not b` 走同一个
+op）只调了 `is_bool_ok(c, ot, line)` 做**操作数**校验，既没有 `return` 也没
+有 `break`。C 的 `switch` 不缺 `break` 就直接落到下一个 case，于是 `!b`
+接着走进了 `case N_BINARY`。
+
+而这两个节点共用 union 布局（`src/lume.h`）：
+
+```
+unary : { Op op; Node *operand; }
+binary: { Op op; Node *left, *right; }
+```
+
+`binary.op` 与 `unary.op` 是同一个槽，`binary.left` 与 `unary.operand` 也是，
+只有 `binary.right` 读到了不相关的槽（这里是 `NULL`）。`OP_NOT` 一路走到
+arithmetic 兜底 → `arith_result(operand, NULL)` → 该函数第一行就
+`if (!a || !b) return any_type();` → **`!b` 的静态类型变成了 `any`。**
+
+**表现（最坑的地方）**：赋值检查遇到 `any` 是**无条件放行**
+（`type_mismatch()` 里 `if (!actual || actual->kind == TY_ANY) return;`），
+于是这些在强类型语言里本该编译失败的写法全部绿：
+
+```
+let b = true;
+let i: int    = !b;   // 本该报错
+let f: float  = not b; // 本该报错
+let s: string = !b;   // 本该报错
+```
+
+运行时值是对的（还是 `false`），所以**只有类型信息是坏的**——不报错，
+但这条表达式的类型在后续任何基于类型的判断里都是"未知"，属于静默降级。
+`tests/smoke.c` 里 11 处 `!` 全是 C 测试框架自己的 `if(!...)`，
+一个 lume 一元 not 的正向类型断言都没有，所以 128 个测试全绿也漏掉了。
+
+**修法**：`OP_NOT` 分支补一句 `return type_prim(TY_BOOL);`（注释里也写明白
+为什么必须 return/break 齐全，别再有人给下一个 case 加分支时顺手删掉）。
+
+**通用教训（不只是这一处）**：
+
+1. **`switch` 的每个 case 都要有确定的出口。** 审查这类代码时别只盯"有没有
+   return 语句"，要点名确认"最后一条路径也走得到返回"。漏 `break` 会一路
+   fall-through 到下一个 case 去执行**不该执行**的代码——编译器只在 `-Wall`
+   下给部分情况（隐式 fallthrough 属性）提示，且本文件那些 case 都没触发
+   提示（因为下一条 case 是带花括号的复合语句块）。
+2. **union 布局下的字段别名是双刃剑。** 省了内存，但让"下一个 case 读到脏
+   字段"变成不崩也不报的静默行为——`binary.right` 读到 `NULL` 反而是运气好
+   （`ck_expr(NULL)` 返回了 NULL 而非崩溃）。
+3. **测试要正反各一半。** 只写 `reject()`（该拒的拒掉）挡不住"该过的被误杀"，
+   也挡不住类型退化成 `any` 之后被放行；补一组正向 `check()`（合法 `!b` 能绑
+   到 `bool` 且值正确）才有闭环。
+
+---
+
+## 10. 避坑优先级（新手先看这三条）
 
 1. 变量/函数命名：同名覆盖已编译期拦截，但**保持命名区分**（`crm_lock_path` vs `crm_lock()`）。
 2. 数据统一走 map（id → 记录），列表只做展示层现造。

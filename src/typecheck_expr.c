@@ -191,6 +191,15 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             if (n->as.unary.op == OP_NOT) {
                 Type *ot = ck_expr(c, n->as.unary.operand, NULL);
                 is_bool_ok(c, ot, n->line);
+                /* `!x` is bool. This branch has to leave the switch by a
+                 * return on every path: an unguarded fall-through would
+                 * re-enter N_BINARY, where the shared union slot makes
+                 * binary.op == OP_NOT and binary.left == this operand, while
+                 * binary.right reads an unrelated slot as NULL. Arithmetic
+                 * then calls arith_result(operand, NULL), which short-circuits
+                 * to any_type() — so `!b` stopped being bool and type-loose
+                 * assignments like `let i: int = !b;` checked clean. */
+                return type_prim(TY_BOOL);
             } else { /* OP_NEG */
                 Type *ot = ck_expr(c, n->as.unary.operand, NULL);
                 if (ot && ot->kind != TY_ANY && ot->kind != TY_INT &&

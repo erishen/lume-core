@@ -383,6 +383,13 @@ int main(void) {
           "print(str(not true)); print(str(not false));",
           "false\ntrue\nfalse\ntrue\n");
 
+    /* 正向侧:! 的结果能绑进 bool 且值正确(仅靠 reject 只能证明「不该过的
+     * 过不了」,还得有「该过的照旧过」这一半)。 */
+    check("logical not keeps bool",
+          "let b = true;\nlet x: bool = !b;\nlet y: bool = not b;\n"
+          "print(str(x)); print(str(y));",
+          "false\nfalse\n");
+
     check("let reassignment + if/else",
           "let x = 1;\nif (x == 1) { x = x + 10; } else { x = 0; }\n"
           "if (x > 5) { print(\"big\"); } else { print(\"small\"); }\n"
@@ -818,6 +825,19 @@ int main(void) {
     /* ---- type checker rejects ---- */
 
     reject("let type mismatch", "let x: int = \"hi\";", "assignable");
+    /* 一元 not 的静态类型曾经漏报:`!b` 的 case 只有 is_bool_ok()、既没 return
+     * 也没 break,于是继续落进下一个 case N_BINARY。两个结构体共用 union 布局
+     * (binary.op == unary.op、binary.left == unary.operand),binary.right 则
+     * 读到不相关的槽(实际为 NULL),arith_result(operand, NULL) 直接短路成
+     * any_type()。后果是 `!b` 的静态类型变 any,而赋值检查遇到 any 无条件放行
+     * ——`let i: int = !b;` 编译全绿,只有运行时才暴露。下面三条把「! 的结果是
+     * bool 而不是它操作数的类型」钉死(见 docs/PITFALLS.md 的 switch 漏return 一条)。 */
+    reject("! is bool, not int",
+           "let b = true;\nlet x: int = !b;", "assignable");
+    reject("not is bool, not string",
+           "let b = true;\nlet s: string = not b;", "assignable");
+    reject("! on a non-bool operand",
+           "print(str(!1));", "expected bool");
     reject("strict bool in if",
           "let x = 1;\nif (x) { print(\"y\"); }", "expected bool");
     reject("strict bool in and",
