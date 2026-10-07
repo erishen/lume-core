@@ -21,6 +21,11 @@
 # 免得 `git add -A` 再把它们捞回来。scripts/check-tree-privacy.sh 是第二道闸。
 /backups/
 
+# 本仓根目录下的 agent 项目记忆目录（跨会话 continuity 笔记，非源码）。
+# 当前未跟踪；挡住它以免将来 `git add -A` 把它扫进这个 PUBLIC 仓。
+# 只挡提交、不删目录（符合勿删 .workbuddy 的纪律）。
+/.workbuddy/
+
 # local runtime state (the host tree owns the server; this tree keeps none,
 # but .data/ is the shared convention if a script happens to create it)
 /.data/
