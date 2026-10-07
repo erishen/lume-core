@@ -1398,11 +1398,16 @@ static Val cg_call(CG *g, Node *n)
          * function hands back: `?` moves the failure out, it does not rewrite
          * it. That matches the interpreter, which stores the whole map as
          * vm->call_result and longjmps. */
-        /* cg_string_val() hands back a name in a caller-owned buffer, so it is
-         * borrowed here, not owned: no free, and val_take() just labels it. */
+        /* cg_string_val() returns xstrdup'd memory, so these two are owned and
+         * must be freed once emitted. (name_res, next to them, is a stack
+         * buffer and must NOT be freed -- mixing the two up is what made an
+         * earlier version of this abort with "pointer being freed was not
+         * allocated", and then leak 16 bytes under LSan when the free was
+         * simply dropped instead.) */
         Val k_err = val_take(type_prim(TY_STRING), cg_string_val(g, "err", 3));
         EMIT(g, "  %s = call i64 @lume_map_has(i8* %s, i8* %s)\n",
              has, name_res, k_err.v);
+        free(k_err.v);
         EMIT(g, "  %s = icmp ne i64 %s, 0\n", test, has);
         EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, lerr, lok);
         EMIT(g, "L%d:\n", lerr);
@@ -1420,6 +1425,7 @@ static Val cg_call(CG *g, Node *n)
                                                       : "i64 0";
         EMIT(g, "  %s = call %s @%s(i8* %s, i8* %s, %s)\n",
              pay, pty, get_fn, name_res, k_ok.v, darg);
+        free(k_ok.v);
         return val_make(payload, pay);
     }
 
