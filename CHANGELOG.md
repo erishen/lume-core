@@ -4,7 +4,7 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-07
 
 ### Fixed — `int` is a real 64-bit integer (规范变更)
 
@@ -142,6 +142,14 @@ at the time; both are now fixed in this commit.
   condition, matching the interpreter (which captures `list.count` at loop
   entry). `tests/native-consistency.lume`'s `pt` case now visits only the
   original three elements instead of spinning.
+
+### Fixed — build: guard OpenSSL includes and SSL calls behind HAVE_OPENSSL
+
+`<openssl/err.h>` was included unconditionally, so a machine without
+`libssl-dev` (e.g. a bare Debian) failed to compile. It now lives inside the
+`HAVE_OPENSSL` guard, an opaque `SSL` typedef is provided for the no-OpenSSL
+path so `Conn.ssl` still compiles, and the `SSL_write` / `SSL_read` /
+`SSL_free` calls are wrapped in the same guard.
 
 ### Changed — the tree itself is named lume-core
 
