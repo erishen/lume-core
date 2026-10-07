@@ -34,14 +34,22 @@
 
 #include "builtins_internal.h"
 #include <ctype.h>
-#include <openssl/err.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
 #include <strings.h>
 #include <time.h>
 
 #if defined(HAVE_OPENSSL)
+/* err.h 必须和 ssl.h 一起在守卫内：握手失败要用 ERR_get_error 的码。
+ * 原来它写在守卫之外，于是「探测失败就降级」并不成立，而是编译期直接
+ * 找不到头文件——debian 里不装 libssl-dev/pkg-config 就整个编不过。 */
 #include <openssl/ssl.h>
+#include <openssl/err.h>
+#else
+/* 没装 libssl 时把 SSL 声明成不透明类型，Conn.ssl 那个字段才编译得过。
+ * 这个构建里它恒为 NULL（tls_attach 走 #if 分支直接返回 1），
+ * 下面所有 SSL_* 调用都由 #if defined(HAVE_OPENSSL) 剔除。 */
+typedef struct ssl_st SSL;
 #endif
 
 #include <arpa/inet.h>
@@ -303,6 +311,7 @@ static int wait_readable(int fd, long deadline) {
 static int conn_write(Conn *c, const char *buf, size_t len, long deadline) {
     size_t off = 0;
     while (off < len) {
+#if defined(HAVE_OPENSSL)
         if (c->ssl) {
             int w = SSL_write(c->ssl, buf + off, (int)(len - off));
             if (w < 0) {
@@ -313,7 +322,9 @@ static int conn_write(Conn *c, const char *buf, size_t len, long deadline) {
             }
             if (w == 0) return -1;
             off += (size_t)w;
-        } else {
+        } else
+#endif
+        {
             if (wait_writable(c->fd, deadline) != 0) return -2;
             ssize_t w = send(c->fd, buf + off, len - off, 0);
             if (w < 0) { if (errno == EINTR) continue; return -1; }
@@ -328,6 +339,7 @@ static int conn_write(Conn *c, const char *buf, size_t len, long deadline) {
 static int conn_read_some(Conn *c, char *buf, size_t n, size_t *got, long deadline) {
     *got = 0;
     for (;;) {
+#if defined(HAVE_OPENSSL)
         if (c->ssl) {
             int r = SSL_read(c->ssl, buf, (int)n);
             if (r > 0) { *got = (size_t)r; return 0; }
@@ -336,6 +348,7 @@ static int conn_read_some(Conn *c, char *buf, size_t n, size_t *got, long deadli
             if (e == SSL_ERROR_WANT_WRITE) { if (wait_writable(c->fd, deadline) != 0) return -2; continue; }
             return -1;
         }
+#endif
         if (wait_readable(c->fd, deadline) != 0) return -2;
         ssize_t r = recv(c->fd, buf, n, 0);
         if (r > 0) { *got = (size_t)r; return 0; }
@@ -361,7 +374,9 @@ static int conn_read_exact(Conn *c, char *buf, size_t want, size_t *got, long de
 }
 
 static void conn_close(Conn *c) {
+#if defined(HAVE_OPENSSL)
     if (c->ssl) { SSL_free(c->ssl); c->ssl = NULL; }
+#endif
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
 }
 
