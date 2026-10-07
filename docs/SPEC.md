@@ -670,15 +670,26 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
 ### 8.1 已知缺口
 
 这条不变式目前覆盖**成功的输出与退出码**，对**错误消息**只做到「都拒绝」，未做到逐字节一致。
-已知五处（第 4、5 条已于本提交修复，见各自标注）；其余三条都不是 int 改造引入，且都不产生错误结果（都是拒绝执行形式的诊断差异），但会误导读者：
+已知五处（第 4、5 条已于前次提交修复；第 1、2 条已于本次提交修复，见各自标注）；第 3 条是
+唯一剩余项——它也不是 int 改造引入，不产生错误结果（是拒绝执行形式的诊断质量问题），但会误导读者：
 
-1. **`float %` 的报错位置**（§1.6）：`--compile-text` 与解释器报
-   `'%' does not apply to floats`，`--compile-llvm` 在更早的类型推断处报
-   `print() cannot print this value`。
-2. **`let x = -7`（变量由一元负号初始化）在 libLLVM 下不可打印**：
-   `let neg = -7; print(neg)` 报 `print() cannot print this value`，而
-   `let n = 7; print(n)` 正常。`cg_unary` 本身会给表达式打上int 类型，缺口在
-   `let` 绑定的类型传递。因此本文件 §1.7 的用例放在 smoke 套件而非三后端靶子。
+1. **[已修复] `float %` 的报错位置**（§1.6）：`--compile-text` 与解释器报
+   `'%' does not apply to floats`，`--compile-llvm` 原在更早的类型推断处报
+   `print() cannot print this value`（下游 `cg_print` 把 `cg_binary` 先发出的正确错误覆盖了）。
+
+   **本提交已修复**：`llvm_codegen.c` 的错误宏改为「首错优先」（`g->err` 已有内容时不覆盖），
+   根因错误不再被 `cg_print` 的通用消息吞掉；同时 `infer_node_type` 新增 `N_BINARY` 分支，
+   在类型推断阶段就把 `float %` 直接判为非法，与 text/解释器一致。
+2. **[已修复] `let x = -7`（变量由一元负号初始化）在 libLLVM 下不可打印**：
+   `let neg = -7; print(neg)` 原报 `print() cannot print this value`，而
+   `let n = 7; print(n)` 正常。`cg_unary` 本身会给表达式打上 int 类型，缺口在
+   `let` 绑定的类型传递——预扫描 `infer_node_type` 当时没有 `N_UNARY` / `N_BINARY` 分支，
+   导致 `let neg = -7` / `let d = 0 - 7` 推不出类型。
+
+   **本提交已修复**：`infer_node_type` 新增 `N_UNARY`（`not`→bool，负号→操作数类型）与
+   `N_BINARY`（逻辑/比较→bool，算术按浮点/整型推算，`string+string`→string）分支，`let`
+   绑定在 libLLVM 下也能正确携带类型，三后端一致。回归用例见 `tests/native-consistency.lume`
+   的 `neg` / `diff`（`-7` / `-7`）。
 3. **`?` 的诊断落在 parser 层**（§5），报 `expected ;, got ?`，而不是讲清「`?` 需要
    Result」的消息，且位置跳到下一行分号。
 4. **[已修复] 同一函数里出现两个同名绑定时，IR 文本后端编不出来**：局部变量的 IR 名是按
@@ -713,9 +724,10 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    （与列表变量分开），循环条件 load 该快照，而不是每轮重读 `len(list)`。现在 `for` 遍历
    绑定时的长度快照，与解释器一致（见 §4.4 与 `tests/native-consistency.lume` 的 `pt`）。
 
-修法分别是：让 libLLVM 在类型推断里把 `float %` 与「负号初始化的 let」直接判为非法，
-把 `?` 的合法性检查从 parser 移到类型检查器；第 4、5 条的修法已在本提交落地（IR 局部名
-按绑定唯一化、for-in 长度在循环入口快照）。
+修法分别是：让 libLLVM 在类型推断里把 `float %` 与「负号初始化的 let」直接判为非法
+（第 1、2 条已在本提交落地，见各自标注），把 `?` 的合法性检查从 parser 移到类型检查器
+（第 3 条，待修）；第 4、5 条的修法已在前次提交落地（IR 局部名按绑定唯一化、for-in 长度
+在循环入口快照）。
 
 ---
 

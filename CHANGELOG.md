@@ -4,6 +4,23 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — two §8.1 native-backend consistency gaps (#1 / #2)
+
+- **#1 `float %` 的报错位置**：`--compile-llvm` 原在下游 `cg_print` 处把
+  `cg_binary` 先发出的 `'%' does not apply to floats` 覆盖成
+  `print() cannot print this value`。`llvm_codegen.c` 的错误宏改为「首错优先」
+  （`g->err` 已有内容时不覆盖），根因错误不再被吞；同时 `infer_node_type`
+  新增 `N_BINARY` 分支，在类型推断阶段就把 `float %` 直接判为非法，与
+  `--compile-text` 及解释器一致。
+- **#2 `let x = -7` 在 libLLVM 下不可打印**：预扫描 `infer_node_type` 当时没有
+  `N_UNARY` / `N_BINARY` 分支，导致 `let neg = -7` / `let d = 0 - 7` 推不出类型
+  （`print() cannot print this value`）。现新增这两类分支（`not`→bool，负号→操作数
+  类型；逻辑/比较→bool，算术按浮点/整型推算，`string+string`→string），三后端一致。
+  回归用例见 `tests/native-consistency.lume` 的 `neg` / `diff`。
+- `tests/native-consistency.expected` 刷新（新增 `-7` / `-7` 两行）。
+
 ## [0.3.0] - 2026-10-07
 
 ### Fixed — `int` is a real 64-bit integer (规范变更)

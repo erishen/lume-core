@@ -119,21 +119,30 @@ static Type *infer_node_type(CG *g, Node *n);
  * so a `br` out of a block that already returned has to be skipped. */
 #define DONE(bb) (LLVMGetBasicBlockTerminator(bb) != NULL)
 
+/* First error wins: the root-cause message must not be overwritten by a
+ * downstream one. `cg_print` walks the same `g->err` buffer, so without this
+ * guard a genuine "X does not apply to floats" raised in `cg_binary` got
+ * clobbered by a generic "print() cannot print this value" once codegen
+ * returned a typeless value to it — see §8.1 #1. `g->err` is zeroed by the
+ * memset in llvm_codegen_module, so the guard reads cleanly on a fresh pass. */
 #define ERR(g, fmt, ...)                                                       \
     do {                                                                       \
-        snprintf((g)->err, sizeof (g)->err, fmt, ##__VA_ARGS__);               \
+        if ((g)->err[0] == '\0')                                               \
+            snprintf((g)->err, sizeof (g)->err, fmt, ##__VA_ARGS__);           \
         return NULL;                                                           \
     } while (0)
 
 #define ERRV(g, fmt, ...)                                                      \
     do {                                                                       \
-        snprintf((g)->err, sizeof (g)->err, fmt, ##__VA_ARGS__);               \
+        if ((g)->err[0] == '\0')                                               \
+            snprintf((g)->err, sizeof (g)->err, fmt, ##__VA_ARGS__);           \
         return (Val){ NULL, NULL };                                            \
     } while (0)
 
 #define ERRX(g, fmt, ...)                                                      \
     do {                                                                       \
-        snprintf((g)->err, sizeof (g)->err, fmt, ##__VA_ARGS__);               \
+        if ((g)->err[0] == '\0')                                               \
+            snprintf((g)->err, sizeof (g)->err, fmt, ##__VA_ARGS__);           \
         return;                                                                \
     } while (0)
 
@@ -1395,6 +1404,36 @@ static Type *infer_node_type(CG *g, Node *n)
     case N_LIST_LIT: { Type *et = infer_list_elem(n); return type_list(et ? et : any_type()); }
     case N_MAP_LIT:  return type_anon_struct();
     case N_MEMBER:   return member_field_type(g, n);
+    case N_UNARY: {
+        /* `let neg = -7` / `let b = not flag` must infer a type so the
+         * binding's alloca gets an IR type; otherwise the native backend
+         * falls back to "cannot infer a type for 'neg'" while the
+         * interpreter accepts it (§8.1 #2). */
+        Type *ot = infer_node_type(g, n->as.unary.operand);
+        if (n->as.unary.op == OP_NOT) return type_prim(TY_BOOL);
+        if (!ot) return NULL;
+        return type_prim(ot->kind == TY_FLOAT ? TY_FLOAT : TY_INT);
+    }
+    case N_BINARY: {
+        int op = (int)n->as.binary.op;
+        if (op == OP_AND || op == OP_OR) return type_prim(TY_BOOL);
+        if (op >= OP_EQ && op <= OP_GE)  return type_prim(TY_BOOL);
+        Type *lt = infer_node_type(g, n->as.binary.left);
+        Type *rt = infer_node_type(g, n->as.binary.right);
+        bool lf = lt && lt->kind == TY_FLOAT;
+        bool rf = rt && rt->kind == TY_FLOAT;
+        /* Catch float % at inference so the libLLVM backend rejects it with
+         * the same "'%' does not apply to floats" the text backend and the
+         * interpreter use, instead of a downstream "print() cannot print
+         * this value" (§8.1 #1). */
+        if (op == OP_MOD && (lf || rf))
+            ERR(g, "line %zu: '%%' does not apply to floats", n->line);
+        if (op == OP_ADD && lt && rt &&
+            lt->kind == TY_STRING && rt->kind == TY_STRING)
+            return type_prim(TY_STRING);
+        if (lf || rf) return type_prim(TY_FLOAT);
+        return type_prim(TY_INT);
+    }
     default:
         return NULL;
     }

@@ -325,5 +325,14 @@ let sized: Sized = { len: 7, w: 2 };
 print(sized.len);
 print(sized.w);
 
+// §8.1 #2: a `let` bound to a unary or binary expression must infer a type in
+// the native backends too. Before the fix the libLLVM backend reported
+// "cannot infer a type for 'neg'" / "print() cannot print this value" while
+// the interpreter accepted it; all three now agree.
+let neg = -7;
+print(neg);            // -7
+let diff = 0 - 7;
+print(diff);           // -7
+
 warmup();
 main();
