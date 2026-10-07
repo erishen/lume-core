@@ -1270,6 +1270,22 @@ static int struct_is_addr(LLVMValueRef v)
 static Val cg_call(CG *g, Node *n)
 {
     AT(g);
+    /* `f()?` — error propagation. Checked first, before any of the dispatch
+     * below, because it would otherwise be lowered as a plain call and then
+     * silently compute the wrong thing: the interpreter unwraps `ok` and
+     * returns the enclosing function early on `err`, so a compiled `?` would
+     * print the whole Result and keep running the code that the error was
+     * supposed to skip. Refusing to compile is the only honest answer until
+     * the emitters can type the unwrapped payload (SPEC 8.1 #6).
+     *
+     * Before Result had a codegen type this was caught further down as
+     * "variable has no codegen type"; now that Result travels as an opaque
+     * pointer it compiles, so this guard is what keeps the case honest.
+     * Kept word-for-word in step with cg_call() in codegen_expr.c. */
+    if (n->as.call.propagate)
+        ERRV(g, "line %zu: '?' error propagation is not supported by the native "
+                "backend yet", n->line);
+
     if (n->as.call.callee && n->as.call.callee->type == N_VAR &&
         strcmp(n->as.call.callee->as.var.name, "print") == 0) {
         if (n->as.call.argc != 1)

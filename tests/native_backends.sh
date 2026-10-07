@@ -273,3 +273,65 @@ for leg in "${RAN[@]}"; do
         fail "null-as-string: $leg printed '$got', expected 'null'"
 done
 pass "null-as-string: every leg prints the bare word null"
+
+# ---- `?` must never compile silently ---------------------------------
+# The most dangerous shape this suite guards against: a feature the emitters
+# do not implement, which they nonetheless *accept* and compute the wrong
+# answer for. `f()?` is exactly that. The interpreter unwraps `ok` and returns
+# the enclosing function early on `err`; an emitter that lowered `?` as a plain
+# call would print the whole Result instead of the payload, and on the error
+# path it would run the very statements the error was meant to skip.
+#
+# This became reachable when Result gained a codegen type (SPEC 8.1 #6): before
+# that, `?` failed with "variable has no codegen type" and the question never
+# arose. Verified against v0.3.0 in a scratch worktree -- both emitters refused
+# there too, so this is not a regression, but the refusal is now the only thing
+# keeping the case honest and it needs to stay that way.
+#
+# Asserted on the error path specifically, since that is where silently
+# accepting `?` does real damage.
+PROPAGATE="$WORK/propagate.lume"
+cat > "$PROPAGATE" <<'LUME'
+func divide(a: int, b: int): Result {
+  if (b == 0) { return { err: "division by zero" }; }
+  return { ok: a / b };
+}
+func report(): Result {
+  let v = divide(21, 0)?;
+  print("must not be reached");
+  return { ok: 0 };
+}
+print(report());
+LUME
+# Sanity: the interpreter really does propagate, so the script above is a
+# legal program rather than one that only looks like one. If this ever stops
+# holding, the assertions below would be guarding the wrong thing.
+prop_out=$("$TARGET" "$PROPAGATE" 2>/dev/null | head -1)
+[ "$prop_out" = '{"err":"division by zero"}' ] ||
+    fail "propagate: the interpreter printed '$prop_out', expected the propagated err"
+prop_msg=""
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+        *)    continue ;;
+    esac
+    msg=$("$TARGET" "$flag" "$PROPAGATE" -o "$WORK/prop-$leg" 2>&1 >/dev/null)
+    if [ $? -eq 0 ] || [ -x "$WORK/prop-$leg" ]; then
+        fail "propagate: $leg compiled \`f()?\` -- it silently computes the wrong answer"
+    fi
+    case "$msg" in
+        *"'?' error propagation is not supported"*) ;;
+        *) echo "$msg" | head -3
+           fail "propagate: $leg refused with an unexpected message" ;;
+    esac
+    if [ -z "$prop_msg" ]; then
+        prop_msg=$msg
+    elif [ "$msg" != "$prop_msg" ]; then
+        fail "propagate: text and llvm word the refusal differently"
+    fi
+done
+[ -n "$prop_msg" ] ||
+    echo "ok   propagate: no emitter leg ran, nothing to assert"
+[ -z "$prop_msg" ] ||
+    pass "propagate: every emitter refuses \`f()?\`, with the same message"
