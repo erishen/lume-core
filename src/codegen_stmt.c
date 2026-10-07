@@ -18,6 +18,8 @@
 
 /* forward: same tu, defined below this point. */
 static void cg_block(CG *g, Node *blk);
+static void cg_handler_ret(CG *g, Node *n);
+static void cg_route_handler(CG *g, Node *fn, int rid);
 
 /* forward: same tu, defined below this point. */
 static void cg_for(CG *g, Node *n);
@@ -352,7 +354,9 @@ static void cg_stmt(CG *g, Node *n)
         (void)cg_assign_mem(g, n);
         break;
 
-    case N_RETURN: {
+    case N_RETURN:
+        if (g->in_handler) { cg_handler_ret(g, n); break; }
+        {
         if (!n->as.ret.expr) { EMIT(g, "  ret void\n"); break; }
         /* `return { .. }` needs the function's declared return type. */
         Type *prev = g->expect;
@@ -402,6 +406,57 @@ static void cg_stmt(CG *g, Node *n)
         cg_block(g, n);
         break;
 
+    case N_SERVER: {
+        /* server { host = ".."; port = N; } -> lume_srv_init */
+        const char *host = "127.0.0.1";
+        long long port = 8082;
+        char hostbuf[256];
+        for (int i = 0; i < n->as.server.count; i++) {
+            Node *a = n->as.server.assigns[i];
+            if (!a || a->type != N_ASSIGN) continue;
+            Node *v = a->as.assign.value;
+            if (strcmp(a->as.assign.name, "host") == 0 && v &&
+                v->type == N_LITERAL && v->as.lit.kind == LIT_STR) {
+                const char *t = v->as.lit.text;
+                size_t l = (size_t)v->as.lit.len;
+                if (l >= 2 && t[0] == '"' && t[l - 1] == '"') { t++; l -= 2; }
+                if (l >= sizeof hostbuf) l = sizeof hostbuf - 1;
+                memcpy(hostbuf, t, l);
+                hostbuf[l] = '\0';
+                host = hostbuf;
+            } else if (strcmp(a->as.assign.name, "port") == 0 && v &&
+                       v->type == N_LITERAL && v->as.lit.kind == LIT_NUM &&
+                       !v->as.lit.is_float) {
+                port = v->as.lit.inum;
+            }
+        }
+        char *hc = cg_string_val(g, host, strlen(host));
+        EMIT(g, "  call void @lume_srv_init(i8* %s, i64 %lld)\n", hc, port);
+        free(hc);
+        break;
+    }
+
+    case N_ROUTE: {
+        if (n->as.route.alias)
+            ERRX(g, "line %zu: verbs alias routes are not supported by the "
+                    "native backend yet", n->line);
+        Node *h = n->as.route.handler;
+        if (!h || h->type != N_FUNC_LIT)
+            ERRX(g, "line %zu: native server: route handler must be a "
+                    "function literal", n->line);
+        int rid = g->hrid++;
+        cg_route_handler(g, h, rid);
+        char *mc = cg_string_val(g, n->as.route.method,
+                                 strlen(n->as.route.method));
+        char *pc = cg_string_val(g, n->as.route.path,
+                                 strlen(n->as.route.path));
+        EMIT(g, "  call void @lume_srv_route(i8* %s, i8* %s, void "
+                "(%%struct.SrvReq*, i8**, i64*, i32*)* @L_route_%d)\n",
+             mc, pc, rid);
+        free(mc); free(pc);
+        break;
+    }
+
     default:
         ERRX(g, "%s", bad(g, n, "this construct"));
     }
@@ -411,6 +466,159 @@ static void cg_block(CG *g, Node *blk)
 {
     if (!blk) return;
     for (int i = 0; i < blk->as.block.count; i++) cg_stmt(g, blk->as.block.stmts[i]);
+}
+
+/* --- native server: route handler FFI compilation --------------------------
+ *
+ * A handler `(req) => { ... }` compiles to
+ *
+ *   define void @L_route_N(%%struct.SrvReq* %p0, i8** %p1, i64* %p2, i32* %p3)
+ *
+ * %p0 is the request: req.* member access lowers onto it in codegen_expr.c.
+ * %p1/%p2 receive the response buffer and its length; %p3 receives the
+ * content-type flag (0 = text/html, 1 = application/json). The handler body
+ * runs with g->in_handler set, so N_RETURN serialises instead of returning a
+ * value. */
+
+static void cg_route_handler(CG *g, Node *fn, int rid)
+{
+    if (fn->as.funclit.arity != 1)
+        ERRX(g, "line %zu: native server: a route handler must take exactly "
+                "one (req) argument", fn->line);
+
+    Sig sig;
+    memset(&sig, 0, sizeof sig);
+    char fname[48];
+    snprintf(fname, sizeof fname, "route_%d", rid);
+    sig.name = xstrdup(fname);
+    sig.ret = NULL;
+    g->cur = &sig;
+
+    Asgs saved = g->locals;
+    memset(&g->locals, 0, sizeof g->locals);
+
+    g->in_handler = 1;
+    g->hreq = fn->as.funclit.names ? fn->as.funclit.names[0] : "req";
+    scan_block(g, fn->as.funclit.body);
+
+    /* Emit into the handlers buffer: a `define` is only legal at module
+     * top level, so handler bodies wait until L_top has closed. */
+    IrBuf *saved_ir = g->ir;
+    g->ir = &g->handlers;
+
+    EMIT(g, "\n; --- route handler %s ---\n", fname);
+    EMIT(g, "define void @L_%s(%%struct.SrvReq* %%p0, i8** %%p1, i64* %%p2, "
+            "i32* %%p3) {\n", fname);
+    EMIT(g, "entry:\n");
+    for (int i = 0; i < g->locals.n; i++) {
+        Asg *a = &g->locals.v[i];
+        if (strncmp(a->slot, "%lv_", 4) != 0) continue;
+        const char *lt = llvm_type_of(a->ty);
+        if (!lt)
+            ERRX(g, "line %zu: variable '%s' has no codegen type",
+                 fn->line, a->name);
+        EMIT(g, "  %s = alloca %s\n", a->slot, lt);
+    }
+
+    if (fn->as.funclit.body) cg_block(g, fn->as.funclit.body);
+    g->in_handler = 0;
+    g->hreq = NULL;
+
+    EMIT(g, "  ret void\n}\n");
+
+    g->ir = saved_ir;
+    asgs_free(&g->locals);
+    g->locals = saved;
+    free(sig.name);
+    g->cur = NULL;
+}
+
+/* return in a native handler: string -> plain text, map literal -> JSON. */
+static void cg_handler_ret(CG *g, Node *n)
+{
+    Node *e = n->as.ret.expr;
+    if (!e) { EMIT(g, "  ret void\n"); return; }
+
+    if (e->type == N_MAP_LIT) {
+        EMIT(g, "  call void @lume_srv_json_begin(i8** %%p1, i64* %%p2)\n");
+        for (int i = 0; i < e->as.map.count; i++) {
+            char *kc = cg_string_val(g, e->as.map.keys[i],
+                                     strlen(e->as.map.keys[i]));
+            EMIT(g, "  call void @lume_srv_json_key(i8** %%p1, i64* %%p2, "
+                    "i8* %s)\n", kc);
+            free(kc);
+
+            Node *v = e->as.map.vals[i];
+            if (v->type == N_LITERAL && v->as.lit.kind == LIT_STR) {
+                const char *vt = v->as.lit.text;
+                size_t vl = (size_t)v->as.lit.len;
+                if (vl >= 2 && vt[0] == '"' && vt[vl - 1] == '"') { vt++; vl -= 2; }
+                char *vc = cg_string_val(g, vt, vl);
+                EMIT(g, "  call void @lume_srv_json_str(i8** %%p1, i64* "
+                        "%%p2, i8* %s)\n", vc);
+                free(vc);
+            } else if (v->type == N_LITERAL &&
+                       (v->as.lit.kind == LIT_TRUE ||
+                        v->as.lit.kind == LIT_FALSE)) {
+                EMIT(g, "  call void @lume_srv_json_bool(i8** %%p1, i64* "
+                        "%%p2, %s)\n",
+                     v->as.lit.kind == LIT_TRUE ? "1" : "0");
+            } else if (v->type == N_LITERAL && v->as.lit.kind == LIT_NUM &&
+                       !v->as.lit.is_float) {
+                EMIT(g, "  call void @lume_srv_json_int(i8** %%p1, i64* "
+                        "%%p2, i64 %lld)\n", v->as.lit.inum);
+            } else {
+                /* generic value: evaluate, then dispatch on its type */
+                Val vv = cg_expr(g, v);
+                if (!vv.v) { free(vv.v);
+                    ERRX(g, "line %zu: cannot serialise map value", v->line); }
+                if (vv.ty && vv.ty->kind == TY_INT) {
+                    EMIT(g, "  call void @lume_srv_json_int(i8** %%p1, i64* "
+                            "%%p2, i64 %s)\n", vv.v);
+                } else if (vv.ty && vv.ty->kind == TY_STRING) {
+                    EMIT(g, "  call void @lume_srv_json_str(i8** %%p1, i64* "
+                            "%%p2, i8* %s)\n", vv.v);
+                } else if (vv.ty && vv.ty->kind == TY_BOOL) {
+                    char *b = emit_instrf(g, type_prim(TY_INT),
+                                          "zext i1 %s to i32", vv.v);
+                    EMIT(g, "  call void @lume_srv_json_bool(i8** %%p1, i64* "
+                            "%%p2, i32 %s)\n", b);
+                    free(b);
+                } else {
+                    free(vv.v);
+                    ERRX(g, "line %zu: native server: map value must be int, "
+                            "string or bool", v->line);
+                }
+                free(vv.v);
+            }
+        }
+        EMIT(g, "  call void @lume_srv_json_end(i8** %%p1, i64* %%p2)\n");
+        EMIT(g, "  store i32 1, i32* %%p3\n");
+        EMIT(g, "  ret void\n");
+        return;
+    }
+
+    /* String-valued expression -> plain text. The length is unknown at
+     * compile time (concatenations, str(), ...), so out_len = -1 asks the
+     * runtime to strlen the buffer. */
+    {
+        Val sv = cg_expr(g, e);
+        if (!sv.v) { free(sv.v);
+            ERRX(g, "line %zu: native server: cannot evaluate handler return",
+                 n->line); }
+        if (sv.ty && sv.ty->kind == TY_STRING) {
+            EMIT(g, "  store i8* %s, i8** %%p1\n", sv.v);
+            EMIT(g, "  store i64 -1, i64* %%p2\n");
+            EMIT(g, "  store i32 0, i32* %%p3\n");
+            free(sv.v);
+            EMIT(g, "  ret void\n");
+            return;
+        }
+        free(sv.v);
+    }
+
+    ERRX(g, "line %zu: native server: handler must return a string or a map "
+            "literal", n->line);
 }
 
 void cg_function(CG *g, Node *fn)

@@ -57,6 +57,10 @@ Type *infer_node_type(CG *g, Node *n)
         /* `let b = f(...)` takes the return type of f — struct returns included,
          * which is how `let b = scale(a, 5)` gets its %Rect slot. */
         if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
+        /* Native server handler: int() lowers to atoi -> int. */
+        if (g->in_handler &&
+            strcmp(n->as.call.callee->as.var.name, "int") == 0)
+            return type_prim(TY_INT);
         Sig *s = sig_find(&g->sigs, n->as.call.callee->as.var.name);
         if (!s) return NULL;
         /* `f()?` is not a Result -- it is the `ok` payload, so the slot has to

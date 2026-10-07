@@ -190,6 +190,7 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
     irbuf_init(&ir);
     cg.ir = &ir;
     irbuf_init(&cg.gs);
+    irbuf_init(&cg.handlers);
 
     Node **top  = prog->as.program.stmts;
     int    ntop = prog->as.program.count;
@@ -326,6 +327,12 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
         cg_function(&cg, top_fn);
         cg.capture_main = 0;
         cg.exit_tmp[0] = '\0';
+    }
+    /* Route handlers were buffered (they cannot be defined inside L_top);
+     * now that every function has closed, append them to the module. */
+    if (cg.handlers.len) {
+        irbuf_puts(&ir, cg.handlers.data);
+        irbuf_free(&cg.handlers);
     }
     /* top_fn borrows `tops` as its body, so it goes out with the array; its
      * name is the literal "top" rather than a copy, and `body` is a stack

@@ -49,6 +49,7 @@ static const Bi BUILTINS[] = {
     { "floor", NULL,           NULL,     NULL,     0,  "lume_bi_floor","double",     "double", 1 },
     { "ceil",  NULL,           NULL,     NULL,     0,  "lume_bi_ceil", "double",     "double", 1 },
     { "round", NULL,           NULL,     NULL,     0,  "lume_bi_round","double",     "double", 1 },
+    { "now",   "lume_bi_now",  NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
 };
 /* forward: same tu, defined below this point. */
 static const Bi *builtin_find(const char *name);
@@ -81,7 +82,7 @@ static Val cg_member(CG *g, Node *n);
 static Val cg_print(CG *g, Node *n, Val a);
 
 /* forward: same tu, defined below this point. */
-static char *cg_string_val(CG *g, const char *text, size_t len);
+char *cg_string_val(CG *g, const char *text, size_t len);
 
 /* forward: same tu, defined below this point. */
 static Val cg_struct_lit(CG *g, Node *n);
@@ -114,19 +115,19 @@ static Type *resolve_struct_lit(CG *g, Node *n, int fatal);
 static const char *rt_arg_type(Type *ty);
 
 /* forward: same tu, defined below this point. */
-static Val val_make(Type *ty, const char *v);
+Val val_make(Type *ty, const char *v);
 
 /* forward: same tu, defined below this point. */
 static Val val_make_agg(Type *ty, const char *v);
 
 /* forward: same tu, defined below this point. */
-static Val val_take(Type *ty, char *owned);
+Val val_take(Type *ty, char *owned);
 
 /* Emit `@.strN` holding text (plus a trailing NUL) and return an i8* value
  * that points at it, via getelementptr — no bitcast needed, and the GEP is
  * folded away by the optimizer. */
 
-static char *cg_string_val(CG *g, const char *text, size_t len)
+char *cg_string_val(CG *g, const char *text, size_t len)
 {
     int id = g->sid++;
 
@@ -157,7 +158,7 @@ static char *cg_string_val(CG *g, const char *text, size_t len)
     return xstrdup(name);
 }
 
-static Val val_make(Type *ty, const char *v)
+Val val_make(Type *ty, const char *v)
 {
     Val r;
     r.ty  = ty;
@@ -171,7 +172,7 @@ static Val val_make(Type *ty, const char *v)
  * so "copy it again" meant an extra allocation nothing ever freed — the copy
  * reached the instruction stream and the original was dropped on the floor. */
 
-static Val val_take(Type *ty, char *owned)
+Val val_take(Type *ty, char *owned)
 {
     Val r;
     r.ty  = ty;
@@ -573,8 +574,50 @@ Type *member_field_type(CG *g, Node *n)
     return NULL;
 }
 
+/* Lower `req.field` inside a native server handler onto the SrvReq FFI
+ * struct (%p0 of the handler's fixed signature). query_params is special:
+ * it is not a SrvReq field — cg_call's get() lowering consumes the sentinel
+ * Val below. */
+static Val cg_handler_req_field(CG *g, Node *n)
+{
+    const char *f = n->as.member.name;
+    if (strcmp(f, "query_params") == 0)
+        return val_make(type_prim(TY_STRING), "@__qp__");
+
+    int idx;
+    if (strcmp(f, "method") == 0)      idx = 0;
+    else if (strcmp(f, "path") == 0)   idx = 1;
+    else if (strcmp(f, "query") == 0)  idx = 2;
+    else if (strcmp(f, "body") == 0)   idx = 3;
+    else if (strcmp(f, "body_len") == 0) idx = 4;
+    else ERRV(g, "line %zu: unknown req field '%s' in a native server handler",
+              n->line, f);
+
+    Type *st = type_prim(TY_STRING);
+    if (idx == 4) {
+        char *gt = emit_instrf(g, st,
+            "getelementptr %%struct.SrvReq, %%struct.SrvReq* %%p0, i32 0, i32 4");
+        char *ld = emit_instrf(g, type_prim(TY_INT),
+            "load i64, i64* %s", gt);
+        free(gt);
+        return val_take(type_prim(TY_INT), ld);
+    }
+    char *gt = emit_instrf(g, st,
+        "getelementptr %%struct.SrvReq, %%struct.SrvReq* %%p0, i32 0, i32 %d", idx);
+    char *ld = emit_instrf(g, st, "load i8*, i8** %s", gt);
+    free(gt);
+    return val_take(st, ld);
+}
+
 static Val cg_member(CG *g, Node *n)
 {
+    /* Native server handler: `req.*` lowers onto the FFI arguments instead
+     * of the type system (req never enters g->locals). */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.var.name, g->hreq) == 0)
+        return cg_handler_req_field(g, n);
+
     Val obj = cg_expr(g, n->as.member.obj);
     if (!obj.v) ERRV(g, "line %zu: bad struct operand", n->line);
 
@@ -1078,6 +1121,23 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_key_at(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
+
+    /* Native server runtime (src/bridge_native.c): the FFI surface that
+     * server{}/route handlers/run() lower onto. SrvReq's layout is a
+     * contract with bridge_native.c (four pointers then one i64). */
+    EMIT(g, "; native server runtime (src/bridge_native.c)\n");
+    EMIT(g, "%%struct.SrvReq = type { i8*, i8*, i8*, i8*, i64 }\n");
+    EMIT(g, "declare void @lume_srv_init(i8*, i64)\n");
+    EMIT(g, "declare void @lume_srv_route(i8*, i8*, void (%%struct.SrvReq*, i8**, i64*, i32*)*)\n");
+    EMIT(g, "declare void @lume_srv_run()\n");
+    EMIT(g, "declare i8* @lume_srv_qp(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_srv_atoi(i8*)\n");
+    EMIT(g, "declare void @lume_srv_json_begin(i8**, i64*)\n");
+    EMIT(g, "declare void @lume_srv_json_key(i8**, i64*, i8*)\n");
+    EMIT(g, "declare void @lume_srv_json_str(i8**, i64*, i8*)\n");
+    EMIT(g, "declare void @lume_srv_json_int(i8**, i64*, i64)\n");
+    EMIT(g, "declare void @lume_srv_json_bool(i8**, i64*, i32)\n");
+    EMIT(g, "declare void @lume_srv_json_end(i8**, i64*)\n");
 }
 
 /* Lower a builtin call onto a runtime helper. Returns a value with .v set when
@@ -1091,6 +1151,16 @@ static Val cg_builtin(CG *g, Node *n)
     const char *bname = n->as.call.callee->as.var.name;
     int argc = n->as.call.argc;
     const Bi *b = builtin_find(bname);
+
+    /* now(): current local time as a string (no arguments, so the table
+     * path below — which requires argc >= 1 — cannot serve it). */
+    if (strcmp(bname, "now") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: now() takes no arguments", n->line);
+        return val_take(type_prim(TY_STRING),
+                        emit_instrf(g, type_prim(TY_STRING),
+                                    "call i8* @lume_bi_now()"));
+    }
 
     if (b) {
         if (argc < 1)
@@ -1252,6 +1322,7 @@ static Val cg_builtin(CG *g, Node *n)
             case TY_INT:    fn = "@lume_bi_str_i64";    pty = "i64";    break;
             case TY_FLOAT:  fn = "@lume_bi_str_double"; pty = "double"; break;
             case TY_BOOL:   fn = "@lume_bi_str_bool";   pty = "i64";    break;
+            case TY_STRING: return a;   /* str of a string is itself */
             default:
                 ERRV(g, "line %zu: str() cannot convert this value", n->line);
             }
@@ -1297,6 +1368,77 @@ static Val cg_call(CG *g, Node *n)
             ERRV(g, "line %zu: print() takes exactly one argument", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
         return cg_print(g, n, a);
+    }
+
+    /* run(): hand control to the native server loop (blocking). */
+    if (n->as.call.callee && n->as.call.callee->type == N_VAR &&
+        strcmp(n->as.call.callee->as.var.name, "run") == 0) {
+        if (n->as.call.argc != 0)
+            ERRV(g, "line %zu: run() takes no arguments", n->line);
+        EMIT(g, "  call void @lume_srv_run()\n");
+        return val_make(type_prim(TY_NULL), "void");
+    }
+
+    /* Native server handler: get(req.query_params, key, default?) lowers to
+     * lume_srv_qp with the handler's query FFI argument. */
+    if (g->in_handler && n->as.call.callee &&
+        n->as.call.callee->type == N_VAR &&
+        strcmp(n->as.call.callee->as.var.name, "get") == 0) {
+        Node *a0 = n->as.call.argc >= 1 ? n->as.call.args[0] : NULL;
+        int qp = a0 && a0->type == N_MEMBER && a0->as.member.obj &&
+                 a0->as.member.obj->type == N_VAR &&
+                 strcmp(a0->as.member.obj->as.var.name, g->hreq) == 0 &&
+                 strcmp(a0->as.member.name, "query_params") == 0;
+        if (!qp)
+            ERRV(g, "line %zu: native server: get() must be called on req.query_params",
+                 n->line);
+        if (n->as.call.argc < 2 || n->as.call.argc > 3)
+            ERRV(g, "line %zu: get() takes (query_params, key, default?)", n->line);
+        Node *a1 = n->as.call.args[1];
+        if (!(a1->type == N_LITERAL && a1->as.lit.kind == LIT_STR))
+            ERRV(g, "line %zu: native server: get() key must be a string literal",
+                 n->line);
+        const char *kt = a1->as.lit.text;
+        size_t kl = (size_t)a1->as.lit.len;
+        if (kl >= 2 && kt[0] == '"' && kt[kl - 1] == '"') { kt++; kl -= 2; }
+        char *kc = cg_string_val(g, kt, kl);
+        char *dc;
+        if (n->as.call.argc == 3) {
+            Node *a2 = n->as.call.args[2];
+            if (!(a2->type == N_LITERAL && a2->as.lit.kind == LIT_STR))
+                ERRV(g, "line %zu: native server: get() default must be a string literal",
+                     n->line);
+            const char *dt = a2->as.lit.text;
+            size_t dl = (size_t)a2->as.lit.len;
+            if (dl >= 2 && dt[0] == '"' && dt[dl - 1] == '"') { dt++; dl -= 2; }
+            dc = cg_string_val(g, dt, dl);
+        } else {
+            dc = xstrdup("null");      /* i8* null */
+        }
+        Type *st = type_prim(TY_STRING);
+        char *gt = emit_instrf(g, st,
+            "getelementptr %%struct.SrvReq, %%struct.SrvReq* %%p0, i32 0, i32 2");
+        char *q  = emit_instrf(g, st, "load i8*, i8** %s", gt);
+        free(gt);
+        char *r = emit_instrf(g, st,
+            "call i8* @lume_srv_qp(i8* %s, i8* %s, i8* %s)", q, kc, dc);
+        free(q); free(kc); free(dc);
+        return val_take(st, r);
+    }
+
+    /* Native server handler: int(...) — string/number to i64 via atoi. */
+    if (g->in_handler && n->as.call.callee &&
+        n->as.call.callee->type == N_VAR &&
+        strcmp(n->as.call.callee->as.var.name, "int") == 0) {
+        if (n->as.call.argc != 1)
+            ERRV(g, "line %zu: int() takes one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) { free(a.v); ERRV(g, "line %zu: bad int() operand", n->line); }
+        if (a.ty && a.ty->kind == TY_INT) return a;
+        char *r = emit_instrf(g, type_prim(TY_INT),
+            "call i64 @lume_srv_atoi(i8* %s)", a.v);
+        free(a.v);
+        return val_take(type_prim(TY_INT), r);
     }
 
     if (!n->as.call.callee || n->as.call.callee->type != N_VAR)

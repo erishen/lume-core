@@ -34,6 +34,11 @@
 #endif
 #define RT_OBJ "build/rt.o"
 
+#ifndef LUME_NATIVE_SRC
+#define LUME_NATIVE_SRC "src/bridge_native.c"
+#endif
+#define NATIVE_OBJ "build/bridge_native.o"
+
 static struct { char path[PATH_MAX]; struct stat st; } rt_last;
 
 static const char *pick_cc(void)
@@ -50,6 +55,18 @@ static const char *pick_cc(void)
 #else
     if (system("command -v clang >/dev/null 2>&1") == 0) return "clang";
 #endif
+    return "cc";
+}
+
+/* The compiler for the IR-text steps. CC may legitimately point at gcc (the
+ * C build's compiler), which cannot parse .ll — so this probes clang (or a
+ * clang-compatible driver such as `zig cc`) first and only then falls back
+ * to CC. The rt.o / bridge_native.o steps are plain C and keep pick_cc(). */
+static const char *pick_ir_cc(void)
+{
+    if (system("command -v clang >/dev/null 2>&1") == 0) return "clang";
+    const char *cc = getenv("CC");
+    if (cc && *cc) return cc;
     return "cc";
 }
 
@@ -141,6 +158,26 @@ int backend_native(const char *src_path, struct Node *prog,
     if (backend_build_rt(err, err_size) != 0)
         return 1;
 
+    /* The native server runtime (bridge_native.c) is a second helper object,
+     * rebuilt on demand exactly like rt.o. It carries lume_srv_* and
+     * lume_bi_now, which the server{} codegen output calls. */
+    {
+        struct stat nst, nost;
+        int have = stat(NATIVE_OBJ, &nost) == 0;
+        int need = stat(LUME_NATIVE_SRC, &nst) != 0 ||
+                   !have || nost.st_mtime < nst.st_mtime;
+        if (need) {
+            char ncmd[PATH_MAX * 2];
+            snprintf(ncmd, sizeof ncmd, "%s -O2 -c -o %s %s",
+                     pick_cc(), NATIVE_OBJ, LUME_NATIVE_SRC);
+            if (run_cmd(ncmd) != 0) {
+                snprintf(err, err_size,
+                         "compiling the native server runtime failed");
+                return 1;
+            }
+        }
+    }
+
     /* Two steps, not one: compiling the IR and linking it must be separate so
      * -Wno-override-module can be scoped to the IR step. clang ignores -target
      * when the input is .ll and always overrides the module triple with its own
@@ -149,7 +186,7 @@ int backend_native(const char *src_path, struct Node *prog,
      * a warning on every build unless it is silenced. */
     char cmd[PATH_MAX * 3];
     snprintf(cmd, sizeof cmd, "%s -O2 -c -o %s.o %s -Wno-override-module",
-             pick_cc(), out_path, ll_path);
+             pick_ir_cc(), out_path, ll_path);
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "compiling %s.ll failed", out_path);
         return 1;
@@ -158,8 +195,8 @@ int backend_native(const char *src_path, struct Node *prog,
      * implicitly on macOS (so this quietly worked there) but glibc does not
      * link without it. Omitting it made --compile-* fail at the link step on
      * any Linux — including the CI runner's `make asan`. */
-    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s.o %s -lm",
-             pick_cc(), out_path, out_path, RT_OBJ);
+    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s.o %s %s -lm",
+             pick_ir_cc(), out_path, out_path, RT_OBJ, NATIVE_OBJ);
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (IR kept in %s.ll)",
                  out_path, out_path);

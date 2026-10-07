@@ -124,6 +124,19 @@ typedef struct {
     int    capture_main;           /* emitting the synthetic top-level body:
                                     * remember what `main()` returned */
     char   exit_tmp[32];
+
+    /* Native server: set while compiling a route handler body. `hreq` names
+     * the handler's request parameter; member access on it (req.path,
+     * req.query_params, ...) is lowered straight onto the SrvReq FFI
+     * arguments instead of the type system. `hrid` numbers the handlers. */
+    int    in_handler;
+    const char *hreq;
+    int    hrid;
+
+    /* Handler definitions are buffered here instead of being emitted into the
+     * function currently open (L_top): LLVM IR forbids a `define` inside a
+     * function body, so route handlers wait until L_top has closed. */
+    IrBuf  handlers;
 } CG;
 
 /* ------------------------------------------------------------- the emitters --- */
@@ -135,6 +148,7 @@ const char *bad(CG *g, Node *n, const char *what);
 Val cg_assign_expr(CG *g, Node *n);
 Val cg_assign_mem(CG *g, Node *n);
 Val cg_expr(CG *g, Node *n);
+char *cg_string_val(CG *g, const char *text, size_t len);
 void cg_function(CG *g, Node *fn);
 int codegen_infer_signatures(Node *prog, char *err, size_t err_size);
 Val coerce(CG *g, Type *to, Val v, size_t line);
@@ -155,6 +169,8 @@ Sig *sig_find(Sigs *s, const char *name);
 void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int arity);
 void stack_push_int(int **v, int *n, int *cap, int x);
 void struct_addr(CG *g, Val *o);
+Val val_make(Type *ty, const char *v);
+Val val_take(Type *ty, char *owned);
 int struct_field_idx(CG *g, const char *sname, const char *fname);
 Type *struct_field_type(CG *g, const char *sname, int idx);
 
