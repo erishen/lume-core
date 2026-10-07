@@ -443,6 +443,18 @@ static int g_index_failed = 0;
 
 int lume_index_failed(void) { return g_index_failed; }
 
+/* Report a failed index read and stop. A compiled program has no error channel
+ * back to a caller -- there is no VM to set an error on -- so it prints to
+ * stderr and exits non-zero, which is what every other fatal runtime condition
+ * in the native path does. The interpreter has its own message for the same
+ * case and its own exit path; only the wording and the exit code have to match,
+ * and both do (SPEC 6.2). */
+void lume_index_error(const char *what)
+{
+    fprintf(stderr, "lume(native): %s\n", what ? what : "index read failed");
+    exit(1);
+}
+
 long lume_list_at_strict(const LumeList *l, long i)
 {
     g_index_failed = 0;
@@ -463,14 +475,23 @@ double lume_list_at_strict_f(const LumeList *l, long i)
     return d;
 }
 
-void *lume_list_at_strict_obj(const LumeList *l, long i)
+/* An element that travels as an i8* -- a string or another container -- cannot
+ * be told apart by the IR type, so the accessor dispatches on the slot tag at
+ * runtime and returns the pointer either way. A string slot yields its char*;
+ * an object slot yields the container; any other slot is a type mismatch and
+ * fails. That is what lets `m["k"]` work without the emitter knowing what the
+ * map holds, which it cannot know. */
+void *lume_list_at_strict_ptr(const LumeList *l, long i)
 {
     g_index_failed = 0;
     if (!l) { g_index_failed = 1; return NULL; }
     if (i < 0) i += l->len;
     if (i < 0 || i >= l->len) { g_index_failed = 1; return NULL; }
-    if (l->items[i].tag != LUME_SLOT_OBJ) { g_index_failed = 1; return NULL; }
-    return (void *)(intptr_t)l->items[i].num;
+    LumeSlot sl = l->items[i];
+    if (sl.tag == LUME_SLOT_STR) return (void *)(intptr_t)sl.str;
+    if (sl.tag == LUME_SLOT_OBJ) return (void *)(intptr_t)sl.num;
+    g_index_failed = 1;
+    return NULL;
 }
 
 /* A string element has no sentinel, so `ok` reports whether one was there. */
@@ -503,12 +524,19 @@ double lume_map_at_strict_f(const LumeMap *m, const char *k)
     return d;
 }
 
-void *lume_map_at_strict_obj(const LumeMap *m, const char *k)
+/* Same tag dispatch as lume_list_at_strict_ptr(): a key whose value is a
+ * string and a key whose value is a container both come back as the i8* the IR
+ * already has, and the caller cannot (and need not) tell them apart. */
+void *lume_map_at_strict_ptr(const LumeMap *m, const char *k)
 {
     g_index_failed = 0;
     long i = map_find(m, k);
-    if (i < 0 || m->vals[i].tag != LUME_SLOT_OBJ) { g_index_failed = 1; return NULL; }
-    return (void *)(intptr_t)m->vals[i].num;
+    if (i < 0) { g_index_failed = 1; return NULL; }
+    LumeSlot sv = m->vals[i];
+    if (sv.tag == LUME_SLOT_STR) return (void *)(intptr_t)sv.str;
+    if (sv.tag == LUME_SLOT_OBJ) return (void *)(intptr_t)sv.num;
+    g_index_failed = 1;
+    return NULL;
 }
 
 const char *lume_map_at_strict_str(const LumeMap *m, const char *k, int *ok)
