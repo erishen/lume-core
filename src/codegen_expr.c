@@ -651,7 +651,7 @@ Val cg_assign_expr(CG *g, Node *n)
     if (!lt) { free(v.v); ERRV(g, "line %zu: variable '%s' has no codegen type",
                                n->line, n->as.assign.name); }
 
-    EMIT(g, "  store %s %s, %s* %%lv_%s\n", lt, v.v, lt, n->as.assign.name);
+    EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
     return v;
 }
 

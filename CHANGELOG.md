@@ -121,6 +121,28 @@ the two broken ones are excluded with a comment saying why.
   that particular case lives in the smoke suite rather than the three-way
   target.
 
+### Fixed — two native-backend codegen bugs (the §8.1 #4 / #5 gaps)
+
+Both were found while pinning the spec and excluded from the three-way target
+at the time; both are now fixed in this commit.
+
+- **Same-named bindings broke the IR text backend.** Locals were named
+  `%lv_<name>` per *name*, so two bindings sharing one name (nested *or*
+  sequential same-name `for` loops — easy to write because the loop variable
+  leaks past the loop) collided and the module failed to assemble. `asg_push`
+  now stamps a process-wide binding counter onto the name (`%lv_a_0`,
+  `%lv_a_1`), and `codegen_stmt.c` / `codegen_expr.c` emit `store`s through the
+  `a->slot` returned by `asg_find` instead of re-spelling `%lv_<name>`. The
+  three backends now agree on `seq_same` / `nest_same` in
+  `tests/native-consistency.lume`.
+- **`push` inside `for ... in` OOM-killed both native backends** (exit 137).
+  Their for-in re-read `len(list)` every iteration, so a `push` in the body
+  grew the bound forever. Both `cg_for_in` emitters now snapshot the length
+  into a dedicated alloca before the loop and load that snapshot in the
+  condition, matching the interpreter (which captures `list.count` at loop
+  entry). `tests/native-consistency.lume`'s `pt` case now visits only the
+  original three elements instead of spinning.
+
 ### Changed — the tree itself is named lume-core
 
 - **The directory is now `work/research/lume-core`** (previously `lume-lang`).

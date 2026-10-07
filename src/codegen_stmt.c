@@ -140,10 +140,12 @@ static Type *elem_rty(Type *ty)
  *
  * A loop over a heap object reached through an opaque pointer, so the
  * "iterator" is an index and the object is read through the helper the static
- * element type picked. The iterable is evaluated once before the loop, but the
- * length is re-read on every iteration — that is what the interpreter's
- * for-in does, and it is what makes `push(xs, v)` inside the body visible to
- * the loop. */
+ * element type picked. The iterable is evaluated once before the loop, and the
+ * length is captured *once*, before the loop, into a snapshot — that is what
+ * the interpreter's for-in does (it reads `list.count` at loop entry). A
+ * `push(xs, v)` inside the body therefore does NOT extend the iteration;
+ * re-reading the length every iteration used to let the native backends spin
+ * forever and OOM (exit 137), which is bug #2 fixed here. */
 
 static void cg_for_in(CG *g, Node *n)
 {
@@ -174,6 +176,20 @@ static void cg_for_in(CG *g, Node *n)
     EMIT(g, "  %s = alloca i64\n", idx);
     EMIT(g, "  store i64 0, i64* %s\n", idx);
 
+    /* Snapshot the collection length once, before the loop (matches the
+     * interpreter's `n_items = list.count` at loop entry). The snapshot is an
+     * immutable bound loaded each time the condition is tested; re-reading it
+     * every iteration made `push(xs, v)` inside the body grow the bound
+     * forever and OOM the native backends. */
+    char lenalloc[64];
+    snprintf(lenalloc, sizeof lenalloc, "%%li%d", g->tid++);
+    EMIT(g, "  %s = alloca i64\n", lenalloc);
+    Val len0 = rt_call(g, type_prim(TY_INT), is_map ? "lume_map_len" : "lume_list_len",
+                        "i8* %s", it.v);
+    if (!len0.v) { free(it.v); ERRX(g, "line %zu: cannot read the collection's length", n->line); }
+    EMIT(g, "  store i64 %s, i64* %s\n", len0.v, lenalloc);
+    free(len0.v);
+
     int lc = g->lid, lb = g->lid + 1, li = g->lid + 2, le = g->lid + 3;
     g->lid += 4;
 
@@ -189,15 +205,14 @@ static void cg_for_in(CG *g, Node *n)
     EMIT(g, "  br label %%L%d\n", lc);
 
     EMIT(g, "L%d:\n", lc);
-    /* The length is re-read every iteration (and shortened to `len` because
-     * `n` is the node). */
-    Val len = rt_call(g, type_prim(TY_INT), is_map ? "lume_map_len" : "lume_list_len",
-                      "i8* %s", it.v);
-    if (!len.v) { free(it.v); ERRX(g, "line %zu: cannot read the collection's length", n->line); }
+    /* Load the loop-bound snapshot once per iteration; it is immutable, so a
+     * `push(xs, v)` inside the body cannot extend the iteration. */
+    char *len = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", lenalloc);
+    if (!len) { free(it.v); ERRX(g, "line %zu: cannot load the loop length", n->line); }
     char *cur = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", idx);
-    if (!cur) { free(it.v); free(len.v); ERRX(g, "line %zu: cannot read the loop index", n->line); }
-    char *c = emit_instrf(g, boolty, "icmp slt i64 %s, %s", cur, len.v);
-    free(len.v);
+    if (!cur) { free(it.v); free(len); ERRX(g, "line %zu: cannot read the loop index", n->line); }
+    char *c = emit_instrf(g, boolty, "icmp slt i64 %s, %s", cur, len);
+    free(len);
     if (!c) { free(it.v); free(cur); ERRX(g, "line %zu: bad 'for ... in' condition", n->line); }
     EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", c, lb, le);
     free(c);
@@ -321,7 +336,9 @@ static void cg_stmt(CG *g, Node *n)
         const char *lt = llvm_type_of(ty);
         if (!lt) ERRX(g, "line %zu: cannot store '%s' into a typed local",
                      n->line, n->as.let.name);
-        EMIT(g, "  store %s %s, %s* %%lv_%s\n", lt, v.v, lt, n->as.let.name);
+        Asg *a = asg_find(&g->locals, n->as.let.name);
+        if (!a) { free(v.v); ERRX(g, "line %zu: unknown variable '%s'", n->line, n->as.let.name); }
+        EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
         free(v.v);
         break;
     }

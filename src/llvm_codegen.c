@@ -1597,6 +1597,17 @@ static void cg_for_in(CG *g, Node *n)
     LLVMValueRef idx = LLVMBuildAlloca(g->ab, g->i64, "li");
     LLVMBuildStore(g->ab, LLVMConstInt(g->i64, 0, 0), idx);
 
+    /* Snapshot the collection length once, before the loop, to match the
+     * interpreter (which captures list.count at loop entry). Re-reading it
+     * every iteration made `push(xs, v)` inside the body extend the bound
+     * forever and OOM the backend. */
+    LLVMValueRef len_slot = LLVMBuildAlloca(g->ab, g->i64, "len");
+    LLVMValueRef len0 = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, &g->i8ptr, 1, 0),
+                                       rt_decl(g, is_map ? "lume_map_len" : "lume_list_len",
+                                                g->i64, &g->i8ptr, 1),
+                                       &it.v, 1, "len0");
+    LLVMBuildStore(g->ab, len0, len_slot);
+
     LLVMBasicBlockRef c = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "for.cond");
     LLVMBasicBlockRef b = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "for.body");
     LLVMBasicBlockRef i = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "for.incr");
@@ -1611,10 +1622,7 @@ static void cg_for_in(CG *g, Node *n)
     if (!DONE(g->cur)) LLVMBuildBr(g->ab, c);
 
     g->cur = c; AT(g);
-    LLVMValueRef len = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, &g->i8ptr, 1, 0),
-                                      rt_decl(g, is_map ? "lume_map_len" : "lume_list_len",
-                                              g->i64, &g->i8ptr, 1),
-                                      &it.v, 1, "len");
+    LLVMValueRef len = LLVMBuildLoad2(g->ab, g->i64, len_slot, "len");
     LLVMValueRef cur = LLVMBuildLoad2(g->ab, g->i64, idx, "cur");
     LLVMValueRef cond = LLVMBuildICmp(g->ab, LLVMIntSLT, cur, len, "c");
     if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, cond, b, e);

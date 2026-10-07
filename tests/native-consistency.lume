@@ -246,15 +246,15 @@ print(3 / 2);
 // Pinned here so a backend cannot drift on loop-variable scope, break/continue,
 // or while's strict-boolean condition.
 //
-// Two §4 behaviours are deliberately ABSENT because the native backends cannot
-// run them yet (both are documented in SPEC §8.1):
+// Both §4 behaviours below used to be native-only failures, now fixed:
 //   * two bindings sharing one name in the same function -- the IR text backend
-//     names every local `%lv_<name>`, so they collide and it refuses to
-//     assemble. That rules out both a nested `for` reusing the name and two
-//     sequential ones, so every loop variable below has a distinct name.
-//   * mutating the iterated list with `push` -- both backends loop forever and
-//     get OOM-killed (exit 137).
-// Both live in the smoke suite instead, where only the interpreter runs them.
+//     used to name every local `%lv_<name>`, so they collided and it refused to
+//     assemble. They now get distinct slots (`%lv_<name>_<uid>`).
+//   * mutating the iterated list with `push` -- both native backends used to
+//     re-read the length every iteration and loop forever (OOM, exit 137). The
+//     length is now snapshotted at loop entry, matching the interpreter.
+// The loop variable still leaks past the loop (printed below), which is the
+// documented non-block-scoped behaviour, not a bug.
 for (let loopvar in [1, 2]) { }
 print(loopvar);                 // the loop variable outlives the loop
 for (let contvar in [1, 2, 3]) { if (contvar == 2) { continue; } print(contvar); }
@@ -262,6 +262,39 @@ for (let brkvar in [1, 2, 3]) { if (brkvar == 2) { break; } print(brkvar); }
 let whilevar = 0;
 while (whilevar < 3) { print(whilevar); whilevar = whilevar + 1; }
 for (let mapkey in { a: 7 }) { print(mapkey); }   // for-in over a map walks keys
+
+// ---- same-name loop variables (bug #1 fixed) ----------------------------
+//
+// Two `for (a in ...)` in one function used to collide in the text backend's
+// `%lv_<name>` slots: a for variable leaks past the loop into the function
+// scope, so two loops reusing the name landed on one `%lv_a` and the module
+// failed to assemble. They now get distinct slots (`%lv_a_<uid>`), so the two
+// loops run independently. Both the sequential and the nested shape below used
+// to break codegen; the three backends must agree on each.
+func seq_same() {
+    for (a in [1, 2]) { print(a); }
+    for (a in [3, 4]) { print(a); }
+}
+seq_same();             // 1 2 3 4
+
+func nest_same() {
+    for (a in [1, 2]) {
+        for (a in [3, 4]) { print(a); }
+    }
+}
+nest_same();            // 3 4 3 4 (inner runs for each outer iteration)
+
+// ---- push inside for-in (bug #2 fixed) ----------------------------------
+//
+// `push` inside the body used to grow the iteration bound forever and OOM the
+// native backends. The length is snapshotted at loop entry, so only the
+// original three elements are visited and the final list holds six.
+let pt = [1, 2, 3];
+for (p in pt) {
+    push(pt, p * 10);
+}
+print(len(pt));         // 6
+print(pt);              // [1,2,3,10,20,30]
 
 func sum3(a, b, c) { return a + b + c; }
 print(sum3(1, 2, 3));

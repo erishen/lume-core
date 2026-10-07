@@ -69,10 +69,20 @@ void asg_push(Asgs *a, const char *name, Type *ty, const char *slot)
         a->v = (Asg *)xrealloc(a->v, (size_t)a->cap * sizeof *a->v);
     }
     char default_slot[128];
-    if (slot)
+    if (slot) {
         snprintf(default_slot, sizeof default_slot, "%s", slot);
-    else
-        snprintf(default_slot, sizeof default_slot, "%%lv_%s", name);
+    } else {
+        /* A local's slot must be unique across the whole program, not just
+         * within one function: the text backend emits every local as a
+         * top-level LLVM `%lv_<name>`, and LLVM rejects two definitions of
+         * the same local. Two `let x` in one function (or a nested `for`
+         * reusing a name) used to collide and the module failed to
+         * assemble. Stamping a process-wide counter onto the name keeps
+         * every slot distinct; the `%lv_` prefix is preserved so the
+         * entry-block alloca pass still recognises it as a stack slot. */
+        static int s_uid = 0;
+        snprintf(default_slot, sizeof default_slot, "%%lv_%s_%d", name, s_uid++);
+    }
 
     a->v[a->n].name = xstrdup(name);
     a->v[a->n].ty   = ty;
