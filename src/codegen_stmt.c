@@ -474,6 +474,9 @@ void cg_function(CG *g, Node *fn)
      * an integer constant and clang rejects it. Only `double` is affected —
      * every other scalar type the emitter can spell is an integer. */
     else if (strncmp(rty, "double", 6) == 0) EMIT(g, "  ret double 0.0\n");
+    /* A string-returning fallback is a null pointer, not `0` — clang rejects
+     * `ret i8* 0` ("integer/byte constant must have integer/byte type"). */
+    else if (strcmp(rty, "i8*") == 0) EMIT(g, "  ret i8* null\n");
     else                 EMIT(g, "  ret %s 0\n", rty);
 
     EMIT(g, "}\n");
