@@ -1173,6 +1173,11 @@ static Val cg_builtin(CG *g, Node *n)
             case TY_INT:    fn = "@lume_bi_str_i64";    pty = "i64";    break;
             case TY_FLOAT:  fn = "@lume_bi_str_double"; pty = "double"; break;
             case TY_BOOL:   fn = "@lume_bi_str_bool";   pty = "i64";    break;
+            case TY_STRING:
+                /* str(s) on a string is the identity: the value already is
+                 * an i8*. The interpreter allows it, so the native backend
+                 * must too. */
+                return val_take(type_prim(TY_STRING), a.v);
             default:
                 ERRV(g, "line %zu: str() cannot convert this value", n->line);
             }
