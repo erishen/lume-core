@@ -38,6 +38,11 @@
  * but a Val still needs a Type and `any` is the honest one. */
 Type *any_type(void);
 
+/* Source-level type name, from codegen_types.c. Declared here rather than
+ * included: this backend deliberately does not pull in codegen_internal.h,
+ * but the coerce() null guard below has to name the type it refused. */
+const char *src_type_name(Type *t);
+
 /* ----------------------------------------------------------------- utils --- */
 
 static void *xmalloc(size_t n)
@@ -845,6 +850,7 @@ static Val cg_assign_expr(CG *g, Node *n)
                  n->line, n->as.assign.name);
 
     v = coerce(g, a->ty, v, n->line);
+    if (g->err[0]) return (Val){ NULL, NULL };
     if (!ty_of(g, a->ty))
         ERRV(g, "line %zu: variable '%s' has no codegen type",
              n->line, n->as.assign.name);
@@ -921,6 +927,7 @@ static Val cg_struct_lit(CG *g, Node *n)
 
         if (f.ty && sd->types[j] && f.ty != sd->types[j])
             f = coerce(g, sd->types[j], f, n->line);
+        if (g->err[0]) return (Val){ NULL, NULL };
         cur = LLVMBuildInsertValue(g->ab, cur, f.v, (unsigned)j, "s");
     }
     return val_make(ty, cur);
@@ -1062,6 +1069,7 @@ static Val cg_builtin(CG *g, Node *n)
         for (int i = 0; i < argc; i++)
             if (av[i].ty && av[i].ty->kind != want->kind)
                 av[i] = coerce(g, want, av[i], n->line);
+        if (g->err[0]) return (Val){ NULL, NULL };
 
         LLVMTypeRef pt = ty_from_spelling(g, pty);
         LLVMTypeRef rt = ty_from_spelling(g, isf ? b->rty_f : b->rty_i);
@@ -1533,6 +1541,20 @@ static Val coerce(CG *g, Type *to, Val v, size_t line)
 {
     if (!to || !v.ty || to == v.ty) return v;
 
+    /* `null` is representable natively as an opaque i8* null pointer, and the
+     * type checker lets it stand in for any type (`type_compat`: "all types
+     * nullable"). But the pointer has no scalar meaning: without this guard
+     * the ptrtoint/intcast edges below turned a null into 0 (or false), so
+     * `let x: int = null; print(x)` printed a confident, wrong 0 where the
+     * interpreter printed `null`. Reject it instead -- silently substituting a
+     * value is worse than refusing to compile. Pointer-shaped targets
+     * (string/list/struct) stay legal; lume_print_str and friends absorb the
+     * null. */
+    if (v.ty->kind == TY_NULL && to->kind != TY_STRING && to->kind != TY_LIST &&
+        to->kind != TY_STRUCT && to->kind != TY_ANY)
+        ERRV(g, "line %zu: cannot use 'null' as a %s value in the native backend",
+             line, src_type_name(to));
+
     LLVMTypeRef tt = ty_of(g, to);
     LLVMTypeRef vt = ty_of(g, v.ty);
     if (!tt || !vt || tt == vt) return v;
@@ -1794,6 +1816,7 @@ static void cg_stmt(CG *g, Node *n)
         /* Prefer the annotation so the stored value matches the slot. */
         Type *ty = n->as.let.annot ? n->as.let.annot : v.ty;
         v = coerce(g, ty, v, n->line);
+        if (g->err[0]) break;   /* coerce refused (e.g. null into a scalar) */
         if (!ty_of(g, ty))
             ERRX(g, "line %zu: cannot store this into a typed local", n->line);
 

@@ -652,6 +652,7 @@ Val cg_assign_expr(CG *g, Node *n)
                               n->line, n->as.assign.name); }
 
     v = coerce(g, a->ty, v, n->line);
+    if (g->err[0]) return (Val){ NULL, NULL, 0 };
     const char *lt = llvm_type_of(a->ty);
     if (!lt) { free(v.v); ERRV(g, "line %zu: variable '%s' has no codegen type",
                                n->line, n->as.assign.name); }
@@ -731,6 +732,7 @@ static Val cg_struct_lit(CG *g, Node *n)
         if (!llvm_type_of(fty)) { free(cur); free(fv.v); free(order);
             ERRV(g, "line %zu: field '%s' has no codegen type", n->line, sd->names[j]); }
         fv = coerce(g, fty, fv, n->line);
+        if (g->err[0]) { free(cur); free(fv.v); free(order); return (Val){ NULL, NULL, 0 }; }
 
         char *ins = emit_instrf_agg(g, "insertvalue %s %s, %s %s, %d",
                                     st, cur, llvm_type_of(fty), fv.v, j);
@@ -1063,6 +1065,7 @@ static Val cg_builtin(CG *g, Node *n)
         for (int i = 0; i < argc; i++)
             if (av[i].ty && av[i].ty->kind != want->kind)
                 av[i] = coerce(g, want, av[i], n->line);
+        if (g->err[0]) return (Val){ NULL, NULL, 0 };
 
         char tmp[48];
         snprintf(tmp, sizeof tmp, "%%c%d", g->tid++);
@@ -1337,6 +1340,19 @@ Val cg_expr(CG *g, Node *n)
 Val coerce(CG *g, Type *to, Val v, size_t line)
 {
     if (!to || !v.ty || to == v.ty) return v;
+
+    /* `null` is an opaque i8* null pointer natively, and the type checker lets
+     * it stand in for any type ("all types nullable"). Pointer-shaped targets
+     * stay legal; a scalar target has no null, and the IR text below has no
+     * edge that could spell one -- so reject it with the same message the
+     * libLLVM backend uses, rather than letting the two backends disagree
+     * about whether `let x: int = null` compiles. */
+    if (v.ty && v.ty->kind == TY_NULL && to && to->kind != TY_STRING &&
+        to->kind != TY_LIST && to->kind != TY_STRUCT && to->kind != TY_ANY) {
+        free(v.v);
+        ERRV(g, "line %zu: cannot use 'null' as a %s value in the native backend",
+             line, src_type_name(to));
+    }
 
     const char *lt = llvm_type_of(v.ty);
     const char *tt = llvm_type_of(to);

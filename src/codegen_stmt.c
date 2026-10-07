@@ -333,6 +333,7 @@ static void cg_stmt(CG *g, Node *n)
          * allocated for it (and gets converted when the two types differ). */
         Type *ty = n->as.let.annot ? n->as.let.annot : v.ty;
         v = coerce(g, ty, v, n->line);
+        if (g->err[0]) { free(v.v); break; }  /* coerce refused the conversion */
         const char *lt = llvm_type_of(ty);
         if (!lt) ERRX(g, "line %zu: cannot store '%s' into a typed local",
                      n->line, n->as.let.name);
@@ -370,6 +371,7 @@ static void cg_stmt(CG *g, Node *n)
             Type *want = g->cur ? g->cur->ret : NULL;
             if (want && v.ty && v.ty->kind == TY_INT && want->kind == TY_FLOAT)
                 v = coerce(g, want, v, n->line);
+            if (g->err[0]) { free(v.v); break; }
         }
         EMIT(g, "  ret %s %s\n", rty, v.v);
         free(v.v);

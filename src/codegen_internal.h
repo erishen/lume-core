@@ -144,6 +144,7 @@ Type *infer_list_elem(Node *lit);
 Type *infer_node_type(CG *g, Node *n);
 const char *llvm_ptr_type_of(Type *t);
 const char *llvm_type_of(Type *t);
+const char *src_type_name(Type *t);
 Type *lt_find(LTys *t, const char *name);
 Type *member_field_type(CG *g, Node *n);
 Val rt_call(CG *g, Type *rty, const char *fn, const char *fmt, ...);

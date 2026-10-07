@@ -63,6 +63,31 @@ const char *llvm_ptr_type_of(Type *t)
     return llvm_type_of(t);
 }
 
+/* Source-level name of a type, as the user wrote it. Used in diagnostics that
+ * must read the same from both native backends -- llvm_type_of() above gives
+ * the IR spelling (i64/double/i1), which is a fine thing to put in an IR
+ * error but not in a message aimed at someone who never saw the IR.
+ * ty_str() in typecheck.c does this for the checker, but that lives behind
+ * typecheck_internal.h and the native backends have no business depending on
+ * the checker. Keep this one small and shared instead. */
+
+const char *src_type_name(Type *t)
+{
+    if (!t) return "any";
+    switch (t->kind) {
+    case TY_NULL:   return "null";
+    case TY_INT:    return "int";
+    case TY_FLOAT:  return "float";
+    case TY_STRING: return "string";
+    case TY_BOOL:   return "bool";
+    case TY_RESULT: return "Result";
+    case TY_LIST:   return "list";
+    case TY_FUNC:   return "func";
+    case TY_NS:     return "module";
+    default:        return t->name ? t->name : "this type";
+    }
+}
+
 /* lume Type -> LLVM type spelling. NULL means "not supported by this backend". */
 
 const char *llvm_type_of(Type *t)

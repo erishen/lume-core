@@ -35,6 +35,37 @@ All notable changes to Lume are documented here. The format follows
   emits `null` / `LLVMConstNull(i8*)`; and a new `lume_print_null` runtime helper
   prints `null`. All three backends now agree on `null` and `print(null)`
   (regression added to `tests/native-consistency.lume`, `.expected` refreshed).
+- **Fixed `null` with a scalar annotation silently becoming a wrong value**
+  (§8.1 #8) — the worst shape a backend divergence can take, because it is
+  silent. `let x: int = null; print(x)` prints `null` under the interpreter,
+  **failed to compile** under `--compile-text`, and printed **`0`** under
+  `--compile-llvm`, whose `coerce` had an `i8* → i64` `ptrtoint` edge that
+  turned the opaque null pointer into an integer. The type checker is right to
+  accept it (`type_compat`: "all types nullable" — the language has no
+  nullable-type distinction); the emitters disagreed about what to do with it.
+  With a `string` annotation both emitters compiled and emitted
+  `call i64 @lume_print_str(ptr null)` — a null pointer into `snprintf`'s
+  `%s`, which is undefined behaviour (glibc happened to print `(null)`).
+  Both `coerce` implementations now reject `TY_NULL` flowing into a scalar,
+  with one shared wording (`cannot use 'null' as a int value in the native
+  backend`; the type name comes from a new shared `src_type_name()` helper,
+  since `ty_str()` lives behind `typecheck_internal.h` and an emitter has no
+  business depending on the checker). Pointer-shaped targets stay legal, and
+  `rt.c`'s `lume_print_str` now guards a null pointer and prints the bare word
+  `null`, matching the interpreter.
+- **Hardened a pre-existing weakness of the same shape**: a failing `coerce`
+  returns an empty `Val`, but 4 of its 6 call sites used it without checking —
+  libLLVM would `LLVMBuildStore(NULL)` and segfault (ASan pinned it in
+  `CreateAlignedStore`). Every call site now bails on `g->err[0]` first.
+- Regression assertions live in `tests/native_backends.sh` as `null-as-scalar`
+  (every emitter must refuse, with identical wording) and `null-as-string`
+  (every leg must print `null`). They cannot live in
+  `native-consistency.lume`: that fixture only diffs programs all three legs
+  *accept*, and what needs asserting here is precisely that the program does
+  not run. Verified by mutation — removing the guard makes the suite fail with
+  `null-as-scalar: llvm compiled 'let x: int = null'`.
+- Docs: dropped the now-stale "known divergence" note on `float %` in §1.6
+  (fixed by #1) and recorded #8 in §8.1.
 
 ## [0.3.0] - 2026-10-07
 

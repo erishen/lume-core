@@ -108,11 +108,9 @@ print(str(-7 % 3));                  // -1
 print(str(7 % -3));                  // 1
 ```
 
-- **`%` 作用于 `float` 是错误**：`'%' does not apply to floats`。
-  ⚠️ **已知实现差异**：`--compile-text` 与解释器给出这条消息，而 `--compile-llvm`
-  目前在更早的类型推断处报 `print() cannot print this value`（它把 `%` 的结果类型推成别的）。
-  两者都是**拒绝**，不是接受后算出不同的值，所以不会产生静默的错误结果；但消息不一致，
-  待修（见 §8.1）。
+- **`%` 作用于 `float` 是错误**：`'%' does not apply to floats`。三后端消息已统一
+  （原先 `--compile-llvm` 在更早的类型推断处报 `print() cannot print this value`，已修，见
+  §8.1 第 1 条）。
 - ⚠️ 整数 `%` 若**任一侧**是 `int` 而溢出（如 `LLONG_MIN % -1`），行为未定义。
 
 ### 1.7 一元负号保持数值类型
@@ -670,10 +668,14 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
 ### 8.1 已知缺口
 
 这条不变式目前覆盖**成功的输出与退出码**，对**错误消息**只做到「都拒绝」，未做到逐字节一致。
-已知七处（第 4、5 条已于前次提交修复；第 1、2 条已于本次提交修复；第 3 条经核查本就一致，见
-其标注；第 7 条 `null` 字面量已于本次提交修复，见其标注）；第 6 条是本次新发现、且最严重的
-真不一致——合法的 `call?` 在解释器能跑、原生后端却编不出来（行为差异，而非消息差异）。
-第 1–5 条均属「拒绝执行形式的诊断差异」；第 6、7 条是「接受/拒绝不同」（前者待修、后者已修）：
+已知八处（第 4、5 条已于前次提交修复；第 1、2 条已于本次提交修复；第 3 条经核查本就一致，见
+其标注；第 7 条 `null` 字面量、第 8 条 `null` 的标量标注已于本次提交修复，见其标注）。
+第 6 条是本次新发现、仍未修的真不一致——合法的 `call?` 在解释器能跑、原生后端却编不出来
+（行为差异，而非消息差异）。
+
+第 1–5 条均属「拒绝执行形式的诊断差异」。第 6、7 条是「接受/拒绝不同」：第 7 条已修，
+第 6 条待修。第 8 条原本也是「接受/拒绝不同」，但它更严重——修复前 libLLVM 后端不是拒绝而是
+**静默给出错误答案**（`null` 变成 `0`），文本后端才拒绝：
 
 1. **[已修复] `float %` 的报错位置**（§1.6）：`--compile-text` 与解释器报
    `'%' does not apply to floats`，`--compile-llvm` 原在更早的类型推断处报
@@ -756,9 +758,37 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    无参数）。三后端对 `null` 与 `print(null)` 现在一致。回归用例见 `tests/
    native-consistency.lume` 的 `n` 与 `print(null)`。
 
-   ⚠️ 局限：`null` 目前只能以「推断出的 `TY_NULL`」形态存在；若显式标注类型（如
-   `let x: int = null`）类型检查器会放行，但原生后端尚无法把 `i8*` 空指针塞进 `i64` 槽——
-   这属运行时值装箱的同一类大改（同第 6 条 / 闭包），不在本次范围。
+8. **[已修复] 标注了标量类型的 `null` 在 libLLVM 后端变成一个静默的错误值**：
+
+   ```lume
+   let x: int = null;
+   print(x);          // 解释器 null；修复前 libLLVM 后端 0，文本后端编译失败
+   ```
+
+   类型检查器放行是**有意的**（`type_compat` 写着「all types nullable」，本语言没有可空类型
+   的区分）。问题在两个 emitter 的 `coerce`：`TY_NULL` 原生表示是不透明 `i8*`，而文本后端
+   没有 `i8* → i64` 这条边（直接拒绝），libLLVM 后端却有一条 `ptrtoint`，于是把 `null` 静默
+   变成了 `0`（`bool` 则变成 `false`）。**一个后端拒绝、另一个后端给出错误答案**——这是三后端
+   分歧里最坏的形态，因为它是静默的。
+
+   更糟的一种：标成 `string` 时两边都编译通过，但发出去的是
+   `call i64 @lume_print_str(ptr null)`，把空指针交给 `snprintf` 的 `%s`——**未定义行为**
+   （glibc 碰巧印 `(null)`，但没有任何东西保证它）。
+
+   **本提交已修复**：两个后端的 `coerce` 都显式拒绝 `TY_NULL` 流向标量类型，报同一条消息
+   `cannot use 'null' as a int value in the native backend`（类型名用新的共享助手
+   `src_type_name()`，因为 `ty_str()` 在 `typecheck_internal.h` 后面、emitter 不该依赖类型
+   检查器）；指针形态的目标（`string`/`list`/`struct`）保持合法，`rt.c` 的 `lume_print_str`
+   加了空指针防护、转印 `null`，与解释器一致。
+
+   顺带修掉一个**同类的既有脆弱点**：`coerce` 失败时返回空 `Val`，但 6 个调用点里有 4 个不检查
+   就继续用它——libLLVM 后端会 `LLVMBuildStore(NULL)` 段错误（ASan 定位在
+   `CreateAlignedStore`）。现在每个调用点都以 `g->err[0]` 为准早退。
+
+   回归断言见 `tests/native_backends.sh` 的 `null-as-scalar`（要求每个 emitter 都拒绝且措辞
+   相同）与 `null-as-string`（要求每个 leg 都印 `null`）。这两条**不能**放进
+   `native-consistency.lume`——那个 fixture 只 diff 三个 leg 都接受的程序，而这里要断言的正是
+   「不运行」。
 
 ---
 

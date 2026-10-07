@@ -201,3 +201,75 @@ for leg in "${RAN[@]}"; do
         fail "exit status: $leg exited $got for a program whose top level never calls main()"
     pass "exit status: $leg reports 3 from main() and 0 without one"
 done
+
+# ---- null must not become a silent scalar ---------------------------
+# The consistency fixture cannot cover this: it only diffs programs all three
+# legs *accept*. `let x: int = null` is accepted by the type checker (every
+# type is nullable) and by the interpreter, and it used to compile differently
+# on the two emitters -- the text one had no IR edge and refused, the libLLVM
+# one had a ptrtoint and printed a confident 0. That is a wrong answer rather
+# than a rejected program, which is the worst shape a backend divergence can
+# take, so it gets its own assertions.
+#
+# Asserted per leg rather than by diffing runs, because the point is that the
+# program does not run at all. The two emitters must also *word* the refusal
+# the same, so a future change that makes only one of them refuse is caught
+# here rather than by a user.
+NULL_SCALARS="$WORK/null-scalar.lume"
+cat > "$NULL_SCALARS" <<'LUME'
+let x: int = null;
+print(x);
+LUME
+
+null_msg=""
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+        *)    continue ;;   # the interpreter accepts this one; nothing to assert
+    esac
+    msg=$("$TARGET" "$flag" "$NULL_SCALARS" -o "$WORK/null-$leg" 2>&1 >/dev/null)
+    rc=$?
+    [ $rc -ne 0 ] ||
+        fail "null-as-scalar: $leg compiled \`let x: int = null\` (it must refuse)"
+    case "$msg" in
+        *"cannot use 'null' as a int value"*) ;;
+        *) echo "$msg" | head -3
+           fail "null-as-scalar: $leg refused with an unexpected message" ;;
+    esac
+    # First leg to get here sets the wording the other one has to match.
+    if [ -z "$null_msg" ]; then
+        null_msg=$msg
+    elif [ "$msg" != "$null_msg" ]; then
+        fail "null-as-scalar: text and llvm word the refusal differently"
+    fi
+done
+[ -n "$null_msg" ] ||
+    echo "ok   null-as-scalar: no emitter leg ran, nothing to assert"
+[ -z "$null_msg" ] ||
+    pass "null-as-scalar: every emitter refuses it, with the same message"
+
+# A string annotation is the one null that stays legal natively (it travels as
+# the same opaque pointer), and it has to *print* like the interpreter prints
+# it. This one is about the emitted code, not the refusal, so it runs:
+# rt.c's lume_print_str used to hand the null straight to snprintf's "%s",
+# which is undefined behaviour -- glibc printed "(null)" and nothing promised
+# that. Both emitters have to agree with the interpreter here.
+NULL_STR="$WORK/null-str.lume"
+cat > "$NULL_STR" <<'LUME'
+let s: string = null;
+print(s);
+LUME
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+        *)    continue ;;
+    esac
+    "$TARGET" "$flag" "$NULL_STR" -o "$WORK/nullstr-$leg" >/dev/null 2>&1 ||
+        fail "null-as-string: $leg refused a legal \`let s: string = null\`"
+    got=$("$WORK/nullstr-$leg" 2>&1 | head -1)
+    [ "$got" = "null" ] ||
+        fail "null-as-string: $leg printed '$got', expected 'null'"
+done
+pass "null-as-string: every leg prints the bare word null"

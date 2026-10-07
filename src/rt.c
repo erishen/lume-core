@@ -23,6 +23,9 @@ static int emit(const char *s)
     return (int)strlen(s);
 }
 
+/* Defined below but called from lume_print_str's null guard. */
+long lume_print_null(void);
+
 long lume_print_i64(long v)
 {
     char buf[40];
@@ -51,7 +54,16 @@ long lume_print_bool(long v)
 long lume_print_str(const char *s)
 {
     /* Same line-ending contract as the other helpers: every print() ends the
-     * line, so mixed int/string output stays readable. */
+     * line, so mixed int/string output stays readable.
+     *
+     * The null guard is load-bearing, not defensive padding. A `let x: string
+     * = null` reaches here as a null `i8*` (both native backends represent
+     * TY_NULL as an opaque pointer), and handing that to snprintf's "%s" is
+     * undefined behaviour -- glibc happens to print "(null)", but nothing
+     * promises it. The backends now reject null for scalar annotations, so
+     * only the string-annotated case can land here, and it must print the
+     * same bare word the interpreter prints. */
+    if (!s) return lume_print_null();
     char buf[512];
     int n = snprintf(buf, sizeof buf, "%s\n", s);
     if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
