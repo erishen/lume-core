@@ -346,7 +346,11 @@ int main(void) {
     /* mcps() reads <cwd>/.data/mcp-servers-router.json — the artifact a
      * router sync writes. Resetting it here keeps the check deterministic
      * even after manual runs have dropped a real catalog. */
+#ifdef _WIN32
+    mkdir(".data");
+#else
     mkdir(".data", 0755);
+#endif
     unlink(".data/mcp-servers-router.json");
 
     check("arithmetic + casts",
