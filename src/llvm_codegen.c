@@ -712,6 +712,13 @@ static const char *list_push_fn(Type *ty)
     case TY_STRING: return "lume_list_push_s";
     case TY_INT:
     case TY_BOOL:   return "lume_list_push_i";
+    /* Containers as elements -- the same branch, and the same reasoning, as in
+     * codegen_expr.c's copy of this function. Kept in step deliberately: these
+     * two are separate implementations of one table, and a type added to one
+     * but not the other compiles on one backend and not the other. */
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "lume_list_push_obj";
     default:        return NULL;
     }
 }
@@ -725,6 +732,9 @@ static const char *map_put_fn(Type *ty)
     case TY_STRING: return "lume_map_put_s";
     case TY_INT:
     case TY_BOOL:   return "lume_map_put_i";
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "lume_map_put_obj";
     default:        return NULL;
     }
 }
@@ -791,7 +801,7 @@ static Val cg_list_lit(CG *g, Node *n)
     for (int i = 0; i < n->as.list.count; i++) {
         Val e = cg_expr(g, n->as.list.items[i]);
         const char *fn = list_push_fn(e.ty);
-        if (!fn) ERRV(g, "line %zu: list elements must be int, float or string", n->line);
+        if (!fn) ERRV(g, "line %zu: list elements must be int, float, string or a container", n->line);
         if (e.ty && e.ty->kind == TY_BOOL) e = coerce(g, type_prim(TY_INT), e, n->line);
         LLVMTypeRef ats[2] = { g->i8ptr, ty_of(g, e.ty) };
         LLVMValueRef vs[2] = { l, e.v };
@@ -818,7 +828,7 @@ static Val cg_map_lit(CG *g, Node *n)
         Val k = val_make(type_prim(TY_STRING),
                          cg_string_val(g, n->as.map.keys[i], strlen(n->as.map.keys[i])));
         const char *fn = map_put_fn(v.ty);
-        if (!fn) ERRV(g, "line %zu: map values must be int, float or string", n->line);
+        if (!fn) ERRV(g, "line %zu: map values must be int, float, string or a container", n->line);
         if (v.ty && v.ty->kind == TY_BOOL) v = coerce(g, type_prim(TY_INT), v, n->line);
         /* The three flavours disagree on the *type* of the third argument as
          * well as on the helper: the string one takes a i8* key, the two
@@ -1238,6 +1248,12 @@ static Val cg_builtin(CG *g, Node *n)
         Type    *rty = type_prim(TY_INT);
         if (d.v && d.ty && d.ty->kind == TY_FLOAT)       { fn = "lume_map_get_f"; rty = type_prim(TY_FLOAT); }
         else if (d.v && d.ty && d.ty->kind == TY_STRING) { fn = "lume_map_get_s"; rty = type_prim(TY_STRING); }
+        /* A container default needs the pointer-returning getter; see the
+         * matching branch in cg_builtin() in codegen_expr.c. */
+        else if (d.v && d.ty && (d.ty->kind == TY_LIST ||
+                                  d.ty->kind == TY_STRUCT ||
+                                  d.ty->kind == TY_RESULT))
+                                      { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
         if (d.v && d.ty && d.ty->kind == TY_BOOL)
             d = coerce(g, type_prim(TY_INT), d, n->line);
 

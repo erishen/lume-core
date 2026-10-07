@@ -13,6 +13,7 @@
  */
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -159,11 +160,24 @@ long lume_bi_len_s(const char *s) { return s ? (long)strlen(s) : 0; }
 #define LUME_SLOT_INT    0
 #define LUME_SLOT_FLOAT  1
 #define LUME_SLOT_STR    2
+/* A nested container: another LumeList or LumeMap, reached through the same
+ * opaque i8* everything else travels as. Before this tag every slot held a
+ * scalar, so `{ a: { b: 1 } }` and `[[1,2],[3]]` could not be built at all —
+ * the emitters refused with "map values must be int, float or string" /
+ * "list elements must be int, float or string" while the interpreter has
+ * always accepted them. */
+#define LUME_SLOT_OBJ    3
 
 typedef struct { long num; const char *str; int tag; } LumeSlot;
 
-typedef struct { long len; long cap; LumeSlot *items; }    LumeList;
-typedef struct { long len; long cap; char **keys; LumeSlot *vals; } LumeMap;
+/* Which container kind an LUME_SLOT_OBJ pointer refers to. A bare i8* does
+ * not say, and the printer has to know to walk it as a list or as a map, so
+ * the tag lives in the object itself and the slot just carries the address. */
+#define LUME_CTR_LIST    0x4c49   /* 'LI' */
+#define LUME_CTR_MAP     0x4d41   /* 'MA' */
+
+typedef struct { long len, cap; int kind; LumeSlot *items; }    LumeList;
+typedef struct { long len, cap; int kind; char **keys; LumeSlot *vals; } LumeMap;
 
 static void *rt_alloc(size_t n)
 {
@@ -182,7 +196,12 @@ static void list_grow(LumeList *l)
     l->cap = cap;
 }
 
-LumeList *lume_list_new(void) { return rt_alloc(sizeof(LumeList)); }
+LumeList *lume_list_new(void)
+{
+    LumeList *l = rt_alloc(sizeof(LumeList));
+    l->kind = LUME_CTR_LIST;
+    return l;
+}
 
 long lume_list_len(const LumeList *l) { return l ? l->len : 0; }
 
@@ -217,13 +236,76 @@ long lume_list_push_s(LumeList *l, const char *v)
     return ++l->len;
 }
 
+/* Push a nested container. `v` is the lume_list_new() / lume_map_new()
+ * pointer, and its own `kind` is what tells a reader how to walk it later, so
+ * one function serves both container kinds. */
+long lume_list_push_obj(LumeList *l, void *v)
+{
+    if (!l) return 0;
+    if (l->len >= l->cap) list_grow(l);
+    l->items[l->len].num = (long)(intptr_t)v;
+    l->items[l->len].str = NULL;
+    l->items[l->len].tag = LUME_SLOT_OBJ;
+    return ++l->len;
+}
+
 /* Render one slot the way the interpreter would print it. The interpreter's
  * print() falls back to JSON for anything that is not a plain scalar, so a
  * string inside a list or a map keeps its quotes and escapes — `["a","b"]`,
- * not `[a,b]`. The two callers (list elements, map values) consume the
- * result immediately, so a single static buffer is enough. */
-static const char *slot_text(LumeSlot s)
+ * not `[a,b]`.
+ *
+ * Writes straight to stdout and returns the byte count rather than handing
+ * back a string: a nested container (LUME_SLOT_OBJ) is printed by recursing
+ * into its own elements, which cannot render into a fixed buffer — the depth
+ * is unbounded and two of them can sit side by side in one list. Scalars
+ * still go through a static buffer, each emitted before the next is written. */
+/* Mutually recursive: a container body holds slots, and a slot may hold a
+ * container. Declared before either body so both can call the other. */
+static int slot_emit(LumeSlot s);
+
+/* Write a container's body -- the elements between the brackets, no brackets
+ * and no trailing newline. Both printers and slot_emit's LUME_SLOT_OBJ branch
+ * go through here, so a nested container renders by exactly the same rules as
+ * a top-level one and the three cannot drift. The cast to LumeList is safe for
+ * both shapes: `kind` is the first int in each and `len`/`cap` follow it. */
+static int container_body(const void *p)
 {
+    const LumeList *as_list = (const LumeList *)p;
+    if (as_list->kind != LUME_CTR_LIST) {
+        const LumeMap *m = (const LumeMap *)p;
+        int n = 0;
+        for (long i = 0; i < m->len; i++) {
+            if (i) n += emit(",");
+            n += emit("\"");
+            n += emit(m->keys[i]);
+            n += emit("\":");
+            n += slot_emit(m->vals[i]);
+        }
+        return n;
+    }
+    int n = 0;
+    for (long i = 0; i < as_list->len; i++) {
+        if (i) n += emit(",");
+        n += slot_emit(as_list->items[i]);
+    }
+    return n;
+}
+
+static int slot_emit(LumeSlot s)
+{
+    if (s.tag == LUME_SLOT_OBJ) {
+        /* The slot holds the container's address; its own `kind` says which
+         * of the two container shapes it is, since an i8* does not. The
+         * printers below end with a newline, so the brackets are written
+         * here -- this is a container *inside* a value, not a whole one. */
+        const void *p = (const void *)(intptr_t)s.num;
+        if (!p) return emit("null");
+        const LumeList *shape = (const LumeList *)p;
+        int n = emit(shape->kind == LUME_CTR_LIST ? "[" : "{");
+        n += container_body(p);
+        return n + emit(shape->kind == LUME_CTR_LIST ? "]" : "}");
+    }
+
     static char buf[1024];
     if (!s.str) s.str = "";
     switch (s.tag) {
@@ -246,16 +328,28 @@ static const char *slot_text(LumeSlot s)
                     buf[n++] = (char)*p;
             }
         }
-        buf[n < sizeof buf ? n : sizeof buf - 1] = '"';
-        return buf;
+        /* The closing quote has to be NUL-terminated, not just written: emit() is
+         * fputs + strlen, so whatever the previous caller left in this static
+         * buffer would still be read after it. That went unnoticed while every
+         * string in a program was written once per run — the first use of the
+         * buffer was always preceded by a longer one filling it, or by nothing
+         * at all and a zeroed buffer. Recursion is what made it visible: a
+         * nested container is the second string rendered into the same buffer,
+         * so `{ a: "AAAAAAAAAAAAAAAA" }` followed by `{ x: { y: "s" } }` printed
+         * `{"y":"s"AAAAAAAAAAAAAA}` -- the 16-byte tail of the earlier string,
+         * because the short one left the old bytes in place after its quote. */
+        size_t end = n < sizeof buf ? n : sizeof buf - 1;
+        buf[end] = '"';
+        buf[end + 1 < sizeof buf ? end + 1 : end] = '\0';
+        return emit(buf);
     }
     case LUME_SLOT_FLOAT: {
         double d = 0;
         memcpy(&d, &s.num, sizeof d);
         snprintf(buf, sizeof buf, "%g", d);
-        return buf;
+        return emit(buf);
     }
-    default:              snprintf(buf, sizeof buf, "%ld", s.num); return buf;
+    default:              snprintf(buf, sizeof buf, "%ld", s.num); return emit(buf);
     }
 }
 
@@ -283,16 +377,19 @@ const char *lume_list_at_s(const LumeList *l, long i)
     return l->items[i].tag == LUME_SLOT_STR ? l->items[i].str : "";
 }
 
+/* Read a nested container back out of a list -- the counterpart of
+ * lume_map_get_obj, and the reason `for (let row in [[1],[2]])` has a way to
+ * see the inner lists. Null for an out-of-range index or a scalar element. */
+void *lume_list_at_obj(const LumeList *l, long i)
+{
+    if (!l || i < 0 || i >= l->len || l->items[i].tag != LUME_SLOT_OBJ) return NULL;
+    return (void *)(intptr_t)l->items[i].num;
+}
+
 long lume_list_print(const LumeList *l)
 {
     if (!l) return emit("[]\n");
-    int n = emit("[");
-    for (long i = 0; i < l->len; i++) {
-        if (i) n += emit(",");
-        n += emit(slot_text(l->items[i]));
-    }
-    n += emit("]\n");
-    return n;
+    return emit("[") + container_body(l) + emit("]\n");
 }
 
 
@@ -320,7 +417,12 @@ static long map_find(const LumeMap *m, const char *k)
     return -1;
 }
 
-LumeMap *lume_map_new(void) { return rt_alloc(sizeof(LumeMap)); }
+LumeMap *lume_map_new(void)
+{
+    LumeMap *m = rt_alloc(sizeof(LumeMap));
+    m->kind = LUME_CTR_MAP;
+    return m;
+}
 
 long lume_map_len(const LumeMap *m) { return m ? m->len : 0; }
 
@@ -351,6 +453,14 @@ long lume_map_put_f(LumeMap *m, const char *k, double v)
 }
 long lume_map_put_s(LumeMap *m, const char *k, const char *v) { return map_put(m, k, 0, v, LUME_SLOT_STR); }
 
+/* Store a nested container as a value -- the map half of lume_list_push_obj.
+ * `map_put` is the shared writer; all it needs is the object tag and the
+ * pointer in the num field. */
+long lume_map_put_obj(LumeMap *m, const char *k, void *v)
+{
+    return map_put(m, k, (long)(intptr_t)v, NULL, LUME_SLOT_OBJ);
+}
+
 
 /* get() with the interpreter's default: an absent key yields `dflt`. */
 long lume_map_get_i(const LumeMap *m, const char *k, long dflt)
@@ -359,6 +469,25 @@ long lume_map_get_i(const LumeMap *m, const char *k, long dflt)
     if (i < 0) return dflt;
     return m->vals[i].tag == LUME_SLOT_STR ? 0 : m->vals[i].num;
 }
+/* Read a nested container back out. Returns null for an absent key or one that
+ * does not hold a container -- the caller hands the result straight to another
+ * container helper or to a printer, both of which take a null pointer as an
+ * empty container. This is what makes `get(m, k, { x: 1 })` and a nested read
+ * work: the getter has to give back a pointer, not the int/float/string the
+ * other three return.
+ *
+ * The third parameter exists only so the call site can pass a default the way
+ * it does for every other flavour (get() picks its getter from the default's
+ * type). A container default is never stored -- an absent key reads as null,
+ * which the container helpers already treat as empty. */
+void *lume_map_get_obj(const LumeMap *m, const char *k, void *dflt)
+{
+    (void)dflt;
+    long i = map_find(m, k);
+    if (i < 0 || m->vals[i].tag != LUME_SLOT_OBJ) return NULL;
+    return (void *)(intptr_t)m->vals[i].num;
+}
+
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)
 {
     long i = map_find(m, k);
@@ -392,14 +521,5 @@ LumeList *lume_map_keys(const LumeMap *m)
 long lume_map_print(const LumeMap *m)
 {
     if (!m) return emit("{}\n");
-    int n = emit("{");
-    for (long i = 0; i < m->len; i++) {
-        if (i) n += emit(",");
-        n += emit("\"");
-        n += emit(m->keys[i]);
-        n += emit("\":");
-        n += emit(slot_text(m->vals[i]));
-    }
-    n += emit("}\n");
-    return n;
+    return emit("{") + container_body(m) + emit("}\n");
 }

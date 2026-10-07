@@ -367,5 +367,24 @@ func show(): Result {
 }
 print(show());           // {"ok":1}
 
+// Native-backend containers can nest. Before this, every slot in rt.c held a
+// scalar, so both emitters refused anything like the two lines below with
+// "map values must be int, float or string" / "list elements must be ..." while
+// the interpreter has always accepted them. The depth here is deliberate: the
+// native printer used to render a slot through one fixed 1024-byte buffer, so a
+// recursive shape is exactly what would have exposed it -- these four levels and
+// the mixed list-in-map-in-list below are what pin the streaming version.
+print({ a: { b: { c: { d: 1 } } } });          // {"a":{"b":{"c":{"d":1}}}}
+print([[1, [2, 3]], [4]]);                     // [[1,[2,3]],[4]]
+print({ x: [1, { y: "s" }] });                 // {"x":[1,{"y":"s"}]}
+print([[]]);                                  // [[]]
+print([{ a: 1 }, { b: 2 }]);                  // [{"a":1},{"b":2}]
+print({ a: [1.5, 2.5] });                     // {"a":[1.5,2.5]}
+// Reading a nested value back out needs the pointer-returning getter, which is
+// picked from the *default*'s type -- a container default is what tells the
+// emitter the key holds a container rather than an int.
+let nested = { a: { b: 1 } };
+print(get(nested, "a", { z: 0 }));            // {"b":1}
+
 warmup();
 main();

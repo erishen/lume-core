@@ -766,6 +766,14 @@ static const char *rt_arg_type(Type *ty)
     switch (ty->kind) {
     case TY_FLOAT:  return "double";
     case TY_STRING: return "i8*";
+    /* A nested container travels as the same opaque pointer a list or a map
+     * itself does. Without this the call site spelled the argument i64 while
+     * the helper is declared i8*, and clang rejected the IR with "%t1 defined
+     * with type 'ptr' but expected 'i64'" -- the container was being built
+     * correctly and then mis-typed on the way into the runtime. */
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "i8*";
     default:        return "i64";
     }
 }
@@ -781,6 +789,12 @@ static const char *list_push_fn(Type *ty)
     case TY_STRING: return "lume_list_push_s";
     case TY_INT:
     case TY_BOOL:   return "lume_list_push_i";
+    /* A nested container travels as the same opaque i8*, so it needs the same
+     * argument spelling as the others -- only the slot tag differs, and that
+     * is the helper's business. This is what makes `[[1,2],[3]]` buildable. */
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "lume_list_push_obj";
     default:        return NULL;
     }
 }
@@ -795,6 +809,11 @@ static const char *map_put_fn(Type *ty)
     case TY_STRING: return "lume_map_put_s";
     case TY_INT:
     case TY_BOOL:   return "lume_map_put_i";
+    /* Containers as values, same reasoning as list_push_fn: this is what makes
+     * `{ a: { b: 1 } }` buildable. */
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "lume_map_put_obj";
     default:        return NULL;
     }
 }
@@ -853,7 +872,7 @@ static Val cg_list_lit(CG *g, Node *n)
     for (int i = 0; i < n->as.list.count; i++) {
         Val e = cg_expr(g, n->as.list.items[i]);
         const char *fn = list_push_fn(e.ty);
-        if (!fn) { free(e.v); free(l.v); ERRV(g, "line %zu: list elements must be int, float or string",
+        if (!fn) { free(e.v); free(l.v); ERRV(g, "line %zu: list elements must be int, float, string or a container",
                                               n->line); }
         if (e.ty && e.ty->kind == TY_BOOL) e = coerce(g, type_prim(TY_INT), e, n->line);
         Val r = rt_call(g, type_prim(TY_INT), fn, "i8* %s, %s %s", l.v,
@@ -879,7 +898,7 @@ static Val cg_map_lit(CG *g, Node *n)
         Val k = val_take(type_prim(TY_STRING),
                          cg_string_val(g, n->as.map.keys[i], strlen(n->as.map.keys[i])));
         const char *fn = map_put_fn(v.ty);
-        if (!fn) { free(k.v); free(v.v); ERRV(g, "line %zu: map values must be int, float or string",
+        if (!fn) { free(k.v); free(v.v); ERRV(g, "line %zu: map values must be int, float, string or a container",
                                               n->line); }
         if (v.ty && v.ty->kind == TY_BOOL) v = coerce(g, type_prim(TY_INT), v, n->line);
         Val r = rt_call(g, type_prim(TY_INT), fn, "i8* %s, i8* %s, %s %s", m.v, k.v,
@@ -1020,9 +1039,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i64 @lume_list_push_i(i8*, i64)\n");
     EMIT(g, "declare i64 @lume_list_push_f(i8*, double)\n");
     EMIT(g, "declare i64 @lume_list_push_s(i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_list_push_obj(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_list_at_i(i8*, i64)\n");
     EMIT(g, "declare double @lume_list_at_f(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_list_at_s(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_list_at_obj(i8*, i64)\n");
     EMIT(g, "declare i64 @lume_list_print(i8*)\n");
 
     EMIT(g, "declare i8* @lume_map_new()\n");
@@ -1030,9 +1051,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i64 @lume_map_put_i(i8*, i8*, i64)\n");
     EMIT(g, "declare i64 @lume_map_put_f(i8*, i8*, double)\n");
     EMIT(g, "declare i64 @lume_map_put_s(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_map_put_obj(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_get_i(i8*, i8*, i64)\n");
     EMIT(g, "declare double @lume_map_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_key_at(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
@@ -1171,6 +1194,16 @@ static Val cg_builtin(CG *g, Node *n)
         Type *rty = type_prim(TY_INT);
         if (d.v && d.ty && d.ty->kind == TY_FLOAT)       { fn = "lume_map_get_f"; rty = type_prim(TY_FLOAT); }
         else if (d.v && d.ty && d.ty->kind == TY_STRING) { fn = "lume_map_get_s"; rty = type_prim(TY_STRING); }
+        /* A container default (`get(m, k, { x: 1 })`, and the shape a nested
+         * read takes once the checker knows a container is there) needs the
+         * pointer-returning getter. Without this branch a container came back
+         * through lume_map_get_i as the integer in its slot field, which
+         * clang then rejected because the call was spelled i64 against an
+         * i8* argument. */
+        else if (d.v && d.ty && (d.ty->kind == TY_LIST ||
+                                  d.ty->kind == TY_STRUCT ||
+                                  d.ty->kind == TY_RESULT))
+                                      { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
 
         char dflt[96];
         const char *darg = "i64 0";
