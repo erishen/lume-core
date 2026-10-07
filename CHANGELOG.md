@@ -70,9 +70,50 @@ unary minus, which makes `-9223372036854775808` the minimum i64.
   - `.len` reads a **declared struct field** when the struct has one, but the
     **key count** on an anonymous map; `.length` works on string/list/map only.
 
-  17 new assertions in `tests/smoke.c` pin these (163 total). Two claims written
-  from memory were wrong and are now corrected against the implementation:
-  `put`/`push` do not return `null`, and `abs` does not preserve `int`.
+- **`docs/SPEC.md` gained control flow, closures and struct semantics (§4, §3.6),
+  and two of the gaps found are severe enough to call out separately.**
+  Documenting these meant running every construct, which turned up behaviour
+  nothing had recorded:
+
+  - **The loop variable is not block-scoped.** `for (let x in [1, 2]) { }` leaves
+    `x` bound to `2` afterwards, and a nested `for` reusing the name **overwrites
+    the outer variable** — the outer read after the inner loop sees `9`, not `1`.
+  - **Closure capture is asymmetric: reads follow the outer variable, writes do
+    not.** `let f = () => x; x = 99; f()` answers `99`, but `let c = () => { x =
+    x + 1; return x; }` never writes `x` back — each call restarts from the
+    captured value. Mutable state has to live in a map or list, which are
+    reference values. The same rule applies to named `func`.
+  - Every closure made inside a loop shares the one loop variable, so they all
+    answer the last value — the opposite of JavaScript's per-iteration `let`.
+  - `for` walks lists and maps only; strings and ints are refused. Map iteration
+    is in insertion order.
+  - A struct is a named map, not a record: `len`/`keys` still count keys, but
+    **assignment is by reference** (mutating the copy mutates the original), and
+    there is no method syntax at all.
+
+Two **pre-existing backend bugs** were found while pinning this down, both now
+in §8.1. Neither is introduced by this work, and both are worse than the
+diagnostic-only gaps already listed there:
+
+  - **Any two same-named bindings in one function break the IR text backend.**
+    Locals are named `%lv_<name>` per *name* rather than per *binding*
+    (`asg_push` in codegen.c), so they collide and it refuses to assemble. This
+    covers nested *and* sequential same-name loops — which the loop-variable
+    leak makes easy to write.
+  - **`push` to the list being iterated OOM-kills both native backends**
+    (exit 137). Their for-in never snapshots the iteration length, so a growing
+    list means the loop never ends. The interpreter is correct. This is the only
+    gap in the spec that does not merely refuse but takes the process down.
+
+16 new assertions in `tests/smoke.c` (179 total), plus a new `reject_syntax`
+helper for constructs that must not parse at all (struct methods). The loop
+cases that both backends *can* run went into `tests/native-consistency.lume`;
+the two broken ones are excluded with a comment saying why.
+
+  17 assertions in `tests/smoke.c` pin those (163 total at that point). Two
+  claims written from memory were wrong and are now corrected against the
+  implementation: `put`/`push` do not return `null`, and `abs` does not
+  preserve `int`.
 
 - `docs/SPEC.md` §7.1 records three **known** backend gaps that are not
   errors — most notably that the libLLVM backend cannot type a variable

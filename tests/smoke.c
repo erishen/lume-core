@@ -101,6 +101,24 @@ static void reject(const char *name, const char *src, const char *want_sub) {
     smoke_release(prog, NULL);
 }
 
+/* The snippet must fail IN THE PARSER with `want_sub` in the message. Syntax
+ * that the language simply does not have (struct method declarations, say)
+ * never reaches the checker, so neither reject() nor check_err() can express
+ * "this must not parse". */
+static void reject_syntax(const char *name, const char *src, const char *want_sub) {
+    tests_run++;
+    char err[512] = {0};
+    Node *prog = parse_program(src, err, sizeof(err));
+    if (prog || !strstr(err, want_sub)) {
+        fprintf(stderr, "FAIL %-32s expected parse error containing '%s'; got: %s\n",
+                name, want_sub, prog ? "parsed (no error)" : err);
+        tests_failed++;
+    } else {
+        printf("ok   %s\n", name);
+    }
+    smoke_release(prog, NULL);
+}
+
 /* The --no-fs lock (VM.no_fs) that check_err_nofs() turns on for one run.
  * Declared here, above check_err, because check_err applies it to the VM it
  * sets up; the driving helper sits below check_err's definition. */
@@ -513,6 +531,102 @@ int main(void) {
     check_err("el() requires the props argument",
               "print(render(el(\"p\")));",
               "el() needs (tag, props, ...children)");
+
+    /* ---- control flow & closures (docs/SPEC.md §4) --------------------- *
+     * The loop variable leaking and the closure write being a shadow are the
+     * two that bite, so both are pinned rather than described. */
+
+    /* for-in walks lists and maps only; strings and ints are refused. */
+    check_err("for-in refuses a string",
+              "for (let c in \"ab\") { print(c); }",
+              "for-in expects a list or map");
+
+    /* The loop variable outlives the loop and holds the LAST value. */
+    check("for loop variable leaks with the last value",
+          "for (let x in [1, 2]) { } print(str(x));",
+          "2\n");
+
+    /* A nested loop with the same name shares one variable -- the outer read
+     * after the inner loop sees the inner's last value, not its own. */
+    check("nested for with the same name shares the variable",
+          "for (let i in [1, 2]) {"
+          " print(\"before \" + str(i));"
+          " for (let i in [8, 9]) { print(\"inner \" + str(i)); }"
+          " print(\"after \" + str(i)); }",
+          "before 1\ninner 8\ninner 9\nafter 9\n"
+          "before 2\ninner 8\ninner 9\nafter 9\n");
+
+    check("break/continue skip the rest of one iteration",
+          "for (let x in [1, 2, 3]) { if (x == 2) { continue; } print(str(x)); }"
+          " for (let y in [1, 2, 3]) { if (y == 2) { break; } print(str(y)); }",
+          "1\n3\n1\n");
+
+    /* for walks the length bound at entry, so appended items are not visited. */
+    check("for does not visit items pushed during the walk",
+          "let l = [1]; for (let x in l) { l = push(l, 9); } print(str(len(l)));",
+          "2\n");
+
+    reject("while requires a bool condition",
+           "let i = 0; while (1) { i = i + 1; }",
+           "expected bool, got int");
+
+    /* Closure reads follow the outer variable... */
+    check("closure read follows the outer variable",
+          "let x = 1; let f = () => x; x = 99; print(str(f()));",
+          "99\n");
+
+    /* ...but a write inside the closure is a shadow local that is discarded,
+     * so each call restarts from the captured value and the outer x is never
+     * changed. Mutable state has to live in a map/list instead. */
+    check("closure writes are shadow-local, not shared",
+          "let x = 1; let c = () => { x = x + 1; return x; };"
+          " print(str(c())); print(str(c())); print(str(x));",
+          "2\n2\n1\n");
+
+    /* Same rule for a named func. */
+    check("named func writes do not escape either",
+          "let x = 1; func g() { x = 5; return 0; } g(); print(str(x));",
+          "1\n");
+
+    /* Every closure made in a loop shares the one loop variable, so all of
+     * them answer the last value -- the opposite of JavaScript's per-iteration
+     * `let`. */
+    check("closures made in a loop all see the last value",
+          "let fns = [];"
+          " for (let i in [1, 2, 3]) { fns = push(fns, () => i); }"
+          " print(str(get(fns, 0)())); print(str(get(fns, 2)()));",
+          "3\n3\n");
+
+    /* ---- struct (docs/SPEC.md §3.6) ------------------------------------ */
+
+    reject("struct literal must not miss a declared field",
+           "type P = { x: int, y: int }; let p: P = { x: 1 }; print(str(p.x));",
+           "is missing field 'y'");
+
+    reject("struct literal must not add an undeclared field",
+           "type P = { x: int }; let p: P = { x: 1, y: 2 }; print(str(p.x));",
+           "has no field 'y'");
+
+    reject("struct field types are checked",
+           "type P = { x: int }; let p: P = { x: \"s\" }; print(str(p.x));",
+           "where int is expected");
+
+    /* Assignment is by reference: mutating the copy mutates the original. */
+    check("struct assignment shares the value",
+          "type P = { x: int }; let a: P = { x: 1 }; let b: P = a; b.x = 9;"
+          " print(str(a.x)); print(str(b.x));",
+          "9\n9\n");
+
+    /* A struct is a named map at runtime, so len/keys still count keys. */
+    check("a struct answers len/keys as its key set",
+          "type P = { x: int, y: int }; let p: P = { x: 1, y: 2 };"
+          " print(str(len(p))); print(str(keys(p)));",
+          "2\n[\"x\",\"y\"]\n");
+
+    /* No method syntax at all: the language has no way to attach one. */
+    reject_syntax("struct has no method syntax",
+                  "type P = { x: int, get(): int }; print(\"?\");",
+                  "expected :, got");
 
     check("string concat",
           "let a = \"hello\"; let b = \" world\"; print(a + b + \"!\");",

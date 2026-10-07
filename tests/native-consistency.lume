@@ -241,6 +241,28 @@ print(1 == 1.0);
 print(2.5 + 1);
 print(3 / 2);
 
+// ---- loops (docs/SPEC.md §4) --------------------------------------------
+//
+// Pinned here so a backend cannot drift on loop-variable scope, break/continue,
+// or while's strict-boolean condition.
+//
+// Two §4 behaviours are deliberately ABSENT because the native backends cannot
+// run them yet (both are documented in SPEC §8.1):
+//   * two bindings sharing one name in the same function -- the IR text backend
+//     names every local `%lv_<name>`, so they collide and it refuses to
+//     assemble. That rules out both a nested `for` reusing the name and two
+//     sequential ones, so every loop variable below has a distinct name.
+//   * mutating the iterated list with `push` -- both backends loop forever and
+//     get OOM-killed (exit 137).
+// Both live in the smoke suite instead, where only the interpreter runs them.
+for (let loopvar in [1, 2]) { }
+print(loopvar);                 // the loop variable outlives the loop
+for (let contvar in [1, 2, 3]) { if (contvar == 2) { continue; } print(contvar); }
+for (let brkvar in [1, 2, 3]) { if (brkvar == 2) { break; } print(brkvar); }
+let whilevar = 0;
+while (whilevar < 3) { print(whilevar); whilevar = whilevar + 1; }
+for (let mapkey in { a: 7 }) { print(mapkey); }   // for-in over a map walks keys
+
 func sum3(a, b, c) { return a + b + c; }
 print(sum3(1, 2, 3));
 
