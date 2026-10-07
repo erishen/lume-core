@@ -488,6 +488,16 @@ void *lume_map_get_obj(const LumeMap *m, const char *k, void *dflt)
     return (void *)(intptr_t)m->vals[i].num;
 }
 
+/* Does this Result hold an error? `?` branches on it right after the call and
+ * before the payload is read, which is the order the interpreter uses
+ * (interp.c's propagate branch looks for "err" first and only then reads "ok").
+ * A Result with neither key -- a callee typed any -- counts as no error, so a
+ * loose call keeps working rather than propagating something that is not there. */
+long lume_map_has(const LumeMap *m, const char *k)
+{
+    return map_find(m, k) >= 0;
+}
+
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)
 {
     long i = map_find(m, k);

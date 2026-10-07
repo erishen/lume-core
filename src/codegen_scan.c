@@ -58,7 +58,14 @@ Type *infer_node_type(CG *g, Node *n)
          * which is how `let b = scale(a, 5)` gets its %Rect slot. */
         if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
         Sig *s = sig_find(&g->sigs, n->as.call.callee->as.var.name);
-        return s ? s->ret : NULL;
+        if (!s) return NULL;
+        /* `f()?` is not a Result -- it is the `ok` payload, so the slot has to
+         * be typed from that. Reading the callee's declared return type instead
+         * alloca'd an i8* for an int payload, and the store/load pair disagreed
+         * on the type: `store i64 %c10, i64* %lv_v` into an `i8*` slot, which
+         * clang assembles and the program then segfaults on. */
+        if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
+        return s->ret;
     }
     case N_MAP_LIT: return type_anon_struct();
     case N_MEMBER:  return member_field_type(g, n);

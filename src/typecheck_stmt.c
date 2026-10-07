@@ -22,9 +22,16 @@ void ck_fn(Checker *c, char **names, Type *ft, Node *body) {
     bool in_saved = c->in_func;
     int loop_saved = c->loop_depth;
     c->scope = scope_new(saved);
-    for (int i = 0; i < ft->count; i++)
-        scope_decl(c, c->scope, names[i], ft->types[i],
-                   body ? body->line : 0); /* 参数间重名/与函数体 let 重名即报错 */
+    for (int i = 0; i < ft->count; i++) {
+        /* Same reason as the top-level `let` in ck_stmt: the body is walked
+         * twice, and re-running scope_decl on the parameters would report a
+         * duplicate binding the second time around. */
+        if (c->collecting)
+            scope_put(c->scope, names[i], ft->types[i]);
+        else
+            scope_decl(c, c->scope, names[i], ft->types[i],
+                       body ? body->line : 0); /* 参数间重名/与函数体 let 重名即报错 */
+    }
     c->cur_ret = ft->ret;
     c->in_func = true;
     c->loop_depth = 0;
@@ -84,6 +91,20 @@ static Type *tool_param_struct(Node *p) {
     return at;
 }
 
+/* Walk one statement. `collect` selects the first of Pass D's two walks: the
+ * collecting one, which records Result payloads and notes diagnostics instead of
+ * reporting them, and the ordinary one. Both walks are the same traversal --
+ * ck_stmt never sees the difference -- because the only thing that has to
+ * happen differently is whether ck_fail() stops the walk, and that is already
+ * handled inside ck_fail(). Kept as a wrapper so the pass loop in
+ * type_check_module() can say which walk it is on without duplicating the
+ * per-statement dispatch. */
+void ck_stmt_mode(Checker *c, Node *n, bool collect) {
+    c->collecting = collect;
+    ck_stmt(c, n);
+    c->collecting = false;
+}
+
 void ck_stmt(Checker *c, Node *n) {
     if (c->failed || !n) return;
     switch (n->type) {
@@ -134,8 +155,18 @@ void ck_stmt(Checker *c, Node *n) {
                 ck_fail(c, n->line, "'%s' is not assignable to the declared type '%s' of '%s'",
                         ty_str(it), ty_str(annot), n->as.let.name);
             }
-            scope_decl(c, c->scope, n->as.let.name,
-                       annot ? annot : (it ? it : any_type()), n->line);
+            /* Pass D walks every statement twice (see type_check_module()), so a
+             * top-level `let` arrives here twice with its name already bound by
+             * the first walk. Re-declaring it would trip scope_decl's
+             * same-scope check and report a duplicate that does not exist --
+             * which is why this goes in through scope_put while collecting. The
+             * binding it makes is the same one the second walk will make. */
+            if (c->collecting)
+                scope_put(c->scope, n->as.let.name,
+                          annot ? annot : (it ? it : any_type()));
+            else
+                scope_decl(c, c->scope, n->as.let.name,
+                           annot ? annot : (it ? it : any_type()), n->line);
             if (n->is_export)
                 export_add(c, n->as.let.name,
                            scope_get(c->scope, n->as.let.name));

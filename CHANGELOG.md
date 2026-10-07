@@ -66,6 +66,59 @@ All notable changes to Lume are documented here. The format follows
   `null-as-scalar: llvm compiled 'let x: int = null'`.
 - Docs: dropped the now-stale "known divergence" note on `float %` in §1.6
   (fixed by #1) and recorded #8 in §8.1.
+- **Implemented `?` error propagation in both native backends** (SPEC 8.1 #6,
+  second half). The recorded diagnosis said the payload type is `any_type()`
+  at check time and that fixing it needed generics or runtime-value boxing.
+  Neither turned out to be necessary: the payload is knowable statically from
+  the callee's own `return { ok: X }` statements.
+
+  The type checker now walks function bodies twice. The first walk records each
+  Result annotation's `ok` payload onto that function's *own* Result type object
+  (`record_ok_payload` writes `Type.elem`); the second walk reports and lets a
+  call site read `callee_t->ret->elem`. Two walks are required, not tidy: in
+  `later()?` where `later` is defined further down the file, a single walk sees
+  an empty payload. During the collecting walk `ck_fail` only records instead of
+  stopping -- a diagnostic must not cut the walk short, since the rest of that
+  body may hold the very `return { ok: X }` a `?` elsewhere needs -- and the
+  collecting walk gets a top-level scope of its own, or the second walk would
+  see the first walk's `let` bindings as duplicate declarations.
+
+  Two `return { ok: X }` in one function whose X disagree is now an error
+  rather than first-wins or a silent widening: the function has no single
+  payload type, and picking either one mistypes whichever call site read the
+  other.
+
+  Both emitters lower `?` to the same thing the interpreter does (interp.c's
+  propagate branch): call, test `lume_map_has(res, "err")`, and on a hit return
+  that Result unchanged -- `?` moves the failure out, it does not rewrite it --
+  otherwise read `ok` through the accessor the payload type picks.
+
+  Three things had to line up that all read as one bug:
+    - codegen_scan.c's and llvm_codegen.c's `infer_node_type` both return the
+      callee's *declared* return type for an N_CALL, so `let v = f()?` alloca'd
+      a pointer for an int payload. The text backend then emitted
+      `store i64 %c10, i64* %lv_v` into an `i8*` slot (clang assembles it, the
+      program segfaults); libLLVM instead printed the integer through
+      lume_map_print. Both infer_node_type copies need the `propagate` case.
+    - `cg_string_val` returns a name in a caller-owned buffer, not heap memory.
+      Freeing it aborts with "pointer being freed was not allocated".
+    - the text backend needs a real basic-block branch, the libLLVM one needs
+      three blocks with the payload parked in an alloca (the shape its
+      short-circuit and/or lowering already uses).
+
+  native_backends.sh's `propagate` assertion is flipped rather than deleted: it
+  used to require both emitters to *refuse* `f()?`, which was the only honest
+  answer while `?` was unimplemented. It now requires every leg to run it and
+  match the interpreter, on both the ok and the err path, since those fail
+  differently (the ok path used to print the whole Result, the err path used to
+  run the statements the error was supposed to skip). Verified by mutation:
+  dropping the payload-type case fails it with "propagate: text disagrees with
+  the interpreter".
+
+  Still refused by both emitters, with the reason stated: a callee that only
+  ever returns `err` has no `return { ok: X }` to read a payload type from. The
+  interpreter runs it fine.
+
 - **Gave `Result` a native representation** (§8.1 #6, partially fixed). The
   gap's recorded diagnosis was wrong: it blamed the `?` propagation suffix and
   called the fix "a large runtime-value-boxing job". Measuring it showed the

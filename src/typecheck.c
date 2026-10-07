@@ -88,6 +88,45 @@ Type *type_result(void) {
     return t;
 }
 
+/* Record what a `return { ok: X }` unwraps to.
+ *
+ * `?` needs the payload type statically: the emitters cannot read a map field
+ * whose layout they do not know, and they refuse to compile rather than guess
+ * (SPEC 8.1 #6). The payload is written onto the *enclosing function's*
+ * declared Result type -- c->cur_ret -- not onto the fresh object the literal
+ * itself produced. That object is what `callee_t->ret` points at for every
+ * call of that function, so a payload recorded there is the one a `?` at any
+ * call site reads back.
+ *
+ * Two `return { ok: X }` in one function that disagree are a type error rather
+ * than something to paper over: the function has no single payload type, and
+ * picking the first would silently mistype whichever call site read the other.
+ * Reported only once per function, on the second and later disagreements, so a
+ * function with a consistent payload stays quiet. */
+void record_ok_payload(Checker *c, Type *lit_result, Type *payload, size_t line) {
+    Type *target = (c->cur_ret && c->cur_ret->kind == TY_RESULT) ? c->cur_ret
+                                                                 : lit_result;
+    if (!target->elem) {
+        target->elem = payload;
+        return;
+    }
+    if (target->elem->kind == TY_ANY || payload->kind == TY_ANY) {
+        target->elem = any_type();
+        return;
+    }
+    if (target->elem->kind == payload->kind &&
+        (!target->elem->name || !payload->name ||
+         strcmp(target->elem->name, payload->name) == 0))
+        return;   /* the same payload type, said twice */
+
+    if (c->cur_ret == target)
+        ck_fail(c, line, "this function returns { ok: ... } of two different "
+                         "types (%s and %s), so '?' has no single payload type",
+                ty_str(target->elem), ty_str(payload));
+    else
+        target->elem = any_type();   /* not in a Result function: stay permissive */
+}
+
 void type_release_all(void) {
     Type *t = ty_allocs;
     ty_allocs = NULL; /* so a second call is a no-op, not a double free */
@@ -184,6 +223,16 @@ const char *ty_str(Type *t) {
 
 void ck_fail(Checker *c, size_t line, const char *fmt, ...) {
     if (c->failed) return;
+    /* During the collecting walk of Pass D, a diagnostic must not stop the
+     * walk: the rest of this body may hold the `return { ok: X }` that a `?`
+     * elsewhere needs, and stopping at the first complaint would leave that
+     * payload unknown and the operator uncompilable for a reason that has
+     * nothing to do with the program. So the error is only *noted* here and
+     * replayed after the second walk, which reports it for real. */
+    if (c->collecting) {
+        c->collect_failed = true;
+        return;
+    }
     c->failed = true;
     if (!c->errbuf || !c->errbuf_size) return;
     snprintf(c->errbuf, c->errbuf_size, "line %zu: ", line);
@@ -524,9 +573,41 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
                        scope_get(c.scope, s->as.func.name));
     }
 
-    /* Pass D: walk everything (function bodies included). */
-    for (int i = 0; i < prog->as.program.count && !c.failed; i++)
-        ck_stmt(&c, prog->as.program.stmts[i]);
+    /* Pass D: walk everything (function bodies included).
+     *
+     * Run twice, and the reason is `?`. A call `f()?` needs f's payload type,
+     * which is only knowable from the `return { ok: X }` statements inside f --
+     * and those may sit *after* the call in source order. One walk would leave
+     * every payload unknown for a forward reference, and the emitters cannot
+     * compile `?` against an unknown type (SPEC 8.1 #6), so the first walk is
+     * there to fill the payloads in and the second is the one that reports.
+     *
+     * Walking twice is safe because the second walk can only find *more*: every
+     * diagnostic the first one produced is produced again, and the loop below
+     * returns before the second walk starts if the first failed. A payload can
+     * make a previously-untyped `?` typed, which can surface a genuine type
+     * error that the first walk (seeing `any` there) could not -- and that is
+     * the point of doing it at all.
+     *
+     * Only function bodies matter for the collection, and ck_stmt already
+     * walks them via ck_fn with the params bound, so no separate walker is
+     * needed -- which is also what keeps the two walks seeing identical scopes. */
+    for (int pass = 0; pass < 2 && !c.failed; pass++) {
+        bool collect = (pass == 0);
+        /* The collecting walk gets a scope of its own, parented on the one
+         * holding the builtins, so that nothing it declares can be seen by the
+         * walk that reports. Sharing one scope made the second walk re-declare
+         * every top-level `let` into a scope the first walk had already bound,
+         * which scope_decl correctly rejects as a duplicate -- a diagnostic
+         * about the checker rather than about the program. Its bindings are
+         * thrown away with it; only the Result payloads it records on the
+         * function types survive, and those live on the Type objects, not here. */
+        CScope *outer = c.scope;
+        if (collect) c.scope = scope_new(outer);
+        for (int i = 0; i < prog->as.program.count && !c.failed; i++)
+            ck_stmt_mode(&c, prog->as.program.stmts[i], collect);
+        if (collect) c.scope = outer;
+    }
 
     g_ck_scopes = NULL;
     ck_free(&c);

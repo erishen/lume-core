@@ -778,6 +778,24 @@ static const char *rt_arg_type(Type *ty)
     }
 }
 
+/* Which getter reads a map value of static type `ty` -- the same choice
+ * map_put_fn makes on the way in, read back for `?` unwrapping. */
+static const char *map_get_fn(Type *ty)
+{
+    if (!ty) return NULL;
+    switch (ty->kind) {
+    case TY_FLOAT:  return "lume_map_get_f";
+    case TY_STRING: return "lume_map_get_s";
+    case TY_INT:
+    case TY_BOOL:   return "lume_map_get_i";
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "lume_map_get_obj";
+    default:        return NULL;
+    }
+}
+
+
 /* Whichpush helper an element of static type `ty` needs. The checker keeps a
  * list homogeneous, so one answer serves every element. */
 
@@ -1056,6 +1074,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_map_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_map_has(i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_key_at(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
@@ -1271,21 +1290,6 @@ static Val cg_builtin(CG *g, Node *n)
 
 static Val cg_call(CG *g, Node *n)
 {
-    /* `f()?` — error propagation. Checked first, before any of the dispatch
-     * below, because it would otherwise be lowered as a plain call and then
-     * silently compute the wrong thing: the interpreter unwraps `ok` and
-     * returns the enclosing function early on `err`, so a compiled `?` would
-     * print the whole Result and keep running the code that the error was
-     * supposed to skip. Refusing to compile is the only honest answer until
-     * the emitters can type the unwrapped payload (SPEC 8.1 #6).
-     *
-     * Before Result had a codegen type this was caught further down as
-     * "variable has no codegen type"; now that Result travels as an opaque
-     * pointer it compiles, so this guard is what keeps the case honest. */
-    if (n->as.call.propagate)
-        ERRV(g, "line %zu: '?' error propagation is not supported by the native "
-                "backend yet", n->line);
-
     /* print() is the one builtin we lower directly to printf */
     if (n->as.call.callee && n->as.call.callee->type == N_VAR &&
         strcmp(n->as.call.callee->as.var.name, "print") == 0) {
@@ -1358,6 +1362,67 @@ static Val cg_call(CG *g, Node *n)
     }
 
     if (!rty) return val_make(s->ret, "void");
+
+    /* `f()?` — the callee handed back a Result; the error has to travel out of
+     * *this* function before the payload is read. The interpreter does exactly
+     * this (interp.c's propagate branch): look for `err` first, and if it is
+     * there return it from the enclosing function without touching `ok`.
+     *
+     * Both halves matter. Lowering `?` as a plain call would print the whole
+     * Result instead of the payload *and* keep running the statements the error
+     * was supposed to skip, which is a silent wrong answer rather than a
+     * diagnostic.
+     *
+     * The returned value is the err slot's contents; the enclosing function's
+     * own Result return type is what carries it out, and the type checker has
+     * already established that this function returns Result.
+     */
+    if (n->as.call.propagate) {
+        Type *payload = s->ret->elem;
+        if (!payload || payload->kind == TY_ANY)
+            ERRV(g, "line %zu: '?' needs '%s' to return at least one "
+                    "{ ok: <value> } whose type is known", n->line, name);
+        const char *get_fn = map_get_fn(payload);
+        if (!get_fn)
+            ERRV(g, "line %zu: '?' cannot unwrap a payload of type '%s'",
+                 n->line, src_type_name(payload));
+
+        char has[48], test[48], pay[48];
+        snprintf(has,  sizeof has,  "%%c%d", g->tid++);
+        snprintf(test, sizeof test, "%%c%d", g->tid++);
+        snprintf(pay,  sizeof pay,  "%%c%d", g->tid++);
+        int lerr = g->lid++, lok = g->lid++;
+
+        /* if lume_map_has(result, "err") { return result; } -- the err slot's
+         * contents are the Result itself here, which is what the enclosing
+         * function hands back: `?` moves the failure out, it does not rewrite
+         * it. That matches the interpreter, which stores the whole map as
+         * vm->call_result and longjmps. */
+        /* cg_string_val() hands back a name in a caller-owned buffer, so it is
+         * borrowed here, not owned: no free, and val_take() just labels it. */
+        Val k_err = val_take(type_prim(TY_STRING), cg_string_val(g, "err", 3));
+        EMIT(g, "  %s = call i64 @lume_map_has(i8* %s, i8* %s)\n",
+             has, name_res, k_err.v);
+        EMIT(g, "  %s = icmp ne i64 %s, 0\n", test, has);
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, lerr, lok);
+        EMIT(g, "L%d:\n", lerr);
+        EMIT(g, "  ret i8* %s\n", name_res);
+        EMIT(g, "L%d:\n", lok);
+
+        /* Otherwise the payload, through the accessor its own type picks. An
+         * absent `ok` cannot happen on this path -- lume_map_has said the map
+         * has no `err` -- but the accessors still take a default, and passing
+         * the zero of the right type keeps the call well-typed for all three. */
+        Val k_ok = val_take(type_prim(TY_STRING), cg_string_val(g, "ok", 2));
+        const char *pty = rt_arg_type(payload);
+        const char *darg = strcmp(pty, "i8*") == 0   ? "i8* null"
+                         : strcmp(pty, "double") == 0 ? "double 0.0"
+                                                      : "i64 0";
+        EMIT(g, "  %s = call %s @%s(i8* %s, i8* %s, %s)\n",
+             pay, pty, get_fn, name_res, k_ok.v, darg);
+        return val_make(payload, pay);
+    }
+
     /* A function that returns a struct hands back an aggregate value — the
      * caller's field access has to slot it first, hence agg. */
     return val_make_agg(s->ret, name_res);

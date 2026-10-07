@@ -290,66 +290,57 @@ for leg in "${RAN[@]}"; do
 done
 pass "null-as-string: every leg prints the bare word null"
 
-# ---- `?` must never compile silently ---------------------------------
-# The most dangerous shape this suite guards against: a feature the emitters
-# do not implement, which they nonetheless *accept* and compute the wrong
-# answer for. `f()?` is exactly that. The interpreter unwraps `ok` and returns
-# the enclosing function early on `err`; an emitter that lowered `?` as a plain
-# call would print the whole Result instead of the payload, and on the error
-# path it would run the very statements the error was meant to skip.
+# ---- `?` error propagation must agree across the backends ----------------
+# This assertion used to require the opposite. `?` was unimplemented in both
+# emitters -- propagate had no handling at all -- so it degraded into a plain
+# call: the interpreter unwraps `ok` and returns the enclosing function early
+# on `err`, while a compiled `?` printed the whole Result instead of the
+# payload and, on the error path, ran the very statements the error was meant
+# to skip. Refusing to compile was the only honest answer then, and this check
+# pinned that.
 #
-# This became reachable when Result gained a codegen type (SPEC 8.1 #6): before
-# that, `?` failed with "variable has no codegen type" and the question never
-# arose. Verified against v0.3.0 in a scratch worktree -- both emitters refused
-# there too, so this is not a regression, but the refusal is now the only thing
-# keeping the case honest and it needs to stay that way.
-#
-# Asserted on the error path specifically, since that is where silently
-# accepting `?` does real damage.
+# `?` is implemented now (the payload type comes from the callee's own
+# `return { ok: X }` statements, recorded by the type checker's first pass), so
+# the requirement flipped: every leg has to *run* it and produce what the
+# interpreter produces. Both paths are checked, because they fail differently:
+# the ok path used to print the whole Result, the err path used to run the
+# skipped statements and then report success.
 PROPAGATE="$WORK/propagate.lume"
 cat > "$PROPAGATE" <<'LUME'
 func divide(a: int, b: int): Result {
   if (b == 0) { return { err: "division by zero" }; }
-  return { ok: a / b };
+  return { ok: a };
 }
-func report(): Result {
+func ok_path(): Result {
+  let v = divide(21, 7)?;
+  print(v);
+  return { ok: 0 };
+}
+func err_path(): Result {
   let v = divide(21, 0)?;
   print("must not be reached");
   return { ok: 0 };
 }
-print(report());
+print(ok_path());
+print(err_path());
 LUME
-# Sanity: the interpreter really does propagate, so the script above is a
-# legal program rather than one that only looks like one. If this ever stops
-# holding, the assertions below would be guarding the wrong thing.
-prop_out=$("$TARGET" "$PROPAGATE" 2>/dev/null | head -1)
-[ "$prop_out" = '{"err":"division by zero"}' ] ||
-    fail "propagate: the interpreter printed '$prop_out', expected the propagated err"
-prop_msg=""
+prop_want=$("$TARGET" "$PROPAGATE" 2>/dev/null)
+[ "$prop_want" = "21
+{\"ok\":0}
+{\"err\":\"division by zero\"}" ] ||
+    fail "propagate: the interpreter printed unexpected output:$(printf ' %s' "$prop_want")"
 for leg in "${RAN[@]}"; do
     case "$leg" in
         text) flag=--compile-text ;;
         llvm) flag=--compile-llvm ;;
         *)    continue ;;
     esac
-    msg=$("$TARGET" "$flag" "$PROPAGATE" -o "$WORK/prop-$leg" 2>&1 >/dev/null)
-    rc=$?
-    msg=$(printf '%s\n' "$msg" | diag_line)
-    if [ $rc -eq 0 ] || [ -x "$WORK/prop-$leg" ]; then
-        fail "propagate: $leg compiled \`f()?\` -- it silently computes the wrong answer"
-    fi
-    case "$msg" in
-        *"'?' error propagation is not supported"*) ;;
-        *) echo "$msg" | head -3
-           fail "propagate: $leg refused with an unexpected message" ;;
-    esac
-    if [ -z "$prop_msg" ]; then
-        prop_msg=$msg
-    elif [ "$msg" != "$prop_msg" ]; then
-        fail "propagate: text and llvm word the refusal differently"
-    fi
+    "$TARGET" "$flag" "$PROPAGATE" -o "$WORK/prop-$leg" >/dev/null 2>&1 ||
+        fail "propagate: $leg refused to compile a legal \`f()?\`"
+    got=$("$WORK/prop-$leg" 2>/dev/null)
+    [ "$got" = "$prop_want" ] || {
+        echo "got: $got"
+        fail "propagate: $leg disagrees with the interpreter on \`f()?\`"
+    }
 done
-[ -n "$prop_msg" ] ||
-    echo "ok   propagate: no emitter leg ran, nothing to assert"
-[ -z "$prop_msg" ] ||
-    pass "propagate: every emitter refuses \`f()?\`, with the same message"
+pass "propagate: every leg unwraps \`?\` and propagates \`err\` like the interpreter"

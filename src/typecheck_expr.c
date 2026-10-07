@@ -73,8 +73,15 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             if (n->as.map.count == 1 &&
                 (strcmp(n->as.map.keys[0], "ok") == 0 ||
                  strcmp(n->as.map.keys[0], "err") == 0)) {
-                ck_expr(c, n->as.map.vals[0], NULL);
-                return type_result();
+                Type *payload = ck_expr(c, n->as.map.vals[0], NULL);
+                Type *rt = type_result();
+                /* Only the `ok` half is the payload `?` unwraps. An `err`
+                 * literal says nothing about it, and a function that only ever
+                 * fails leaves it unknown -- which the emitters report rather
+                 * than guess. */
+                if (strcmp(n->as.map.keys[0], "ok") == 0)
+                    record_ok_payload(c, rt, payload, n->line);
+                return rt;
             }
             /* duplicate keys are almost certainly a bug */
             for (int i = 0; i < n->as.map.count; i++)
@@ -301,7 +308,16 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                     c->cur_ret->kind != TY_ANY)
                     ck_fail(c, n->line,
                             "'?' needs the enclosing function to return Result");
-                return any_type(); /* payload type is unknown without generics */
+                /* The payload is whatever the callee's own `return { ok: X }`
+                 * statements said, recorded onto its declared Result type by
+                 * record_ok_payload(). Two passes over the function bodies run
+                 * before this one, so a `?` on a function defined further down
+                 * reads the same payload. `elem` is NULL when the callee only
+                 * ever returns `err` -- nothing to unwrap, so there is no type
+                 * to hand the emitters and they refuse to compile the call.
+                 * That used to be every `?`, which is why the emitters could
+                 * not support the operator at all. */
+                return (src && src->elem) ? src->elem : any_type();
             }
             return ret;
         }

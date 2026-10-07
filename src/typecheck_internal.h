@@ -48,6 +48,13 @@ typedef struct {
     char *errbuf;
     size_t errbuf_size;
     bool failed;
+    /* Pass D runs twice: the first walk only records Result payloads (so a `?`
+     * on a function defined later in the file can be typed) and must not stop
+     * at the first diagnostic, since the body it is walking may be exactly
+     * where the real error is. `failed` is held while that walk is in
+     * progress and replayed if it ends up set -- see ck_collect_note(). */
+    bool collecting;
+    bool collect_failed;
     /* module context (NULL for single-file / REPL checks): the module being
      * checked and the loader registry used to resolve `import "x" as ns`. */
     struct Module *self;
@@ -71,6 +78,7 @@ Module *scope_get_ns(CScope *s, const char *name);
 StructDef *find_struct(Checker *c, const char *name);
 void add_struct(Checker *c, const char *name, Type *t);
 Type *resolve(Checker *c, Type *t, size_t line);
+void record_ok_payload(Checker *c, Type *lit_result, Type *payload, size_t line);
 bool type_compat(Checker *c, Type *src, Type *dst, size_t line);
 bool is_bool_ok(Checker *c, Type *t, size_t line);
 void expect_compat(Checker *c, Type *actual, Type *expected,
@@ -80,6 +88,7 @@ Type *arith_result(Type *a, Type *b);
 /* ---- 表达式 / 语句检查(typecheck_expr.c / typecheck_stmt.c) ---- */
 Type *ck_expr(Checker *c, Node *n, Type *expected);
 void ck_stmt(Checker *c, Node *n);
+void ck_stmt_mode(Checker *c, Node *n, bool collect);
 void ck_blk(Checker *c, Node *n);
 void ck_fn(Checker *c, char **names, Type *ft, Node *body);
 

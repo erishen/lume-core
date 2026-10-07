@@ -702,6 +702,24 @@ static Val cg_member(CG *g, Node *n)
 
 /* --------------------------------------------------------- list / map lit -- */
 
+/* Which getter reads a map value of static type `ty` -- the same choice
+ * map_put_fn makes on the way in, read back for `?` unwrapping. Kept in step
+ * with codegen_expr.c's copy. */
+static const char *map_get_fn(Type *ty)
+{
+    if (!ty) return NULL;
+    switch (ty->kind) {
+    case TY_FLOAT:  return "lume_map_get_f";
+    case TY_STRING: return "lume_map_get_s";
+    case TY_INT:
+    case TY_BOOL:   return "lume_map_get_i";
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT: return "lume_map_get_obj";
+    default:        return NULL;
+    }
+}
+
 /* Which push helper an element of static type `ty` needs. The checker keeps a
  * list homogeneous, so one answer serves every element. */
 static const char *list_push_fn(Type *ty)
@@ -1286,21 +1304,6 @@ static int struct_is_addr(LLVMValueRef v)
 static Val cg_call(CG *g, Node *n)
 {
     AT(g);
-    /* `f()?` — error propagation. Checked first, before any of the dispatch
-     * below, because it would otherwise be lowered as a plain call and then
-     * silently compute the wrong thing: the interpreter unwraps `ok` and
-     * returns the enclosing function early on `err`, so a compiled `?` would
-     * print the whole Result and keep running the code that the error was
-     * supposed to skip. Refusing to compile is the only honest answer until
-     * the emitters can type the unwrapped payload (SPEC 8.1 #6).
-     *
-     * Before Result had a codegen type this was caught further down as
-     * "variable has no codegen type"; now that Result travels as an opaque
-     * pointer it compiles, so this guard is what keeps the case honest.
-     * Kept word-for-word in step with cg_call() in codegen_expr.c. */
-    if (n->as.call.propagate)
-        ERRV(g, "line %zu: '?' error propagation is not supported by the native "
-                "backend yet", n->line);
 
     if (n->as.call.callee && n->as.call.callee->type == N_VAR &&
         strcmp(n->as.call.callee->as.var.name, "print") == 0) {
@@ -1413,6 +1416,65 @@ static Val cg_call(CG *g, Node *n)
      * synthetic top body returns, and from there the entry's exit status. */
     if (g->capture_main && rty && strcmp(name, "main") == 0)
         g->exit_val = res;
+
+    /* `f()?` — see the matching block in cg_call() in codegen_expr.c for why
+     * this has to branch rather than read `ok` directly. Kept in step with that
+     * copy deliberately: the two emitters are separate implementations of one
+     * lowering, and a change made to only one of them shows up as a backend
+     * that accepts what the other rejects. */
+    if (n->as.call.propagate) {
+        Type *payload = s->ret ? s->ret->elem : NULL;
+        if (!payload || payload->kind == TY_ANY)
+            ERRV(g, "line %zu: '?' needs '%s' to return at least one "
+                    "{ ok: <value> } whose type is known", n->line, name);
+        const char *get_fn = map_get_fn(payload);
+        if (!get_fn)
+            ERRV(g, "line %zu: '?' cannot unwrap a payload of type '%s'",
+                 n->line, src_type_name(payload));
+
+        /* Same three-block shape the short-circuit and/or lowering uses: park
+         * the payload in an alloca rather than a phi, which is what the rest of
+         * this emitter does for every local. The `err` block returns the Result
+         * unchanged -- `?` moves the failure out of this function, it does not
+         * rewrite it -- and the join block reads the payload back. */
+        LLVMTypeRef pty   = ty_of(g, payload);
+        LLVMValueRef slot = LLVMBuildAlloca(g->ab, pty, "prop");
+
+        LLVMBasicBlockRef bb_err = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "prop_err");
+        LLVMBasicBlockRef bb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "prop_ok");
+        LLVMBasicBlockRef bb_end = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "prop_end");
+
+        LLVMValueRef errk = cg_string_val(g, "err", 3);
+        LLVMValueRef has  = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, (LLVMTypeRef[]){ g->i8ptr, g->i8ptr }, 2, 0),
+                rt_decl(g, "lume_map_has", g->i64,
+                        (LLVMTypeRef[]){ g->i8ptr, g->i8ptr }, 2),
+                (LLVMValueRef[]){ res, errk }, 2, "has");
+        LLVMValueRef cond = LLVMBuildICmp(g->ab, LLVMIntNE, has,
+                                          LLVMConstInt(g->i64, 0, 0), "iserr");
+        if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, cond, bb_err, bb_ok);
+
+        g->cur = bb_err; AT(g);
+        if (!DONE(g->cur)) LLVMBuildRet(g->ab, res);
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, bb_end);
+
+        g->cur = bb_ok; AT(g);
+        LLVMTypeRef ats[3] = { g->i8ptr, g->i8ptr, pty };
+        LLVMValueRef dflt = payload->kind == TY_FLOAT ? LLVMConstReal(pty, 0.0)
+                            : pty == g->i8ptr         ? LLVMConstNull(g->i8ptr)
+                                                     : LLVMConstInt(pty, 0, 0);
+        LLVMValueRef okk = cg_string_val(g, "ok", 2);
+        LLVMValueRef pay = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(pty, ats, 3, 0),
+                rt_decl(g, get_fn, pty, ats, 3),
+                (LLVMValueRef[]){ res, okk, dflt }, 3, "p");
+        if (!DONE(g->cur)) LLVMBuildStore(g->ab, pay, slot);
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, bb_end);
+
+        g->cur = bb_end; AT(g);
+        return val_make(payload, LLVMBuildLoad2(g->ab, pty, slot, "pv"));
+    }
+
     return val_make(s->ret, res);
 }
 
@@ -1473,7 +1535,13 @@ static Type *infer_node_type(CG *g, Node *n)
     case N_CALL: {
         if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
         Sig *s = sig_find(&g->sigs, n->as.call.callee->as.var.name);
-        return s ? s->ret : NULL;
+        if (!s) return NULL;
+        /* `f()?` is the `ok` payload, not a Result -- see the same branch in
+         * codegen_scan.c. Reading the declared return type here alloca'd a
+         * pointer for an int payload and the emitter then printed the integer
+         * through lume_map_print, which segfaulted. */
+        if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
+        return s->ret;
     }
     case N_LIST_LIT: { Type *et = infer_list_elem(n); return type_list(et ? et : any_type()); }
     case N_MAP_LIT:  return type_anon_struct();
