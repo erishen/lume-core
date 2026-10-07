@@ -84,6 +84,9 @@ a
 -7
 null
 null
+{"ok":3}
+{"err":"division by zero"}
+{"ok":1}
 1
 1
 2

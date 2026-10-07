@@ -945,6 +945,10 @@ static Val cg_print(CG *g, Node *n, Val a)
         if (!a.ty->name) { fn = "lume_map_print"; pty = "i8*"; break; }
         free(arg);
         ERRV(g, "line %zu: print() cannot print a struct value", n->line);
+    /* A Result *is* a map ({ ok: ... } / { err: ... }), so it prints through
+     * the same runtime helper. Without this it fell to the default arm and the
+     * interpreter could print a Result that the emitters refused to build. */
+    case TY_RESULT: fn = "lume_map_print"; pty = "i8*"; break;
     default:
         ERRV(g, "line %zu: print() cannot print this value", n->line);
     }

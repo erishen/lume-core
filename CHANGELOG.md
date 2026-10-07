@@ -66,6 +66,46 @@ All notable changes to Lume are documented here. The format follows
   `null-as-scalar: llvm compiled 'let x: int = null'`.
 - Docs: dropped the now-stale "known divergence" note on `float %` in §1.6
   (fixed by #1) and recorded #8 in §8.1.
+- **Gave `Result` a native representation** (§8.1 #6, partially fixed). The
+  gap's recorded diagnosis was wrong: it blamed the `?` propagation suffix and
+  called the fix "a large runtime-value-boxing job". Measuring it showed the
+  opposite — **`Result` had no codegen type at all**. `llvm_type_of()` and
+  `ty_of()` had no `TY_RESULT` branch, so both returned NULL and even
+  `let r = divide(21, 7);` with no `?` anywhere failed with `variable 'r' has
+  no codegen type`. The "boxing" framing came from reading a compile failure as
+  a missing representation.
+  No new representation was needed either: `Result` is `{ ok: ... }` /
+  `{ err: ... }` and the interpreter already treats it as an ordinary map
+  (`interp.c`'s `propagate` branch looks both keys up with `map_get`), so
+  natively it is the same heap map. Both backends map `TY_RESULT → i8*` (the
+  same shape as an anonymous map; `LumeSlot` is a tagged union, so one map
+  holds an int `ok` and a string `err` side by side) and route `print` through
+  the existing `lume_map_print`. Round-tripping `{ok:int}` / `{err:string}`
+  now agrees across all three backends (regression added to
+  `tests/native-consistency.lume`, `.expected` refreshed).
+- **Fixed a pre-existing IR defect that `Result` was the first to trigger**:
+  `codegen_stmt.c`'s fallback `ret %s 0` emits `ret i8* 0` for a pointer return
+  type, which is not a legal pointer constant — clang rejected it with
+  `integer constant must have integer type`. Any pointer-returning function
+  that fell out of its body hit this; a `Result` function is simply the first
+  one to get there. Now handled like the existing `double` special case:
+  pointers emit `ret %s null`.
+- `?` propagation is **still unsupported by both native backends** and remains
+  tracked as the remaining half of §8.1 #6 — there the recorded diagnosis does
+  hold up: the payload type is `any_type()` at check time (`typecheck_expr.c`:
+  `/* payload type is unknown without generics */`), so the emitters cannot
+  type the unwrapped value. It needs generics or runtime-value boxing.
+  Verified by mutation — removing the `TY_RESULT` branch fails the suite with
+  `variable 'good' has no codegen type`.
+- Also corrected §5, which still described `?`'s legality check as living in
+  the parser and reporting `expected ;, got ? ('?')` with a jumping position.
+  It lives in the typechecker and reports `'?' used on a call that does not
+  return Result` (verified on the current build).
+- A **pre-existing** limitation, untouched here and not introduced by this
+  work: native map values must be scalar (`map values must be int, float or
+  string`), so `{ ok: <Result> }` is rejected by both emitters while the
+  interpreter accepts it. Confirmed against the pre-change tree via
+  `git stash` before claiming otherwise.
 
 ## [0.3.0] - 2026-10-07
 

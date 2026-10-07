@@ -108,6 +108,12 @@ const char *llvm_type_of(Type *t)
     /* A list or a map lives on the heap (src/rt.c), so a value of this type
      * travels as the pointer itself — exactly like a string. */
     case TY_LIST:   return "i8*";
+    /* Result is `{ ok: ... }` / `{ err: ... }` -- the interpreter treats it as
+     * an ordinary map and looks the two keys up at runtime (interp.c's
+     * `propagate` branch), so natively it is the same heap map and travels as
+     * the same opaque pointer. LumeSlot is a tagged union, so one map holds an
+     * int `ok` and a string `err` side by side without a second slot type. */
+    case TY_RESULT: return "i8*";
     default:        return NULL;
     }
 }

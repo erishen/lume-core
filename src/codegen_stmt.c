@@ -491,8 +491,15 @@ void cg_function(CG *g, Node *fn)
     else if (rty[0] == '%') EMIT(g, "  unreachable\n");
     /* A floating-point literal needs a decimal point: `ret double 0` is not
      * an integer constant and clang rejects it. Only `double` is affected —
-     * every other scalar type the emitter can spell is an integer. */
+     * every other scalar type the emitter can spell is an integer.
+     *
+     * Same story for a pointer: `ret i8* 0` is not a pointer constant, LLVM
+     * spells the null pointer `null`. A Result-returning function is the first
+     * thing to reach this line with a pointer result type (every `if` on the
+     * way out of the body can leave it falling through), and the illegal IR
+     * surfaced as `integer constant must have integer type` from clang. */
     else if (strncmp(rty, "double", 6) == 0) EMIT(g, "  ret double 0.0\n");
+    else if (rty[strlen(rty) - 1] == '*') EMIT(g, "  ret %s null\n", rty);
     else                 EMIT(g, "  ret %s 0\n", rty);
 
     EMIT(g, "}\n");

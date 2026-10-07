@@ -273,6 +273,13 @@ static LLVMTypeRef ty_of(CG *g, Type *t)
     case TY_STRING: return g->i8ptr;
     case TY_NULL:   return g->i8ptr;   /* opaque null pointer; rt.c prints it */
     case TY_LIST:   return g->i8ptr;
+    case TY_RESULT:
+        /* Result is `{ ok: ... }` / `{ err: ... }`, and the interpreter treats
+         * it as an ordinary map (interp.c's `propagate` branch looks the two
+         * keys up at runtime) -- so natively it is the same heap map and
+         * travels as the same opaque pointer. Kept in step with
+         * llvm_type_of() in codegen_types.c, which the text emitter uses. */
+        return g->i8ptr;
     case TY_STRUCT:
         /* An anonymous struct is a runtime map (a `{...}` no declared type
          * claimed) and a list is a heap object: both are opaque pointers, not
@@ -993,6 +1000,18 @@ static Val cg_print(CG *g, Node *n, Val a)
         if (a.ty->name)
             ERRV(g, "line %zu: print() cannot print a struct value", n->line);
         {   /* an anonymous struct is a runtime map */
+            LLVMTypeRef p[1] = { g->i8ptr };
+            LLVMValueRef v[1] = { a.v };
+            return val_make(type_prim(TY_INT),
+                            LLVMBuildCall2(g->ab, LLVMFunctionType(ret, p, 1, 0),
+                                           rt_decl(g, "lume_map_print", ret, p, 1),
+                                           v, 1, "p"));
+        }
+    case TY_RESULT:
+        /* A Result *is* a map ({ ok: ... } / { err: ... }), so it prints
+         * through the same runtime helper. Kept in step with cg_print() in
+         * codegen_expr.c, which the text emitter uses. */
+        {
             LLVMTypeRef p[1] = { g->i8ptr };
             LLVMValueRef v[1] = { a.v };
             return val_make(type_prim(TY_INT),

@@ -343,5 +343,29 @@ let n = null;
 print(n);              // null
 print(null);           // null
 
+// §8.1 #6: a Result value must survive a round trip through both native
+// backends. Before the fix neither emitter had a codegen type for Result at
+// all -- llvm_type_of() returned NULL, so even `let r = divide(21, 7);`
+// with no `?` anywhere reported "variable 'r' has no codegen type" while the
+// interpreter ran it. Result is `{ ok: ... }` / `{ err: ... }`, which the
+// interpreter treats as an ordinary map, so natively it is the same heap map.
+//
+// The `?` propagation operator is still unsupported by both emitters (it needs
+// the payload type, which typecheck_expr.c has as any_type() -- no generics);
+// the typechecker already rejects `?` on a non-Result callee, so nothing here
+// can drift into using it.
+func divide(a: int, b: int): Result {
+  if (b == 0) { return { err: "division by zero" }; }
+  return { ok: a / b };
+}
+func show(): Result {
+  let good = divide(21, 7);
+  print(good);                         // {"ok":3}
+  let bad = divide(21, 0);
+  print(bad);                          // {"err":"division by zero"}
+  return { ok: 1 };
+}
+print(show());           // {"ok":1}
+
 warmup();
 main();
