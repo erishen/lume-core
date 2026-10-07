@@ -48,7 +48,33 @@ unary minus, which makes `-9223372036854775808` the minimum i64.
   modulo, and `tests/smoke.c` gained 11 interpreter-level assertions
   (146 tests total). The three-way target is the thing that would have caught
   the divergence in the first place.
-- `docs/SPEC.md` §6.1 records three **known** backend gaps that are not
+- **`docs/SPEC.md` gained a complete builtin reference (§5), verified by execution.**
+  The previous version documented the *language* but not its 55 builtins, so
+  the only written record was `LUME.md`'s name list — no signatures, no return
+  types, no failure modes. Writing §5 meant running every builtin, and that
+  turned up behaviour no document had recorded, several of which is a trap:
+
+  - `map` / `filter` / `reduce` take **`(fn, list)`** — the reverse of nearly
+    every other language.
+  - `put` / `push` return **the collection**, not `null`, so they chain.
+  - `min` / `max` are **variadic** (not two-argument) and, like `abs`, always
+    answer `float` — they go through `double` internally.
+  - `round` is **half-to-even**: `round(2.5) = 3`, `round(3.5) = 4`.
+  - `int("abc")`, `float("x")`, `len(5)`, `read_file(<missing>)` and
+    `env(<unset>)` all answer **silently** (`0` / `0.0` / `0` / `null` / `null`)
+    instead of failing.
+  - `strftime` takes `(format, timestamp)`, not the reverse.
+  - `html`'s slots are **`{N}`** with N from 0; `{{` / `}}` are literal-brace
+    escapes. Its result is flagged **trusted**, so `html(html(...))` injects
+    raw and skips escaping — an injection channel, now documented as such.
+  - `.len` reads a **declared struct field** when the struct has one, but the
+    **key count** on an anonymous map; `.length` works on string/list/map only.
+
+  17 new assertions in `tests/smoke.c` pin these (163 total). Two claims written
+  from memory were wrong and are now corrected against the implementation:
+  `put`/`push` do not return `null`, and `abs` does not preserve `int`.
+
+- `docs/SPEC.md` §7.1 records three **known** backend gaps that are not
   errors — most notably that the libLLVM backend cannot type a variable
   initialised from a unary minus (`let neg = -7; print(neg)`), which is why
   that particular case lives in the smoke suite rather than the three-way

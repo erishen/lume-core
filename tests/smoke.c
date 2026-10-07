@@ -420,7 +420,99 @@ int main(void) {
 
     reject("bare 2^63 is refused",
            "let x = 9223372036854775808;",
-           "does not fit in int");
+            "does not fit in int");
+
+    /* ---- builtins: the semantics docs/SPEC.md §5 pins down -------------
+     * These are the ones that surprise people, so they get an executable
+     * claim rather than only a doc line. A silent 0 or a flipped argument
+     * order is exactly what a reader cannot check by skimming. */
+
+    check("get: missing key is null, with default is the default",
+          "print(str(get({a:1}, \"b\"))); print(str(get({a:1}, \"b\", 99)));",
+          "null\n99\n");
+
+    /* range's upper bound is exclusive. */
+    check("range excludes its upper bound",
+          "print(str(range(1, 5)));",
+          "[1,2,3,4]\n");
+
+    /* put/push mutate in place AND return the collection (not null), so they
+     * chain. Documented in SPEC 5.2 after this was first written as null. */
+    check("put/push return the collection, not null",
+          "print(str(put({a:1}, \"b\", 2))); print(str(push([1], 2)));",
+          "{\"a\":1,\"b\":2}\n[1,2]\n");
+
+    /* len on a non-collection answers 0 rather than failing. */
+    check("len of a non-collection is silently 0",
+          "print(str(len(5)));",
+          "0\n");
+
+    check_err("keys() rejects a list",
+              "print(str(keys([1])));",
+              "keys() expects a map");
+
+    /* The higher-order builtins take (fn, list) — the reverse of most
+     * languages, and getting it wrong is a type error, not a silent swap. */
+    check("map/filter/reduce take (fn, list)",
+          "print(str(map((x) => x * x, [1,2,3])));"
+          " print(str(filter((x) => x > 1, [1,2,3])));"
+          " print(str(reduce((a, b) => a + b, [1,2,3], 0)));",
+          "[1,4,9]\n[2,3]\n6\n");
+
+    check_err("map() rejects the (list, fn) order",
+              "print(str(map([1,2,3], (x) => x)));",
+              "map() expects (fn, list)");
+
+    check("try(fn) reports ok/err instead of propagating",
+          "print(str(try(() => 42))); print(str(try(() => 1 / 0)));",
+          "{\"ok\":42,\"err\":null}\n{\"ok\":null,\"err\":\"division by zero\"}\n");
+
+    /* Conversions fail silently: a mistyped field name becomes 0. */
+    check("int()/float() of a non-numeric string is silently 0",
+          "print(str(int(\"abc\"))); print(str(float(\"x\"))); print(str(int(\"3.9\")));",
+          "0\n0\n3\n");
+
+    check("read_file of a missing path is null, env of an unset var is null",
+          "print(str(read_file(\"nope-does-not-exist.txt\")));"
+          " print(str(env(\"NOPE_XYZ_VAR\")));",
+          "null\nnull\n");
+
+    /* round is half-to-even, not half-away-from-zero. */
+    check("round is half-to-even (banker's rounding)",
+          "print(str(round(2.5))); print(str(round(3.5)));",
+          "3\n4\n");
+
+    /* abs/min/max go through double, so they always answer float. */
+    check("abs/min/max answer float, and min/max are variadic",
+          "print(str(abs(0 - 7))); print(str(min(3, 5, 1))); print(str(max(1, 9, 5)));",
+          "7\n1\n9\n");
+
+    check("strftime takes (format, timestamp)",
+          "print(strftime(\"%Y\", 0));",
+          "1970\n");
+
+    /* html slots are {N} with N from 0; {{ }} are literal-brace escapes. */
+    check("html fills {N} slots and folds {{ }} to one brace",
+          "print(html(\"a{0}b{1}c\", \"X\", \"Y\")); print(html(\"{{x}}\"));"
+          " print(html(\"a{5}b\", \"X\"));",
+          "aXbYc\n{x}\na{5}b\n");
+
+    /* html() marks its result trusted, so nesting it skips escaping — an
+     * injection channel worth pinning so the SPEC warning stays true. */
+    check("html() output is trusted and injects raw when nested",
+          "print(html(\"<i>{0}</i>\", html(\"<b>&</b>\")));"
+          " print(html(\"<i>{0}</i>\", \"<b>&</b>\"));",
+          "<i><b>&</b></i>\n<i>&lt;b&gt;&amp;&lt;/b&gt;</i>\n");
+
+    /* el escapes attribute values but validates neither tag nor prop name. */
+    check("el escapes attribute values but not tag names",
+          "print(render(el(\"a\", { href: \"x?a=1&b=2\" }, \"t\")));"
+          " print(render(el(\"script\", {}, \"alert(1)\")));",
+          "<a href=\"x?a=1&amp;b=2\">t</a>\n<script>alert(1)</script>\n");
+
+    check_err("el() requires the props argument",
+              "print(render(el(\"p\")));",
+              "el() needs (tag, props, ...children)");
 
     check("string concat",
           "let a = \"hello\"; let b = \" world\"; print(a + b + \"!\");",
