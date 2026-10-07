@@ -214,6 +214,20 @@ static Node *parse_postfix(Parser *p) {
             member->as.member.obj = n;
             member->as.member.name = ident_name(p, f);
             n = member;
+        } else if (check(p, TOK_LBRACKET)) {
+            /* `m["k"]` / `l[0]`. A postfix loop rather than part of parse_primary
+             * so it chains: `m["a"][0]`, `rows[i]["name"]`. The index is a full
+             * expression, not a literal, because the key is usually a variable
+             * and `m[k]` is the case worth having. */
+            Token br = peek(p);
+            advance(p);
+            Node *ix = parse_expression(p);
+            if (!ix) return NULL;
+            if (!expect(p, TOK_RBRACKET)) return NULL;
+            Node *index = nalloc(N_INDEX, br.line);
+            index->as.index.obj = n;
+            index->as.index.index = ix;
+            n = index;
         } else {
             break;
         }

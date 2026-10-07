@@ -20,6 +20,7 @@ static void exec_statement_tool(VM *vm, Node *n, Env *env);
 static void eval_expr(VM *vm, Node *n, Env *env);
 static void eval_expr_literal(VM *vm, Node *n);
 static void eval_expr_member(VM *vm, Node *n, Env *env);
+static void eval_expr_index(VM *vm, Node *n, Env *env);
 static void eval_expr_binary(VM *vm, Node *n, Env *env);
 static void eval_expr_call(VM *vm, Node *n, Env *env);
 
@@ -270,6 +271,9 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
         case N_MEMBER:
             eval_expr_member(vm, n, env);
             return;
+        case N_INDEX:
+            eval_expr_index(vm, n, env);
+            return;
         case N_BINARY:
             eval_expr_binary(vm, n, env);
             return;
@@ -322,6 +326,64 @@ static void eval_expr_literal(VM *vm, Node *n) {
         }
     }
     return;
+}
+
+/* `m["k"]` / `l[0]`. The index expression is evaluated first and left on the
+ * stack, then the container, so this reads like the two-argument `get()` it
+ * replaces -- but strictly: a missing key or an out-of-range index is an
+ * error, where `get()` returns null and `el()` takes a default. The strictness
+ * is the point of having the syntax (SPEC 6.2).
+ *
+ * A negative index counts from the end, so `l[-1]` is the last element. That
+ * is resolved here, once, rather than in every accessor the two native backends
+ * end up calling -- they normalise the same way. */
+static void eval_expr_index(VM *vm, Node *n, Env *env) {
+    eval_expr(vm, n->as.index.index, env);
+    if (vm->error) return;
+    eval_expr(vm, n->as.index.obj, env);
+    if (vm->error) return;
+
+    Value objv = vm_pop(vm);      /* container */
+    Value ixv  = vm_pop(vm);      /* index */
+    Value out  = val_null();
+
+    if (!IS_OBJ(objv)) {
+        vm_set_error(vm, "cannot index into a non-container value");
+        return;
+    }
+    Obj *o = AS_OBJ(objv);
+
+    if (o->type == OBJ_MAP) {
+        if (!IS_OBJ(ixv) || AS_OBJ(ixv)->type != OBJ_STRING) {
+            vm_set_error(vm, "a map key must be a string");
+            return;
+        }
+        const char *key = obj_string(AS_OBJ(ixv));
+        int found = 0;
+        Value v = map_get(vm, o, key, &found);
+        if (!found) {
+            vm_set_error(vm, "map has no key '%s'", key);
+            return;
+        }
+        out = v;
+    } else if (o->type == OBJ_LIST) {
+        if (!IS_NUM(ixv)) {
+            vm_set_error(vm, "a list index must be an int");
+            return;
+        }
+        long i = (long)AS_NUM(ixv);
+        if (i < 0) i += o->as.list.count;   /* -1 is the last element */
+        if (i < 0 || i >= o->as.list.count) {
+            vm_set_error(vm, "list index %ld out of range (length %d)",
+                         (long)AS_NUM(ixv), o->as.list.count);
+            return;
+        }
+        out = o->as.list.items[i];
+    } else {
+        vm_set_error(vm, "cannot index into this value");
+        return;
+    }
+    vm_push(vm, out);
 }
 
 static void eval_expr_member(VM *vm, Node *n, Env *env) {

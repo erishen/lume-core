@@ -424,6 +424,103 @@ LumeMap *lume_map_new(void)
     return m;
 }
 
+/* ---------- strict accessors for the index syntax (SPEC 6.2) ----------
+ *
+ * `l[0]` / `m["k"]` are strict: an out-of-range index or a missing key is a
+ * runtime error, where the existing lume_list_at_* / lume_map_get_* helpers
+ * answer 0 / a default. Those stay as they are because `el()` and `get()` are
+ * specified in terms of them and quietly tightening them would change every
+ * existing caller. These are for the syntax instead.
+ *
+ * A negative index counts from the end, so l[-1] is the last element --
+ * resolved here once, for both native backends, rather than in each of them.
+ *
+ * The numeric flavours report failure out of band, via lume_index_failed(),
+ * because a stored 0 is a legal value and cannot be told from a failed read by
+ * the return alone. The string flavours take an `ok` out-param instead, since a
+ * string has no sentinel of its own. */
+static int g_index_failed = 0;
+
+int lume_index_failed(void) { return g_index_failed; }
+
+long lume_list_at_strict(const LumeList *l, long i)
+{
+    g_index_failed = 0;
+    if (!l) { g_index_failed = 1; return 0; }
+    if (i < 0) i += l->len;
+    if (i < 0 || i >= l->len) { g_index_failed = 1; return 0; }
+    return l->items[i].tag == LUME_SLOT_STR ? 0 : l->items[i].num;
+}
+
+double lume_list_at_strict_f(const LumeList *l, long i)
+{
+    g_index_failed = 0;
+    if (!l) { g_index_failed = 1; return 0; }
+    if (i < 0) i += l->len;
+    if (i < 0 || i >= l->len) { g_index_failed = 1; return 0; }
+    double d = 0;
+    if (l->items[i].tag != LUME_SLOT_STR) memcpy(&d, &l->items[i].num, sizeof d);
+    return d;
+}
+
+void *lume_list_at_strict_obj(const LumeList *l, long i)
+{
+    g_index_failed = 0;
+    if (!l) { g_index_failed = 1; return NULL; }
+    if (i < 0) i += l->len;
+    if (i < 0 || i >= l->len) { g_index_failed = 1; return NULL; }
+    if (l->items[i].tag != LUME_SLOT_OBJ) { g_index_failed = 1; return NULL; }
+    return (void *)(intptr_t)l->items[i].num;
+}
+
+/* A string element has no sentinel, so `ok` reports whether one was there. */
+const char *lume_list_at_strict_str(const LumeList *l, long i, int *ok)
+{
+    *ok = 0;
+    if (!l) return NULL;
+    if (i < 0) i += l->len;
+    if (i < 0 || i >= l->len) return NULL;
+    if (l->items[i].tag != LUME_SLOT_STR) return NULL;
+    *ok = 1;
+    return l->items[i].str;
+}
+
+long lume_map_at_strict_i(const LumeMap *m, const char *k)
+{
+    g_index_failed = 0;
+    long i = map_find(m, k);
+    if (i < 0 || m->vals[i].tag == LUME_SLOT_STR) { g_index_failed = 1; return 0; }
+    return m->vals[i].num;
+}
+
+double lume_map_at_strict_f(const LumeMap *m, const char *k)
+{
+    g_index_failed = 0;
+    long i = map_find(m, k);
+    if (i < 0 || m->vals[i].tag == LUME_SLOT_STR) { g_index_failed = 1; return 0; }
+    double d = 0;
+    memcpy(&d, &m->vals[i].num, sizeof d);
+    return d;
+}
+
+void *lume_map_at_strict_obj(const LumeMap *m, const char *k)
+{
+    g_index_failed = 0;
+    long i = map_find(m, k);
+    if (i < 0 || m->vals[i].tag != LUME_SLOT_OBJ) { g_index_failed = 1; return NULL; }
+    return (void *)(intptr_t)m->vals[i].num;
+}
+
+const char *lume_map_at_strict_str(const LumeMap *m, const char *k, int *ok)
+{
+    *ok = 0;
+    long i = map_find(m, k);
+    if (i < 0 || m->vals[i].tag != LUME_SLOT_STR) return NULL;
+    *ok = 1;
+    return m->vals[i].str;
+}
+
+
 long lume_map_len(const LumeMap *m) { return m ? m->len : 0; }
 
 static long map_put(LumeMap *m, const char *k, long num, const char *str, int tag)

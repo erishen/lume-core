@@ -203,6 +203,47 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return any_type();
         }
 
+        case N_INDEX: {
+            /* `m["k"]` / `l[0]`. The container decides which accessor reads
+             * it, so the index type is checked against the container and the
+             * result type comes back from the element. Both cases are strict:
+             * a missing key or an out-of-range index is a runtime error, not a
+             * silent null -- see SPEC 6.2. */
+            Type *ot = resolve(c, ck_expr(c, n->as.index.obj, NULL), n->line);
+            if (ot->kind == TY_ANY) { ck_expr(c, n->as.index.index, NULL); return any_type(); }
+
+            if (ot->kind == TY_LIST) {
+                /* The index has to be an int: `l["x"]` is a type error, not a
+                 * runtime one, so it cannot reach the accessor. */
+                Type *it = ck_expr(c, n->as.index.index, NULL);
+                it = resolve(c, it, n->line);
+                if (it->kind != TY_ANY && it->kind != TY_INT)
+                    ck_fail(c, n->line, "a list index must be an int, got '%s'",
+                            ty_str(it));
+                /* A negative literal is allowed (it counts from the end), so
+                 * the sign is not checked here -- rt.c normalises it. Any int
+                 * expression is accepted; whether the value is in range is a
+                 * runtime question, exactly as for `el`. */
+                return ot->elem && ot->elem->kind != TY_ANY ? ot->elem : any_type();
+            }
+            if (ot->kind == TY_STRUCT && !ot->name) {
+                /* A runtime map: the key must be a string, since that is what
+                 * `get` takes. */
+                Type *kt = ck_expr(c, n->as.index.index, NULL);
+                kt = resolve(c, kt, n->line);
+                if (kt->kind != TY_ANY && kt->kind != TY_STRING)
+                    ck_fail(c, n->line, "a map key must be a string, got '%s'",
+                            ty_str(kt));
+                /* The value type is not knowable from the literal -- a map's
+                 * values are whatever was put in -- so any() it is. */
+                return any_type();
+            }
+            ck_expr(c, n->as.index.index, NULL);
+            ck_fail(c, n->line, "cannot index into a value of type '%s'",
+                    ty_str(ot));
+            return any_type();
+        }
+
         case N_UNARY:
             if (n->as.unary.op == OP_NOT) {
                 Type *ot = ck_expr(c, n->as.unary.operand, NULL);

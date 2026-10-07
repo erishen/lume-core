@@ -453,7 +453,7 @@ typedef enum {
     N_SERVER, N_ROUTE, N_TOOL, N_VERBS, N_FUNC_DECL, N_TYPE_DECL,
     N_VAR, N_ASSIGN, N_ASSIGN_MEMBER,
     N_LITERAL, N_MAP_LIT, N_LIST_LIT, N_FUNC_LIT,
-    N_CALL, N_MEMBER,
+    N_CALL, N_MEMBER, N_INDEX,
     N_UNARY, N_BINARY,
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
@@ -528,6 +528,11 @@ typedef struct Node {
         struct { struct Node *callee; struct Node **args; int argc;
                  bool propagate; } call; /* propagate: trailing `?` */
         struct { struct Node *obj; char *name; struct Type *type; } member;
+        /* `m["k"]` / `l[0]`: `obj[index]`. Kept apart from `member` rather
+         * than folded into it because the key is an arbitrary expression, not
+         * an identifier -- a runtime value that has to be evaluated, and whose
+         * type decides which accessor reads it. */
+        struct { struct Node *obj; struct Node *index; } index;
         struct { Op op; struct Node *operand; } unary;
         struct { Op op; struct Node *left, *right; } binary;
         /* import: path is the raw string literal from the source (resolved
