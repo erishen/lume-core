@@ -169,6 +169,7 @@ static void cg_free(CG *cg)
     free(cg->sigs.v);
     free(cg->structs.v);
     free(cg->gs.data);
+    free(cg->handlers.data);
     free(cg->brk);
     free(cg->cnt);
     memset(&cg->sigs, 0, sizeof cg->sigs);

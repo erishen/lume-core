@@ -64,7 +64,13 @@ static const char *pick_cc(void)
  * to CC. The rt.o / bridge_native.o steps are plain C and keep pick_cc(). */
 static const char *pick_ir_cc(void)
 {
+#ifdef _WIN32
+    /* system() goes through cmd.exe on Windows, where `command -v` is not
+     * a valid command; probe clang the way cmd.exe can (see pick_cc). */
+    if (system("clang --version >nul 2>&1") == 0) return "clang";
+#else
     if (system("command -v clang >/dev/null 2>&1") == 0) return "clang";
+#endif
     const char *cc = getenv("CC");
     if (cc && *cc) return cc;
     return "cc";
@@ -242,11 +248,15 @@ int backend_native(const char *src_path, struct Node *prog,
         snprintf(outexe, sizeof outexe, "%s.exe", out_path);
         oname = outexe;
     }
+    int win_link = xt_windows();
+#ifdef _WIN32
+    win_link = 1;                        /* native windows build: winsock */
+#endif
     snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s",
              pick_ir_cc(), xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
              oname, out_path, rt_obj_path(), nat_obj_path(),
-             xt_windows() ? "-lws2_32" : "-lm");
+             win_link ? "-lws2_32" : "-lm");
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (IR kept in %s.ll)",
                  out_path, out_path);
