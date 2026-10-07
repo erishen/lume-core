@@ -1,0 +1,34 @@
+// tests/http_smoke.lume — HTTP 服务端冒烟（bridge_run 单线程服务）
+//
+//   make check 或 lume-core --check 验证语法
+//   直接运行:  lume-core tests/http_smoke.lume   （阻塞，Ctrl-C 退出）
+//   验证:      curl http://127.0.0.1:8891/hello 等
+
+server {
+  host = "127.0.0.1";
+  port = 8891;
+}
+
+func fact(n: int): int {
+  if (n <= 1) { return 1; }
+  return n * fact(n - 1);
+}
+
+get "/", (req) => {
+  return "hello from lume-core http\nserver time: " + str(now()) + "\n";
+};
+
+get "/hello", (req) => {
+  return { message: "hello, world", path: req.path, method: req.method };
+};
+
+get "/fact", (req) => {
+  let n = int(get(req.query_params, "n", "5"));
+  return { n: n, fact: fact(n) };
+};
+
+post "/echo", (req) => {
+  return { method: req.method, body: req.body };
+};
+
+run();

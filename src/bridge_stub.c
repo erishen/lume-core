@@ -11,9 +11,8 @@
  *     the honest thing — `route {}` / `tool {}` keep meaning "register", they
  *     no longer mean "reachable from an HTTP request", because there is no
  *     server in this build to serve them.
- *   - bridge_run() refuses loudly instead of pretending to serve. The `run`
- *     builtin calls it; a compiler that silently "succeeds" at starting a
- *     server it does not have is worse than one that says no.
+ *   - bridge_run() serves routes with the in-tree minimal HTTP server in
+ *     bridge_serve.c (POSIX + winsock via net_compat).
  */
 
 #include "lume.h"
@@ -66,13 +65,4 @@ int bridge_define_tool(VM *vm, const char *name, const char *desc,
     return 0;
 }
 
-void bridge_run(VM *vm)
-{
-    (void)vm;
-    fprintf(stderr,
-            "lume: run() needs the agent-httpd host build (work/research/lume).\n"
-            "      This tree is the standalone compiler: routes and tools are\n"
-            "      registered but nothing serves them. Use --compile or run the\n"
-            "      script with the interpreter instead.\n");
-    exit(2);
-}
+/* bridge_run() is implemented in bridge_serve.c (in-tree HTTP server). */
