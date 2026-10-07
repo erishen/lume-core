@@ -169,12 +169,23 @@ static void cg_free(CG *cg)
     free(cg->sigs.v);
     free(cg->structs.v);
     free(cg->gs.data);
-    free(cg->handlers.data);
+    /* Route handlers are buffered until every function has closed (see
+     * codegen_emit_ir), and codegen_emit_ir frees them once it has appended
+     * them to the module. Releasing them here as well is what makes the
+     * empty case safe: a program with no route handler never enters that
+     * `if`, so the append-and-free never runs, and the buffer leaked on every
+     * single compile -- 256 bytes that LeakSanitizer reported as
+     * `Direct leak ... irbuf_init src/irbuf.c:14 <- codegen_emit_ir`, and
+     * which failed `make asan` on Linux. Members freed twice are not a
+     * concern: irbuf_free zeroes the buffer it frees, and the memset below
+     * covers the rest. */
+    irbuf_free(&cg->handlers);
     free(cg->brk);
     free(cg->cnt);
     memset(&cg->sigs, 0, sizeof cg->sigs);
     memset(&cg->structs, 0, sizeof cg->structs);
     memset(&cg->gs, 0, sizeof cg->gs);
+    memset(&cg->handlers, 0, sizeof cg->handlers);
     cg->brk = cg->cnt = NULL;
     cg->nbrk = cg->ncnt = cg->cbrk = cg->ccnt = 0;
 }
