@@ -248,6 +248,7 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
     EMIT(&cg, "declare i64 @lume_print_double(double)\n");
     EMIT(&cg, "declare i64 @lume_print_bool(i64)\n");
     EMIT(&cg, "declare i64 @lume_print_str(i8*)\n");
+    EMIT(&cg, "declare i64 @lume_print_null()\n");
     emit_builtin_declares(&cg);
 
     for (int i = 0; i < cg.structs.n; i++) {

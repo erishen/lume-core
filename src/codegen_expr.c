@@ -346,6 +346,11 @@ static Val cg_literal(CG *g, Node *n)
         return val_make(type_prim(TY_INT), buf);
     }
 
+    if (k == LIT_NULL)
+        /* `null` lowers to an opaque i8* null pointer in the native backend;
+         * the runtime helper prints it as "null" (matching the interpreter). */
+        return val_make(type_prim(TY_NULL), "null");
+
     ERRV(g, "line %zu: 'null' literals are not supported by the native backend yet", n->line);
 }
 
@@ -909,6 +914,18 @@ static Val cg_print(CG *g, Node *n, Val a)
     const char *pty;     /* the helper's *parameter* type */
     char *arg = a.v;
     bool   widen = false;
+
+    /* `null` needs no argument and prints the bare word "null" — it cannot go
+     * through the switch below, which always emits a typed argument. `arg` is
+     * owned by this call (see the `free(arg)` at the bottom), so free it here
+     * too to avoid leaking the literal's IR buffer. */
+    if (a.ty && a.ty->kind == TY_NULL) {
+        char name[48];
+        snprintf(name, sizeof name, "%%c%d", g->tid++);
+        EMIT(g, "  %s = call i64 @lume_print_null()\n", name);
+        free(arg);
+        return val_make(type_prim(TY_INT), name);
+    }
 
     /* One switch decides both: which helper prints this value and which type
      * that helper takes — they are not always the same (a bool value is i1,

@@ -58,6 +58,13 @@ long lume_print_str(const char *s)
     return emit(buf);
 }
 
+/* `null` has no value to pass — it prints the bare word and takes no
+ * argument, so `print(null)` matches the interpreter's "null" exactly. */
+long lume_print_null(void)
+{
+    return emit("null\n");
+}
+
 /* ------------------------------------------------------------------ *
  * Builtin helpers.
  *

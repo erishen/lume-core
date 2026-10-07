@@ -43,7 +43,8 @@ Type *infer_node_type(CG *g, Node *n)
         case LIT_STR:   return type_prim(TY_STRING);
         case LIT_TRUE:
         case LIT_FALSE: return type_prim(TY_BOOL);
-        default:        return NULL;    /* null: no codegen type */
+        case LIT_NULL:  return type_prim(TY_NULL);
+        default:        return NULL;
         }
     case N_VAR: {
         Asg *a = asg_find(&g->locals, n->as.var.name);

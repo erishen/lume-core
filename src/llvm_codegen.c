@@ -266,6 +266,7 @@ static LLVMTypeRef ty_of(CG *g, Type *t)
     case TY_FLOAT:  return g->dbl;
     case TY_BOOL:   return g->i1;
     case TY_STRING: return g->i8ptr;
+    case TY_NULL:   return g->i8ptr;   /* opaque null pointer; rt.c prints it */
     case TY_LIST:   return g->i8ptr;
     case TY_STRUCT:
         /* An anonymous struct is a runtime map (a `{...}` no declared type
@@ -395,6 +396,11 @@ static Val cg_literal(CG *g, Node *n)
         return val_make(type_prim(TY_INT),
                         LLVMConstInt(g->i64, (unsigned long long)n->as.lit.inum, 0));
     }
+
+    if (k == LIT_NULL)
+        /* `null` lowers to an opaque i8* null pointer (LLVMConstNull); the
+         * runtime helper prints it as "null", matching the interpreter. */
+        return val_make(type_prim(TY_NULL), LLVMConstNull(g->i8ptr));
 
     ERRV(g, "line %zu: 'null' literals are not supported by the native backend yet", n->line);
 }
@@ -987,6 +993,14 @@ static Val cg_print(CG *g, Node *n, Val a)
                                            rt_decl(g, "lume_map_print", ret, p, 1),
                                            v, 1, "p"));
         }
+    case TY_NULL:
+        /* `null` prints the bare word "null" and takes no argument, so it
+         * cannot share the typed-argument call shape the switch otherwise
+         * builds. */
+        return val_make(type_prim(TY_INT),
+                        LLVMBuildCall2(g->ab, LLVMFunctionType(ret, NULL, 0, 0),
+                                       rt_decl(g, "lume_print_null", ret, NULL, 0),
+                                       NULL, 0, "p"));
     default:
         ERRV(g, "line %zu: print() cannot print this value", n->line);
     }
@@ -1390,6 +1404,7 @@ static Type *infer_node_type(CG *g, Node *n)
         case LIT_STR:   return type_prim(TY_STRING);
         case LIT_TRUE:
         case LIT_FALSE: return type_prim(TY_BOOL);
+        case LIT_NULL:  return type_prim(TY_NULL);
         default:        return NULL;
         }
     case N_VAR: {

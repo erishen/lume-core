@@ -73,6 +73,7 @@ const char *llvm_type_of(Type *t)
     case TY_FLOAT:  return "double";
     case TY_BOOL:   return "i1";
     case TY_STRING: return "i8*";
+    case TY_NULL:   return "i8*";   /* opaque null pointer; rt.c prints it */
     case TY_STRUCT:
         /* An *anonymous* struct is a map literal (a heap map keyed by strings),
          * which travels exactly like a list: one opaque pointer. A *named*

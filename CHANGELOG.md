@@ -20,6 +20,21 @@ All notable changes to Lume are documented here. The format follows
   类型；逻辑/比较→bool，算术按浮点/整型推算，`string+string`→string），三后端一致。
   回归用例见 `tests/native-consistency.lume` 的 `neg` / `diff`。
 - `tests/native-consistency.expected` 刷新（新增 `-7` / `-7` 两行）。
+- §8.1 #3 was **verified already consistent**: its legality check already
+  lives in the typechecker (`src/typecheck_expr.c:297/299/303`), and all three
+  backends emit the same clear message — the SPEC's "lands in the parser" claim
+  was stale, so no code change was needed for it.
+- Investigating #3 surfaced a **new, real gap (§8.1 #6)**: a *legal* `call?`
+  (error propagation) compiles and runs only in the interpreter; both native
+  backends fail to codegen it (`variable 'q' has no codegen type`) because the
+  `?` payload type is `any_type()` at check time and there is no native `Result`
+  type. Deferred as a large feature (needs runtime-value boxing, like closures).
+- **Fixed the native backends rejecting `null` literals** (§8.1 #7): both
+  emitters' `infer_node_type` now handles `LIT_NULL` (→ `TY_NULL`); `TY_NULL`
+  lowers to an opaque `i8*` null pointer (`llvm_type_of` / `ty_of`); `cg_literal`
+  emits `null` / `LLVMConstNull(i8*)`; and a new `lume_print_null` runtime helper
+  prints `null`. All three backends now agree on `null` and `print(null)`
+  (regression added to `tests/native-consistency.lume`, `.expected` refreshed).
 
 ## [0.3.0] - 2026-10-07
 

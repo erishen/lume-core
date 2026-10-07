@@ -334,5 +334,14 @@ print(neg);            // -7
 let diff = 0 - 7;
 print(diff);           // -7
 
+// §8.1 #3 (native-backend gap): `null` literals and printing them must work
+// in the native backends too. Before the fix both emitters reported "cannot
+// infer a type for 'x'" / "null literals are not supported by the native
+// backend yet" while the interpreter accepted `null` and printed "null"; all
+// three now agree.
+let n = null;
+print(n);              // null
+print(null);           // null
+
 warmup();
 main();

@@ -670,8 +670,10 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
 ### 8.1 已知缺口
 
 这条不变式目前覆盖**成功的输出与退出码**，对**错误消息**只做到「都拒绝」，未做到逐字节一致。
-已知五处（第 4、5 条已于前次提交修复；第 1、2 条已于本次提交修复，见各自标注）；第 3 条是
-唯一剩余项——它也不是 int 改造引入，不产生错误结果（是拒绝执行形式的诊断质量问题），但会误导读者：
+已知七处（第 4、5 条已于前次提交修复；第 1、2 条已于本次提交修复；第 3 条经核查本就一致，见
+其标注；第 7 条 `null` 字面量已于本次提交修复，见其标注）；第 6 条是本次新发现、且最严重的
+真不一致——合法的 `call?` 在解释器能跑、原生后端却编不出来（行为差异，而非消息差异）。
+第 1–5 条均属「拒绝执行形式的诊断差异」；第 6、7 条是「接受/拒绝不同」（前者待修、后者已修）：
 
 1. **[已修复] `float %` 的报错位置**（§1.6）：`--compile-text` 与解释器报
    `'%' does not apply to floats`，`--compile-llvm` 原在更早的类型推断处报
@@ -690,8 +692,11 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    `N_BINARY`（逻辑/比较→bool，算术按浮点/整型推算，`string+string`→string）分支，`let`
    绑定在 libLLVM 下也能正确携带类型，三后端一致。回归用例见 `tests/native-consistency.lume`
    的 `neg` / `diff`（`-7` / `-7`）。
-3. **`?` 的诊断落在 parser 层**（§5），报 `expected ;, got ?`，而不是讲清「`?` 需要
-   Result」的消息，且位置跳到下一行分号。
+3. **[已一致] `?` 的合法性检查**：原 SPEC 称其「落在 parser 层」并报 `expected ;, got ?`、
+   位置跳行；但当前代码（`src/typecheck_expr.c:297/299/303`）已在**类型检查器**里检查，
+   三条后端统一报 `'?' used on a call that does not return Result` /
+   `'?' needs the enclosing function to return Result` 等清晰消息，位置正确。无需改动；
+   `?` 真正未实现的部分见第 6 条。
 4. **[已修复] 同一函数里出现两个同名绑定时，IR 文本后端编不出来**：局部变量的 IR 名是按
    **名字**生成的（`%lv_<name>`，`codegen.c` 的 `asg_push`），不是按**绑定**生成的，所以
    两个同名绑定撞在同一个 IR 名上。触发条件比「遮蔽」更宽：**同一函数内任何两个同名绑定**
@@ -724,10 +729,36 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    （与列表变量分开），循环条件 load 该快照，而不是每轮重读 `len(list)`。现在 `for` 遍历
    绑定时的长度快照，与解释器一致（见 §4.4 与 `tests/native-consistency.lume` 的 `pt`）。
 
-修法分别是：让 libLLVM 在类型推断里把 `float %` 与「负号初始化的 let」直接判为非法
-（第 1、2 条已在本提交落地，见各自标注），把 `?` 的合法性检查从 parser 移到类型检查器
-（第 3 条，待修）；第 4、5 条的修法已在前次提交落地（IR 局部名按绑定唯一化、for-in 长度
-在循环入口快照）。
+修法分别已落地：第 1、2 条（libLLVM 的 `float %` 报错位置、`let` 绑定类型推断）于本提交
+修复（见各自标注）；第 4、5 条（同名绑定 IR 冲突、for-in 长度快照）于前次提交修复。第 3 条
+经核查本就已在类型检查器里、三条后端消息一致，无需改动。第 6 条（原生后端 `call?` 代码生成）
+属大改，另立计划。第 7 条（`null` 字面量）于本提交修复（见其标注）。
+
+6. 🔴 **[待修] 原生后端编不出合法的 `call?`（错误传播）**：解释器能跑
+   `let q = div(21,7)?;`（见 §5）——`src/interp.c` 的 `propagate` 分支解 `ok`、遇 `err`
+   经 `longjmp` 向外传播。但 `propagate` 在 `codegen_expr.c` / `llvm_codegen.c` 里**零处理**：
+   `?` 被当成普通调用，`q` 被推成 `Result` 类型，而原生后端没有 `Result` 的代码生成类型，
+   报 `variable 'q' has no codegen type`。这等于「同一份合法程序，解释器接受、原生后端拒绝」，
+   是比起第 1–3 条（仅消息差异）更严重的三后端不一致。根因：`?` 解出的 `ok` 载荷类型在
+   类型检查器里是 `any_type()`（无泛型），原生后端拿不到静态类型来发 IR——要么给 `Result`
+   的 `ok` 字段一个具体类型，要么在原生后端引入运行时值装箱（同闭包那条路）。属大改，另立计划。
+
+7. **[已修复] 原生后端编不出 `null` 字面量**：`null` 在解释器里是合法值（打印 `null`、可赋给
+   任意可空类型），但两个原生后端原本都编不出——`infer_node_type` 缺 `LIT_NULL` 分支，
+   `codegen_expr.c` / `llvm_codegen.c` 的 `cg_literal` 直接报 `'null' literals are not
+   supported by the native backend yet'`，属「解释器接受、原生后端拒绝」的不一致（与第 6 条同类，
+   但更窄、已修）。
+
+   **本提交已修复**：两个后端的 `infer_node_type` 增 `LIT_NULL → TY_NULL` 分支；`TY_NULL` 在
+   原生后端统一降为不透明 `i8*` 空指针（`codegen_types.c` 的 `llvm_type_of` 与 `llvm_codegen.c`
+   的 `ty_of` 均返回 `i8*`）；`cg_literal` 对 `LIT_NULL` 发 `null` / `LLVMConstNull(i8*)`；
+   `codegen.c` 补 `declare i64 @lume_print_null()`、`rt.c` 新增 `lume_print_null`（打印 `null`、
+   无参数）。三后端对 `null` 与 `print(null)` 现在一致。回归用例见 `tests/
+   native-consistency.lume` 的 `n` 与 `print(null)`。
+
+   ⚠️ 局限：`null` 目前只能以「推断出的 `TY_NULL`」形态存在；若显式标注类型（如
+   `let x: int = null`）类型检查器会放行，但原生后端尚无法把 `i8*` 空指针塞进 `i64` 槽——
+   这属运行时值装箱的同一类大改（同第 6 条 / 闭包），不在本次范围。
 
 ---
 
