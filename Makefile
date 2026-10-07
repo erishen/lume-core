@@ -178,6 +178,8 @@ ifeq ($(IS_WINDOWS),1)
     SRCS := $(filter-out src/builtins_http.c,$(SRCS))
     HAVE_OPENSSL := 0
     LUME_HAS_HTTP := 0
+    # bridge_serve.c / bridge_native.c link against winsock (winsock2.h).
+    LDFLAGS_EXTRA += -lws2_32
 endif
 # Propagate the http flag to every TU so builtins.c emits the native_http_*
 # stubs exactly when builtins_http.c is excluded (Windows) and not otherwise.

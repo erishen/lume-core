@@ -22,13 +22,51 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <time.h>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#endif
+
+/* ---- platform socket glue: one SockFd type and a few macros so the accept
+ * loop below reads the same on POSIX and winsock. winsock wants int buffer
+ * lengths (our buffers are far below INT_MAX), reports errors through
+ * WSAGetLastError(), and needs one WSAStartup before anything. ---- */
+#if defined(_WIN32)
+typedef SOCKET SockFd;
+#define SOCK_BADP(f) ((f) == INVALID_SOCKET)
+#define sock_close(f) closesocket(f)
+#define sock_err() WSAGetLastError()
+#define SOCK_EINTR WSAEINTR
+#define sock_send(f, b, n) send((f), (const char *)(b), (int)(n), 0)
+#define sock_recv(f, b, n) recv((f), (char *)(b), (int)(n), 0)
+static int g_wsock_started = 0;
+static int wsock_start(void)
+{
+    if (!g_wsock_started) {
+        WSADATA wd;
+        if (WSAStartup(MAKEWORD(2, 2), &wd) != 0) return 0;
+        g_wsock_started = 1;
+    }
+    return 1;
+}
+#else
+typedef int SockFd;
+#define SOCK_BADP(f) ((f) < 0)
+#define sock_close(f) close(f)
+#define sock_err() errno
+#define SOCK_EINTR EINTR
+#define sock_send(f, b, n) send((f), (b), (n), 0)
+#define sock_recv(f, b, n) recv((f), (b), (n), 0)
+#endif
 
 #define NATIVE_ROUTES_MAX 32
 #define REQ_BUF_MAX (1 << 20)
@@ -122,7 +160,11 @@ const char *lume_bi_now(void)
     static char buf[64];
     time_t t = time(NULL);
     struct tm tmv;
+#if defined(_WIN32)
+    localtime_s(&tmv, &t);
+#else
     localtime_r(&t, &tmv);
+#endif
     strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &tmv);
     return buf;
 }
@@ -135,8 +177,13 @@ const char *lume_srv_qp(const char *query, const char *key, const char *def)
     strncpy(g_qpbuf, query, sizeof g_qpbuf - 1);
     g_qpbuf[sizeof g_qpbuf - 1] = '\0';
     char *save = NULL;
+#if defined(_WIN32)
+    for (char *tok = strtok_s(g_qpbuf, "&", &save); tok;
+         tok = strtok_s(NULL, "&", &save)) {
+#else
     for (char *tok = strtok_r(g_qpbuf, "&", &save); tok;
          tok = strtok_r(NULL, "&", &save)) {
+#endif
         char *eq = strchr(tok, '=');
         if (eq) *eq = '\0';
         if (strcmp(tok, key) == 0) {
@@ -266,7 +313,7 @@ static const char *status_text(int code)
     }
 }
 
-static void send_resp(int fd, int status, const char *ctype,
+static void send_resp(SockFd fd, int status, const char *ctype,
                       const char *body, size_t blen)
 {
     char hdr[512];
@@ -277,8 +324,8 @@ static void send_resp(int fd, int status, const char *ctype,
                      "Connection: close\r\n"
                      "\r\n",
                      status, status_text(status), ctype, blen);
-    if (n > 0) send(fd, hdr, (size_t)n, 0);
-    if (body && blen) send(fd, body, blen, 0);
+    if (n > 0) sock_send(fd, hdr, (size_t)n);
+    if (body && blen) sock_send(fd, body, blen);
 }
 
 static const char *ci_find(const char *hay, size_t hlen, const char *needle)
@@ -301,6 +348,13 @@ static const char *ci_find(const char *hay, size_t hlen, const char *needle)
 
 void lume_srv_run(void)
 {
+#if defined(_WIN32)
+    if (!wsock_start()) {
+        fprintf(stderr, "lume: run(): WSAStartup failed\n");
+        exit(1);
+    }
+#endif
+
     char portstr[16];
     snprintf(portstr, sizeof portstr, "%ld", g_port);
 
@@ -314,31 +368,44 @@ void lume_srv_run(void)
         exit(1);
     }
 
-    int listener = -1;
+#if defined(_WIN32)
+    SockFd listener = INVALID_SOCKET;
+#else
+    SockFd listener = -1;
+#endif
     for (struct addrinfo *r = res; r; r = r->ai_next) {
         listener = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-        if (listener < 0) continue;
+        if (SOCK_BADP(listener)) continue;
         int one = 1;
-        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
+                   (const char *)&one, sizeof one);
+#if defined(_WIN32)
+        if (bind(listener, r->ai_addr, (int)r->ai_addrlen) == 0 &&
+#else
         if (bind(listener, r->ai_addr, (socklen_t)r->ai_addrlen) == 0 &&
+#endif
             listen(listener, SERVE_BACKLOG) == 0)
             break;
-        close(listener);
+        sock_close(listener);
+#if defined(_WIN32)
+        listener = INVALID_SOCKET;
+#else
         listener = -1;
+#endif
     }
     freeaddrinfo(res);
 
-    if (listener < 0) {
+    if (SOCK_BADP(listener)) {
         fprintf(stderr, "lume: run(): cannot listen on %s:%ld (errno %d)\n",
-                g_host, g_port, errno);
+                g_host, g_port, sock_err());
         exit(1);
     }
     fprintf(stderr, "lume: serving http://%s:%ld (native)\n", g_host, g_port);
 
     for (;;) {
-        int cfd = accept(listener, NULL, NULL);
-        if (cfd < 0) {
-            if (errno == EINTR) continue;
+        SockFd cfd = accept(listener, NULL, NULL);
+        if (SOCK_BADP(cfd)) {
+            if (sock_err() == SOCK_EINTR) continue;
             break;
         }
 
@@ -347,7 +414,7 @@ void lume_srv_run(void)
         size_t scanned = 0;
         int hdr_done = 0;
         while (hlen + 1 < sizeof head) {
-            ssize_t n = recv(cfd, head + hlen, sizeof head - hlen - 1, 0);
+            int n = sock_recv(cfd, head + hlen, sizeof head - hlen - 1);
             if (n <= 0) break;
             hlen += (size_t)n;
             head[hlen] = '\0';
@@ -364,7 +431,7 @@ void lume_srv_run(void)
         }
         if (!hdr_done) {
             send_resp(cfd, 400, "text/plain; charset=utf-8", "bad request", 11);
-            close(cfd);
+            sock_close(cfd);
             continue;
         }
 
@@ -374,7 +441,7 @@ void lume_srv_run(void)
         const char *sp2 = sp1 ? strchr(sp1 + 1, ' ') : NULL;
         if (!sp1 || !sp2) {
             send_resp(cfd, 400, "text/plain; charset=utf-8", "bad request", 11);
-            close(cfd);
+            sock_close(cfd);
             continue;
         }
         size_t mlen = (size_t)(sp1 - head);
@@ -417,8 +484,8 @@ void lume_srv_run(void)
             memcpy(body, head + body_off, have);
             body_len = have;
             while (body_len < (size_t)clen) {
-                ssize_t n = recv(cfd, body + body_len,
-                                 (size_t)clen - body_len, 0);
+                int n = sock_recv(cfd, body + body_len,
+                                  (size_t)clen - body_len);
                 if (n <= 0) break;
                 body_len += (size_t)n;
             }
@@ -433,7 +500,7 @@ void lume_srv_run(void)
         }
         if (!h) {
             send_resp(cfd, 404, "text/plain; charset=utf-8", "not found", 9);
-            close(cfd);
+            sock_close(cfd);
             continue;
         }
 
@@ -466,8 +533,8 @@ void lume_srv_run(void)
         } else {
             send_resp(cfd, 204, "text/plain; charset=utf-8", NULL, 0);
         }
-        close(cfd);
+        sock_close(cfd);
     }
 
-    close(listener);
+    sock_close(listener);
 }

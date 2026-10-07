@@ -70,6 +70,32 @@ static const char *pick_ir_cc(void)
     return "cc";
 }
 
+/* Cross-compilation: LUME_TARGET (e.g. x86_64-windows-gnu) is passed to every
+ * compile/link step and switches the link libraries (winsock vs -lm). */
+static const char *xt_target(void)
+{
+    const char *xt = getenv("LUME_TARGET");
+    return (xt && *xt) ? xt : NULL;
+}
+
+static int xt_windows(void)
+{
+    const char *xt = xt_target();
+    return xt && strstr(xt, "windows") != NULL;
+}
+
+/* Cross-compiling writes the helper objects under separate names so a
+ * windows COFF never overwrites (and later breaks) the native objects. */
+static const char *rt_obj_path(void)
+{
+    return xt_target() ? "build/rt_win.o" : RT_OBJ;
+}
+
+static const char *nat_obj_path(void)
+{
+    return xt_target() ? "build/bridge_native_win.o" : NATIVE_OBJ;
+}
+
 static int run_cmd(const char *cmd)
 {
     fflush(stdout);
@@ -102,14 +128,23 @@ int backend_build_rt(char *err, size_t err_size)
     }
 
     struct stat ost;
-    int have = stat(RT_OBJ, &ost) == 0;
-    if (have && ost.st_mtime >= st.st_mtime && rt_last.st.st_mtime >= st.st_mtime)
+    int have = stat(rt_obj_path(), &ost) == 0;
+    /* Cross-compiling rebuilds unconditionally: build/rt.o is a native
+     * object and a windows .o must not be mixed into a posix link. */
+    if (!xt_target() && have && ost.st_mtime >= st.st_mtime &&
+        rt_last.st.st_mtime >= st.st_mtime)
         return 0;                        /* already up to date */
 
     lume_mkdir("build");                /* no -p guarantee beyond this one */
 
     char cmd[PATH_MAX * 2];
-    snprintf(cmd, sizeof cmd, "%s -O2 -c -o %s %s", pick_cc(), RT_OBJ, LUME_RT_SRC);
+    /* Cross-compiling a C helper needs a clang-like driver too: CC may point
+     * at gcc, which does not accept -target. */
+    const char *cc = xt_target() ? pick_ir_cc() : pick_cc();
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s",
+             cc, xt_target() ? " -target " : "",
+             xt_target() ? xt_target() : "",
+             rt_obj_path(), LUME_RT_SRC);
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "compiling the runtime helper failed");
         return 1;
@@ -163,13 +198,17 @@ int backend_native(const char *src_path, struct Node *prog,
      * lume_bi_now, which the server{} codegen output calls. */
     {
         struct stat nst, nost;
-        int have = stat(NATIVE_OBJ, &nost) == 0;
+        int have = stat(nat_obj_path(), &nost) == 0;
         int need = stat(LUME_NATIVE_SRC, &nst) != 0 ||
-                   !have || nost.st_mtime < nst.st_mtime;
+                   !have || nost.st_mtime < nst.st_mtime ||
+                   xt_target() != NULL;
         if (need) {
             char ncmd[PATH_MAX * 2];
-            snprintf(ncmd, sizeof ncmd, "%s -O2 -c -o %s %s",
-                     pick_cc(), NATIVE_OBJ, LUME_NATIVE_SRC);
+            snprintf(ncmd, sizeof ncmd, "%s -O2%s%s -c -o %s %s",
+                     xt_target() ? pick_ir_cc() : pick_cc(),
+                     xt_target() ? " -target " : "",
+                     xt_target() ? xt_target() : "",
+                     nat_obj_path(), LUME_NATIVE_SRC);
             if (run_cmd(ncmd) != 0) {
                 snprintf(err, err_size,
                          "compiling the native server runtime failed");
@@ -185,8 +224,10 @@ int backend_native(const char *src_path, struct Node *prog,
      * "macosx26.0.0" — a patch-version difference that is harmless, but it is
      * a warning on every build unless it is silenced. */
     char cmd[PATH_MAX * 3];
-    snprintf(cmd, sizeof cmd, "%s -O2 -c -o %s.o %s -Wno-override-module",
-             pick_ir_cc(), out_path, ll_path);
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s.o %s -Wno-override-module",
+             pick_ir_cc(), xt_target() ? " -target " : "",
+             xt_target() ? xt_target() : "",
+             out_path, ll_path);
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "compiling %s.ll failed", out_path);
         return 1;
@@ -195,8 +236,17 @@ int backend_native(const char *src_path, struct Node *prog,
      * implicitly on macOS (so this quietly worked there) but glibc does not
      * link without it. Omitting it made --compile-* fail at the link step on
      * any Linux — including the CI runner's `make asan`. */
-    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s.o %s %s -lm",
-             pick_ir_cc(), out_path, out_path, RT_OBJ, NATIVE_OBJ);
+    char outexe[PATH_MAX * 2];
+    const char *oname = out_path;
+    if (xt_windows() && !strstr(out_path, ".exe")) {
+        snprintf(outexe, sizeof outexe, "%s.exe", out_path);
+        oname = outexe;
+    }
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s",
+             pick_ir_cc(), xt_target() ? " -target " : "",
+             xt_target() ? xt_target() : "",
+             oname, out_path, rt_obj_path(), nat_obj_path(),
+             xt_windows() ? "-lws2_32" : "-lm");
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (IR kept in %s.ll)",
                  out_path, out_path);

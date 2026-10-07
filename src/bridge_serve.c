@@ -22,6 +22,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#if defined(_WIN32)
+/* winnt.h's _TOKEN_INFORMATION_CLASS has an enum member TokenType, which
+ * clashes with lume.h's typedef name; shim it away for the windows headers. */
+#define TokenType LumeWinTokTypeShim
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#undef TokenType
+#include <process.h>
+#else
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -29,6 +40,52 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <sys/time.h>
+#endif
+
+/* ---- platform socket glue (shared shape with bridge_native.c) ---- */
+#if defined(_WIN32)
+typedef SOCKET SockFd;
+#define SOCK_BADP(f) ((f) == INVALID_SOCKET)
+#define sock_close(f) closesocket(f)
+#define sock_err() WSAGetLastError()
+#define SOCK_EINTR WSAEINTR
+#define sock_send(f, b, n) send((f), (const char *)(b), (int)(n), 0)
+#define sock_recv(f, b, n) recv((f), (char *)(b), (int)(n), 0)
+#define lume_getpid() _getpid()
+static int g_wsock_started = 0;
+static int wsock_start(void)
+{
+    if (!g_wsock_started) {
+        WSADATA wd;
+        if (WSAStartup(MAKEWORD(2, 2), &wd) != 0) return 0;
+        g_wsock_started = 1;
+    }
+    return 1;
+}
+
+/* gettimeofday is not in the windows CRT; the only use is a monotonic-ish
+ * timestamp, _ftime covers it. */
+#include <sys/timeb.h>
+static int lume_gettimeofday(struct timeval *tv, void *tz)
+{
+    struct _timeb tb;
+    (void)tz;
+    _ftime(&tb);
+    tv->tv_sec = (long)tb.time;
+    tv->tv_usec = tb.millitm * 1000;
+    return 0;
+}
+#define gettimeofday lume_gettimeofday
+#else
+typedef int SockFd;
+#define SOCK_BADP(f) ((f) < 0)
+#define sock_close(f) close(f)
+#define sock_err() errno
+#define SOCK_EINTR EINTR
+#define sock_send(f, b, n) send((f), (b), (n), 0)
+#define sock_recv(f, b, n) recv((f), (b), (n), 0)
+#define lume_getpid() getpid()
+#endif
 
 #define SERVE_BACKLOG 16
 #define HEAD_BUF_MAX 16384
@@ -177,8 +234,13 @@ static Value make_req_map(VM *vm, const HttpReq *r)
     if (r->query[0]) {
         char *copy = strdup(r->query);
         char *save = NULL;
+#if defined(_WIN32)
+        for (char *tok = strtok_s(copy, "&", &save); tok;
+             tok = strtok_s(NULL, "&", &save)) {
+#else
         for (char *tok = strtok_r(copy, "&", &save); tok;
              tok = strtok_r(NULL, "&", &save)) {
+#endif
             char kb[1024], vb[1024];
             char *eq = strchr(tok, '=');
             if (eq) {
@@ -217,7 +279,7 @@ static const char *status_text(int code)
     }
 }
 
-static void send_resp(int fd, int status, const char *ctype,
+static void send_resp(SockFd fd, int status, const char *ctype,
                       const char *body, size_t blen)
 {
     char hdr[512];
@@ -228,8 +290,8 @@ static void send_resp(int fd, int status, const char *ctype,
                      "Connection: close\r\n"
                      "\r\n",
                      status, status_text(status), ctype, blen);
-    if (n > 0) send(fd, hdr, (size_t)n, 0);
-    if (body && blen) send(fd, body, blen, 0);
+    if (n > 0) sock_send(fd, hdr, (size_t)n);
+    if (body && blen) sock_send(fd, body, blen);
 }
 
 /* case-insensitive substring search (Content-Length lookup) */
@@ -332,37 +394,57 @@ void bridge_run(VM *vm)
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
+#if defined(_WIN32)
+    if (!wsock_start()) {
+        fprintf(stderr, "lume: run(): WSAStartup failed\n");
+        exit(1);
+    }
+#endif
+
     if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) {
         fprintf(stderr, "lume: run(): cannot resolve %s:%s\n", host, portstr);
         exit(1);
     }
 
-    int listener = -1;
+#if defined(_WIN32)
+    SockFd listener = INVALID_SOCKET;
+#else
+    SockFd listener = -1;
+#endif
     for (struct addrinfo *r = res; r; r = r->ai_next) {
         listener = socket(r->ai_family, r->ai_socktype, r->ai_protocol);
-        if (listener < 0) continue;
+        if (SOCK_BADP(listener)) continue;
         int one = 1;
-        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR,
+                   (const char *)&one, sizeof one);
+#if defined(_WIN32)
+        if (bind(listener, r->ai_addr, (int)r->ai_addrlen) == 0 &&
+#else
         if (bind(listener, r->ai_addr, (socklen_t)r->ai_addrlen) == 0 &&
+#endif
             listen(listener, SERVE_BACKLOG) == 0)
             break;
-        close(listener);
+        sock_close(listener);
+#if defined(_WIN32)
+        listener = INVALID_SOCKET;
+#else
         listener = -1;
+#endif
     }
     freeaddrinfo(res);
 
-    if (listener < 0) {
+    if (SOCK_BADP(listener)) {
         fprintf(stderr, "lume: run(): cannot listen on %s:%ld (errno %d)\n",
-                host, port, errno);
+                host, port, sock_err());
         exit(1);
     }
     fprintf(stderr, "lume: serving http://%s:%ld (pid %ld)\n",
-            host, port, (long)getpid());
+            host, port, (long)lume_getpid());
 
     for (;;) {
-        int cfd = accept(listener, NULL, NULL);
-        if (cfd < 0) {
-            if (errno == EINTR) continue;
+        SockFd cfd = accept(listener, NULL, NULL);
+        if (SOCK_BADP(cfd)) {
+            if (sock_err() == SOCK_EINTR) continue;
             break;
         }
 
@@ -374,7 +456,7 @@ void bridge_run(VM *vm)
         size_t scanned = 0;          /* bytes already checked for the terminator */
         int hdr_done = 0;
         while (hlen + 1 < sizeof head) {
-            ssize_t n = recv(cfd, head + hlen, sizeof head - hlen - 1, 0);
+            int n = sock_recv(cfd, head + hlen, sizeof head - hlen - 1);
             if (n <= 0) break;
             hlen += (size_t)n;
             head[hlen] = '\0';
@@ -395,7 +477,7 @@ void bridge_run(VM *vm)
         if (!hdr_done || parse_request(head, hlen, &req) != 0) {
             send_resp(cfd, 400, "text/plain; charset=utf-8",
                       "bad request", 11);
-            close(cfd);
+            sock_close(cfd);
             continue;
         }
 
@@ -411,8 +493,8 @@ void bridge_run(VM *vm)
             if (clen > 0 && req.body_len < (size_t)clen &&
                 (size_t)clen <= sizeof req.body) {
                 while (req.body_len < (size_t)clen) {
-                    ssize_t n = recv(cfd, req.body + req.body_len,
-                                     (size_t)clen - req.body_len, 0);
+                    int n = sock_recv(cfd, req.body + req.body_len,
+                                     REQ_BUF_MAX - req.body_len);
                     if (n <= 0) break;
                     req.body_len += (size_t)n;
                 }
@@ -430,7 +512,7 @@ void bridge_run(VM *vm)
         if (!match) {
             send_resp(cfd, 404, "text/plain; charset=utf-8",
                       "not found", 9);
-            close(cfd);
+            sock_close(cfd);
             continue;
         }
 
@@ -449,7 +531,7 @@ void bridge_run(VM *vm)
                       vm->error_msg[0] ? vm->error_msg : "internal error",
                       strlen(vm->error_msg[0] ? vm->error_msg : "internal error"));
             vm->error = false;
-            close(cfd);
+            sock_close(cfd);
             continue;
         }
 
@@ -466,9 +548,9 @@ void bridge_run(VM *vm)
                       b.p ? b.p : "null", b.len ? b.len : 4);
             free(b.p);
         }
-        close(cfd);
+        sock_close(cfd);
         (void)serve_now_ms;
     }
 
-    close(listener);
+    sock_close(listener);
 }
