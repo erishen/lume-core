@@ -4,6 +4,7 @@
  * and/or)仅本文件内部使用。 */
 
 #include "parser_internal.h"
+#include <limits.h>
 
 static Node *parse_primary(Parser *p) {
     Token t = peek(p);
@@ -12,12 +13,14 @@ static Node *parse_primary(Parser *p) {
         advance(p);
         Node *n = nalloc(N_LITERAL, t.line);
         n->as.lit.kind = LIT_NUM;
+        /* The lexer already classified the literal (it had to, to pick
+         * strtoll over strtod) and carries the i64 value intact, so this no
+         * longer re-derives floatness from the text nor squeezes the integer
+         * through a double. */
+        n->as.lit.is_float = t.is_int == 0;
+        n->as.lit.inum = t.inum;
         n->as.lit.num = t.num;
-        bool is_float = false;
-        for (int i = 0; i < t.length && !is_float; i++)
-            if (t.start[i] == '.' || t.start[i] == 'e' || t.start[i] == 'E')
-                is_float = true;
-        n->as.lit.is_float = is_float;
+        n->as.lit.neg_min = t.neg_min;
         return n;
     }
     if (t.type == TOK_STRING) {
@@ -227,6 +230,18 @@ static Node *parse_unary(Parser *p) {
         Node *n = nalloc(N_UNARY, t.line);
         n->as.unary.op = (t.type == TOK_NOT) ? OP_NOT : OP_NEG;
         n->as.unary.operand = operand;
+        /* `-9223372036854775808` is the one literal whose magnitude overflows
+         * i64: the lexer kept the clamped 2^63 and flagged it, and this is the
+         * only place that can supply the missing negation. Fold it here so the
+         * AST holds LLONG_MIN exactly, and drop the OP_NEG wrapper since the
+         * value is already correct — leaving it in would negate twice. */
+        if (n->as.unary.op == OP_NEG && operand->type == N_LITERAL &&
+            operand->as.lit.kind == LIT_NUM && operand->as.lit.neg_min) {
+            operand->as.lit.inum = LLONG_MIN;
+            operand->as.lit.num = (double)LLONG_MIN;
+            operand->as.lit.neg_min = 0;
+            return operand;
+        }
         return n;
     }
     return parse_postfix(p);

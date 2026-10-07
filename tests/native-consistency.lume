@@ -201,6 +201,46 @@ print(dbl(21));
 func halve(v) { return v / 2; }        /* `/` widens to float, so 9 / 2 = 4.5 */
 print(halve(9));
 
+// ---- int is i64, not a double (docs/SPEC.md§integers) -------------------
+//
+// These pin the property that the interpreter and the two native backends used
+// to disagree on: `int` was stored in a C double, so anything past 2^53 was
+// silently rounded and int overflow saturated in the interpreter while the
+// backends wrapped in i64. Every line below is chosen to fail loudly on either
+// half of that split.
+
+/* Literals past 2^53 must survive lexing exactly. 2^53+1 is the smallest
+ * integer a double cannot represent, so it is the smallest witness. */
+print(9007199254740993);
+print(123456789012345678);
+
+/* Both i64 extremes. */
+print(9223372036854775807);
+print(-9223372036854775808);
+
+/* Wrapping, matching the emitters' unadorned `add i64` / `mul i64`. */
+let big = 9223372036854775807;
+print(big + 1);
+print(big * 2);
+print(0 - big - 1);
+
+/* int modulo keeps C's sign convention and never detours through fmod, which
+ * would round a large int; `/` stays floating point even for two ints.
+ *
+ * The unary-minus-then-modulo case (`let neg = -7; neg % 3`) lives in the smoke
+ * suite rather than here: the libLLVM backend cannot yet type a variable
+ * initialised from a unary minus (docs/SPEC.md §6.1), so putting it in this
+ * three-way target would fail the target for a known, unrelated reason. */
+print(-7 / 2);
+print(-7 % 3);
+print(7 % -3);
+
+/* An int compared against a float is a well-typed comparison, and comparing
+ * them must not go through a lossy widening on the way to str(). */
+print(1 == 1.0);
+print(2.5 + 1);
+print(3 / 2);
+
 func sum3(a, b, c) { return a + b + c; }
 print(sum3(1, 2, 3));
 

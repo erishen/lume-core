@@ -41,6 +41,15 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
         case N_LITERAL:
             switch (n->as.lit.kind) {
                 case LIT_NUM:
+                    /* neg_min still set here means the 2^63 magnitude reached
+                     * the checker without a unary minus in front of it, so
+                     * nothing ever supplied the negation and no i64 can hold
+                     * the value. parse_unary clears the flag when the minus
+                     * is there. */
+                    if (n->as.lit.neg_min)
+                        ck_fail(c, n->line,
+                                "integer literal 9223372036854775808 does not fit in int "
+                                "(i64); write -9223372036854775808 for the minimum");
                     return n->as.lit.is_float ? type_prim(TY_FLOAT)
                                               : type_prim(TY_INT);
                 case LIT_STR:  return type_prim(TY_STRING);

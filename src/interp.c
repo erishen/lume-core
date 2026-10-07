@@ -284,7 +284,12 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
                 vm_push(vm, val_bool(!value_truthy(v)));
             } else { /* OP_NEG */
                 if (!IS_NUM(v)) { vm_set_error(vm, "cannot negate a non-number"); return; }
-                vm_push(vm, val_num(-AS_NUM(v)));
+                /* Keep int an int. val_num(-AS_NUM(v)) widened every negation
+                 * to float, so `let a = -7; a % 3` was rejected with "'%' does
+                 * not apply to floats" — the type checker calls `-7` an int, so
+                 * the runtime disagreed with it. Negate in i64 for int. */
+                if (IS_INT(v)) vm_push(vm, val_int(-AS_INT(v)));
+                else          vm_push(vm, val_float(-AS_NUM(v)));
             }
             return;
         }
@@ -298,7 +303,13 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
 
 static void eval_expr_literal(VM *vm, Node *n) {
     switch (n->as.lit.kind) {
-        case LIT_NUM:  vm_push(vm, val_num(n->as.lit.num)); return;
+        case LIT_NUM:
+            /* Integers keep their i64 (docs/SPEC.md); only float literals take
+             * the double slot. Pushing both through val_num() is what used to
+             * round every int past 2^53. */
+            if (n->as.lit.is_float) vm_push(vm, val_float(n->as.lit.num));
+            else                   vm_push(vm, val_int(n->as.lit.inum));
+            return;
         case LIT_TRUE: vm_push(vm, val_bool(true)); return;
         case LIT_FALSE: vm_push(vm, val_bool(false)); return;
         case LIT_NULL: vm_push(vm, val_null()); return;
@@ -447,18 +458,56 @@ static void eval_expr_binary(VM *vm, Node *n, Env *env) {
         vm_set_error(vm, "line %zu: operator needs numbers", n->line);
         return;
     }
+    /* int op int is i64 arithmetic, wrapping like the native backends'
+     * unadorned `add i64` (docs/SPEC.md §integers). Everything else promotes
+     * to double. This must not be reordered into a single double path: doing
+     * so is what made `m + 1` saturate in the interpreter while the native
+     * backends wrapped, i.e. the same program meant two different numbers.
+     * `/` and `%` promote even for two ints, because `/` is documented as
+     * floating-point division (7 / 2 == 3.5) and codegen widens to match. */
+    if (IS_INT(l) && IS_INT(r) &&
+        n->as.binary.op != OP_DIV && n->as.binary.op != OP_MOD) {
+        long long a = AS_INT(l), b = AS_INT(r);
+        switch (n->as.binary.op) {
+            case OP_ADD: vm_push(vm, val_int((long long)((unsigned long long)a + (unsigned long long)b))); return;
+            case OP_SUB: vm_push(vm, val_int((long long)((unsigned long long)a - (unsigned long long)b))); return;
+            case OP_MUL: vm_push(vm, val_int((long long)((unsigned long long)a * (unsigned long long)b))); return;
+            case OP_LT:  vm_push(vm, val_bool(a <  b)); return;
+            case OP_LE:  vm_push(vm, val_bool(a <= b)); return;
+            case OP_GT:  vm_push(vm, val_bool(a >  b)); return;
+            case OP_GE:  vm_push(vm, val_bool(a >= b)); return;
+            default: vm_push(vm, val_null()); return;
+        }
+    }
     double a = AS_NUM(l), b = AS_NUM(r);
     switch (n->as.binary.op) {
-        case OP_ADD: vm_push(vm, val_num(a + b)); return;
-        case OP_SUB: vm_push(vm, val_num(a - b)); return;
-        case OP_MUL: vm_push(vm, val_num(a * b)); return;
+        case OP_ADD: vm_push(vm, val_float(a + b)); return;
+        case OP_SUB: vm_push(vm, val_float(a - b)); return;
+        case OP_MUL: vm_push(vm, val_float(a * b)); return;
         case OP_DIV:
             if (b == 0) { vm_set_error(vm, "division by zero"); return; }
-            vm_push(vm, val_num(a / b));
+            vm_push(vm, val_float(a / b));
             return;
         case OP_MOD:
             if (b == 0) { vm_set_error(vm, "modulo by zero"); return; }
-            vm_push(vm, val_num(fmod(a, b)));
+            /* Integer modulo stays integer (and keeps C's sign convention:
+             * the result takes the dividend's sign) so that `n % 2` on a large
+             * int is not routed through fmod's double. Computed from AS_INT,
+             * not the widened a/b — a % b on doubles would be UB for values
+             * that are not exactly representable.
+             *
+             * Both emitters reject `%` on floats outright
+             * ("'%' does not apply to floats", codegen_expr.c / llvm_codegen.c),
+             * so the interpreter must refuse it too rather than answer with
+             * fmod: the three have to agree byte-for-byte (docs/SPEC.md §6). */
+            if (IS_INT(l) && IS_INT(r)) {
+                long long ia = AS_INT(l), ib = AS_INT(r);
+                vm_push(vm, val_int(ia % ib));
+            } else {
+                vm_set_error(vm, "line %zu: '%%' does not apply to floats",
+                             n->line);
+                return;
+            }
             return;
         case OP_LT: vm_push(vm, val_bool(a < b)); return;
         case OP_LE: vm_push(vm, val_bool(a <= b)); return;

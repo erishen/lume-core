@@ -381,8 +381,10 @@ static Val cg_literal(CG *g, Node *n)
     if (k == LIT_NUM) {
         if (n->as.lit.is_float)
             return val_make(type_prim(TY_FLOAT), LLVMConstReal(g->dbl, n->as.lit.num));
+        /* Read the literal's i64 directly; going through lit.num (a double)
+         * would round anything past 2^53 before LLVM ever sees it. */
         return val_make(type_prim(TY_INT),
-                        LLVMConstInt(g->i64, (unsigned long long)n->as.lit.num, 0));
+                        LLVMConstInt(g->i64, (unsigned long long)n->as.lit.inum, 0));
     }
 
     ERRV(g, "line %zu: 'null' literals are not supported by the native backend yet", n->line);
@@ -1089,7 +1091,12 @@ static Val cg_builtin(CG *g, Node *n)
         else
             name = strcmp(bname, "int") == 0 ? "lume_bi_int" : "lume_bi_float";
 
+        /* A comparison result is i1 in LLVM, but the runtime's bool builtins
+         * take i64 (the interpreter's bool representation). Zext before the
+         * call — otherwise str(1 == 1.0) fails to verify with an i1 argument. */
         LLVMValueRef v[1] = { a.v };
+        if (a.ty && a.ty->kind == TY_BOOL && pty == g->i64)
+            v[0] = LLVMBuildZExt(g->ab, a.v, g->i64, "boolarg");
         LLVMValueRef r = LLVMBuildCall2(g->ab, ft, rt_decl(g, name, rty, &pty, 1),
                                         v, 1, "b");
         return val_make(rt, r);

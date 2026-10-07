@@ -339,7 +339,10 @@ static Val cg_literal(CG *g, Node *n)
             if (!strpbrk(buf, ".eE")) strcat(buf, ".0");
             return val_make(type_prim(TY_FLOAT), buf);
         }
-        snprintf(buf, sizeof buf, "%lld", (long long)n->as.lit.num);
+        /* The i64 value comes straight from the literal, not from a round trip
+         * through double: casting a >2^53 int back to long long has already
+         * lost the low bits by this point. */
+        snprintf(buf, sizeof buf, "%lld", n->as.lit.inum);
         return val_make(type_prim(TY_INT), buf);
     }
 
@@ -1191,6 +1194,16 @@ static Val cg_builtin(CG *g, Node *n)
 
         char tmp[48];
         snprintf(tmp, sizeof tmp, "%%c%d", g->tid++);
+        /* A comparison yields i1 in LLVM, but the runtime's bool builtins take
+         * the interpreter's bool representation, which is i64. Widen before the
+         * call; without this, str(1 == 1.0) fails to assemble with "%t36 defined
+         * with type 'i1' but expected 'i64'" (reachable now that int/float
+         * comparison is well-typed instead of rejected). */
+        if (pty && strcmp(pty, "i64") == 0 && a.ty && a.ty->kind == TY_BOOL) {
+            char *w = emit_instrf(g, type_prim(TY_BOOL), "zext i1 %s to i64", a.v);
+            free(a.v);
+            a.v = w;
+        }
         EMIT(g, "  %s = call %s %s(%s %s)\n", tmp, rty, fn, pty, a.v);
         free(a.v);
         return val_make(rt, tmp);

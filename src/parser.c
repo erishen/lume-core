@@ -589,7 +589,14 @@ static void indent_print(int n) { for (int i = 0; i < n; i++) printf("  "); }
 
 static void dump_lit(Node *n, int depth) {
     switch (n->as.lit.kind) {
-        case LIT_NUM: indent_print(depth); printf("num %g\n", n->as.lit.num); break;
+        case LIT_NUM:
+            indent_print(depth);
+            /* Integers print as i64 (%lld), not %g: the double slot cannot
+             * hold anything past 2^53, so dumping it there would misreport a
+             * literal the compiler itself keeps exactly. */
+            if (n->as.lit.is_float) printf("num %g\n", n->as.lit.num);
+            else printf("num %lld\n", n->as.lit.inum);
+            break;
         case LIT_STR:
             indent_print(depth);
             printf("str \"%.*s\"\n", n->as.lit.len, n->as.lit.text);

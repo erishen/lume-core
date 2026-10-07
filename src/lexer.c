@@ -1,4 +1,6 @@
 #include "lume.h"
+#include <errno.h>
+#include <limits.h>
 
 /* Lexer: source (NUL-terminated) -> Token array.
  * Errors are reported by emitting a single TOK_ERROR token followed by
@@ -36,9 +38,26 @@ static void emit(LexOut *o, TokenType t, const char *start, int len) {
     tok.length = len;
     tok.line = o->lx.line;
     tok.num = 0;
+    /* Must zero the numeric-literal fields for EVERY token, not just numbers:
+     * emit_number() sets them, but a non-number token never goes through it, so
+     * leaving them unset made the parser read indeterminate values — a stray
+     * neg_min made an ordinary literal report "does not fit in int". */
+    tok.inum = 0;
+    tok.is_int = 0;
+    tok.neg_min = 0;
     o->toks[o->count++] = tok;
 }
 
+/* Lex a numeric literal. Integers are the language's `int` (i64, two's
+ * complement — see docs/SPEC.md) and must not pass through double: strtod
+ * silently rounds anything past 2^53, so `9007199254740993` used to become
+ * ...992 with no diagnostic anywhere, and the native backends (which work in
+ * i64) disagreed with the interpreter about it. Only literals carrying '.',
+ * 'e' or 'E' take the strtod path and are `float`.
+ *
+ * An integer too large for i64 is an error rather than a silent wrap: a value
+ * the source cannot represent is a source bug, and quietly changing it is how
+ * the two backends drifted apart in the first place. */
 static void emit_number(LexOut *o, const char *start, int len) {
     emit(o, TOK_NUMBER, start, len);
     if (len == 0) return;
@@ -46,8 +65,43 @@ static void emit_number(LexOut *o, const char *start, int len) {
     if (len > (int)sizeof(buf) - 1) len = (int)sizeof(buf) - 1;
     memcpy(buf, start, (size_t)len);
     buf[len] = '\0';
-    double d = strtod(buf, NULL);
-    o->toks[o->count - 1].num = d;
+
+    bool is_float = false;
+    for (int i = 0; i < len; i++)
+        if (buf[i] == '.' || buf[i] == 'e' || buf[i] == 'E') { is_float = true; break; }
+
+    Token *t = &o->toks[o->count - 1];
+    t->is_int = is_float ? 0 : 1;
+    if (!is_float) {
+        errno = 0;
+        char *end = NULL;
+        long long v = strtoll(buf, &end, 10);
+        /* ERANGE covers both under- and overflow; a non-NUL end means the text
+         * was not a plain integer (the scanner admits 'e', e.g. `1e5`).
+         *
+         * One exception: 9223372036854775808 (= 2^63) is out of range for
+         * strtoll but is a perfectly good literal here, because the parser
+         * applies a unary minus to it — `-9223372036854775808` is the minimum
+         * i64. The minus is a separate token, so accept the magnitude at the
+         * boundary and let the parser negate it in i64. A bare
+         * `9223372036854775808` with no minus in front still errors, because
+         * nothing can represent it. */
+        bool negatable = (errno == ERANGE && v == LLONG_MAX);
+        if (end == buf || *end != '\0' || (errno == ERANGE && !negatable)) {
+            t->is_int = 0;
+            lx_error(&o->lx, "integer literal does not fit in int (i64)");
+            return;
+        }
+        t->inum = v;
+        t->num = (double)v;  /* kept for diagnostics/float-widening paths */
+        /* 2^63 arrives here clamped to LLONG_MAX, but it is only representable
+         * as LLONG_MIN. Flag it; the parser folds it into the minimum when it
+         * sees the unary minus (see the neg_min note in lume.h), and rejects it
+         * when there is no minus, because nothing else can hold the value. */
+        t->neg_min = negatable;
+        return;
+    }
+    t->num = strtod(buf, NULL);
 }
 
 static bool is_ident_start(char c) {

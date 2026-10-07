@@ -353,6 +353,75 @@ int main(void) {
           "print(str(1 + 2 * 3)); print(str(int(\"42\") - 2.5));",
           "7\n39.5\n");
 
+    /* int is i64 (docs/SPEC.md#integers). It used to be carried in a C double,
+     * so anything past 2^53 was rounded away and overflow saturated instead of
+     * wrapping — and the native backends, which work in i64, disagreed. The
+     * interpreter half of that is pinned here; the three-way version lives in
+     * tests/native-consistency.lume. */
+
+    /* 2^53+1 is the smallest integer a double cannot represent, so it is the
+     * smallest witness for "the lexer must not route ints through strtod". */
+    check("int literal past 2^53 is exact",
+          "print(str(9007199254740993)); print(str(123456789012345678));",
+          "9007199254740993\n123456789012345678\n");
+
+    check("int survives print() and str()",
+          "print(9223372036854775807); print(-9223372036854775808);",
+          "9223372036854775807\n-9223372036854775808\n");
+
+    /* Wrapping, matching the emitters' unadorned `add i64` / `mul i64`. */
+    check("int overflow wraps as i64",
+          "let m = 9223372036854775807; print(str(m + 1)); print(str(m * 2));"
+          " print(str(0 - m - 1));",
+          "-9223372036854775808\n-2\n-9223372036854775808\n");
+
+    /* int %-stays integer (never fmod's double) and keeps C's sign; `/` is
+     * documented as floating point even for two ints. */
+    check("int modulo keeps C signs, / is float",
+          "print(str(-7 / 2)); print(str(-7 % 3)); print(str(7 % -3));",
+          "-3.5\n-1\n1\n");
+
+    /* Unary minus must keep int an int: it used to widen through double, so
+     * `-7 % 3` was answered with "% does not apply to floats" even though the
+     * type checker types `-7` as int. */
+    check("unary minus keeps int an int",
+          "let a = -7; print(str(a)); print(str(a % 3)); print(str(-7 + 0));",
+          "-7\n-1\n-7\n");
+
+    /* Negating the i64 minimum wraps to itself, consistent with 1.2. */
+    check("negating the i64 minimum wraps to itself",
+          "let x = -9223372036854775808; print(str(0 - x));",
+          "-9223372036854775808\n");
+
+    /* `%` on a float is refused by all three backends, never silently fmod'd. */
+    check_err("modulo on a float is a runtime error",
+              "print(str(5.5 % 2));",
+              "does not apply to floats");
+
+    check("int/float compare across kinds",
+          "print(str(1 == 1.0)); print(str(2.5 + 1)); print(str(1 < 1.5));",
+          "true\n3.5\ntrue\n");
+
+    check("large int as a map key round-trips",
+          "let m = { \"id\": 9007199254740993 }; print(str(get(m, \"id\", 0)));",
+          "9007199254740993\n");
+
+    /* The negative minimum is the one literal whose magnitude alone overflows
+     * i64, so it needs the unary minus to become representable. */
+    check("negative i64 minimum is the minimum, not a wrap",
+          "let x = -9223372036854775808; print(str(x)); print(str(x - 1));",
+          "-9223372036854775808\n9223372036854775807\n");
+
+    /* Out of range in either direction, and 2^63 with nothing to negate it:
+     * each must be refused rather than silently rounded. */
+    reject("int literal beyond i64 is refused",
+           "let x = 99999999999999999999;",
+           "does not fit in int");
+
+    reject("bare 2^63 is refused",
+           "let x = 9223372036854775808;",
+           "does not fit in int");
+
     check("string concat",
           "let a = \"hello\"; let b = \" world\"; print(a + b + \"!\");",
           "hello world!\n");

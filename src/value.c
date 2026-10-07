@@ -322,11 +322,21 @@ bool value_truthy(Value v) {
 }
 
 static bool value_eq(Value a, Value b) {
+    /* int and float are distinct runtime tags but comparable values: the type
+     * checker widens int to float (type_compat), so `1 == 1.0` has to stay
+     * true. Compare on the widest common representation instead of bailing on
+     * the tag mismatch — but keep two ints exact rather than dragging them
+     * through double, which is the whole point of the i64 split. */
+    if (IS_NUM(a) && IS_NUM(b)) {
+        if (IS_INT(a) && IS_INT(b)) return AS_INT(a) == AS_INT(b);
+        return AS_NUM(a) == AS_NUM(b);
+    }
     if (a.type != b.type) return false;
     switch (a.type) {
         case VAL_NULL: return true;
         case VAL_BOOL: return AS_BOOL(a) == AS_BOOL(b);
-        case VAL_NUM:  return AS_NUM(a) == AS_NUM(b);
+        case VAL_INT: return AS_INT(a) == AS_INT(b);
+        case VAL_FLOAT: return AS_NUM(a) == AS_NUM(b);
         case VAL_OBJ:
             if (AS_OBJ(a) == AS_OBJ(b)) return true;
             if (AS_OBJ(a)->type == OBJ_STRING && AS_OBJ(b)->type == OBJ_STRING) {
@@ -375,11 +385,13 @@ void json_append_value(VM *vm, void *sbufp, Value v) {
     if (IS_BOOL(v)) { sb_str(b, AS_BOOL(v) ? "true" : "false"); return; }
     if (IS_NUM(v)) {
         char buf[64];
-        double d = AS_NUM(v);
-        if (d == (long long)d)
-            snprintf(buf, sizeof(buf), "%lld", (long long)d);
+        /* JSON keeps the exact integer too — an int serialized through a
+         * double would round past 2^53, so json() of a large id would not
+         * round-trip. */
+        if (IS_INT(v))
+            snprintf(buf, sizeof(buf), "%lld", AS_INT(v));
         else
-            snprintf(buf, sizeof(buf), "%g", d);
+            snprintf(buf, sizeof(buf), "%g", AS_NUM(v));
         sb_str(b, buf);
         return;
     }

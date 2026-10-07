@@ -6,6 +6,54 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — `int` is a real 64-bit integer (规范变更)
+
+The single most consequential fix in this tree's history, and the reason
+`docs/SPEC.md` now exists. `int` was **carried in a C `double`**
+(`val_int()` did `val_num((double)i)`, and the lexer ran *every* numeric
+literal through `strtod`). Consequences, all silent:
+
+- Any integer past 2^53 was rounded. `9007199254740993` became
+  `9007199254740992`, and the type checker reported `parse OK`.
+- Integer overflow **saturated** in the interpreter while both native
+  backends wrapped in i64, so the same program meant two different numbers
+  depending on how it was run. `m = 9223372036854775807; m + 1` printed
+  `9223372036854775807` under the interpreter and `-9223372036854775808`
+  compiled.
+- Unary minus widened to float, so `let neg = -7; neg % 3` was refused with
+  `'%' does not apply to floats` even though the type checker types `-7` as
+  an int.
+
+`int` is now `VAL_INT` carrying an i64, distinct from `VAL_FLOAT`, mirroring
+the `TY_INT` / `TY_FLOAT` the type checker already had. Integers are lexed
+with `strtoll`, wrapped in arithmetic like the emitters' unadorned `add i64`,
+printed from their i64, and serialized to JSON without a detour through
+`double`. An integer literal too large for i64 is now a **lexical error**
+rather than a silent rounding; `2^63` is accepted only as the operand of a
+unary minus, which makes `-9223372036854775808` the minimum i64.
+
+`%` on a float is now refused by the interpreter too (it used to answer with
+`fmod`), so all three backends agree.
+
+### Added — a language spec, and a three-way invariant to keep it honest
+
+- **`docs/SPEC.md`**, the first normative document for the language: numeric
+  types (int is i64, overflow wraps, `/` is float division, `%` is integer
+  with C signs, unary minus preserves the type), left-to-right evaluation
+  order, the type system, `Result` / `?`, module resolution and circular
+  imports, and the three-backend invariant. It documents what the language
+  **is**, not how the code is organised.
+- **The int cases are now pinned in CI.** `tests/native-consistency.lume`
+  gained literals past 2^53, both i64 extremes, wrap behaviour and signed
+  modulo, and `tests/smoke.c` gained 11 interpreter-level assertions
+  (146 tests total). The three-way target is the thing that would have caught
+  the divergence in the first place.
+- `docs/SPEC.md` §6.1 records three **known** backend gaps that are not
+  errors — most notably that the libLLVM backend cannot type a variable
+  initialised from a unary minus (`let neg = -7; print(neg)`), which is why
+  that particular case lives in the smoke suite rather than the three-way
+  target.
+
 ### Changed — the tree itself is named lume-core
 
 - **The directory is now `work/research/lume-core`** (previously `lume-lang`).
