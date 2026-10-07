@@ -411,6 +411,21 @@ int main(void) {
           "let x = -9223372036854775808; print(str(0 - x));",
           "-9223372036854775808\n");
 
+    /* The i64 minimum spelled as a bare literal -- the one magnitude that does
+     * not fit in an i64 positive, so the lexer keeps the clamped 2^63, flags
+     * it, and parse_unary supplies the missing negation by folding the OP_NEG
+     * wrapper away. The value was always right; what was wrong was the shell:
+     * the wrapper node came from nalloc and was returned without being
+     * released, stranding one AST node per run. LeakSanitizer caught it on
+     * Linux CI (80 bytes, one object, constant no matter how many statements
+     * the script had) and macOS cannot see it at all, since Apple's LSan does
+     * not exist there. Run through `check` rather than the three-way fixture:
+     * a leak shows up under the sanitizer, not in the printed output, so this
+     * pins the value while the ASan target pins the absence of the leak. */
+    check("i64 minimum as a bare literal",
+          "print(-9223372036854775808); print(str(-9223372036854775808));",
+          "-9223372036854775808\n-9223372036854775808\n");
+
     /* `%` on a float is refused by all three backends, never silently fmod'd. */
     check_err("modulo on a float is a runtime error",
               "print(str(5.5 % 2));",

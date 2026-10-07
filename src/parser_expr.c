@@ -234,9 +234,22 @@ static Node *parse_unary(Parser *p) {
          * i64: the lexer kept the clamped 2^63 and flagged it, and this is the
          * only place that can supply the missing negation. Fold it here so the
          * AST holds LLONG_MIN exactly, and drop the OP_NEG wrapper since the
-         * value is already correct — leaving it in would negate twice. */
+         * value is already correct — leaving it in would negate twice.
+         *
+         * The shell has to be freed before returning: it came from nalloc, so
+         * it is on the orphan journal, and it never becomes part of the tree
+         * (nothing holds a pointer to it) — returning it without releasing
+         * stranded exactly one node per run, which is what LeakSanitizer
+         * reported on Linux CI (80 bytes, one object, constant regardless of
+         * how many statements the script had). Released the way this file
+         * releases every other discarded shell: unjournal, then free. A plain
+         * free rather than node_free_own() because an N_UNARY carries no
+         * owned arrays — only `operand`, which stays untouched and is the node
+         * being returned. */
         if (n->as.unary.op == OP_NEG && operand->type == N_LITERAL &&
             operand->as.lit.kind == LIT_NUM && operand->as.lit.neg_min) {
+            node_unjournal(n);
+            free(n);
             operand->as.lit.inum = LLONG_MIN;
             operand->as.lit.num = (double)LLONG_MIN;
             operand->as.lit.neg_min = 0;
