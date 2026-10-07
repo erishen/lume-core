@@ -12,7 +12,7 @@ Node *parse_statement(Parser *p) {
          * mark it; the checker/interp publish it into the module's export
          * table. (importers bind `import "x" as ns` to that table.) */
         advance(p);
-        TokenType kt = peek(p).type;
+        LT_TokenType kt = peek(p).type;
         if (kt != TOK_LET && kt != TOK_FUNC && kt != TOK_TYPE) {
             perror_at(p, peek(p).line,
                       "expected 'let', 'func' or 'type' after 'export'", NULL);
@@ -177,7 +177,7 @@ Node *parse_statement(Parser *p) {
         return n;
     }
     if (t.type == TOK_BREAK || t.type == TOK_CONTINUE) {
-        TokenType kt = t.type;
+        LT_TokenType kt = t.type;
         advance(p);
         if (!expect(p, TOK_SEMI)) return NULL;
         return nalloc(kt == TOK_BREAK ? N_BREAK : N_CONTINUE, t.line);

@@ -1,0 +1,21 @@
+// HTTP server + outbound smoke test for lume-core's built-in HTTP.
+server { host = "127.0.0.1"; port = 8891; }
+
+get "/", (req) => {
+  return "hello from lume-core http";
+};
+
+get "/api", (req) => {
+  return {
+    path: req.path,
+    method: req.method,
+    query: req.query,
+    params: req.query_params,
+  };
+};
+
+post "/echo", (req) => {
+  return { body: req.body, method: req.method };
+};
+
+run();

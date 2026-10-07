@@ -130,6 +130,7 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/interp.c src/builtins.c src/builtins_fs.c src/os_win32.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
             src/token.c src/bridge_stub.c src/builtins_http.c \
+            src/net_compat.c src/bridge_serve.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/irbuf.c src/backend.c
 # --- 第二个原生后端:libLLVM C API(可选) ---------------------------------
 # 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume-core 保持 ~2MB。
@@ -167,20 +168,30 @@ ifeq ($(HAVE_OPENSSL),1)
 endif
 
 # --- Windows / mingw-w64 native port -----------------------------------
-# HTTP/TLS is opted out: builtins_http.c is excluded and LUME_HAS_HTTP is
-# forced off, so the always-compiled b_http_* wrappers bind to the
-# native_http_unavailable stubs in builtins.c instead of the (excluded)
-# real implementation. --watch is already compiled out by #ifdef _WIN32 in
-# main.c. The remaining platform spots (mkdir/flock/realpath) are handled
-# with shims in the source, so a plain `make` in an MSYS2 mingw64 shell
-# builds bin/lume-core.exe.
+# HTTP is ON on Windows since the 2026-10 port: builtins_http.c is compiled
+# (outbound http_get/post/... on winsock via net_compat.h) and bridge_run()
+# serves via src/bridge_serve.c, linked against ws2_32. TLS stays off here —
+# the MSVC-built OpenSSL import libs under D:\Software\OpenSSL-Win64 are a
+# separate integration; without it https:// reports "needs libssl" instead of
+# silently downgrading. --watch is compiled out by #ifdef _WIN32 in main.c.
+# The remaining platform spots (mkdir/flock/realpath) are handled with shims
+# in the source, so a plain `make` in an MSYS2 mingw64 shell builds
+# bin/lume-core.exe.
 ifeq ($(IS_WINDOWS),1)
-    SRCS := $(filter-out src/builtins_http.c,$(SRCS))
     HAVE_OPENSSL := 0
-    LUME_HAS_HTTP := 0
+    LUME_HAS_HTTP := 1
+    LDFLAGS  += -lws2_32
+    # IR 编译必须走 clang(C 源码仍用 gcc:CC=gcc)。cmd.exe 看不到 MSYS 格式
+    # 的 PATH, 直接探测 clang 会落回 gcc 而编不出 .o —— 所以用 bash 找到
+    # clang 后转成 Windows 全路径, 经 LUME_IR_CC(backend.c 里优先于 CC)导出。
+    CLANG_WIN := $(shell command -v clang 2>/dev/null)
+    ifneq ($(strip $(CLANG_WIN)),)
+        export LUME_IR_CC := $(shell cygpath -w "$(CLANG_WIN)" 2>/dev/null)
+    endif
 endif
 # Propagate the http flag to every TU so builtins.c emits the native_http_*
-# stubs exactly when builtins_http.c is excluded (Windows) and not otherwise.
+# stubs exactly when a build opts HTTP out (HAVE_OPENSSL-less builds still
+# get the real implementations; the stubs are only a link fallback).
 CFLAGS += -DLUME_HAS_HTTP=$(LUME_HAS_HTTP)
 
 # 注意:这段必须在 SRCS := 之后 —— 这里用的是 +=,提前写会被上面的 := 盖掉。

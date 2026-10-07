@@ -12,8 +12,8 @@
  * defined here for the Windows branch. */
 #ifdef _WIN32
 /* Windows implementations live in os_win32.c (compiled only on Windows) so
- * this TU can include lume.h's TokenType without colliding with the
- * TokenType enumerator that <windows.h> pulls in via winnt.h. */
+ * this TU can include lume.h's LT_TokenType without colliding with the
+ * LT_TokenType enumerator that <windows.h> pulls in via winnt.h. */
 #include <io.h>
 #include <fcntl.h>
 #ifndef LOCK_SH

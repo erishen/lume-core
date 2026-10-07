@@ -15,7 +15,7 @@ static const char *const TOKEN_NAMES[] = {
     "+", "-", "*", "/", "%"
 };
 
-const char *token_type_name(TokenType t) {
+const char *token_type_name(LT_TokenType t) {
     int i = (int)t;
     return (i >= 0 && i < (int)(sizeof(TOKEN_NAMES) / sizeof(TOKEN_NAMES[0])))
                ? TOKEN_NAMES[i]

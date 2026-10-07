@@ -1,8 +1,8 @@
 /* Windows (mingw-w64) implementations of the lume_mkdir / lume_flock shims.
  *
  * Kept in a separate translation unit on purpose: this file #includes
- * <windows.h>, which (via winnt.h) also defines a TokenType enumerator. The
- * rest of the tree (lume.h, builtins_fs.c, ...) uses TokenType as a type name,
+ * <windows.h>, which (via winnt.h) also defines a LT_TokenType enumerator. The
+ * rest of the tree (lume.h, builtins_fs.c, ...) uses LT_TokenType as a type name,
  * and the two collide in the same TU ("redeclared as different kind of
  * symbol"). Putting the Windows-only code here — where lume.h is never
  * included — keeps builtins_fs.c free of <windows.h> while still providing the

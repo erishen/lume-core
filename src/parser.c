@@ -86,14 +86,14 @@ Token peek(const Parser *p)        { return p->toks[p->pos]; }
 Token peek2(const Parser *p)       { return p->toks[p->pos + 1]; }
 size_t previous_line(const Parser *p) { return p->toks[p->pos - 1].line; }
 bool at_end(const Parser *p)       { return peek(p).type == TOK_EOF; }
-bool check(const Parser *p, TokenType t) { return peek(p).type == t; }
+bool check(const Parser *p, LT_TokenType t) { return peek(p).type == t; }
 
 bool advance(Parser *p) {
     if (p->pos < p->count) p->pos++;
     return peek(p).type != TOK_EOF;
 }
 
-bool match(Parser *p, TokenType t) {
+bool match(Parser *p, LT_TokenType t) {
     if (check(p, t)) {
         advance(p);
         return true;
@@ -101,7 +101,7 @@ bool match(Parser *p, TokenType t) {
     return false;
 }
 
-bool expect(Parser *p, TokenType t) {
+bool expect(Parser *p, LT_TokenType t) {
     if (check(p, t)) {
         advance(p);
         return true;
@@ -142,12 +142,12 @@ char *ident_name(Parser *p, Token t) {
 /* `get`/`post`/... are route-shorthand keywords at statement level, but stay
  * usable as identifiers/keys elsewhere (same rule as `type`/`int`) so the
  * `get(m, key)` builtin and `{ get: 1 }` maps keep working. */
-bool is_method_keyword(TokenType t) {
+bool is_method_keyword(LT_TokenType t) {
     return t == TOK_GET || t == TOK_HEAD || t == TOK_POST || t == TOK_PUT ||
            t == TOK_PATCH || t == TOK_DELETE || t == TOK_OPTIONS;
 }
 
-const char *method_keyword_name(TokenType t) {
+const char *method_keyword_name(LT_TokenType t) {
     switch (t) {
         case TOK_GET:     return "GET";
         case TOK_HEAD:    return "HEAD";
@@ -160,7 +160,7 @@ const char *method_keyword_name(TokenType t) {
     }
 }
 
-bool is_field_token(TokenType t) {
+bool is_field_token(LT_TokenType t) {
     return t == TOK_IDENT || t == TOK_TYPE || t == TOK_INT || t == TOK_FLOAT ||
            t == TOK_KW_STRING || t == TOK_BOOL || t == TOK_RESULT ||
            t == TOK_STRING || /* 字符串字面量 map 键 {"a": 1} / 成员名 (2026-09-27) */

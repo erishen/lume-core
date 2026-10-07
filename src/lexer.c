@@ -24,7 +24,7 @@ static void lx_error(Lexer *lx, const char *msg) {
     snprintf(lx->err, sizeof(lx->err), "line %zu: %s", lx->line, msg);
 }
 
-static void emit(LexOut *o, TokenType t, const char *start, int len) {
+static void emit(LexOut *o, LT_TokenType t, const char *start, int len) {
     if (o->count >= o->cap) {
         o->cap = o->cap ? o->cap * 2 : 64;
         o->toks = realloc(o->toks, sizeof(Token) * (size_t)o->cap);
@@ -60,7 +60,7 @@ static bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
 static const struct {
     const char *word;
-    TokenType type;
+    LT_TokenType type;
 } KEYWORDS[] = {
     {"server", TOK_SERVER}, {"route",  TOK_ROUTE}, {"tool",    TOK_TOOL},
     {"func",   TOK_FUNC},   {"return", TOK_RETURN}, {"if",     TOK_IF},
@@ -78,7 +78,7 @@ static const struct {
     {"verbs", TOK_VERBS},
 };
 
-static TokenType keyword_type(const char *start, int len) {
+static LT_TokenType keyword_type(const char *start, int len) {
     for (size_t i = 0; i < sizeof(KEYWORDS) / sizeof(KEYWORDS[0]); i++) {
         if ((int)strlen(KEYWORDS[i].word) == len &&
             strncmp(start, KEYWORDS[i].word, (size_t)len) == 0)
@@ -180,7 +180,7 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
             const char *p = tok_start;
             while (is_ident_char(*p)) p++;
             o.lx.pos = (size_t)(p - source);
-            TokenType t = keyword_type(tok_start, (int)(p - tok_start));
+            LT_TokenType t = keyword_type(tok_start, (int)(p - tok_start));
             emit(&o, t, tok_start, (int)(p - tok_start));
             continue;
         }
@@ -189,7 +189,7 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
             continue;
         }
 
-        TokenType t = TOK_EOF;
+        LT_TokenType t = TOK_EOF;
         int width = 1;
         switch (c) {
             case '(': t = TOK_LPAREN; break;

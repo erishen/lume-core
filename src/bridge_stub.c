@@ -8,12 +8,10 @@
  *   - route/tool registration is recorded into the VM's own tables (they
  *     already exist in VM: RouteRec routes[] / ToolRec tool_records[] hold
  *     the handler as a GC root, exactly as they do in the host). Recording is
- *     the honest thing — `route {}` / `tool {}` keep meaning "register", they
- *     no longer mean "reachable from an HTTP request", because there is no
- *     server in this build to serve them.
- *   - bridge_run() refuses loudly instead of pretending to serve. The `run`
- *     builtin calls it; a compiler that silently "succeeds" at starting a
- *     server it does not have is worse than one that says no.
+ *     the honest thing — `route {}` / `tool {}` keep meaning "register".
+ *   - bridge_run() lives in bridge_serve.c: the language's own minimal HTTP
+ *     server (net_compat.h sockets, single-threaded, shared VM), so `run()`
+ *     actually serves on POSIX and Windows alike.
  */
 
 #include "lume.h"
@@ -65,14 +63,4 @@ int bridge_define_tool(VM *vm, const char *name, const char *desc,
     vm->tool_count++;
     return 0;
 }
-
-void bridge_run(VM *vm)
-{
-    (void)vm;
-    fprintf(stderr,
-            "lume: run() needs the agent-httpd host build (work/research/lume).\n"
-            "      This tree is the standalone compiler: routes and tools are\n"
-            "      registered but nothing serves them. Use --compile or run the\n"
-            "      script with the interpreter instead.\n");
-    exit(2);
-}
+/* bridge_run() is implemented in bridge_serve.c. */

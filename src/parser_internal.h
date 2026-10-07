@@ -21,14 +21,14 @@ Token peek(const Parser *p);
 Token peek2(const Parser *p);
 size_t previous_line(const Parser *p);
 bool at_end(const Parser *p);
-bool check(const Parser *p, TokenType t);
+bool check(const Parser *p, LT_TokenType t);
 bool advance(Parser *p);
-bool match(Parser *p, TokenType t);
-bool expect(Parser *p, TokenType t);
+bool match(Parser *p, LT_TokenType t);
+bool expect(Parser *p, LT_TokenType t);
 char *ident_name(Parser *p, Token t);
-bool is_method_keyword(TokenType t);
-const char *method_keyword_name(TokenType t);
-bool is_field_token(TokenType t);
+bool is_method_keyword(LT_TokenType t);
+const char *method_keyword_name(LT_TokenType t);
+bool is_field_token(LT_TokenType t);
 
 /* Release one node the parser abandoned mid-statement: children are NOT
  * walked (the caller frees every node of the batch itself). */

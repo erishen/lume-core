@@ -32,28 +32,18 @@
  * TLS 依赖可选的 libssl(Makefile 用 pkg-config openssl 探测)。没装时
  * http_get 仍可用,但对 https:// 直接报 "needs libssl",不静默降明文。 */
 
+/* net_compat.h first: on Windows winsock2.h must precede anything that may
+ * pull in windows.h. It also supplies the unified socket surface below. */
+#include "net_compat.h"
 #include "builtins_internal.h"
 #include <ctype.h>
-#include <openssl/err.h>
-#include <fcntl.h>
-#include <netinet/tcp.h>
-#include <strings.h>
-#include <time.h>
-
-#if defined(HAVE_OPENSSL)
-#include <openssl/ssl.h>
-#endif
-
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <stdbool.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+
+#if defined(HAVE_OPENSSL)
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#endif
 
 /* opts.timeout 以秒为单位(脚本里写 30 表示 30 s),内部一律转毫秒。
  * 别把秒当毫秒用:那样 { timeout: 5 } 会在代理握手前就超时。 */
@@ -258,41 +248,42 @@ static void body_done(sbuf *b) {
 /* ---- 连接助手:非阻塞 fd + poll,整体 deadline ---- */
 
 typedef struct {
-    int fd;   /* 底层 socket;TLS 时它仍是真 fd */
+    net_fd fd; /* 底层 socket;TLS 时它仍是真 fd */
+#if defined(HAVE_OPENSSL)
     SSL *ssl; /* NULL => 明文 */
+#else
+    void *ssl; /* never set without libssl */
+#endif
     char why[160]; /* 连接失败原因,给调用方拼错误信息 */
 } Conn;
 
-static long now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
+static long now_ms(void) { return net_now_ms(); }
 
-static int wait_writable(int fd, long deadline) {
+static int wait_writable(net_fd fd, long deadline) {
     for (;;) {
         long left = deadline - now_ms();
         if (left <= 0) return -2; /* timeout */
-        struct pollfd p = { .fd = fd, .events = POLLOUT };
-        int r = poll(&p, 1, (int)(left < 500 ? left : 500));
+        struct pollfd p = { .fd = (int)fd, .events = POLLOUT };
+        int r = net_poll(&p, 1, (int)(left < 500 ? left : 500));
         /* EINTR 是 poll 的常见返回(定时器/子进程信号):重算剩余时间继续等,
          * 别把它当成「连不上」。 */
-        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r < 0) { if (NET_ERRNO() == NET_EINTR) continue; return -1; }
         if (r == 0) continue;
         if (p.revents & (POLLERR | POLLNVAL)) return -1;
         if (p.revents & POLLOUT) return 0;
     }
 }
 
-static int wait_readable(int fd, long deadline) {
+static int wait_readable(net_fd fd, long deadline) {
     for (;;) {
         long left = deadline - now_ms();
         if (left <= 0) return -2;
-        struct pollfd p = { .fd = fd, .events = POLLIN };
-        int r = poll(&p, 1, (int)(left < 500 ? left : 500));
+        struct pollfd p = { .fd = (int)fd, .events = POLLIN };
+        int r = net_poll(&p, 1, (int)(left < 500 ? left : 500));
         /* 同 wait_writable:EINTR 重来,不算超时。 */
-        if (r < 0) { if (errno == EINTR) continue;
-                     fprintf(stderr, "[dbg] wait_readable poll r=%d errno=%d (%s)\n", r, errno, strerror(errno));
+        if (r < 0) { if (NET_ERRNO() == NET_EINTR) continue;
+                     fprintf(stderr, "[dbg] wait_readable poll r=%d err=%d (%s)\n",
+                             r, NET_ERRNO(), net_strerror(NET_ERRNO()));
                      return -1; }
         if (r == 0) continue;
         if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) return 0;
@@ -303,6 +294,7 @@ static int wait_readable(int fd, long deadline) {
 static int conn_write(Conn *c, const char *buf, size_t len, long deadline) {
     size_t off = 0;
     while (off < len) {
+#if defined(HAVE_OPENSSL)
         if (c->ssl) {
             int w = SSL_write(c->ssl, buf + off, (int)(len - off));
             if (w < 0) {
@@ -313,10 +305,12 @@ static int conn_write(Conn *c, const char *buf, size_t len, long deadline) {
             }
             if (w == 0) return -1;
             off += (size_t)w;
-        } else {
+        } else
+#endif
+        {
             if (wait_writable(c->fd, deadline) != 0) return -2;
             ssize_t w = send(c->fd, buf + off, len - off, 0);
-            if (w < 0) { if (errno == EINTR) continue; return -1; }
+            if (w < 0) { if (NET_ERRNO() == NET_EINTR) continue; return -1; }
             if (w == 0) return -1;
             off += (size_t)w;
         }
@@ -328,6 +322,7 @@ static int conn_write(Conn *c, const char *buf, size_t len, long deadline) {
 static int conn_read_some(Conn *c, char *buf, size_t n, size_t *got, long deadline) {
     *got = 0;
     for (;;) {
+#if defined(HAVE_OPENSSL)
         if (c->ssl) {
             int r = SSL_read(c->ssl, buf, (int)n);
             if (r > 0) { *got = (size_t)r; return 0; }
@@ -336,11 +331,13 @@ static int conn_read_some(Conn *c, char *buf, size_t n, size_t *got, long deadli
             if (e == SSL_ERROR_WANT_WRITE) { if (wait_writable(c->fd, deadline) != 0) return -2; continue; }
             return -1;
         }
+#endif
         if (wait_readable(c->fd, deadline) != 0) return -2;
         ssize_t r = recv(c->fd, buf, n, 0);
         if (r > 0) { *got = (size_t)r; return 0; }
         if (r == 0) return 0; /* EOF */
-        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+        int e = NET_ERRNO();
+        if (e == NET_EINTR || e == NET_EAGAIN || e == NET_EWOULDBLOCK) continue;
         return -1;
     }
 }
@@ -361,8 +358,10 @@ static int conn_read_exact(Conn *c, char *buf, size_t want, size_t *got, long de
 }
 
 static void conn_close(Conn *c) {
+#if defined(HAVE_OPENSSL)
     if (c->ssl) { SSL_free(c->ssl); c->ssl = NULL; }
-    if (c->fd >= 0) { close(c->fd); c->fd = -1; }
+#endif
+    if (c->fd != NET_INVALID) { net_close(c->fd); c->fd = NET_INVALID; }
 }
 
 #if defined(HAVE_OPENSSL)
@@ -418,20 +417,23 @@ static int tls_attach(Conn *c, const char *sni_host, long deadline) {
 #endif
 }
 
-static int connect_with_deadline(int fd, const struct sockaddr *sa, socklen_t len,
+static int connect_with_deadline(net_fd fd, const struct sockaddr *sa, socklen_t len,
                                  long deadline) {
     if (connect(fd, sa, len) == 0) return 0;
-    if (errno != EINPROGRESS) return -1;
+    int e = NET_ERRNO();
+    /* winsock reports a pending non-blocking connect as WSAEWOULDBLOCK,
+     * POSIX as EINPROGRESS — both mean "keep waiting". */
+    if (e != NET_EINPROGRESS && e != NET_EWOULDBLOCK) return -1;
     for (;;) {
         long left = deadline - now_ms();
         if (left <= 0) return -1;
-        struct pollfd p = { .fd = fd, .events = POLLOUT };
-        int r = poll(&p, 1, (int)(left < 500 ? left : 500));
+        struct pollfd p = { .fd = (int)fd, .events = POLLOUT };
+        int r = net_poll(&p, 1, (int)(left < 500 ? left : 500));
         if (r < 0) return -1;
         if (r == 0) continue;
         int soerr = 0;
         socklen_t sl = sizeof soerr;
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0) return -1;
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&soerr, &sl) != 0) return -1;
         if (soerr != 0) return -1;
         return 0;
     }
@@ -446,7 +448,7 @@ static const char *proxy_for(int https) {
 
 /* 连上(必要时先开 CONNECT 隧道)。返回 0 成功,1 = 需要 libssl,-1 = 连不上。 */
 static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
-    c->fd = -1;
+    c->fd = NET_INVALID;
     c->ssl = NULL;
 
     const char *chost = u->host;
@@ -484,29 +486,33 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
         snprintf(c->why, sizeof c->why, "name lookup failed for %s", chost);
         return -1;
     }
-    int fd = -1;
+    net_fd fd = NET_INVALID;
     for (struct addrinfo *r = res; r; r = r->ai_next) {
         fd = socket(r->ai_family, SOCK_STREAM, 0);
-        if (fd < 0) { fd = -1; continue; }
+        if (fd == NET_INVALID) { fd = NET_INVALID; continue; }
         int one = 1;
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
         if (connect_with_deadline(fd, r->ai_addr, r->ai_addrlen, deadline) != 0) {
-            fprintf(stderr, "[dbg] connect(%s) errno=%d %s\n", chost, errno, strerror(errno));
-            close(fd);
-            fd = -1;
+            fprintf(stderr, "[dbg] connect(%s) err=%d %s\n", chost,
+                    NET_ERRNO(), net_strerror(NET_ERRNO()));
+            net_close(fd);
+            fd = NET_INVALID;
             continue;
         }
         break;
     }
     freeaddrinfo(res);
-    if (fd < 0) {
+    if (fd == NET_INVALID) {
         /* 带出原因:否则「连不上」永远只剩一句没信息的 cannot reach。 */
-        snprintf(c->why, sizeof c->why, "%s", strerror(errno));
+        snprintf(c->why, sizeof c->why, "%s", net_strerror(NET_ERRNO()));
         return -1;
     }
     c->fd = fd;
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (net_set_nonblock(fd) != 0) {
+        snprintf(c->why, sizeof c->why, "could not set non-blocking");
+        net_close(fd);
+        return -1;
+    }
 
     if (via_proxy && u->https) {
         /* CONNECT 隧道:读头部直到 \r\n\r\n,2xx/3xx 才算开成。 */
@@ -732,6 +738,7 @@ static int read_body(Conn *c, sbuf *b, size_t max_bytes, const char *hdr,
  *   carries_body  是否读 opts.body(GET/DELETE 不给,传了也当没传) */
 static void http_call(VM *vm, int argc, Value *args, Value *out,
                       const char *name, const char *method, int carries_body) {
+    net_init(); /* WSAStartup once on Windows; no-op on POSIX */
     if (vm->no_net) {
         vm_set_error(vm, "%s(): network access is disabled in this run "
                          "(--no-net / LUME_NO_NET=1)", name);

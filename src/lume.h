@@ -67,17 +67,17 @@ typedef enum {
 
     TOK_EQ, TOK_EQEQ, TOK_NEQ, TOK_LT, TOK_LE, TOK_GT, TOK_GE, TOK_ARROW,
     TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_PERCENT
-} TokenType;
+} LT_TokenType;
 
 typedef struct {
-    TokenType type;
+    LT_TokenType type;
     const char *start;   /* into the source buffer (never freed) */
     int length;
     size_t line;
     double num;          /* TOK_NUMBER */
 } Token;
 
-const char *token_type_name(TokenType t);
+const char *token_type_name(LT_TokenType t);
 
 /* ===================== type system ===================== */
 

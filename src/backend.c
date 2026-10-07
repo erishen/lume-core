@@ -38,7 +38,15 @@ static struct { char path[PATH_MAX]; struct stat st; } rt_last;
 
 static const char *pick_cc(void)
 {
-    const char *cc = getenv("CC");
+    /* LUME_IR_CC is the IR compiler (must accept .ll); CC is the C compiler.
+     * They split on Windows/mingw: the toolchain builds lume-core with gcc
+     * (CC=gcc) but IR must go through clang, which gcc cannot parse. Makefile
+     * exports LUME_IR_CC as a full Windows path there because cmd.exe cannot
+     * see MSYS-style PATH entries, so the PATH probe below would silently
+     * fall back to gcc and produce no .o. */
+    const char *cc = getenv("LUME_IR_CC");
+    if (cc && *cc) return cc;
+    cc = getenv("CC");
     if (cc && *cc) return cc;
 #ifdef _WIN32
     /* system() goes through cmd.exe on Windows, where `command` is not a
