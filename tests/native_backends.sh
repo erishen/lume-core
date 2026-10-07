@@ -32,6 +32,21 @@ trap 'rm -rf "$WORK"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok   $*"; }
 
+# The compiler's own diagnostic, with everything else on the same stream
+# stripped. `make asan` points TARGET at a sanitized binary, and LSan writes
+# its report to stderr -- so a capture of `2>&1` picks the leak report up
+# alongside the message, and two backends that word the refusal identically
+# still differ byte-for-byte because one of them leaked a different amount.
+# That is a real difference in the *sanitizer's* output, not in the wording,
+# and it made this file's wording assertion fail on Linux CI while passing
+# everywhere else. Only the `lume:` line is the diagnostic.
+#
+# It takes the already-captured stream on stdin rather than running the
+# compiler itself, so the caller keeps the compiler's own exit status (`$?`
+# after a pipeline would be grep's) and there is only one place that knows
+# the redirection order.
+diag_line() { grep -m1 '^lume:'; }
+
 [ -x "$TARGET" ] || fail "$TARGET missing — run make first"
 [ -f "$EXPECTED" ] || fail "$EXPECTED missing"
 
@@ -230,6 +245,7 @@ for leg in "${RAN[@]}"; do
     esac
     msg=$("$TARGET" "$flag" "$NULL_SCALARS" -o "$WORK/null-$leg" 2>&1 >/dev/null)
     rc=$?
+    msg=$(printf '%s\n' "$msg" | diag_line)
     [ $rc -ne 0 ] ||
         fail "null-as-scalar: $leg compiled \`let x: int = null\` (it must refuse)"
     case "$msg" in
@@ -317,7 +333,9 @@ for leg in "${RAN[@]}"; do
         *)    continue ;;
     esac
     msg=$("$TARGET" "$flag" "$PROPAGATE" -o "$WORK/prop-$leg" 2>&1 >/dev/null)
-    if [ $? -eq 0 ] || [ -x "$WORK/prop-$leg" ]; then
+    rc=$?
+    msg=$(printf '%s\n' "$msg" | diag_line)
+    if [ $rc -eq 0 ] || [ -x "$WORK/prop-$leg" ]; then
         fail "propagate: $leg compiled \`f()?\` -- it silently computes the wrong answer"
     fi
     case "$msg" in
