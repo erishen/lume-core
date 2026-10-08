@@ -30,6 +30,11 @@
 # but .data/ is the shared convention if a script happens to create it)
 /.data/
 
+# Windows local build via build_core.bat: machine-local config and the
+# compiler log it writes next to the tree
+/.env
+/build_err.txt
+
 # `tests/smoke.c` does `mkdir(".data")` to reset the mcps() catalog and then
 # unlinks the catalog file, leaving the directory behind — so running the suite
 # from tests/ (or anywhere but the checkout root) dirties the work tree with a
