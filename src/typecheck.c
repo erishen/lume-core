@@ -344,6 +344,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "discovery_endpoints", "catalog", /* discovery builtins */
     "push", "try", /* collection / error handling (2026-09-27) */
     "replace", /* string builtins (2026-09-27) */
+    "upper", "lower", "capitalize", "trim", "contains", "split", "join",
+    "substr", /* string tools (2026-10-08, P4a codegen) */
     "crypt_sha512", /* sha512 crypt hash (2026-09-29) */
     /* math builtins (2026-09-28, builtins_math.c) */
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",

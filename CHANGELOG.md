@@ -6,6 +6,18 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — string tools (codegen-oriented)
+
+- New string builtins in `builtins_str.c`: `upper(s)`, `lower(s)`,
+  `capitalize(s)` (ASCII; non-ASCII bytes pass through unchanged),
+  `trim(s)` (ASCII whitespace), `contains(s, sub)` (empty sub → true),
+  `split(s, sep)` → list (empty sep → `[s]`), `join(list, sep)`
+  (16 MiB cap, elements stringified via `str_of_value`), and
+  `substr(s, start, len?)` (byte-based; negative start counts from the
+  end, len clamps). These cover the string-transform needs of
+  code-generation tooling (e.g. `capitalize(controller)` in CRUD
+  generators).
+
 ### Added — LSP language server (`--lsp`)
 
 - New `--lsp` mode: a stdio Language Server Protocol server
