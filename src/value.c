@@ -583,11 +583,27 @@ static void json_value(VM *vm, JsonState *st) {
     }
 
     if (c == '-' || (c >= '0' && c <= '9')) {
+        /* JSON integers (no '.', 'e', 'E') decode as VAL_INT: the `int`
+         * MCP schema matches, and 64-bit precision survives. Anything with
+         * a fraction or exponent is a float (strtod). */
+        const char *q = st->p;
+        int is_int = 1;
+        if (*q == '-') q++;
+        if (*q == '-') is_int = 0;   /* "--" is malformed, not a number */
+        while (*q >= '0' && *q <= '9') q++;
+        if (*q == '.' || *q == 'e' || *q == 'E') is_int = 0;
         char *end = NULL;
-        double d = strtod(st->p, &end);
-        if (end == st->p) { snprintf(st->err, sizeof(st->err), "bad number"); return; }
-        st->p = end;
-        vm_push(vm, val_num(d));
+        if (is_int) {
+            long long iv = strtoll(st->p, &end, 10);
+            if (end == st->p) { snprintf(st->err, sizeof(st->err), "bad number"); return; }
+            st->p = end;
+            vm_push(vm, val_int(iv));
+        } else {
+            double d = strtod(st->p, &end);
+            if (end == st->p) { snprintf(st->err, sizeof(st->err), "bad number"); return; }
+            st->p = end;
+            vm_push(vm, val_num(d));
+        }
         return;
     }
 

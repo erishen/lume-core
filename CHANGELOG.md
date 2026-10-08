@@ -6,6 +6,19 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — MCP tools/call argument validation
+
+- `tools/call` now rejects arguments whose type does not match the tool's
+  declared schema (`{"k":"string",...}`): a mismatch returns -32602 with
+  the offending field name. Missing keys stay fine (handlers fall back via
+  `get(params, k, def)`).
+- JSON integers (no `.`, `e`, `E`) now decode as `int` instead of `float`
+  (SPEC §6.1), so an `int` schema actually matches a JSON integer and
+  64-bit precision is preserved.
+- `examples/`: `mcp_fs.lume` (fs_read / fs_list / fs_write) and
+  `mcp_math.lume` (math_add / math_fact / math_stats) show scripts
+  exposing builtins as MCP tools with zero C-side changes.
+
 ### Added — serve() cookie sessions
 
 - Every HTTP request now gets a session: `req.session` is a map shared

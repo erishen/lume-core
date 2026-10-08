@@ -150,6 +150,54 @@ static void mcp_tools_list(VM *vm, long long id) {
     free(b.p);
 }
 
+/* Schema type check for tools/call: return NULL when `v` matches `want`
+ * (simplified schema types), else the expected type name for the error.
+ * Unknown schema types impose no constraint. */
+static const char *arg_type_ok(Value v, const char *want) {
+    if (strcmp(want, "string") == 0)
+        return (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING) ? NULL : "string";
+    if (strcmp(want, "number") == 0) return IS_NUM(v) ? NULL : "number";
+    if (strcmp(want, "int") == 0) return IS_INT(v) ? NULL : "int";
+    if (strcmp(want, "bool") == 0) return IS_BOOL(v) ? NULL : "bool";
+    if (strcmp(want, "array") == 0)
+        return (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_LIST) ? NULL : "array";
+    if (strcmp(want, "object") == 0)
+        return (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_MAP) ? NULL : "object";
+    return NULL;
+}
+
+/* Validate `arguments` against the tool's simplified params schema
+ * ({"k":"string",...}). Type mismatches are rejected with -32602; missing
+ * keys are fine (handlers fall back via get(params,k,def)). */
+static const char *mcp_validate_args(VM *vm, const ToolRec *rec, Value args) {
+    if (!rec->params[0]) return NULL;         /* no schema: no constraints */
+    if (!IS_OBJ(args) || AS_OBJ(args)->type != OBJ_MAP) return NULL;
+    char jerr[256] = {0};
+    json_parse(vm, rec->params, jerr, sizeof jerr);
+    if (vm->error) {
+        vm->error = false;
+        vm->error_msg[0] = '\0';
+        return NULL;
+    }
+    Value sv = vm_pop(vm);
+    if (!IS_OBJ(sv) || AS_OBJ(sv)->type != OBJ_MAP) return NULL;
+    Obj *schema = AS_OBJ(sv);
+    Obj *argm = AS_OBJ(args);
+    for (int i = 0; i < schema->as.map.count; i++) {
+        const char *k = schema->as.map.keys[i];
+        Value wantv = schema->as.map.vals[i];
+        if (!IS_OBJ(wantv) || AS_OBJ(wantv)->type != OBJ_STRING) continue;
+        const char *want = obj_string(AS_OBJ(wantv));
+        /* only validate keys the caller actually supplied */
+        int af = 0;
+        Value av = map_get(vm, argm, k, &af);
+        if (!af) continue;
+        const char *bad = arg_type_ok(av, want);
+        if (bad) return k;  /* caller reports the field name */
+    }
+    return NULL;
+}
+
 /* tools/call: find the tool by name and run its handler with the decoded
  * arguments (one map argument; the handler sees `(params) => ...`). */
 static void mcp_tools_call(VM *vm, long long id, Obj *params) {
@@ -174,6 +222,16 @@ static void mcp_tools_call(VM *vm, long long id, Obj *params) {
     int af = 0;
     Value av = map_get(vm, params, "arguments", &af);
     if (af) argv = av;
+
+    /* reject type mismatches against the declared schema before running */
+    const char *bad_field = mcp_validate_args(vm, rec, argv);
+    if (bad_field) {
+        char msg[160];
+        snprintf(msg, sizeof msg, "invalid argument type for '%s'",
+                 bad_field);
+        mcp_write(id, NULL, -32602, msg);
+        return;
+    }
 
     /* callee + one argument on the stack, then call. */
     vm_push(vm, rec->handler);

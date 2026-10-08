@@ -1,0 +1,19 @@
+// MCP tool examples: filesystem tools written in lume.
+//   run: lume-core --mcp examples/mcp_fs.lume
+//
+// Demonstrates the "registered tools" model: any lume script can wrap
+// builtins and expose them to MCP clients with a few tool statements.
+
+tool "fs_read", "Read a text file. Params: path (string)", {path: "string"}, (p) => {
+  return read_file(p["path"]);
+};
+
+tool "fs_list", "List a directory. Params: dir (string), recursive (bool)", {dir: "string", recursive: "bool"}, (p) => {
+  let rec = get(p, "recursive", false);
+  return files(p["dir"], rec);
+};
+
+tool "fs_write", "Write a text file. Params: path (string), content (string)", {path: "string", content: "string"}, (p) => {
+  write_file(p["path"], p["content"]);
+  return "wrote " + p["path"] + " (" + str(len(p["content"])) + " bytes)";
+};

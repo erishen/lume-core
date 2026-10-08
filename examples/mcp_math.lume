@@ -1,0 +1,27 @@
+// MCP tool examples: pure math tools written in lume.
+//   run: lume-core --mcp examples/mcp_math.lume
+//
+// Exercises schema validation: math_add declares numbers, math_stats
+// declares an array; a caller passing the wrong type gets -32602.
+
+tool "math_add", "Add two numbers. Params: a (number), b (number)", {a: "number", b: "number"}, (p) => {
+  return float(p["a"]) + float(p["b"]);
+};
+
+tool "math_fact", "Factorial of n (0..20). Params: n (int)", {n: "int"}, (p) => {
+  let n = int(p["n"]);
+  if (n < 0 || n > 20) { return "error: n must be 0..20"; }
+  let r = 1;
+  let i = 1;
+  while (i <= n) { r = r * i; i = i + 1; }
+  return r;
+};
+
+tool "math_stats", "Mean of a number list. Params: nums (array)", {nums: "array"}, (p) => {
+  let xs = p["nums"];
+  if (len(xs) == 0) { return "error: empty list"; }
+  let sum = 0.0;
+  let i = 0;
+  while (i < len(xs)) { sum = sum + float(xs[i]); i = i + 1; }
+  return sum / float(len(xs));
+};
