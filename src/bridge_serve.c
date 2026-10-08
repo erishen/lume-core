@@ -95,6 +95,7 @@ typedef struct {
     char method[16];
     char path[1024];       /* path only, query stripped (URL-encoded) */
     char query[1024];      /* raw query string without '?' */
+    char cookie[512];      /* raw Cookie header value (lume_sid=...), or "" */
     char body[REQ_BUF_MAX];
     size_t body_len;
     const char *label;     /* route label, or NULL */
@@ -262,6 +263,60 @@ static Value make_req_map(VM *vm, const HttpReq *r)
     if (r->label)
         map_set(vm, o, "label", make_string_cstr(vm, r->label));
 
+    /* ---- sessions ----
+     * Every request gets a session: reuse the one named by `lume_sid=<id>`
+     * in the Cookie header when it exists in the table, otherwise create a
+     * fresh id + empty session map. A fresh session sets vm->session_new so
+     * the response can carry Set-Cookie. The table is VM-owned, so session
+     * data persists across requests (and is GC-rooted via vm->session_table). */
+    {
+        const char *sid = NULL;
+        char sidbuf[64] = {0};
+        if (r->cookie[0]) {
+            const char *p = strstr(r->cookie, "lume_sid=");
+            if (p) {
+                p += 9; /* "lume_sid=" */
+                size_t n = strcspn(p, ";");
+                if (n > 0 && n < sizeof sidbuf) {
+                    memcpy(sidbuf, p, n);
+                    sidbuf[n] = '\0';
+                    sid = sidbuf;
+                }
+            }
+        }
+
+        if (sid && vm->session_table) {
+            int found = 0;
+            Value existing = map_get(vm, vm->session_table, sid, &found);
+            if (found && IS_OBJ(existing) && AS_OBJ(existing)->type == OBJ_MAP) {
+                map_set(vm, o, "session_id", make_string_cstr(vm, sid));
+                map_set(vm, o, "session", existing);
+                vm->session_new = false;
+                snprintf(vm->session_id, sizeof vm->session_id, "%s", sid);
+                return m;
+            }
+        }
+
+        /* fresh session */
+        if (!vm->session_table) {
+            Value t = make_map(vm);
+            vm_push(vm, t);
+            vm->session_table = AS_OBJ(t);
+            vm_pop(vm);
+        }
+        static long s_sess_counter;
+        snprintf(vm->session_id, sizeof vm->session_id, "ls%lx%ld",
+                 (unsigned long)serve_now_ms(),
+                 (long)++s_sess_counter);
+        Value fresh = make_map(vm);
+        vm_push(vm, fresh);
+        map_set(vm, vm->session_table, vm->session_id, fresh);
+        vm_pop(vm);
+        map_set(vm, o, "session_id", make_string_cstr(vm, vm->session_id));
+        map_set(vm, o, "session", fresh);
+        vm->session_new = true;
+    }
+
     return m;
 }
 
@@ -280,14 +335,14 @@ static const char *status_text(int code)
 }
 
 static void send_resp(SockFd fd, int status, const char *ctype,
-                      const char *body, size_t blen)
+                      const char *body, size_t blen, const char *set_cookie)
 {
     /* Default security headers on every response: serve() is a public-facing
      * HTTP surface, so nosniff / frame-deny / referrer-policy cost nothing
      * and harden every content type; CSP is harmless on API responses
      * (browsers only enforce it on documents) and right on HTML. A future
      * `server { csp = ... }` option can relax it per-app. */
-    char hdr[1024];
+    char hdr[2048];
     int n = snprintf(hdr, sizeof hdr,
                      "HTTP/1.1 %d %s\r\n"
                      "Content-Type: %s\r\n"
@@ -296,9 +351,17 @@ static void send_resp(SockFd fd, int status, const char *ctype,
                      "X-Content-Type-Options: nosniff\r\n"
                      "X-Frame-Options: DENY\r\n"
                      "Referrer-Policy: no-referrer\r\n"
-                     "Content-Security-Policy: default-src 'self'\r\n"
-                     "\r\n",
+                     "Content-Security-Policy: default-src 'self'\r\n",
                      status, status_text(status), ctype, blen);
+    if (n > 0 && set_cookie && set_cookie[0]) {
+        int n2 = snprintf(hdr + n, (size_t)sizeof hdr - (size_t)n,
+                          "Set-Cookie: %s\r\n", set_cookie);
+        if (n2 > 0) n += n2;
+    }
+    if (n > 0 && (size_t)n + 2 < sizeof hdr) {
+        memcpy(hdr + n, "\r\n", 3);
+        n += 2;
+    }
     if (n > 0) sock_send(fd, hdr, (size_t)n);
     if (body && blen) sock_send(fd, body, blen);
 }
@@ -357,6 +420,17 @@ static int parse_request(const char *head, size_t hlen, HttpReq *req)
     }
     if (!hdr_end) return -1;
     size_t body_off = (size_t)(hdr_end - head) + 4;
+
+    /* Cookie header: raw value, capped (only lume_sid= is consumed later). */
+    const char *ck = ci_find(head, body_off, "cookie:");
+    if (ck) {
+        ck += 7;
+        while (*ck == ' ' || *ck == '\t') ck++;
+        size_t cklen = strcspn(ck, "\r\n");
+        if (cklen >= sizeof req->cookie) cklen = sizeof req->cookie - 1;
+        memcpy(req->cookie, ck, cklen);
+        req->cookie[cklen] = '\0';
+    }
 
     const char *cl = ci_find(head, body_off, "content-length:");
     long clen = -1;
@@ -459,6 +533,7 @@ void bridge_run(VM *vm)
 
         HttpReq req;
         memset(&req, 0, sizeof req);
+        vm->session_new = false; /* stale flag must not leak across requests */
 
         char head[HEAD_BUF_MAX];
         size_t hlen = 0;
@@ -485,7 +560,7 @@ void bridge_run(VM *vm)
 
         if (!hdr_done || parse_request(head, hlen, &req) != 0) {
             send_resp(cfd, 400, "text/plain; charset=utf-8",
-                      "bad request", 11);
+                      "bad request", 11, NULL);
             sock_close(cfd);
             continue;
         }
@@ -520,7 +595,7 @@ void bridge_run(VM *vm)
 
         if (!match) {
             send_resp(cfd, 404, "text/plain; charset=utf-8",
-                      "not found", 9);
+                      "not found", 9, NULL);
             sock_close(cfd);
             continue;
         }
@@ -538,23 +613,35 @@ void bridge_run(VM *vm)
         if (vm->error) {
             send_resp(cfd, 500, "text/plain; charset=utf-8",
                       vm->error_msg[0] ? vm->error_msg : "internal error",
-                      strlen(vm->error_msg[0] ? vm->error_msg : "internal error"));
+                      strlen(vm->error_msg[0] ? vm->error_msg : "internal error"),
+                      NULL);
             vm->error = false;
             sock_close(cfd);
             continue;
+        }
+
+        /* A fresh session created by make_req_map must be handed to the
+         * browser: Set-Cookie carries the new id so the next request can
+         * present it and resume the session map. */
+        const char *set_cookie = NULL;
+        if (vm->session_new && vm->session_id[0]) {
+            static char ckbuf[160];
+            snprintf(ckbuf, sizeof ckbuf, "lume_sid=%s; Path=/; HttpOnly; SameSite=Lax",
+                     vm->session_id);
+            set_cookie = ckbuf;
         }
 
         sbuf b = {0};
         if (IS_OBJ(res) && AS_OBJ(res)->type == OBJ_STRING) {
             Obj *s = AS_OBJ(res);
             send_resp(cfd, 200, "text/html; charset=utf-8",
-                      obj_string(s), obj_string_len(s));
+                      obj_string(s), obj_string_len(s), set_cookie);
         } else if (IS_NULL(res)) {
-            send_resp(cfd, 204, "text/plain; charset=utf-8", NULL, 0);
+            send_resp(cfd, 204, "text/plain; charset=utf-8", NULL, 0, set_cookie);
         } else {
             value_to_json(vm, &b, res);
             send_resp(cfd, 200, "application/json; charset=utf-8",
-                      b.p ? b.p : "null", b.len ? b.len : 4);
+                      b.p ? b.p : "null", b.len ? b.len : 4, set_cookie);
             free(b.p);
         }
         sock_close(cfd);

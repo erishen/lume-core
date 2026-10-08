@@ -983,7 +983,20 @@ JSON-RPC 错误按规范回 `-32700`（解析）/ `-32600`（请求）/ `-32601`
 用途：任何脚本可把任意 lume 函数暴露成 MCP 工具，供 Claude Desktop / 豆包等
 MCP 客户端调用——例如 hello-gen 的 `gen_crud`（实体模型 → 多栈 CRUD 生成）。
 
-## 10. 破坏性变更流程
+## 10. serve 会话（cookie session）
+
+`serve()` 的每个请求都会获得一个会话：
+
+- `req.session`：当前会话的数据 map，**跨请求共享**（同一 `lume_sid` cookie）；
+- `req.session_id`：会话 id 字符串。
+
+没有携带有效 `lume_sid` cookie 的请求会**新建**会话，响应带
+`Set-Cookie: lume_sid=<id>; Path=/; HttpOnly; SameSite=Lax`，浏览器下次请求
+即可恢复同一会话 map（此时不再下发 Set-Cookie）。会话表由 VM 持有并纳入
+GC 根，进程生命周期内持续有效（重启即清空，不做持久化）。会话每请求创建
+（简单、可推理）；未来可加 `server { sessions = off }` 关闭。
+
+## 11. 破坏性变更流程
 
 1. 先在 `tests/native-consistency.lume` / `tests/smoke.c` 写下**新**行为的期望；
 2. 改实现，直到三后端与测试同时变绿；

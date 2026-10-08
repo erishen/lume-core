@@ -384,6 +384,12 @@ struct VM {
     int tool_count;
     Obj *server_config;       /* `server { ... }` results (GC root) */
     bool run_called;
+    /* serve() sessions: id -> session map, shared across requests (GC root).
+     * Per request, session_new is set when a fresh session was created and
+     * session_id holds the id for the Set-Cookie response. */
+    Obj *session_table;
+    bool session_new;
+    char session_id[64];
     /* Opt-in filesystem lock for untrusted scripts. Default is OFF, i.e. the
      * interpreter is NOT a sandbox: read_file/write_file/files/mkdir still
      * reach any path the process can open. Turn it on (--no-fs, or

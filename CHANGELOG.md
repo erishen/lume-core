@@ -6,6 +6,17 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — serve() cookie sessions
+
+- Every HTTP request now gets a session: `req.session` is a map shared
+  across requests for the same `lume_sid` cookie, and `req.session_id` names
+  it. A fresh session is handed to the browser via
+  `Set-Cookie: lume_sid=<id>; Path=/; HttpOnly; SameSite=Lax` (no Set-Cookie
+  when an existing session is resumed). The session table is VM-owned and
+  GC-rooted, so session data lives for the process lifetime (cleared on
+  restart). Sessions are created eagerly per request; a future
+  `server { sessions = off }` can disable them.
+
 ### Added — MCP stdio server (`--mcp`)
 
 - `lume-core --mcp <script.lume>` runs the script (so `tool "name", "desc",

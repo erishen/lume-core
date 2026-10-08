@@ -87,6 +87,7 @@ void gc_collect(VM *vm) {
     for (Env *e = vm->active_envs; e; e = e->next_active) mark_obj((Obj *)e);
     if (vm->server_config) mark_obj(vm->server_config);
     if (vm->argv) mark_obj(vm->argv);       /* CLI script args (see VM.argv) */
+    if (vm->session_table) mark_obj(vm->session_table); /* serve() sessions */
     mark_value(vm->default_handler);
     for (int i = 0; i < vm->route_count; i++)
         mark_value(vm->routes[i].handler);
