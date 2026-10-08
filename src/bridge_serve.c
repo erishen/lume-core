@@ -282,12 +282,21 @@ static const char *status_text(int code)
 static void send_resp(SockFd fd, int status, const char *ctype,
                       const char *body, size_t blen)
 {
-    char hdr[512];
+    /* Default security headers on every response: serve() is a public-facing
+     * HTTP surface, so nosniff / frame-deny / referrer-policy cost nothing
+     * and harden every content type; CSP is harmless on API responses
+     * (browsers only enforce it on documents) and right on HTML. A future
+     * `server { csp = ... }` option can relax it per-app. */
+    char hdr[1024];
     int n = snprintf(hdr, sizeof hdr,
                      "HTTP/1.1 %d %s\r\n"
                      "Content-Type: %s\r\n"
                      "Content-Length: %zu\r\n"
                      "Connection: close\r\n"
+                     "X-Content-Type-Options: nosniff\r\n"
+                     "X-Frame-Options: DENY\r\n"
+                     "Referrer-Policy: no-referrer\r\n"
+                     "Content-Security-Policy: default-src 'self'\r\n"
                      "\r\n",
                      status, status_text(status), ctype, blen);
     if (n > 0) sock_send(fd, hdr, (size_t)n);

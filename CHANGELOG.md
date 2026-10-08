@@ -6,6 +6,14 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — default security headers on serve() responses
+
+- Every HTTP response now carries `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and
+  `Content-Security-Policy: default-src 'self'` by default. Hardcoded for
+  now; a `server { csp = ... }` option is the planned escape hatch for apps
+  that need inline scripts or external resources.
+
 ### Added — CLI script arguments (`argv()`)
 
 - `lume-core script.lume a b` now collects everything after the script name
