@@ -645,8 +645,19 @@ static void cg_def(CG *g, const char *sym, const char *title,
     g->cur = &sig;
     sig.name = xstrdup(title);
 
+    /* L_top is the one body that arrives with its locals already scanned
+     * (the driver's pass 1.7, which lifted the top-level bindings into
+     * @lv_ globals): re-scanning would push a second set of entries, and
+     * the pre-scanned table is the thing whose slots name the globals the
+     * function bodies read. Every other define starts from an empty table
+     * and scans its own body here. */
     Asgs saved = g->locals;
-    memset(&g->locals, 0, sizeof g->locals);
+    int preset = g->scanning_top && g->preset_locals;
+    if (preset) {
+        g->locals = *g->preset_locals;
+    } else {
+        memset(&g->locals, 0, sizeof g->locals);
+    }
 
     /* A define is its own function: a `break` inside it can never target a
      * loop in whoever is being emitted around it (no loop can span a define
@@ -670,7 +681,7 @@ static void cg_def(CG *g, const char *sym, const char *title,
                      0);
         }
     }
-    scan_block(g, body);
+    if (!preset) scan_block(g, body);
 
     const char *rty = llvm_type_of(ret);
 
@@ -742,7 +753,13 @@ static void cg_def(CG *g, const char *sym, const char *title,
     g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
     g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
 
-    asgs_free(&g->locals);
+    if (preset) {
+        /* The pre-scanned table stays owned by the driver (it is freed right
+         * after this define closes); only the shallow copy here goes away. */
+        memset(&g->locals, 0, sizeof g->locals);
+    } else {
+        asgs_free(&g->locals);
+    }
     g->locals = saved;
     free(sig.name);
     g->cur = NULL;

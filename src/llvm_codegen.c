@@ -90,12 +90,22 @@ typedef struct {
     LLVMTypeRef       i1, i64, dbl, i8ptr, void_ty, i32;
 
     Asgs   locals;                 /* variables of the function emitted now  */
+    Asgs   gvars;                  /* top-level bindings lifted to module
+                                    * globals (SPEC 8.1 #10): a function body
+                                    * that misses in `locals` reads here      */
     Sigs   sigs;                   /* every top-level func                   */
     SDefs  structs;                /* every `type X = {...}`                 */
     Type  *expect;                 /* type the surrounding context wants     */
     Type  *cur_ret;                /* return type of the function emitted    */
     StructEnt structs_types[MAX_STRUCT_TYPES];
     int    structs_types_n;
+
+    /* Set while the driver pre-scans / emits the synthetic L_top: the scan
+     * then lifts every top-level `let` and for-in variable into `gvars` (an
+     * LLVM global) instead of a fresh alloca, and cg_def reuses the
+     * pre-scanned table instead of scanning the body a second time. */
+    int    scanning_top;
+    Asgs  *preset_locals;
 
     char   err[1024];
     int    tid;
@@ -182,6 +192,19 @@ static Asg *asg_find(Asgs *a, const char *name, size_t use_line)
 {
     for (int i = a->n - 1; i >= 0; i--)
         if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line)
+            return &a->v[i];
+    return NULL;
+}
+
+/* The top-level table has no line filter — see codegen.c's gvar_find: the
+ * typechecker has already proved every reaching use names a binding declared
+ * before the function's own text, and the semantics of reading one are the
+ * interpreter's call-time env lookup. */
+
+static Asg *gvar_find(Asgs *a, const char *name)
+{
+    for (int i = a->n - 1; i >= 0; i--)
+        if (strcmp(a->v[i].name, name) == 0)
             return &a->v[i];
     return NULL;
 }
@@ -435,6 +458,10 @@ static Val cg_literal(CG *g, Node *n)
 static Val cg_var(CG *g, Node *n)
 {
     Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
+    /* Not a local: a top-level binding, read through its module global (the
+     * slot value is the global itself — a valid pointer operand for the load,
+     * same as an alloca). Mirrors codegen_expr.c's fallback. */
+    if (!a) a = gvar_find(&g->gvars, n->as.var.name);
     if (!a) ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
     if (!ty_of(g, a->ty))
         ERRV(g, "line %zu: variable '%s' has no codegen type", n->line, n->as.var.name);
@@ -2116,7 +2143,11 @@ static Type *infer_node_type(CG *g, Node *n)
         }
     case N_VAR: {
         Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
-        return a ? a->ty : NULL;
+        if (a) return a->ty;
+        /* A top-level binding lifts to a module global (SPEC 8.1 #10). */
+        a = gvar_find(&g->gvars, n->as.var.name);
+        if (a) return a->ty;
+        return NULL;
     }
     case N_FUNC_LIT: {
         /* A closure value; thread the node through Type.func (mirrors
@@ -2241,6 +2272,23 @@ static Type *for_in_elem_type(CG *g, Node *n)
  * all of them before any statement is emitted. */
 static void scan_block(CG *g, Node *blk);
 
+/* The module-global name a top-level binding is lifted into (SPEC 8.1 #10).
+ * Numbered like the %lv_ locals so two same-name bindings never share
+ * storage. Creates the LLVM global zero-initialized (LLVMConstNull covers
+ * every spellable type: i1/i64/double/ptr and a named struct body). */
+
+static LLVMValueRef gvar_make(CG *g, const char *name, Type *ty)
+{
+    static int s_uid = 0;
+    char buf[128];
+    snprintf(buf, sizeof buf, "lv_%s_%d", name, s_uid++);
+    LLVMTypeRef lt = ty_of(g, ty);
+    if (!lt) return NULL;
+    LLVMValueRef gv = LLVMAddGlobal(g->mod, lt, buf);
+    LLVMSetInitializer(gv, LLVMConstNull(lt));
+    return gv;
+}
+
 static void scan_stmt(CG *g, Node *n)
 {
     if (!n) return;
@@ -2251,16 +2299,40 @@ static void scan_stmt(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                  n->line, n->as.let.name);
+        if (g->scanning_top) {
+            /* Module storage, registered twice (mirrors codegen_scan.c):
+             * gvars for what function bodies resolve through, L_top's own
+             * locals for what the top level's stores hit. */
+            LLVMValueRef slot = gvar_make(g, n->as.let.name, ty);
+            if (!slot)
+                ERRX(g, "line %zu: top-level variable '%s' has no codegen type",
+                     n->line, n->as.let.name);
+            asg_push(&g->gvars, n->as.let.name, ty, slot, n->line);
+            asg_push(&g->locals, n->as.let.name, ty, slot, n->line);
+            break;
+        }
         asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
         break;
     }
     case N_FOR: {
         /* `for (x in xs)` binds the loop variable — it is not a `let`, so
          * without registering it here the body's use of it dies in codegen.
-         * It binds in the enclosing scope (mirrors codegen_scan.c). */
+         * It binds in the enclosing scope (mirrors codegen_scan.c). At the
+         * top level that scope is the module: a function the top level calls
+         * after the loop must see the rebound value. */
         if (n->as.fors.is_in) {
-            asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL,
-                     n->line);
+            Type *et = for_in_elem_type(g, n);
+            if (g->scanning_top) {
+                LLVMValueRef slot = gvar_make(g, n->as.fors.var, et);
+                if (!slot)
+                    ERRX(g, "line %zu: variable '%s' has no codegen type",
+                         n->line, n->as.fors.var);
+                asg_push(&g->gvars, n->as.fors.var, et, slot, n->line);
+                asg_push(&g->locals, n->as.fors.var, et, slot, n->line);
+            } else {
+                asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL,
+                         n->line);
+            }
             scan_stmt(g, n->as.fors.body);
             break;
         }
@@ -2271,9 +2343,41 @@ static void scan_stmt(CG *g, Node *n)
             if (!ty)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                      init->line, init->as.let.name);
+            /* A C-style for's init `let` stays a plain local (mirrors
+             * codegen_scan.c: the interpreter binds it for the loop). */
             asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
+        } else if (init) {
+            scan_stmt(g, init);
         }
+        if (n->as.fors.incr &&
+            (n->as.fors.incr->type == N_ASSIGN ||
+             n->as.fors.incr->type == N_EXPR_STMT))
+            scan_stmt(g, n->as.fors.incr);
         scan_stmt(g, n->as.fors.body);
+        break;
+    }
+    /* An assignment to a name that is not a local defines a fresh
+     * function-local cell (the interpreter never assigns through to a
+     * top-level binding) — register it so the alloca pass sees it. Mirrors
+     * codegen_scan.c's N_ASSIGN case. */
+    case N_ASSIGN: {
+        if (!g->scanning_top &&
+            !asg_find(&g->locals, n->as.assign.name, n->line)) {
+            Asg *gv = gvar_find(&g->gvars, n->as.assign.name);
+            if (gv) {
+                Type *ty = infer_node_type(g, n->as.assign.value);
+                asg_push(&g->locals, n->as.assign.name, ty ? ty : gv->ty,
+                         NULL, n->line);
+            }
+        }
+        break;
+    }
+    /* A bare `x = e;` wraps its assignment in an expr-stmt: unwrap so the
+     * registration above can fire (mirrors codegen_scan.c). */
+    case N_EXPR_STMT: {
+        Node *e = n->as.expr_stmt.expr;
+        if (e && (e->type == N_ASSIGN || e->type == N_ASSIGN_MEMBER))
+            scan_stmt(g, e);
         break;
     }
     /* A nested block is the body of if/while/for and any bare { } — its `let`s
@@ -2685,9 +2789,16 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
     /* Locals move aside: a variable of the caller must not be visible here.
      * The loop-label stacks too: a `break` inside this body can never target
      * a loop outside it, and with the stacks cleared the emitter reports
-     * "'break' outside a loop" instead of branching into another function. */
+     * "'break' outside a loop" instead of branching into another function.
+     * L_top is the one body that arrives with its locals already scanned
+     * (the driver's pre-scan, which lifted the top-level bindings into
+     * module globals) — reuse that table instead of scanning a second time. */
     Asgs saved = g->locals;
-    memset(&g->locals, 0, sizeof g->locals);
+    int preset = g->scanning_top && g->preset_locals;
+    if (preset)
+        g->locals = *g->preset_locals;
+    else
+        memset(&g->locals, 0, sizeof g->locals);
     LLVMBasicBlockRef *saved_brk = g->brk; int snbrk = g->nbrk, scbrk = g->cbrk;
     LLVMBasicBlockRef *saved_cnt = g->cnt; int sncnt = g->ncnt, sccnt = g->ccnt;
     g->brk = g->cnt = NULL; g->nbrk = g->ncnt = g->cbrk = g->ccnt = 0;
@@ -2712,7 +2823,7 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
                      0);
     }
 
-    scan_block(g, body);
+    if (!preset) scan_block(g, body);
 
     /* Entry: one alloca per local, then seed the non-struct parameters. */
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "entry");
@@ -2756,7 +2867,13 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
         else                                   LLVMBuildRet(g->ab, LLVMConstNull(rty));
     }
 
-    asgs_free(&g->locals);
+    if (preset) {
+        /* The pre-scanned table stays owned by the driver; only the shallow
+         * copy here goes away. */
+        memset(&g->locals, 0, sizeof g->locals);
+    } else {
+        asgs_free(&g->locals);
+    }
     g->locals = saved;
     g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
     g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
@@ -2986,6 +3103,28 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
         }
     }
 
+    /* ---- pass 1.7: lift the top-level bindings into module globals ----
+     * Mirrors codegen.c: one global per top-level `let` / for-in variable,
+     * scanned once so L_top's stores and every function body's loads name
+     * the same storage (the interpreter's env semantics, spelled as one
+     * shared slot). The scanned table is handed to cg_def through
+     * preset_locals, so L_top is never scanned twice. */
+    Asgs top_locals;
+    memset(&top_locals, 0, sizeof top_locals);
+    if (ntops > 0) {
+        Node body;
+        memset(&body, 0, sizeof body);
+        body.type = N_BLOCK;
+        body.as.block.stmts = tops;
+        body.as.block.count = ntops;
+
+        cg.scanning_top = 1;
+        scan_block(&cg, &body);
+        cg.scanning_top = 0;
+        top_locals = cg.locals;      /* steal the scanned table */
+        memset(&cg.locals, 0, sizeof cg.locals);
+    }
+
     for (int i = 0; i < nfns; i++) {
         cg_function(&cg, fns[i]);
     }
@@ -3011,7 +3150,15 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
             top_fn->as.func.ret = type_prim(TY_INT);
             cg.capture_main = 1;
         }
+        /* The table pass 1.7 scanned IS L_top's locals: its entries carry the
+         * module globals, so every store the top level makes lands in the
+         * same global a function body reads. */
+        cg.preset_locals = &top_locals;
+        cg.scanning_top = 1;
         cg_function(&cg, top_fn);
+        cg.scanning_top = 0;
+        cg.preset_locals = NULL;
+        asgs_free(&top_locals);
         cg.capture_main = 0;
         cg.exit_val = NULL;
         free(top_fn);
@@ -3093,12 +3240,14 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
         LLVMDisposeModule(cg.mod);
         LLVMContextDispose(ctx);
         free(cg.sigs.v); free(cg.structs.v); free(cg.brk); free(cg.cnt);
+        asgs_free(&cg.gvars);
         free(msg);
         return NULL;
     }
 
     LLVMDisposeBuilder(cg.ab);
     sigs_free(&cg.sigs); sdefs_free(&cg.structs);
+    asgs_free(&cg.gvars);
     free(cg.brk); free(cg.cnt);
     /* The module outlives this function, so the context cannot be disposed
      * here — hand it to the caller instead. It is disposed after the module,

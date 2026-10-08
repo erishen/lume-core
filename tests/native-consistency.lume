@@ -476,5 +476,33 @@ let w2 = 99;
 for (w2 in [7, 8]) { print(w2); }               // 7 8
 print(w2);                                      // 8
 
+// ---- top-level bindings are visible inside function bodies (SPEC 8.1 #10)
+//
+// Every top-level `let` is one module slot that the top level's stores and
+// the function bodies' loads share: a function reads whatever the top level
+// last stored before the call (call-time env lookup, not a snapshot), an
+// assignment inside a body defines a fresh function local that never
+// reaches the top level, and a parameter shadows the global.
+let gbase = 1;
+func readg(): int { return gbase; }
+print(readg());                                 // 1
+gbase = 2;                                      // top-level mutation...
+print(readg());                                 // ...seen at call time: 2
+func touchg() { gbase = 5; }                    // defines a LOCAL, not the global
+touchg();
+print(gbase);                                   // 2 (untouched by touchg)
+
+let base = 10;
+func addbase(x: int): int { return x + base; }
+print(addbase(5));                              // 15
+
+let greet = "hi";
+func shout(): string { return greet + "!"; }
+print(shout());                                 // hi!
+
+let shad = 7;
+func shadow2(shad: int): int { return shad * 2; }
+print(shadow2(3));                              // 6 (parameter shadows)
+
 warmup();
 main();

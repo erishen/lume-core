@@ -359,6 +359,11 @@ static Val cg_literal(CG *g, Node *n)
 static Val cg_var(CG *g, Node *n)
 {
     Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
+    /* Not a local: a top-level binding, read through its @lv_ module global.
+     * The load spelling is identical (the slot string just starts with '@'),
+     * and the semantics are the interpreter's call-time env lookup — the
+     * value read is whatever the top level last stored, not a snapshot. */
+    if (!a) a = gvar_find(&g->gvars, n->as.var.name);
     if (!a) ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
 
     const char *lt = llvm_type_of(a->ty);

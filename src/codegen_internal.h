@@ -118,8 +118,20 @@ typedef struct {
     Sigs   sigs;            /* every top-level func, collected before emitting */
     SDefs  structs;         /* every `type X = {...}` declaration            */
     Asgs   locals;          /* variables of the function currently emitted   */
+    Asgs   gvars;           /* top-level bindings, lifted to module globals:
+                             * a function body that misses in `locals` reads
+                             * the name here (SPEC 8.1 #10). Filled by the
+                             * driver's pre-scan of the top-level statements,
+                             * which is also the scan L_top reuses.            */
     Sig   *cur;             /* signature of the function currently emitted   */
     Type  *expect;          /* type the expression context wants (struct lits) */
+
+    /* Set while the driver pre-scans / emits the synthetic L_top: the scan
+     * then lifts every top-level `let` and for-in variable into `gvars` (an
+     * @lv_ global) instead of a fresh stack slot, and cg_def reuses the
+     * pre-scanned table instead of scanning the body a second time. */
+    int    scanning_top;
+    Asgs  *preset_locals;
 
     int    lid;             /* label id counter            */
     int    tid;             /* temp/id counter            */
@@ -150,6 +162,7 @@ typedef struct {
 /* ------------------------------------------------------------- the emitters --- */
 
 Asg *asg_find(Asgs *a, const char *name, size_t use_line);
+Asg *gvar_find(Asgs *a, const char *name);
 void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
               size_t line);
 void asgs_free(Asgs *a);

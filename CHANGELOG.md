@@ -28,6 +28,18 @@ All notable changes to Lume are documented here. The format follows
   垃圾把具名函数错走 lambda 回写分支，经 union 偏移踩坏 `param_types`，表现为
   `native-fact.lume` 的 UAF）；libLLVM reduce 把 `Val[]` 误作 `LLVMValueRef[]` 传参
   （第二实参拿到 `Type*`，验证器打印该 call 时段错误）。
+
+### Fixed — top-level bindings visible inside function bodies (SPEC 8.1 #10)
+
+- 每个顶层 `let` / 顶层 for-in 变量提升为一个模块级槽（文本后端 `@lv_<name>` 全局、
+  libLLVM `LLVMAddGlobal`），顶层语句与函数体读写同一份存储，两后端镜像同步。语义逐点
+  对齐解释器：函数调用时读到顶层最后写入的值（非定义时快照）；函数体内对顶层名赋值新建
+  函数级局部（不穿透写全局，赋值行之前的读仍解析到全局——沿 §8.1 #12 的行号规则）；
+  参数遮蔽顶层名。
+- 驱动在签名推断后新增 pass 1.7 预扫描顶层语句，L_top 复用该预扫描表（不再二次扫描）；
+  函数体名字解析顺序 = 位置感知 locals → 顶层表兜底。
+- `native-consistency.lume` 新增顶层绑定差分段（调用时读、顶层改值后调用、函数内赋值
+  不穿透、参数遮蔽），`.expected` 刷新；SPEC §8.1 #10 开放 → 已修。
 - **边缘形态排查后的签名 pass 加固**：① lambda 预注册 pre-pass——`f = (x) => ...` 赋值
   右侧、lambda 体调用另一 lambda 等从未被调用点触及的 lambda 原先到达发射器时没有
   mangled 名，报 `internal:` 级消息；现在推断开始前全 AST 预注册（同时消除 mid-round

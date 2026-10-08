@@ -49,6 +49,10 @@ Type *infer_node_type(CG *g, Node *n)
     case N_VAR: {
         Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
         if (a) return a->ty;
+        /* A top-level binding lifts to a module global (SPEC 8.1 #10); its
+         * type was fixed by the driver's pre-scan. */
+        a = gvar_find(&g->gvars, n->as.var.name);
+        if (a) return a->ty;
         /* The signature pass runs before any slot is allocated, so a name it
          * already typed is the only other source. */
         return lt_find(&g->scope, n->as.var.name);
@@ -204,6 +208,16 @@ static Type *for_in_elem_type(CG *g, Node *n)
     return NULL;
 }
 
+/* The @lv_ global slot a top-level binding is lifted into (SPEC 8.1 #10).
+ * Numbered like asg_push's %lv_ slots so two same-name bindings (a for-in
+ * variable rebound by a later `let`) never share storage. */
+
+static void gvar_slot(char *buf, size_t cap, const char *name)
+{
+    static int s_uid = 0;
+    snprintf(buf, cap, "@lv_%s_%d", name, s_uid++);
+}
+
 static void scan_stmt(CG *g, Node *n)
 {
     if (!n) return;
@@ -214,6 +228,19 @@ static void scan_stmt(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                  n->line, n->as.let.name);
+        if (g->scanning_top) {
+            /* A top-level binding is module storage: the same @lv_ global is
+             * registered as a gvar (what function bodies resolve through)
+             * and as L_top's own local (what the top level's stores hit), so
+             * a mutation the top level makes after a function is defined is
+             * visible when that function runs — the interpreter's env
+             * semantics, spelled as one shared slot. */
+            char slot[128];
+            gvar_slot(slot, sizeof slot, n->as.let.name);
+            asg_push(&g->gvars, n->as.let.name, ty, slot, n->line);
+            asg_push(&g->locals, n->as.let.name, ty, slot, n->line);
+            break;
+        }
         asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
         break;
     }
@@ -224,10 +251,20 @@ static void scan_stmt(CG *g, Node *n)
          * use of the variable then dies as an unknown variable. It binds in
          * the enclosing scope (the interpreter's for-in assigns through to an
          * existing name and leaves it bound after the loop), so it takes the
-         * for statement's own line and no block of its own. */
+         * for statement's own line and no block of its own. At the top level
+         * the enclosing scope is the module: the variable is lifted exactly
+         * like a `let`, because a function the top level calls after the loop
+         * must see the rebound value. */
         if (n->as.fors.is_in) {
-            asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL,
-                     n->line);
+            Type *et = for_in_elem_type(g, n);
+            if (g->scanning_top) {
+                char slot[128];
+                gvar_slot(slot, sizeof slot, n->as.fors.var);
+                asg_push(&g->gvars, n->as.fors.var, et, slot, n->line);
+                asg_push(&g->locals, n->as.fors.var, et, slot, n->line);
+            } else {
+                asg_push(&g->locals, n->as.fors.var, et, NULL, n->line);
+            }
             scan_stmt(g, n->as.fors.body);
             break;
         }
@@ -238,9 +275,54 @@ static void scan_stmt(CG *g, Node *n)
             if (!ty)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                      init->line, init->as.let.name);
+            /* A C-style for's init `let` stays a plain local even at the top
+             * level: the interpreter binds it for the loop, not for the
+             * program, and no function can name it. */
             asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
+        } else if (init) {
+            /* `for (i = 0; ...)` assigns rather than declares — the target
+             * needs its local registered all the same. */
+            scan_stmt(g, init);
         }
+        if (n->as.fors.incr &&
+            (n->as.fors.incr->type == N_ASSIGN ||
+             n->as.fors.incr->type == N_EXPR_STMT))
+            scan_stmt(g, n->as.fors.incr);
         scan_stmt(g, n->as.fors.body);
+        break;
+    }
+
+    /* An assignment to a name that is not a local *is* meaningful inside a
+     * function: the interpreter's assignment does not reach through to a
+     * top-level binding — it defines a fresh function-local cell (a `g = 2`
+     * in a body leaves the top-level `g` untouched, and a read after the
+     * assignment sees the new local). The fresh cell needs a slot like any
+     * other local, registered at the assignment's own line so reads before
+     * it still resolve to the top-level global and reads after it see the
+     * local — the same position-aware rule every binding follows. The type
+     * is the assigned value's; a second assignment to the same name can
+     * register another entry of a different type, and lookup sorts it out. */
+    case N_ASSIGN: {
+        if (!g->scanning_top &&
+            !asg_find(&g->locals, n->as.assign.name, n->line)) {
+            Asg *gv = gvar_find(&g->gvars, n->as.assign.name);
+            if (gv) {
+                Type *ty = infer_node_type(g, n->as.assign.value);
+                asg_push(&g->locals, n->as.assign.name, ty ? ty : gv->ty,
+                         NULL, n->line);
+            }
+        }
+        break;
+    }
+
+    /* A bare `x = e;` statement wraps its assignment in an expr-stmt; the
+     * registration above only fires if the walk actually reaches the
+     * N_ASSIGN, so unwrap the common shapes here. (A C-style for's init and
+     * increment are bare N_ASSIGNs handled by their own case.) */
+    case N_EXPR_STMT: {
+        Node *e = n->as.expr_stmt.expr;
+        if (e && (e->type == N_ASSIGN || e->type == N_ASSIGN_MEMBER))
+            scan_stmt(g, e);
         break;
     }
 
