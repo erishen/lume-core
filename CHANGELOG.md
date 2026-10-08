@@ -4,7 +4,78 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-08
+
+### Added — index syntax `m["k"]` / `l[0]` (规范变更)
+
+- `m["k"]` and `l[0]` now **exist** — SPEC §6.2 replaces the line that said they
+  do not. Subscripts live in the postfix loop, so they **chain** (`m["a"][0]`,
+  `rows[i]["name"]`), and the subscript is a **full expression**, not just a
+  literal — `m[k]` with a variable is the shape worth having.
+- ⚠️ **Strict** — that is the only difference from `get()` / `el()` and the
+  reason the syntax exists: a missing key or an out-of-range index is an
+  **error**, where `get()` silently answers `null` and `el()` answers its
+  default. **Negative indices count from the end**: `l[-1]` is the last item.
+- Interpreter support landed first (parser, type checker, `src/rt.c`'s strict
+  `lume_*_at_strict*` accessors), then **both native backends** (§6.2): `N_INDEX`
+  lowers through unified `lume_index_int/float/ptr` runtime entry points, with
+  the container kind field dispatching list vs map at runtime (needed for
+  opaque chains like `m["p"][1]`). List indexing is fully typed and prints
+  directly; map reads return an opaque `i8*`, so the portable native shape is
+  binding to a typed variable (`let c: string = m[k]`) — a direct print of an
+  opaque result is guarded to print `(opaque value)` rather than a raw pointer.
+
+### Added — native containers nest
+
+- `{ a: { b: 1 } }` and `[[1, 2], [3]]` used to be refused by both emitters
+  ("map values must be int, float or string") while the interpreter had always
+  accepted them. It was not a missing feature so much as a missing
+  representation: every `LumeSlot` held a scalar. A new `LUME_SLOT_OBJ` tag
+  carries a nested container's address in the slot's `num` field
+  (`lume_list_push_obj` / `lume_map_put_obj`), and both container structs grew
+  a `kind` (`LUME_CTR_LIST` / `LUME_CTR_MAP`) at the same offset, so the
+  printer reads one field to know what it is holding.
+- Printing stopped going through a buffer: `slot_emit` now writes straight out
+  and recurses (`container_body()` is the single place elements are walked, so
+  the three paths cannot drift). That surfaced a latent bug fixed along the
+  way — the string branch wrote the closing quote but no NUL, so a short
+  string rendered after a longer one into the same static buffer printed the
+  old one's tail. **Maps in maps, lists in lists — four levels deep — now
+  agree across all three backends** (regression in
+  `tests/native-consistency.lume`, verified by mutation).
+- Remaining refusal, unchanged and predating this work: `get()` with no
+  default still cannot return a container (its flavour follows the default's
+  type and the checker does not type `get()`'s result).
+
+### Added — an in-tree HTTP server, on every path
+
+- `run()` in the standalone interpreter no longer refuses: `bridge_run()` serves
+  `vm->routes` through a minimal single-threaded HTTP/1.1 server on POSIX
+  sockets. `server{}` config carries host/port; a handler returning a string
+  answers `text/html`, a map answers JSON, `null` answers 204, an unmatched
+  path answers 404, a handler error answers 500. `req` carries
+  `method` / `path` / `query` / `query_params` (URL-decoded) / `body` / `label`.
+- The `--compile-text` path gets the same thing **VM-free**: `bridge_native.c`
+  (`lume_srv_init` / route / run, query-param lookup, JSON accumulation) is
+  compiled per build like `rt.o` and linked into the binary; `server{}` lowers
+  to init and route handlers compile as FFI functions reading `req` through
+  `SrvReq` fields.
+- **Windows**: the winsock port covers both the native and the interpreter
+  servers — `winsock2`/`ws2tcpip` glue (`SOCKET` vs `int`, `closesocket`,
+  `WSAStartup`), `localtime_s`/`strtok_s` shims, and a `TokenType` shim around
+  `windows.h` (winnt.h's enum member clash). `backend.c` gained `LUME_TARGET`
+  cross-compilation (`LUME_TARGET=x86_64-windows-gnu` produces a working
+  PE32+ exe via zig cc; cross objects go to `build/*_win.o` so a windows COFF
+  never poisons the native link), and the mingw branch links `-lws2_32`.
+- The route-handler buffer is freed in `cg_free` (not only when it has
+  content) — a leak found on the way.
+
+### Build & platform
+
+- `build_core.bat` (Windows build helper) reads its toolchain paths from a
+  local `.env` (`LUME_RT_SRC` / `MINGW_BIN`) instead of hardcoding them; the
+  file and the build log are gitignored.
+- CI: the Windows native-text leg and an asan leak are fixed.
 
 ### Added — no-capture closures as first-class values on all three backends (§4.8)
 
