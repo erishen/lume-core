@@ -39,7 +39,7 @@ enum { NAT_DEFAULT = 0, NAT_LLVM = 1, NAT_TEXT = 2 };
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text] [--no-fs] [--no-net] [--no-pass] <script.lume>\n"
+            "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text|--mcp] [--no-fs] [--no-net] [--no-pass] <script.lume>\n"
             "  --check   parse + type check (no side effects)\n"
 "  --no-fs   runtime filesystem lock: read_file/write_file/files/\n"
 "            mkdir/lock_file fail at runtime instead of touching\n"
@@ -386,6 +386,7 @@ int main(int argc, char **argv) {
      * refusing the flag there would only break scripts that pass it. It is
      * read on the text path too (as a note), so neither build sees it unused. */
     bool no_pass = false;
+    bool do_mcp = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--check") == 0) do_check = true;
@@ -403,6 +404,7 @@ int main(int argc, char **argv) {
             native_choice = NAT_TEXT;
         }
         else if (strcmp(argv[i], "--no-pass") == 0) no_pass = true;
+        else if (strcmp(argv[i], "--mcp") == 0) do_mcp = true;
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) out_path = argv[++i];
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
@@ -500,6 +502,14 @@ int main(int argc, char **argv) {
 
     if (do_check) {
         printf("parse OK (%s)\n", script);
+        vm_teardown(&vm);
+        return 0;
+    }
+
+    /* --mcp: the script (already run, so `tool ...` statements registered their
+     * handlers) becomes an MCP stdio server: JSON-RPC on stdin/stdout. */
+    if (do_mcp) {
+        mcp_run(&vm);
         vm_teardown(&vm);
         return 0;
     }

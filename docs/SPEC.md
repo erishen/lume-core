@@ -961,7 +961,29 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
 
 ---
 
-## 9. 破坏性变更流程
+## 9. MCP stdio 服务器（`--mcp`）
+
+`lume-core --mcp <script.lume>` 先运行脚本（顶层执行，`tool "name", "desc", {schema}, handler;`
+语句把工具注册进 VM 的工具表），随后进入 MCP stdio 循环：**stdin/stdout 上按行读写的
+JSON-RPC 2.0**（Windows 下 stdin/stdout 切换为二进制模式，行分隔严格）。
+
+已实现的方法：
+
+- `initialize` → 返回协议版本、能力（tools）与服务名（lume-core）。
+- `tools/list` → 每个注册工具的 `name` / `description` / `inputSchema`（即
+  `tool` 构造的 params 字面量，原样 JSON 输出）。
+- `tools/call` → 按 `params.name` 找工具，把 `params.arguments`（JSON 解码后的值）
+  作为**单个参数**传给 handler（`(params) => ...`），返回
+  `{content:[{type:"text",text:...}],isError:false}`；字符串结果直接作为 text，
+  其他值 JSON 序列化；handler 报错时 `isError:true` 并带错误文本。
+
+JSON-RPC 错误按规范回 `-32700`（解析）/ `-32600`（请求）/ `-32601`（方法）/
+`-32602`（参数）。通知（无 `id`）不回包。stdin EOF 即退出。
+
+用途：任何脚本可把任意 lume 函数暴露成 MCP 工具，供 Claude Desktop / 豆包等
+MCP 客户端调用——例如 hello-gen 的 `gen_crud`（实体模型 → 多栈 CRUD 生成）。
+
+## 10. 破坏性变更流程
 
 1. 先在 `tests/native-consistency.lume` / `tests/smoke.c` 写下**新**行为的期望；
 2. 改实现，直到三后端与测试同时变绿；

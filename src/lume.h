@@ -604,5 +604,6 @@ int bridge_define_route(VM *vm, const char *method, const char *path, Value hand
 int bridge_define_tool(VM *vm, const char *name, const char *desc,
                        const char *params_json, Value handler);
 void bridge_run(VM *vm);
+void mcp_run(VM *vm);
 
 #endif /* LUME_H */

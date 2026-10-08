@@ -260,7 +260,17 @@ void native_write_file(VM *vm, int argc, Value *args, Value *out) {
 #endif
     size_t wrote = data && len ? fwrite(data, 1, len, f) : 0;
     int ok = (fclose(f) == 0) && (wrote == len);
-    if (ok) ok = rename(tmp, p) == 0;
+    if (ok) {
+#ifdef _WIN32
+        /* MSVCRT rename() refuses to replace an existing file: drop the old
+         * one first (best-effort - it may not exist) so write_file() keeps
+         * its "atomically replace" contract on Windows too. */
+        remove(p);
+        ok = rename(tmp, p) == 0;
+#else
+        ok = rename(tmp, p) == 0;
+#endif
+    }
     if (!ok) remove(tmp);
     *out = val_bool(ok);
 }

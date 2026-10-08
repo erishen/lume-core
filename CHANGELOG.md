@@ -6,6 +6,24 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — MCP stdio server (`--mcp`)
+
+- `lume-core --mcp <script.lume>` runs the script (so `tool "name", "desc",
+  {schema}, handler;` statements register their handlers), then serves the
+  Model Context Protocol over stdio: newline-delimited JSON-RPC 2.0 on
+  stdin/stdout. Methods: `initialize` (capabilities), `tools/list`, and
+  `tools/call` (runs the handler with one decoded-arguments map; string
+  results return as plain text, other values as JSON). JSON-RPC errors use
+  the spec codes (-32700/-32600/-32601/-32602); notifications get no reply.
+- Windows: stdin/stdout are switched to binary mode so \n framing is exact.
+
+### Fixed — write_file() replacing an existing file on Windows
+
+- MSVCRT `rename()` refuses to overwrite, so `write_file()` to an existing
+  path silently failed to update it (e.g. regenerating hello-gen output).
+  The old file is now removed before the rename, restoring the
+  atomic-replace contract on Windows.
+
 ### Added — default security headers on serve() responses
 
 - Every HTTP response now carries `X-Content-Type-Options: nosniff`,
