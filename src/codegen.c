@@ -110,6 +110,13 @@ void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int arity)
     s->v[s->n].arity  = arity;
     s->v[s->n].body   = NULL;
     s->v[s->n].node   = NULL;
+    /* The vector grows by realloc, which does not zero the new tail — every
+     * field added to Sig must be set HERE, or a named function's write-back
+     * can wander into the lambda branch and spell its types through the
+     * funclit union offsets (where funclit.ret sits exactly on
+     * func.param_types). Found as a use-after-free that only reproduced
+     * under some binaries: the garbage byte decided which branch ran. */
+    s->v[s->n].is_lambda = 0;
     s->n++;
 }
 
@@ -188,6 +195,98 @@ static void cg_free(CG *cg)
     memset(&cg->handlers, 0, sizeof cg->handlers);
     cg->brk = cg->cnt = NULL;
     cg->nbrk = cg->ncnt = cg->cbrk = cg->ccnt = 0;
+}
+
+/* Collect every lambda the signature pass named, in one pass over the tree.
+ *
+ * The pass registers each N_FUNC_LIT it can reach from a call site and stamps
+ * its mangled name onto the node (funclit.cname); this walk afterwards is what
+ * turns that registry into `define`s. Only nodes with a cname are collected —
+ * a route handler is a function literal too, but it is emitted through the
+ * FFI path and never gets a cname, so the gate keeps the two apart. The walk
+ * descends into lambda bodies as well, so a lambda nested in a lambda is
+ * found from the outer one's own entry. */
+
+static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
+{
+    if (!n) return;
+    switch (n->type) {
+    case N_FUNC_LIT:
+        if (n->as.funclit.cname) {
+            if (*cnt == *cap) {
+                *cap = *cap ? *cap * 2 : 8;
+                *out = (Node **)xrealloc(*out, (size_t)*cap * sizeof **out);
+            }
+            (*out)[(*cnt)++] = n;
+        }
+        collect_lambdas(n->as.funclit.body, out, cnt, cap);
+        return;
+    case N_PROGRAM: case N_BLOCK:
+        for (int i = 0; i < n->as.block.count; i++)
+            collect_lambdas(n->as.block.stmts[i], out, cnt, cap);
+        return;
+    case N_FUNC_DECL:
+        collect_lambdas(n->as.func.body, out, cnt, cap);
+        return;
+    case N_LET:        collect_lambdas(n->as.let.init, out, cnt, cap); return;
+    case N_IF:
+        collect_lambdas(n->as.ifs.cond, out, cnt, cap);
+        collect_lambdas(n->as.ifs.then, out, cnt, cap);
+        collect_lambdas(n->as.ifs.els,  out, cnt, cap);
+        return;
+    case N_WHILE:
+        collect_lambdas(n->as.whiles.cond, out, cnt, cap);
+        collect_lambdas(n->as.whiles.body, out, cnt, cap);
+        return;
+    case N_FOR:
+        collect_lambdas(n->as.fors.init,     out, cnt, cap);
+        collect_lambdas(n->as.fors.cond,     out, cnt, cap);
+        collect_lambdas(n->as.fors.incr,     out, cnt, cap);
+        collect_lambdas(n->as.fors.iterable, out, cnt, cap);
+        collect_lambdas(n->as.fors.body,     out, cnt, cap);
+        return;
+    case N_RETURN:     collect_lambdas(n->as.ret.expr, out, cnt, cap); return;
+    case N_EXPR_STMT:  collect_lambdas(n->as.expr_stmt.expr, out, cnt, cap); return;
+    case N_ASSIGN:     collect_lambdas(n->as.assign.value, out, cnt, cap); return;
+    case N_ASSIGN_MEMBER:
+        collect_lambdas(n->as.assign_mem.obj,   out, cnt, cap);
+        collect_lambdas(n->as.assign_mem.value, out, cnt, cap);
+        return;
+    case N_CALL:
+        collect_lambdas(n->as.call.callee, out, cnt, cap);
+        for (int i = 0; i < n->as.call.argc; i++)
+            collect_lambdas(n->as.call.args[i], out, cnt, cap);
+        return;
+    case N_MEMBER:     collect_lambdas(n->as.member.obj, out, cnt, cap); return;
+    case N_INDEX:
+        collect_lambdas(n->as.index.obj,   out, cnt, cap);
+        collect_lambdas(n->as.index.index, out, cnt, cap);
+        return;
+    case N_UNARY:      collect_lambdas(n->as.unary.operand, out, cnt, cap); return;
+    case N_BINARY:
+        collect_lambdas(n->as.binary.left,  out, cnt, cap);
+        collect_lambdas(n->as.binary.right, out, cnt, cap);
+        return;
+    case N_LIST_LIT:
+        for (int i = 0; i < n->as.list.count; i++)
+            collect_lambdas(n->as.list.items[i], out, cnt, cap);
+        return;
+    case N_MAP_LIT:
+        for (int i = 0; i < n->as.map.count; i++)
+            collect_lambdas(n->as.map.vals[i], out, cnt, cap);
+        return;
+    case N_SERVER:
+        for (int i = 0; i < n->as.server.count; i++)
+            collect_lambdas(n->as.server.assigns[i], out, cnt, cap);
+        return;
+    case N_ROUTE:      collect_lambdas(n->as.route.handler, out, cnt, cap); return;
+    case N_TOOL:
+        collect_lambdas(n->as.tool.params,  out, cnt, cap);
+        collect_lambdas(n->as.tool.handler, out, cnt, cap);
+        return;
+    case N_VERBS:      collect_lambdas(n->as.verbs.methods, out, cnt, cap); return;
+    default: return;   /* literals, imports, type decls, break/continue */
+    }
 }
 
 char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_size)
@@ -345,6 +444,17 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
     if (cg.handlers.len) {
         irbuf_puts(&ir, cg.handlers.data);
         irbuf_free(&cg.handlers);
+    }
+    /* Closures: every lambda the signature pass named gets its own define.
+     * They are emitted here, at module scope after the named functions, so
+     * nothing inside them can sit inside another body — a `define` is only
+     * legal at the top level of a module. */
+    {
+        Node **clos = NULL;
+        int nclos = 0, capc = 0;
+        collect_lambdas(prog, &clos, &nclos, &capc);
+        for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
+        free(clos);
     }
     /* top_fn borrows `tops` as its body, so it goes out with the array; its
      * name is the literal "top" rather than a copy, and `body` is a stack

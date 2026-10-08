@@ -139,8 +139,15 @@ void type_release_all(void) {
         }
         /* types[] holds Type* (members or params) that are part of this same
          * graph -- including the param vector calloc'd by the checker's Pass
-         * C -- so the whole shell goes here, not block by block. */
-        free(t->types);
+         * C -- so the whole shell goes here, not block by block.
+         *
+         * One exception: a TY_FUNC that carries the AST back-pointer (t->func)
+         * borrowed its param vector straight from the N_FUNC_LIT node — the
+         * parser owns that array and node_free_own frees it. The checker's
+         * own type_func vectors (Pass C, the N_FUNC_LIT case in
+         * typecheck_expr.c) are calloc'd here and stay reclaimed below. */
+        if (!(t->kind == TY_FUNC && t->func))
+            free(t->types);
         free(t);
         t = next;
     }

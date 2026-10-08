@@ -280,6 +280,7 @@ static LLVMTypeRef ty_of(CG *g, Type *t)
          * travels as the same opaque pointer. Kept in step with
          * llvm_type_of() in codegen_types.c, which the text emitter uses. */
         return g->i8ptr;
+    case TY_FUNC:   return g->i8ptr;   /* closure record pointer (LumeClosure*) */
     case TY_STRUCT:
         /* An anonymous struct is a runtime map (a `{...}` no declared type
          * claimed) and a list is a heap object: both are opaque pointers, not
@@ -337,6 +338,8 @@ static LLVMValueRef cg_string_val(CG *g, const char *text, size_t len)
 typedef struct { LLVMValueRef v; Type *ty; } Val;
 
 static Val coerce(CG *g, Type *to, Val v, size_t line);
+static const char *list_at_fn(Type *ty);   /* element accessor, defined with for-in */
+static int struct_is_addr(LLVMValueRef v); /* defined with cg_builtin's tail */
 static Val cg_assign_mem(CG *g, Node *n);   /* defined with cg_stmt, used by cg_expr */
 static Val cg_index(CG *g, Node *n);        /* m["k"] / l[0] -- defined after cg_expr */
 static Val cg_expr(CG *g, Node *n);
@@ -1092,6 +1095,159 @@ static const Bi *builtin_find(const char *name)
 /* Returns a value with .v set when the name is a builtin this backend knows;
  * an empty Val when it is something else, so the caller can report the
  * "unknown function" error instead. */
+/* --- closures (SPEC 4.8, native) --------------------------------------------
+ *
+ * A lambda is a value: the mangled `define` the signature pass named is boxed
+ * by lume_closure_make into a { i8* fn, i8* cap } record. `cap` is null in
+ * this phase — free-variable capture stays interpreter-only — but the record
+ * shape and the leading context parameter of every closure define are the
+ * contract every call site is built against, and they are the same ABI the
+ * text emitter spells by hand. Under opaque pointers no bitcasts are needed:
+ * a function value is a pointer like any other. */
+
+/* Forward-declare (or fetch) the closure's define and build the boxed value.
+ * The body itself is attached later, by cg_closure, through the same
+ * get-or-insert dance a forward call to a named function uses. */
+
+static Val cg_funclit(CG *g, Node *n)
+{
+    AT(g);
+    const char *cname = n->as.funclit.cname;
+    if (!cname)
+        ERRV(g, "line %zu: internal: lambda was never named by the signature "
+                "pass", n->line);
+
+    int arity = n->as.funclit.arity;
+    LLVMTypeRef *pts = (LLVMTypeRef *)xmalloc(sizeof(LLVMTypeRef) * (size_t)(arity + 1));
+    pts[0] = g->i8ptr;                       /* the capture context */
+    for (int i = 0; i < arity; i++) {
+        pts[i + 1] = n->as.funclit.param_types
+            ? ptr_of(g, n->as.funclit.param_types[i]) : NULL;
+        if (!pts[i + 1]) { free(pts); ERRV(g, "line %zu: this lambda's parameter "
+                                           "has no codegen type", n->line); }
+    }
+    LLVMTypeRef rty = n->as.funclit.ret ? ty_of(g, n->as.funclit.ret) : g->void_ty;
+    LLVMTypeRef fty = LLVMFunctionType(rty, pts, (unsigned)(arity + 1), 0);
+    free(pts);
+    if (!fty) ERRV(g, "line %zu: cannot spell this lambda's type", n->line);
+    if (!LLVMGetNamedFunction(g->mod, cname) &&
+        !LLVMAddFunction(g->mod, cname, fty))
+        ERRV(g, "line %zu: cannot declare the closure", n->line);
+    LLVMValueRef fnv = LLVMGetNamedFunction(g->mod, cname);
+    if (!fnv) ERRV(g, "line %zu: internal: closure symbol vanished", n->line);
+
+    LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+    LLVMValueRef vs[2] = { fnv, LLVMConstNull(g->i8ptr) };
+    LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p2, 2, 0),
+                                    rt_decl(g, "lume_closure_make", g->i8ptr, p2, 2),
+                                    vs, 2, "clo");
+    if (!r) ERRV(g, "line %zu: cannot build this closure", n->line);
+
+    /* The same TY_FUNC-with-back-pointer infer_node_type builds, so a call
+     * through the boxed value finds the lambda and its pinned signature. */
+    Type *ft = type_func(arity, n->as.funclit.param_types, n->as.funclit.ret);
+    ft->func = n;
+    return val_make(ft, r);
+}
+
+/* Call through a closure value. `clo` holds the boxed record; `lambda`
+ * supplies the fn pointer's signature; the arguments are already evaluated,
+ * coerced and struct-decayed. Borrows everything; returns the call's value. */
+
+static LLVMValueRef cg_clo_invoke(CG *g, Node *lambda, LLVMValueRef clo,
+                                  LLVMValueRef *args, int argc)
+{
+    AT(g);
+    LLVMTypeRef rec_elems[2] = { g->i8ptr, g->i8ptr };
+    LLVMTypeRef rec = LLVMStructTypeInContext(g->ctx, rec_elems, 2, 0);
+    LLVMValueRef fnp = LLVMBuildStructGEP2(g->ab, rec, clo, 0, "fnp");
+    LLVMValueRef capp = LLVMBuildStructGEP2(g->ab, rec, clo, 1, "capp");
+    if (!fnp || !capp) return NULL;
+    LLVMValueRef fnv = LLVMBuildLoad2(g->ab, g->i8ptr, fnp, "fn");
+    LLVMValueRef capv = LLVMBuildLoad2(g->ab, g->i8ptr, capp, "cap");
+    if (!fnv || !capv) return NULL;
+
+    int arity = lambda->as.funclit.arity;
+    LLVMTypeRef *pts = (LLVMTypeRef *)xmalloc(sizeof(LLVMTypeRef) * (size_t)(arity + 1));
+    pts[0] = g->i8ptr;
+    for (int i = 0; i < arity; i++) {
+        pts[i + 1] = lambda->as.funclit.param_types
+            ? ptr_of(g, lambda->as.funclit.param_types[i]) : NULL;
+        if (!pts[i + 1]) { free(pts); return NULL; }
+    }
+    LLVMTypeRef rty = lambda->as.funclit.ret
+        ? ty_of(g, lambda->as.funclit.ret) : g->void_ty;
+    LLVMTypeRef fty = LLVMFunctionType(rty ? rty : g->void_ty,
+                                       pts, (unsigned)(arity + 1), 0);
+    free(pts);
+    if (!fty) return NULL;
+
+    LLVMValueRef *all = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef) * (size_t)(argc + 1));
+    all[0] = capv;
+    for (int i = 0; i < argc; i++) all[i + 1] = args[i];
+    LLVMValueRef r = LLVMBuildCall2(g->ab, fty, fnv, all,
+                                    (unsigned)(argc + 1), lambda->as.funclit.ret ? "c" : "");
+    free(all);
+    return r;
+}
+
+/* `f(3)` where f is a variable bound to a lambda. cg_call routes here before
+ * it consults the named-function table — the lambda lives under its mangled
+ * name. */
+
+static Val cg_clo_call(CG *g, Node *n, Node *lambda)
+{
+    AT(g);
+    if (n->as.call.argc != lambda->as.funclit.arity)
+        ERRV(g, "line %zu: this closure expects %d argument(s), got %d",
+             n->line, lambda->as.funclit.arity, n->as.call.argc);
+
+    Val clo = cg_expr(g, n->as.call.callee);
+    if (!clo.v) ERRV(g, "line %zu: cannot evaluate the closure", n->line);
+
+    LLVMValueRef *avs = NULL;
+    if (n->as.call.argc > 0) {
+        avs = (LLVMValueRef *)xmalloc(
+            sizeof(LLVMValueRef) * (size_t)n->as.call.argc);
+        for (int i = 0; i < n->as.call.argc; i++) {
+            Val a = cg_expr(g, n->as.call.args[i]);
+            if (a.ty && a.ty->kind == TY_STRUCT && !struct_is_addr(a.v)) {
+                LLVMValueRef slot = LLVMBuildAlloca(g->ab, ty_of(g, a.ty), "sa");
+                LLVMBuildStore(g->ab, a.v, slot);
+                a.v = slot;
+            }
+            Type *pt = lambda->as.funclit.param_types
+                ? lambda->as.funclit.param_types[i] : NULL;
+            if (pt) a = coerce(g, pt, a, n->line);
+            if (!a.v) { free(avs); ERRV(g, "line %zu: bad argument %d for the "
+                                        "closure", n->line, i + 1); }
+            avs[i] = a.v;
+        }
+    }
+
+    LLVMValueRef r = cg_clo_invoke(g, lambda, clo.v, avs, n->as.call.argc);
+    free(avs);
+    if (!r) ERRV(g, "line %zu: cannot call through this closure", n->line);
+    Type *ret = lambda->as.funclit.ret;
+    return val_make(ret, r);
+}
+
+/* The lambda behind a HOF's first argument: an inline literal, or a variable
+ * bound to one. Same recovery rule the signature pass used to pin the
+ * lambda's parameters. */
+
+static Node *hof_lambda(CG *g, Node *a)
+{
+    if (a && a->type == N_FUNC_LIT) return a;
+    if (a && a->type == N_VAR) {
+        Type *ct = infer_node_type(g, a);
+        if (ct && ct->kind == TY_FUNC && ct->func &&
+            ct->func->type == N_FUNC_LIT)
+            return ct->func;
+    }
+    return NULL;
+}
+
 static Val cg_builtin(CG *g, Node *n)
 {
     const char *bname = n->as.call.callee->as.var.name;
@@ -1284,6 +1440,307 @@ static Val cg_builtin(CG *g, Node *n)
         return r;
     }
 
+    /* map(fn, list) / filter(fn, list) / reduce(fn, list, init) — SPEC 4.8's
+     * higher-order builtins, looped inline. The lambda's parameters were
+     * pinned by the shared signature pass (param[0] from the list element,
+     * reduce's param[0] from the init), so the loop reads elements through
+     * the same accessor table for-in uses and calls the closure with the
+     * exact signature its define was built against. Mirrors the text
+     * emitter's copy branch for branch. */
+
+    if (strcmp(bname, "map") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: map() takes exactly two arguments", n->line);
+        Node *lambda = hof_lambda(g, n->as.call.args[0]);
+        if (!lambda)
+            ERRV(g, "line %zu: map() needs a lambda as its first argument",
+                 n->line);
+        Type *ret = lambda->as.funclit.ret;
+        const char *pushfn = list_push_fn(ret);
+        if (!ret || !pushfn)
+            ERRV(g, "line %zu: map() needs a lambda that returns a value "
+                    "this backend can put in a list", n->line);
+        Type *et = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        const char *atfn = list_at_fn(et);
+        if (!atfn)
+            ERRV(g, "line %zu: a list of this element type cannot be mapped",
+                 n->line);
+
+        Val fnv = cg_expr(g, n->as.call.args[0]);
+        Val src = cg_expr(g, n->as.call.args[1]);
+        if (!fnv.v || !src.v || !src.ty || src.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: map() needs a list as its second argument",
+                 n->line);
+
+        Val dst = rt_call(g, list_type(), "lume_list_new", 0, NULL, NULL);
+        if (!dst.v) ERRV(g, "line %zu: cannot allocate a list", n->line);
+
+        /* index + snapshot length, the for-in shape: the bound is captured
+         * once, so a push() the lambda makes cannot extend the iteration. */
+        LLVMValueRef idx = LLVMBuildAlloca(g->ab, g->i64, "li");
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i64, 0, 0), idx);
+        LLVMValueRef len_slot = LLVMBuildAlloca(g->ab, g->i64, "len");
+        {
+            LLVMTypeRef p1[1] = { g->i8ptr };
+            LLVMValueRef v1[1] = { src.v };
+            LLVMValueRef len0 = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_list_len", g->i64, p1, 1), v1, 1, "len0");
+            LLVMBuildStore(g->ab, len0, len_slot);
+        }
+
+        LLVMBasicBlockRef lc = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "map.cond");
+        LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "map.body");
+        LLVMBasicBlockRef li = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "map.incr");
+        LLVMBasicBlockRef le = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "map.end");
+
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lc);
+        g->cur = lc; AT(g);
+        LLVMValueRef len = LLVMBuildLoad2(g->ab, g->i64, len_slot, "len");
+        LLVMValueRef cur = LLVMBuildLoad2(g->ab, g->i64, idx, "cur");
+        LLVMValueRef cond = LLVMBuildICmp(g->ab, LLVMIntSLT, cur, len, "c");
+        LLVMBuildCondBr(g->ab, cond, lb, le);
+
+        g->cur = lb; AT(g);
+        Type *rt = et->kind == TY_BOOL ? type_prim(TY_INT) : et;
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { src.v, cur };
+        Val e = rt_call(g, rt, atfn, 2, p2, v2);
+        if (!e.v) ERRV(g, "line %zu: cannot read an element", n->line);
+        Type *p0 = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        if (p0) e = coerce(g, p0, e, n->line);
+        if (!e.v) ERRV(g, "line %zu: cannot coerce the map argument", n->line);
+        LLVMValueRef rv = cg_clo_invoke(g, lambda, fnv.v, &e.v, 1);
+        if (!rv) ERRV(g, "line %zu: cannot call the mapping closure", n->line);
+        Val item = val_make(ret, rv);
+        if (item.ty && item.ty->kind == TY_BOOL)
+            item = coerce(g, type_prim(TY_INT), item, n->line);
+        if (!item.v) ERRV(g, "line %zu: cannot coerce the mapped value", n->line);
+        {
+            LLVMTypeRef pa[2] = { g->i8ptr, ty_of(g, item.ty) };
+            LLVMValueRef va[2] = { dst.v, item.v };
+            Val pr = rt_call(g, type_prim(TY_INT), pushfn, 2, pa, va);
+            if (!pr.v) ERRV(g, "line %zu: cannot append to a list", n->line);
+        }
+        LLVMBuildBr(g->ab, li);
+
+        g->cur = li; AT(g);
+        LLVMValueRef nxt = LLVMBuildAdd(g->ab, cur, LLVMConstInt(g->i64, 1, 0), "nxt");
+        LLVMBuildStore(g->ab, nxt, idx);
+        LLVMBuildBr(g->ab, lc);
+
+        g->cur = le; AT(g);
+        return val_make(type_list(ret), dst.v);
+    }
+
+    if (strcmp(bname, "filter") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: filter() takes exactly two arguments", n->line);
+        Node *lambda = hof_lambda(g, n->as.call.args[0]);
+        if (!lambda)
+            ERRV(g, "line %zu: filter() needs a lambda as its first argument",
+                 n->line);
+        Type *ret = lambda->as.funclit.ret;
+        if (!ret || (ret->kind != TY_BOOL && ret->kind != TY_INT &&
+                     ret->kind != TY_FLOAT))
+            ERRV(g, "line %zu: filter() needs a lambda that returns a bool "
+                    "(the native backend tests the truth of a bool, an int "
+                    "or a float)", n->line);
+        Type *et = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        const char *atfn = list_at_fn(et);
+        if (!atfn)
+            ERRV(g, "line %zu: a list of this element type cannot be filtered",
+                 n->line);
+
+        Val fnv = cg_expr(g, n->as.call.args[0]);
+        Val src = cg_expr(g, n->as.call.args[1]);
+        if (!fnv.v || !src.v || !src.ty || src.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: filter() needs a list as its second argument",
+                 n->line);
+
+        Val dst = rt_call(g, list_type(), "lume_list_new", 0, NULL, NULL);
+        if (!dst.v) ERRV(g, "line %zu: cannot allocate a list", n->line);
+
+        LLVMValueRef idx = LLVMBuildAlloca(g->ab, g->i64, "li");
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i64, 0, 0), idx);
+        LLVMValueRef len_slot = LLVMBuildAlloca(g->ab, g->i64, "len");
+        {
+            LLVMTypeRef p1[1] = { g->i8ptr };
+            LLVMValueRef v1[1] = { src.v };
+            LLVMValueRef len0 = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_list_len", g->i64, p1, 1), v1, 1, "len0");
+            LLVMBuildStore(g->ab, len0, len_slot);
+        }
+
+        LLVMBasicBlockRef lc = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "flt.cond");
+        LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "flt.body");
+        LLVMBasicBlockRef lp = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "flt.push");
+        LLVMBasicBlockRef li = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "flt.incr");
+        LLVMBasicBlockRef le = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "flt.end");
+
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lc);
+        g->cur = lc; AT(g);
+        LLVMValueRef len = LLVMBuildLoad2(g->ab, g->i64, len_slot, "len");
+        LLVMValueRef cur = LLVMBuildLoad2(g->ab, g->i64, idx, "cur");
+        LLVMValueRef cond = LLVMBuildICmp(g->ab, LLVMIntSLT, cur, len, "c");
+        LLVMBuildCondBr(g->ab, cond, lb, le);
+
+        g->cur = lb; AT(g);
+        Type *rt = et->kind == TY_BOOL ? type_prim(TY_INT) : et;
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { src.v, cur };
+        Val e = rt_call(g, rt, atfn, 2, p2, v2);
+        if (!e.v) ERRV(g, "line %zu: cannot read an element", n->line);
+        /* The element travels twice: the raw runtime value into the result
+         * list when the test passes, and a copy — narrowed to the
+         * parameter's spelling — into the closure. coerce() replaces the
+         * value it converts, so the closure argument is built from a
+         * separate Val and the raw e stays owned for the push below. */
+        Val arg = e;
+        Type *p0 = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        if (p0) arg = coerce(g, p0, arg, n->line);
+        if (!arg.v) ERRV(g, "line %zu: cannot coerce the filter argument", n->line);
+        LLVMValueRef rv = cg_clo_invoke(g, lambda, fnv.v, &arg.v, 1);
+        if (!rv) ERRV(g, "line %zu: cannot call the filter closure", n->line);
+
+        LLVMValueRef test;
+        if (ret->kind == TY_BOOL)      test = rv;
+        else if (ret->kind == TY_FLOAT) test = LLVMBuildFCmp(g->ab, LLVMRealUNE,
+                                                             rv, LLVMConstReal(g->dbl, 0.0), "t");
+        else                            test = LLVMBuildICmp(g->ab, LLVMIntNE,
+                                                             rv, LLVMConstInt(g->i64, 0, 0), "t");
+        if (!test) ERRV(g, "line %zu: cannot test the filter result", n->line);
+        LLVMBuildCondBr(g->ab, test, lp, li);
+
+        g->cur = lp; AT(g);
+        {
+            LLVMTypeRef pa[2] = { g->i8ptr, ty_of(g, rt) };
+            LLVMValueRef va[2] = { dst.v, e.v };
+            Val pr = rt_call(g, type_prim(TY_INT), list_push_fn(et), 2, pa, va);
+            if (!pr.v) ERRV(g, "line %zu: cannot append to a list", n->line);
+        }
+        LLVMBuildBr(g->ab, li);
+
+        g->cur = li; AT(g);
+        LLVMValueRef nxt = LLVMBuildAdd(g->ab, cur, LLVMConstInt(g->i64, 1, 0), "nxt");
+        LLVMBuildStore(g->ab, nxt, idx);
+        LLVMBuildBr(g->ab, lc);
+
+        g->cur = le; AT(g);
+        return val_make(type_list(et), dst.v);
+    }
+
+    if (strcmp(bname, "reduce") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: reduce() takes exactly three arguments", n->line);
+        Node *lambda = hof_lambda(g, n->as.call.args[0]);
+        if (!lambda)
+            ERRV(g, "line %zu: reduce() needs a lambda as its first argument",
+                 n->line);
+        if (lambda->as.funclit.arity != 2)
+            ERRV(g, "line %zu: reduce()'s lambda takes (accumulator, item)",
+                 n->line);
+        Type *et = lambda->as.funclit.param_types && lambda->as.funclit.arity > 1
+            ? lambda->as.funclit.param_types[1] : NULL;
+        const char *atfn = list_at_fn(et);
+        if (!atfn)
+            ERRV(g, "line %zu: a list of this element type cannot be reduced",
+                 n->line);
+
+        Val fnv = cg_expr(g, n->as.call.args[0]);
+        Val src = cg_expr(g, n->as.call.args[1]);
+        Val acc0 = cg_expr(g, n->as.call.args[2]);
+        if (!fnv.v || !src.v || !src.ty || src.ty->kind != TY_LIST ||
+            !acc0.v || !acc0.ty || acc0.ty->kind == TY_STRUCT)
+            ERRV(g, "line %zu: reduce() needs a list and a scalar or list "
+                    "accumulator", n->line);
+        LLVMTypeRef acc_ty = ty_of(g, acc0.ty);
+        if (!acc_ty) ERRV(g, "line %zu: the accumulator has no codegen type",
+                          n->line);
+
+        /* The accumulator lives in a slot: every iteration loads it, calls
+         * the closure with (acc, item) and stores the result back. */
+        LLVMValueRef acc_slot = LLVMBuildAlloca(g->ab, acc_ty, "acc");
+        {
+            Type *p0 = lambda->as.funclit.param_types
+                ? lambda->as.funclit.param_types[0] : NULL;
+            Val acc_init = p0 ? coerce(g, p0, acc0, n->line) : acc0;
+            if (!acc_init.v)
+                ERRV(g, "line %zu: cannot seed the accumulator", n->line);
+            LLVMBuildStore(g->ab, acc_init.v, acc_slot);
+        }
+
+        LLVMValueRef idx = LLVMBuildAlloca(g->ab, g->i64, "li");
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i64, 0, 0), idx);
+        LLVMValueRef len_slot = LLVMBuildAlloca(g->ab, g->i64, "len");
+        {
+            LLVMTypeRef p1[1] = { g->i8ptr };
+            LLVMValueRef v1[1] = { src.v };
+            LLVMValueRef len0 = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_list_len", g->i64, p1, 1), v1, 1, "len0");
+            LLVMBuildStore(g->ab, len0, len_slot);
+        }
+
+        LLVMBasicBlockRef lc = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "rd.cond");
+        LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "rd.body");
+        LLVMBasicBlockRef li = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "rd.incr");
+        LLVMBasicBlockRef le = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "rd.end");
+
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lc);
+        g->cur = lc; AT(g);
+        LLVMValueRef len = LLVMBuildLoad2(g->ab, g->i64, len_slot, "len");
+        LLVMValueRef cur = LLVMBuildLoad2(g->ab, g->i64, idx, "cur");
+        LLVMValueRef cond = LLVMBuildICmp(g->ab, LLVMIntSLT, cur, len, "c");
+        LLVMBuildCondBr(g->ab, cond, lb, le);
+
+        g->cur = lb; AT(g);
+        Type *rt = et->kind == TY_BOOL ? type_prim(TY_INT) : et;
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { src.v, cur };
+        Val e = rt_call(g, rt, atfn, 2, p2, v2);
+        LLVMValueRef accv = LLVMBuildLoad2(g->ab, acc_ty, acc_slot, "acc");
+        if (!e.v || !accv)
+            ERRV(g, "line %zu: cannot read an element or the accumulator", n->line);
+        Val argv[2] = { { accv, acc0.ty }, e };
+        Type *p0 = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        Type *p1 = lambda->as.funclit.param_types && lambda->as.funclit.arity > 1
+            ? lambda->as.funclit.param_types[1] : NULL;
+        if (p0) argv[0] = coerce(g, p0, argv[0], n->line);
+        if (p1) argv[1] = coerce(g, p1, argv[1], n->line);
+        if (!argv[0].v || !argv[1].v)
+            ERRV(g, "line %zu: cannot coerce the reduce arguments", n->line);
+        /* cg_clo_invoke takes a bare LLVMValueRef array — the coerced Vals
+         * must be unwrapped first (a Val* reinterpreted would hand the call
+         * each Val's Type* as the argument value). */
+        LLVMValueRef cargs[2] = { argv[0].v, argv[1].v };
+        LLVMValueRef rv = cg_clo_invoke(g, lambda, fnv.v, cargs, 2);
+        if (!rv) ERRV(g, "line %zu: cannot call the reducing closure", n->line);
+        Val acc_next = val_make(acc0.ty, rv);
+        acc_next = coerce(g, acc0.ty, acc_next, n->line);
+        if (!acc_next.v)
+            ERRV(g, "line %zu: the reducing closure's result does not fit "
+                    "the accumulator", n->line);
+        LLVMBuildStore(g->ab, acc_next.v, acc_slot);
+        LLVMBuildBr(g->ab, li);
+
+        g->cur = li; AT(g);
+        LLVMValueRef nxt = LLVMBuildAdd(g->ab, cur, LLVMConstInt(g->i64, 1, 0), "nxt");
+        LLVMBuildStore(g->ab, nxt, idx);
+        LLVMBuildBr(g->ab, lc);
+
+        g->cur = le; AT(g);
+        LLVMValueRef res = LLVMBuildLoad2(g->ab, acc_ty, acc_slot, "res");
+        if (!res) ERRV(g, "line %zu: cannot read the accumulator", n->line);
+        return val_make(acc0.ty, res);
+    }
+
     return (Val){ NULL, NULL };
 }
 
@@ -1316,6 +1773,17 @@ static Val cg_call(CG *g, Node *n)
 
     if (!n->as.call.callee || n->as.call.callee->type != N_VAR)
         ERRV(g, "line %zu: only direct calls to named functions are supported", n->line);
+
+    /* A closure-valued variable: `f(3)` where f was bound to a lambda. The
+     * variable's TY_FUNC type carries the back-pointer to the lambda node
+     * the signature pass pinned; a plain named-function reference has no
+     * back-pointer and falls through to the sig_find path below. */
+    {
+        Type *ct = infer_node_type(g, n->as.call.callee);
+        if (ct && ct->kind == TY_FUNC && ct->func &&
+            ct->func->type == N_FUNC_LIT)
+            return cg_clo_call(g, n, ct->func);
+    }
 
     const char *name = n->as.call.callee->as.var.name;
     Sig *s = sig_find(&g->sigs, name);
@@ -1492,6 +1960,7 @@ static Val cg_expr(CG *g, Node *n)
     case N_ASSIGN_MEMBER: return cg_assign_mem(g, n);
     case N_EXPR_STMT: return cg_expr(g, n->as.expr_stmt.expr);
     case N_VAR:      return cg_var(g, n);
+    case N_FUNC_LIT: return cg_funclit(g, n);
     case N_UNARY:    return cg_unary(g, n);
     case N_BINARY:   return cg_binary(g, n);
     case N_MEMBER:   return cg_member(g, n);
@@ -1641,9 +2110,50 @@ static Type *infer_node_type(CG *g, Node *n)
         Asg *a = asg_find(&g->locals, n->as.var.name);
         return a ? a->ty : NULL;
     }
+    case N_FUNC_LIT: {
+        /* A closure value; thread the node through Type.func (mirrors
+         * codegen_scan.c). */
+        Type *ft = type_func(n->as.funclit.arity, n->as.funclit.param_types,
+                             n->as.funclit.ret);
+        ft->func = n;
+        return ft;
+    }
     case N_CALL: {
         if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
-        Sig *s = sig_find(&g->sigs, n->as.call.callee->as.var.name);
+        const char *name = n->as.call.callee->as.var.name;
+
+        /* Closure-valued variable call: `f(3)` where f : func. */
+        {
+            Type *ct = infer_node_type(g, n->as.call.callee);
+            if (ct && ct->kind == TY_FUNC && ct->func &&
+                ct->func->type == N_FUNC_LIT)
+                return ct->func->as.funclit.ret;
+        }
+
+        /* Higher-order builtins that consume a closure. */
+        if (strcmp(name, "map") == 0) {
+            Node *clo = n->as.call.argc > 0 ? n->as.call.args[0] : NULL;
+            Node *lambda = NULL;
+            if (clo && clo->type == N_FUNC_LIT) lambda = clo;
+            else if (clo && clo->type == N_VAR) {
+                Type *ct = infer_node_type(g, clo);
+                if (ct && ct->kind == TY_FUNC && ct->func &&
+                    ct->func->type == N_FUNC_LIT)
+                    lambda = ct->func;
+            }
+            if (lambda && lambda->as.funclit.ret)
+                return type_list(lambda->as.funclit.ret);
+            return type_list(any_type());
+        }
+        if (strcmp(name, "filter") == 0) {
+            Type *lt = infer_node_type(g, n->as.call.args[1]);
+            if (lt && lt->kind == TY_LIST) return lt;
+            return type_list(any_type());
+        }
+        if (strcmp(name, "reduce") == 0)
+            return infer_node_type(g, n->as.call.args[2]);
+
+        Sig *s = sig_find(&g->sigs, name);
         if (!s) return NULL;
         /* `f()?` is the `ok` payload, not a Result -- see the same branch in
          * codegen_scan.c. Reading the declared return type here alloca'd a
@@ -2129,54 +2639,69 @@ static void cg_block(CG *g, Node *blk)
 
 /* ------------------------------------------------------------- functions ---- */
 
-static void cg_function(CG *g, Node *fn)
-{
-    Type **params = fn->as.func.param_types;
-    int    arity  = fn->as.func.arity;
-    const char *lume_name = fn->as.func.name;
+/* The one shape every function definition takes. `sym` is the LLVM symbol
+ * (L_<name> for a named function, the mangled __lume_clo_N for a closure);
+ * `has_cap` prepends the closure-context parameter a lambda's define carries
+ * and every call site passes the loaded .cap into (null in this phase). */
 
+static void cg_def(CG *g, const char *sym, char **names, Type **params,
+                   int arity, Type *ret, Node *body, int has_cap, size_t line)
+{
+    int np = arity + (has_cap ? 1 : 0);
     LLVMTypeRef *pts = NULL;
-    if (params) {
-        pts = (LLVMTypeRef *)xmalloc(sizeof(LLVMTypeRef) * (arity > 0 ? arity : 1));
+    if (np > 0) {
+        pts = (LLVMTypeRef *)xmalloc(sizeof(LLVMTypeRef) * (size_t)np);
+        if (has_cap) pts[0] = g->i8ptr;
         for (int i = 0; i < arity; i++) {
-            pts[i] = ptr_of(g, params[i]);
-            if (!pts[i])
+            pts[i + (has_cap ? 1 : 0)] = params ? ptr_of(g, params[i]) : NULL;
+            if (!pts[i + (has_cap ? 1 : 0)])
                 ERRX(g, "line %zu: parameter '%s' has no codegen type",
-                     fn->line, fn->as.func.names ? fn->as.func.names[i] : "?");
+                     line, names ? names[i] : "?");
         }
     }
 
-    LLVMTypeRef rty = ty_of(g, fn->as.func.ret);
-    LLVMTypeRef fty = LLVMFunctionType(rty ? rty : g->void_ty, pts, (unsigned)arity, 0);
+    LLVMTypeRef rty = ty_of(g, ret);
+    LLVMTypeRef fty = LLVMFunctionType(rty ? rty : g->void_ty,
+                                       np > 0 ? pts : NULL, (unsigned)np, 0);
 
-    char fname[160];
-    snprintf(fname, sizeof fname, "L_%s", lume_name ? lume_name : "?");
     /* LLVMAddFunction always creates and then *uniques* the name (L_g.1, ...)
      * — the get-or-insert semantics live in the C++ helper a call goes
-     * through, not in this API. A forward call already declared this symbol,
-     * so it is reused instead; otherwise the body would land on a copy. */
-    LLVMValueRef prev = LLVMGetNamedFunction(g->mod, fname);
-    g->fn = prev ? prev : LLVMAddFunction(g->mod, fname, fty);
+     * through, not in this API. A forward call (or the boxing call a lambda
+     * literal emits) already declared this symbol, so it is reused instead;
+     * otherwise the body would land on a copy. */
+    LLVMValueRef prev = LLVMGetNamedFunction(g->mod, sym);
+    g->fn = prev ? prev : LLVMAddFunction(g->mod, sym, fty);
 
-    /* Locals move aside: a variable of the caller must not be visible here. */
+    /* Locals move aside: a variable of the caller must not be visible here.
+     * The loop-label stacks too: a `break` inside this body can never target
+     * a loop outside it, and with the stacks cleared the emitter reports
+     * "'break' outside a loop" instead of branching into another function. */
     Asgs saved = g->locals;
     memset(&g->locals, 0, sizeof g->locals);
+    LLVMBasicBlockRef *saved_brk = g->brk; int snbrk = g->nbrk, scbrk = g->cbrk;
+    LLVMBasicBlockRef *saved_cnt = g->cnt; int sncnt = g->ncnt, sccnt = g->ccnt;
+    g->brk = g->cnt = NULL; g->nbrk = g->ncnt = g->cbrk = g->ccnt = 0;
     Type *saved_ret = g->cur_ret;
-    g->cur_ret = fn->as.func.ret;
+    g->cur_ret = ret;
 
     /* Parameters first, so their slots exist before the body is scanned. A
      * struct parameter is *already* a pointer, so it keeps the parameter value
-     * as its slot. */
+     * as its slot. With a capture context the closure's own parameters start
+     * at LLVM param index 1. */
     LLVMValueRef *pv = NULL;
     if (arity > 0) {
-        pv = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef) * (size_t)arity);
+        pv = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef) * (size_t)np);
+        /* LLVMGetParams fills one entry per function parameter, the capture
+         * context first when has_cap — so the readback below indexes
+         * pv[i + 1] for a closure's own parameters. */
         LLVMGetParams(g->fn, pv);
         for (int i = 0; i < arity; i++)
-            asg_push(&g->locals, fn->as.func.names[i], params[i],
-                     (params[i] && params[i]->kind == TY_STRUCT) ? pv[i] : NULL);
+            asg_push(&g->locals, names[i], params[i],
+                     (params[i] && params[i]->kind == TY_STRUCT)
+                         ? pv[i + (has_cap ? 1 : 0)] : NULL);
     }
 
-    scan_block(g, fn->as.func.body);
+    scan_block(g, body);
 
     /* Entry: one alloca per local, then seed the non-struct parameters. */
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "entry");
@@ -2196,18 +2721,18 @@ static void cg_function(CG *g, Node *fn)
         if (!ty_of(g, a->ty))
             ERRX(g, "line %zu: variable '%s' has no codegen type "
                     "(its type could not be inferred, e.g. an empty list)",
-                 fn->line, a->name);
+                 line, a->name);
         a->slot = LLVMBuildAlloca(g->ab, ty_of(g, a->ty), "lv");
     }
     if (pv) {
         for (int i = 0; i < arity; i++) {
             if (params[i] && params[i]->kind == TY_STRUCT) continue;
-            LLVMBuildStore(g->ab, pv[i],
-                           asg_find(&g->locals, fn->as.func.names[i])->slot);
+            LLVMBuildStore(g->ab, pv[i + (has_cap ? 1 : 0)],
+                           asg_find(&g->locals, names[i])->slot);
         }
     }
 
-    if (fn->as.func.body) cg_block(g, fn->as.func.body);
+    if (body) cg_block(g, body);
 
     /* Close the function: any block the body left open still needs exactly one
      * terminator. A struct return has no zeroinitialiser to hand back — such a
@@ -2222,12 +2747,39 @@ static void cg_function(CG *g, Node *fn)
 
     asgs_free(&g->locals);
     g->locals = saved;
+    g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
+    g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
     g->cur_ret = saved_ret;
     g->fn = NULL;
     /* The two scratch vectors: LLVMFunctionType and LLVMGetParams only read
      * them, the IR owns the values, so nothing survives past this point. */
     free(pts);
     free(pv);
+}
+
+static void cg_function(CG *g, Node *fn)
+{
+    char sym[160];
+    snprintf(sym, sizeof sym, "L_%s", fn->as.func.name ? fn->as.func.name : "?");
+    cg_def(g, sym, fn->as.func.names, fn->as.func.param_types,
+           fn->as.func.arity, fn->as.func.ret, fn->as.func.body, 0, fn->line);
+}
+
+/* A closure's `define`: the lambda node the signature pass named, emitted
+ * with the leading capture parameter its call sites always pass. The body
+ * runs through the same cg_def as a named function — the capture context is
+ * null in this phase (no free-variable capture yet), but the parameter is
+ * part of the calling convention the boxing call and the fn-pointer
+ * invocations are built against. */
+
+static void cg_closure(CG *g, Node *fn)
+{
+    if (!fn->as.funclit.cname)
+        ERRX(g, "line %zu: internal: closure was never given a mangled name",
+             fn->line);
+    cg_def(g, fn->as.funclit.cname, fn->as.funclit.names,
+           fn->as.funclit.param_types, fn->as.funclit.arity,
+           fn->as.funclit.ret, fn->as.funclit.body, 1, fn->line);
 }
 
 /* ------------------------------------------------------------------- entry -- */
@@ -2239,6 +2791,95 @@ void llvm_codegen_init_targets(void)
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
     done = 1;
+}
+
+/* Collect every lambda the signature pass named, in one pass over the tree —
+ * the same walk the text emitter's driver runs (codegen.c), kept here because
+ * each backend owns its module assembly. Only nodes with a mangled name are
+ * collected: a route handler is a function literal too, but it goes through
+ * the FFI path and never gets a cname. The walk descends into lambda bodies
+ * as well, so a lambda nested in a lambda is found from the outer one. */
+
+static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
+{
+    if (!n) return;
+    switch (n->type) {
+    case N_FUNC_LIT:
+        if (n->as.funclit.cname) {
+            if (*cnt == *cap) {
+                *cap = *cap ? *cap * 2 : 8;
+                *out = (Node **)xrealloc(*out, (size_t)*cap * sizeof **out);
+            }
+            (*out)[(*cnt)++] = n;
+        }
+        collect_lambdas(n->as.funclit.body, out, cnt, cap);
+        return;
+    case N_PROGRAM: case N_BLOCK:
+        for (int i = 0; i < n->as.block.count; i++)
+            collect_lambdas(n->as.block.stmts[i], out, cnt, cap);
+        return;
+    case N_FUNC_DECL:
+        collect_lambdas(n->as.func.body, out, cnt, cap);
+        return;
+    case N_LET:        collect_lambdas(n->as.let.init, out, cnt, cap); return;
+    case N_IF:
+        collect_lambdas(n->as.ifs.cond, out, cnt, cap);
+        collect_lambdas(n->as.ifs.then, out, cnt, cap);
+        collect_lambdas(n->as.ifs.els,  out, cnt, cap);
+        return;
+    case N_WHILE:
+        collect_lambdas(n->as.whiles.cond, out, cnt, cap);
+        collect_lambdas(n->as.whiles.body, out, cnt, cap);
+        return;
+    case N_FOR:
+        collect_lambdas(n->as.fors.init,     out, cnt, cap);
+        collect_lambdas(n->as.fors.cond,     out, cnt, cap);
+        collect_lambdas(n->as.fors.incr,     out, cnt, cap);
+        collect_lambdas(n->as.fors.iterable, out, cnt, cap);
+        collect_lambdas(n->as.fors.body,     out, cnt, cap);
+        return;
+    case N_RETURN:     collect_lambdas(n->as.ret.expr, out, cnt, cap); return;
+    case N_EXPR_STMT:  collect_lambdas(n->as.expr_stmt.expr, out, cnt, cap); return;
+    case N_ASSIGN:     collect_lambdas(n->as.assign.value, out, cnt, cap); return;
+    case N_ASSIGN_MEMBER:
+        collect_lambdas(n->as.assign_mem.obj,   out, cnt, cap);
+        collect_lambdas(n->as.assign_mem.value, out, cnt, cap);
+        return;
+    case N_CALL:
+        collect_lambdas(n->as.call.callee, out, cnt, cap);
+        for (int i = 0; i < n->as.call.argc; i++)
+            collect_lambdas(n->as.call.args[i], out, cnt, cap);
+        return;
+    case N_MEMBER:     collect_lambdas(n->as.member.obj, out, cnt, cap); return;
+    case N_INDEX:
+        collect_lambdas(n->as.index.obj,   out, cnt, cap);
+        collect_lambdas(n->as.index.index, out, cnt, cap);
+        return;
+    case N_UNARY:      collect_lambdas(n->as.unary.operand, out, cnt, cap); return;
+    case N_BINARY:
+        collect_lambdas(n->as.binary.left,  out, cnt, cap);
+        collect_lambdas(n->as.binary.right, out, cnt, cap);
+        return;
+    case N_LIST_LIT:
+        for (int i = 0; i < n->as.list.count; i++)
+            collect_lambdas(n->as.list.items[i], out, cnt, cap);
+        return;
+    case N_MAP_LIT:
+        for (int i = 0; i < n->as.map.count; i++)
+            collect_lambdas(n->as.map.vals[i], out, cnt, cap);
+        return;
+    case N_SERVER:
+        for (int i = 0; i < n->as.server.count; i++)
+            collect_lambdas(n->as.server.assigns[i], out, cnt, cap);
+        return;
+    case N_ROUTE:      collect_lambdas(n->as.route.handler, out, cnt, cap); return;
+    case N_TOOL:
+        collect_lambdas(n->as.tool.params,  out, cnt, cap);
+        collect_lambdas(n->as.tool.handler, out, cnt, cap);
+        return;
+    case N_VERBS:      collect_lambdas(n->as.verbs.methods, out, cnt, cap); return;
+    default: return;   /* literals, imports, type decls, break/continue */
+    }
 }
 
 /* Build (and hand back) the module. Returns NULL with a message in err. */
@@ -2365,6 +3006,19 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
         free(top_fn);
     }
     free(fns); free(tops);
+
+    /* Closures: every lambda the signature pass named gets its own define.
+     * The bodies are attached here, after the named functions, through the
+     * same get-or-insert path a forward call used when the lambda literal was
+     * boxed — so the symbol cg_funclit declared and called is the one that
+     * gains a body. */
+    {
+        Node **clos = NULL;
+        int nclos = 0, capc = 0;
+        collect_lambdas(prog, &clos, &nclos, &capc);
+        for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
+        free(clos);
+    }
 
     /* ---- C entry: the top level, and nothing else ----
      * `main` is an ordinary function here, as it is in the interpreter: the

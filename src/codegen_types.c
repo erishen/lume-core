@@ -114,6 +114,9 @@ const char *llvm_type_of(Type *t)
      * the same opaque pointer. LumeSlot is a tagged union, so one map holds an
      * int `ok` and a string `err` side by side without a second slot type. */
     case TY_RESULT: return "i8*";
+    /* A function value is a closure record pointer (LumeClosure*) — opaque to
+     * the IR, read back as `.fn`/`.cap` by fixed offset when called. */
+    case TY_FUNC:   return "i8*";
     default:        return NULL;
     }
 }

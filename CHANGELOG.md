@@ -6,6 +6,29 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — no-capture closures as first-class values on all three backends (§4.8)
+
+- **无捕获 lambda 三后端通用**：`let f = (x) => x * 2` 在解释器、`--compile-text`、
+  `--compile-llvm` 下行为逐字一致——装箱、存变量、调用。§4.8 原「闭包只在解释器可用」
+  的口径作废；自由变量捕获与 `try` 仍是解释器独占。
+- 运行时新增 `LumeClosure { fn, cap }` 与 `lume_closure_make`（`src/rt.c`），闭包以不透明
+  `i8*` 穿过两个发射器。
+- 共享签名推断（`codegen_sig.c`）为每个 lambda 定参定返并指派 mangled 名，两个
+  `infer_node_type` 副本据此把 `N_FUNC_LIT` 推成带 AST 回指针的 `TY_FUNC`。
+- 文本后端（`codegen_*.c`）与 libLLVM 后端（`llvm_codegen.c`）各实现两阶段发射：
+  字面量处装箱，lambda 体以 `define @__lume_clo_N(i8* %cap, ...)` 追加在模块尾；
+  闭包调用拆记录取 fn/cap 后带 cap 调用。
+- **`map` / `filter` / `reduce` 成为原生 HOF**：两个发射器把循环内联展开（迭代长度只
+  快照一次，循环体内的 `push` 不延长迭代），filter 有 push/skip 分块，reduce 用累加器
+  槽。一阶段拒绝项：自由变量捕获、`try`、filter 返回非 bool/int/float、struct 累加器、
+  容器元素列表。
+- `tests/native-consistency.lume` 新增闭包 + HOF 差分段（9 行输出），`.expected` 刷新；
+  `docs/SPEC.md` §4.8 重写，`docs/LUME.md` 的过时口径同步更正。
+- 排查过程修掉两个发射器级缺陷：`Sig.is_lambda` 未在 `sig_push` 清零（realloc 尾巴的
+  垃圾把具名函数错走 lambda 回写分支，经 union 偏移踩坏 `param_types`，表现为
+  `native-fact.lume` 的 UAF）；libLLVM reduce 把 `Val[]` 误作 `LLVMValueRef[]` 传参
+  （第二实参拿到 `Type*`，验证器打印该 call 时段错误）。
+
 ### Fixed — two §8.1 native-backend consistency gaps (#1 / #2)
 
 - **#1 `float %` 的报错位置**：`--compile-llvm` 原在下游 `cg_print` 处把

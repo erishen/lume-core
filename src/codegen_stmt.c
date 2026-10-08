@@ -37,10 +37,10 @@ static void cg_stmt(CG *g, Node *n);
 static void cg_while(CG *g, Node *n);
 
 /* forward: same tu, defined below this point. */
-static Type *elem_rty(Type *ty);
+Type *elem_rty(Type *ty);
 
 /* forward: same tu, defined below this point. */
-static const char *list_at_fn(Type *ty);
+const char *list_at_fn(Type *ty);
 
 /* Returns the stored value, because `p.x = e` is a statement *and* an
  * expression: the parser wraps a bare `p.x = e;` in an expr-stmt, and cg_expr
@@ -111,9 +111,12 @@ static void cg_while(CG *g, Node *n)
     g->nbrk--; g->ncnt--;
 }
 
-/* Which element accessor reads a list whose variable is typed `ty`. */
+/* Which element accessor reads a list whose variable is typed `ty`.
+ * Shared with the map/filter/reduce emitters (declared in codegen_internal.h):
+ * one dispatch table, so for-in and the HOFs can never disagree about which
+ * element types are readable. */
 
-static const char *list_at_fn(Type *ty)
+const char *list_at_fn(Type *ty)
 {
     if (!ty) return NULL;
     switch (ty->kind) {
@@ -126,9 +129,10 @@ static const char *list_at_fn(Type *ty)
 }
 
 /* Which return type that accessor has — it is what the store into the
- * iteration variable's slot has to use. */
+ * iteration variable's slot has to use. Shared with the HOF emitters, same
+ * reason as list_at_fn above. */
 
-static Type *elem_rty(Type *ty)
+Type *elem_rty(Type *ty)
 {
     if (!ty) return NULL;
     switch (ty->kind) {
@@ -621,18 +625,38 @@ static void cg_handler_ret(CG *g, Node *n)
             "literal", n->line);
 }
 
-void cg_function(CG *g, Node *fn)
+/* The one shape every text-backend `define` takes. `sym` is the LLVM symbol
+ * (L_<name> for a named function, the mangled __lume_clo_N for a closure);
+ * `has_cap` prepends the closure-context parameter a lambda's define carries
+ * and a direct call site passes i8* null (or the loaded .cap) into.
+ *
+ * Everything else — parameter slots, the entry-block alloca pass, the
+ * terminator fallback — is byte-for-byte what cg_function always did, because
+ * a closure body is a function body and there is no second emitter to keep in
+ * step. */
+
+static void cg_def(CG *g, const char *sym, const char *title,
+                   char **names, Type **params, int arity, Type *ret,
+                   Node *body, int has_cap, size_t line)
 {
-    Type **params = fn->as.func.param_types;
-    int    arity  = fn->as.func.arity;
-    Sig    sig;
+    Sig sig;
     memset(&sig, 0, sizeof sig);
-    sig.ret = fn->as.func.ret;
+    sig.ret = ret;
     g->cur = &sig;
-    sig.name = xstrdup(fn->as.func.name);
+    sig.name = xstrdup(title);
 
     Asgs saved = g->locals;
     memset(&g->locals, 0, sizeof g->locals);
+
+    /* A define is its own function: a `break` inside it can never target a
+     * loop in whoever is being emitted around it (no loop can span a define
+     * boundary in this backend, so the stacks are always empty here anyway —
+     * the reset is what keeps that invariant load-bearing instead of lucky).
+     * With an empty stack the N_BREAK emitter reports "'break' outside a
+     * loop" instead of branching into another function. */
+    int *saved_brk = g->brk; int snbrk = g->nbrk, scbrk = g->cbrk;
+    int *saved_cnt = g->cnt; int sncnt = g->ncnt, sccnt = g->ccnt;
+    g->brk = g->cnt = NULL; g->nbrk = g->ncnt = g->cbrk = g->ccnt = 0;
 
     /* parameters first, so their slots exist before the body scan. A struct
      * parameter is *already* a pointer (`%pN`), so it keeps the parameter and
@@ -641,23 +665,24 @@ void cg_function(CG *g, Node *fn)
         for (int i = 0; i < arity; i++) {
             char pslot[48];
             snprintf(pslot, sizeof pslot, "%%p%d", i);
-            asg_push(&g->locals, fn->as.func.names[i], params[i],
+            asg_push(&g->locals, names[i], params[i],
                      params[i] && params[i]->kind == TY_STRUCT ? pslot : NULL);
         }
     }
-    scan_block(g, fn->as.func.body);
+    scan_block(g, body);
 
-    const char *rty = llvm_type_of(sig.ret);
+    const char *rty = llvm_type_of(ret);
 
-    EMIT(g, "\n; --- func %s ---\n", fn->as.func.name);
+    EMIT(g, "\n; --- %s ---\n", title);
     EMIT(g, "define ");
     if (rty) EMIT(g, "%s ", rty); else EMIT(g, "void ");
-    EMIT(g, "@L_%s(", fn->as.func.name);
+    EMIT(g, "@%s(", sym);
+    if (has_cap) EMIT(g, "i8* %%cap");
     for (int i = 0; i < arity; i++) {
         const char *pt = params && params[i] ? llvm_ptr_type_of(params[i]) : NULL;
         if (!pt) ERRX(g, "line %zu: parameter '%s' has no codegen type",
-                     fn->line, fn->as.func.names ? fn->as.func.names[i] : "?");
-        EMIT(g, "%s %%p%d%s", pt, i, (i + 1 < arity) ? ", " : "");
+                      line, names ? names[i] : "?");
+        EMIT(g, "%s%s %%p%d", (has_cap || i) ? ", " : "", pt, i);
     }
     EMIT(g, ") {\n");
 
@@ -669,7 +694,7 @@ void cg_function(CG *g, Node *fn)
          * a struct local still needs an alloca. Locals always live in %lv_. */
         if (strncmp(a->slot, "%lv_", 4) != 0) continue;
         const char *lt = llvm_type_of(a->ty);
-        if (!lt) ERRX(g, "line %zu: variable '%s' has no codegen type", fn->line, a->name);
+        if (!lt) ERRX(g, "line %zu: variable '%s' has no codegen type", line, a->name);
         EMIT(g, "  %s = alloca %s\n", a->slot, lt);
     }
     if (params) {
@@ -677,11 +702,11 @@ void cg_function(CG *g, Node *fn)
             if (params[i] && params[i]->kind == TY_STRUCT) continue;
             const char *pt = llvm_type_of(params[i]);
             EMIT(g, "  store %s %%p%d, %s* %s\n", pt, i, pt,
-                 asg_find(&g->locals, fn->as.func.names[i])->slot);
+                 asg_find(&g->locals, names[i])->slot);
         }
     }
 
-    if (fn->as.func.body) cg_block(g, fn->as.func.body);
+    if (body) cg_block(g, body);
 
     /* A basic block must end with a terminator. A struct-returning function
      * produces its aggregate in the body, so `ret %Rect 0` would not even
@@ -712,8 +737,39 @@ void cg_function(CG *g, Node *fn)
 
     EMIT(g, "}\n");
 
+    free(g->brk); free(g->cnt);
+    g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
+    g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
+
     asgs_free(&g->locals);
     g->locals = saved;
     free(sig.name);
     g->cur = NULL;
+}
+
+void cg_function(CG *g, Node *fn)
+{
+    char sym[256];
+    snprintf(sym, sizeof sym, "L_%s", fn->as.func.name);
+    cg_def(g, sym, fn->as.func.name, fn->as.func.names,
+           fn->as.func.param_types, fn->as.func.arity, fn->as.func.ret,
+           fn->as.func.body, 0, fn->line);
+}
+
+/* A closure's `define`: the lambda node the signature pass named, emitted with
+ * the leading capture parameter its call sites always pass. The body runs
+ * through the same cg_def as a named function — the capture context is i8*
+ * null in this phase (no free-variable capture yet), so nothing in the body
+ * can reach it, but the parameter is part of the calling convention the call
+ * sites and the fn-pointer bitcasts are spelled against. */
+
+void cg_closure(CG *g, Node *fn)
+{
+    if (!fn->as.funclit.cname)
+        ERRX(g, "line %zu: internal: closure was never given a mangled name",
+             fn->line);
+    cg_def(g, fn->as.funclit.cname, fn->as.funclit.cname,
+           fn->as.funclit.names, fn->as.funclit.param_types,
+           fn->as.funclit.arity, fn->as.funclit.ret,
+           fn->as.funclit.body, 1, fn->line);
 }

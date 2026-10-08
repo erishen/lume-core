@@ -410,5 +410,37 @@ let ikey = "name";
 let ikeyed: string = im[ikey];
 print(ikeyed);           // lume
 
+// ---- closures as first-class values (docs/SPEC.md §4.8) ------------------
+//
+// No-capture lambdas are now first-class on all three backends: they box
+// into an opaque closure record (fn pointer + null context) at the literal
+// site, can be stored in a variable, called, and handed to the native
+// map/filter/reduce loops. Everything below must print byte-identically
+// from the interpreter, the text emitter and the libLLVM emitter -- this
+// section is what retired §4.8's "closures are interpreter-only" stance.
+
+let f = (x) => x * 2;
+print(f(3));                                   // 6
+print(f(10));                                  // 20
+let sq = (x) => x * x;
+print(sq(7));                                  // 49
+
+// Inline lambdas straight into the higher-order builtins. The loop reads
+// elements through the same accessor table for-in uses and snapshots the
+// length once, so all three backends iterate the exact same count.
+print(map((x) => x * x, [1, 2, 3]));           // [1,4,9]
+print(filter((x) => x > 1, [1, 2, 3]));        // [2,3]
+print(reduce((a, x) => a + x, [1, 2, 3], 0));  // 6
+
+// A closure VARIABLE as a HOF argument -- the value travels through the
+// same boxing path whether it is called directly or consumed by a loop.
+let twice = (x) => x + x;
+print(map(twice, [1, 2, 3]));                  // [2,4,6]
+
+// String elements and a non-zero reduce seed (the seed type pins the
+// accumulator slot; 10 must survive to the result, not start at 0).
+print(map((s) => s, ["a", "b"]));              // ["a","b"]
+print(reduce((a, x) => a + x, [1, 2], 10));    // 13
+
 warmup();
 main();

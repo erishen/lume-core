@@ -378,6 +378,173 @@ static Val cg_var(CG *g, Node *n)
     return val_take(a->ty, r);
 }
 
+/* --- closures (SPEC 4.8, native) --------------------------------------------
+ *
+ * A lambda is a value: the mangled `define` the signature pass named is
+ * bitcast to i8* and boxed by lume_closure_make into a { i8* fn, i8* cap }
+ * record. `cap` is null in this phase — free-variable capture stays
+ * interpreter-only — but the record shape and the leading context parameter
+ * of every closure define are the contract every call site is spelled
+ * against, so capture later widens without changing the ABI. */
+
+/* The fn-pointer type a closure's define is spelled against:
+ * `<ret> (i8* cap, <param>...)*`, read off the lambda node the signature
+ * pass already typed. */
+
+static void clo_fn_type(Node *lambda, char *buf, size_t n)
+{
+    const char *rty = lambda->as.funclit.ret
+        ? llvm_type_of(lambda->as.funclit.ret) : "void";
+    size_t off = (size_t)snprintf(buf, n, "%s (i8*", rty);
+    for (int i = 0; lambda->as.funclit.param_types &&
+                    i < lambda->as.funclit.arity && off < n; i++) {
+        const char *pt = llvm_ptr_type_of(lambda->as.funclit.param_types[i]);
+        off += (size_t)snprintf(buf + off, n - off, ", %s", pt ? pt : "i8*");
+    }
+    if (off < n) snprintf(buf + off, n - off, ")*");
+}
+
+/* A lambda in expression position builds its boxed closure value. */
+
+static Val cg_funclit(CG *g, Node *n)
+{
+    const char *cname = n->as.funclit.cname;
+    if (!cname)
+        ERRV(g, "line %zu: internal: lambda was never named by the signature "
+                "pass", n->line);
+    char ftype[256];
+    clo_fn_type(n, ftype, sizeof ftype);
+
+    /* The same TY_FUNC-with-back-pointer infer_node_type builds, so a call
+     * through the boxed value (or through a variable bound to it) finds the
+     * lambda and its pinned signature again. */
+    Type *ft = type_func(n->as.funclit.arity, n->as.funclit.param_types,
+                         n->as.funclit.ret);
+    ft->func = n;
+    char *r = emit_instrf(g, ft,
+        "call i8* @lume_closure_make(i8* bitcast (%s @%s to i8*), i8* null)",
+        ftype, cname);
+    if (!r) ERRV(g, "line %zu: cannot build this closure", n->line);
+    return val_take(ft, r);
+}
+
+/* Call through a closure value. `clo_v` is the register holding the boxed
+ * record; `lambda` supplies the fn pointer's signature; the arguments are
+ * already evaluated, coerced and struct-decayed. Borrows everything — the
+ * caller frees `args` and owns the returned register string. */
+
+static char *cg_clo_invoke(CG *g, Node *lambda, const char *clo_v,
+                           Val *args, int argc)
+{
+    char ftype[256];
+    clo_fn_type(lambda, ftype, sizeof ftype);
+    const char *rty = lambda->as.funclit.ret
+        ? llvm_type_of(lambda->as.funclit.ret) : NULL;
+
+    /* Split the { i8* fn, i8* cap } record. The struct type is spelled
+     * inline: it is a private ABI between the boxing call, this load pair,
+     * and LumeClosure in src/rt.c. */
+    char *rec = emit_instrf(g, type_prim(TY_NULL),
+                            "bitcast i8* %s to { i8*, i8* }*", clo_v);
+    if (!rec) return NULL;
+    char *fnp = emit_instrf(g, type_prim(TY_NULL),
+        "getelementptr inbounds { i8*, i8* }, { i8*, i8* }* %s, i32 0, i32 0",
+        rec);
+    char *capp = emit_instrf(g, type_prim(TY_NULL),
+        "getelementptr inbounds { i8*, i8* }, { i8*, i8* }* %s, i32 0, i32 1",
+        rec);
+    free(rec);
+    if (!fnp || !capp) { free(fnp); free(capp); return NULL; }
+    char *fnv = emit_instrf(g, type_prim(TY_NULL), "load i8*, i8** %s", fnp);
+    char *capv = emit_instrf(g, type_prim(TY_NULL), "load i8*, i8** %s", capp);
+    free(fnp); free(capp);
+    if (!fnv || !capv) { free(fnv); free(capv); return NULL; }
+    char *fnbc = emit_instrf(g, type_prim(TY_NULL),
+                             "bitcast i8* %s to %s", fnv, ftype);
+    free(fnv);
+    if (!fnbc) { free(capv); return NULL; }
+
+    char res[48];
+    snprintf(res, sizeof res, "%%t%d", g->tid++);
+    if (rty) EMIT(g, "  %s = call %s %s(i8* %s", res, rty, fnbc, capv);
+    else     EMIT(g, "  call void %s(i8* %s", fnbc, capv);
+    free(fnbc);
+    for (int i = 0; i < argc; i++) {
+        const char *pt = args[i].ty ? llvm_ptr_type_of(args[i].ty) : "i8*";
+        EMIT(g, ", %s %s", pt ? pt : "i8*", args[i].v);
+    }
+    EMIT(g, ")\n");
+    free(capv);
+    return xstrdup(res);
+}
+
+/* `f(3)` where f is a variable bound to a lambda. The named-function table
+ * has no entry for the variable — the lambda lives under its mangled name —
+ * so cg_call routes here before it ever consults sig_find. */
+
+static Val cg_clo_call(CG *g, Node *n, Node *lambda)
+{
+    if (n->as.call.argc != lambda->as.funclit.arity)
+        ERRV(g, "line %zu: this closure expects %d argument(s), got %d",
+             n->line, lambda->as.funclit.arity, n->as.call.argc);
+
+    Val clo = cg_expr(g, n->as.call.callee);
+    if (!clo.v) ERRV(g, "line %zu: cannot evaluate the closure", n->line);
+
+    Val *args = NULL;
+    if (n->as.call.argc > 0) {
+        args = (Val *)xmalloc((size_t)n->as.call.argc * sizeof *args);
+        for (int i = 0; i < n->as.call.argc; i++) {
+            args[i] = cg_expr(g, n->as.call.args[i]);
+            if (args[i].ty && args[i].ty->kind == TY_STRUCT)
+                struct_addr(g, &args[i]);
+            /* Pin the value to the parameter's spelling, the way a named
+             * call's coerce does: int/float/bool conversions, and the no-op
+             * everything else is. */
+            Type *pt = lambda->as.funclit.param_types
+                ? lambda->as.funclit.param_types[i] : NULL;
+            if (pt && args[i].v) args[i] = coerce(g, pt, args[i], n->line);
+            if (!args[i].v) {
+                for (int k = 0; k < i; k++) free(args[k].v);
+                free(args); free(clo.v);
+                ERRV(g, "line %zu: bad argument %d for the closure",
+                     n->line, i + 1);
+            }
+        }
+    }
+
+    char *res = cg_clo_invoke(g, lambda, clo.v, args, n->as.call.argc);
+    free(clo.v);
+    for (int i = 0; i < n->as.call.argc; i++) free(args[i].v);
+    free(args);
+    if (!res) ERRV(g, "line %zu: cannot call through this closure", n->line);
+
+    Type *ret = lambda->as.funclit.ret;
+    const char *rty = ret ? llvm_type_of(ret) : NULL;
+    if (!rty) { free(res); return val_make(type_prim(TY_NULL), "void"); }
+    Val v = val_make(ret, res);
+    free(res);
+    if (rty[0] == '%') v.agg = 1;
+    return v;
+}
+
+/* The lambda behind a HOF's first argument: an inline literal, or a variable
+ * bound to one. Same recovery rule the signature pass used to pin the
+ * lambda's parameters, so the emitter and the pass can never disagree about
+ * which lambda a call site drives. */
+
+static Node *hof_lambda(CG *g, Node *a)
+{
+    if (a && a->type == N_FUNC_LIT) return a;
+    if (a && a->type == N_VAR) {
+        Type *ct = infer_node_type(g, a);
+        if (ct && ct->kind == TY_FUNC && ct->func &&
+            ct->func->type == N_FUNC_LIT)
+            return ct->func;
+    }
+    return NULL;
+}
+
 static Val cg_unary(CG *g, Node *n)
 {
     Val o = cg_expr(g, n->as.unary.operand);
@@ -1237,6 +1404,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
 
+    /* Closures (SPEC 4.8): the box a lambda literal builds and every call
+     * site unwraps. The record layout lives in src/rt.c (LumeClosure). */
+    EMIT(g, "; closures (src/rt.c)\n");
+    EMIT(g, "declare i8* @lume_closure_make(i8*, i8*)\n");
+
     /* Native server runtime (src/bridge_native.c): the FFI surface that
      * server{}/route handlers/run() lower onto. SrvReq's layout is a
      * contract with bridge_native.c (four pointers then one i64). */
@@ -1310,6 +1482,363 @@ static Val cg_builtin(CG *g, Node *n)
         for (int i = 0; i < argc; i++) free(av[i].v);
         free(av);
         return val_make(want, tmp);
+    }
+
+    /* map(fn, list) / filter(fn, list) / reduce(fn, list, init) — SPEC 4.8's
+     * higher-order builtins, looped inline. The lambda's parameters were
+     * pinned by the shared signature pass (param[0] from the list element,
+     * reduce's param[0] from the init), so the loop reads elements through
+     * the same accessor table for-in uses and calls the closure with the
+     * exact spelling its define was emitted against. */
+
+    if (strcmp(bname, "map") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: map() takes exactly two arguments", n->line);
+        Node *lambda = hof_lambda(g, n->as.call.args[0]);
+        if (!lambda)
+            ERRV(g, "line %zu: map() needs a lambda as its first argument",
+                 n->line);
+        Type *ret = lambda->as.funclit.ret;
+        const char *pushfn = list_push_fn(ret);
+        if (!ret || !pushfn)
+            ERRV(g, "line %zu: map() needs a lambda that returns a value "
+                    "this backend can put in a list", n->line);
+
+        Val fn = cg_expr(g, n->as.call.args[0]);
+        Val src = cg_expr(g, n->as.call.args[1]);
+        Type *et = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        const char *atfn = list_at_fn(et);
+        if (!fn.v || !src.v || !src.ty || src.ty->kind != TY_LIST) {
+            free(fn.v); free(src.v);
+            ERRV(g, "line %zu: map() needs a list as its second argument",
+                 n->line);
+        }
+        if (!atfn) {
+            free(fn.v); free(src.v);
+            ERRV(g, "line %zu: a list of this element type cannot be mapped",
+                 n->line);
+        }
+
+        Val dst = rt_call(g, list_type(), "lume_list_new", "");
+        if (!dst.v) { free(fn.v); free(src.v); ERRV(g, "line %zu: cannot allocate a list", n->line); }
+
+        char idx[64], lenalloc[64];
+        snprintf(idx, sizeof idx, "%%li%d", g->tid++);
+        snprintf(lenalloc, sizeof lenalloc, "%%li%d", g->tid++);
+        EMIT(g, "  %s = alloca i64\n", idx);
+        EMIT(g, "  store i64 0, i64* %s\n", idx);
+        EMIT(g, "  %s = alloca i64\n", lenalloc);
+        Val len0 = rt_call(g, type_prim(TY_INT), "lume_list_len", "i8* %s", src.v);
+        if (!len0.v) {
+            free(fn.v); free(src.v); free(dst.v);
+            ERRV(g, "line %zu: cannot read the list's length", n->line);
+        }
+        EMIT(g, "  store i64 %s, i64* %s\n", len0.v, lenalloc);
+        free(len0.v);
+
+        int lc = g->lid++, lb = g->lid++, li = g->lid++, le = g->lid++;
+        EMIT(g, "  br label %%L%d\n", lc);
+        EMIT(g, "L%d:\n", lc);
+        char *len = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", lenalloc);
+        char *cur = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", idx);
+        char *cond = len && cur
+            ? emit_instrf(g, type_prim(TY_BOOL), "icmp slt i64 %s, %s", cur, len)
+            : NULL;
+        free(len);
+        if (!cond) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                     ERRV(g, "line %zu: cannot spell the map loop", n->line); }
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", cond, lb, le);
+        free(cond);
+
+        EMIT(g, "L%d:\n", lb);
+        Val e = rt_call(g, elem_rty(et), atfn, "i8* %s, i64 %s", src.v, cur);
+        if (!e.v) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                    ERRV(g, "line %zu: cannot read an element", n->line); }
+        Type *p0 = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        if (p0) e = coerce(g, p0, e, n->line);
+        if (!e.v) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                    ERRV(g, "line %zu: cannot coerce the map argument", n->line); }
+        Val argv[1] = { e };
+        char *rv = cg_clo_invoke(g, lambda, fn.v, argv, 1);
+        free(e.v);
+        if (!rv) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                   ERRV(g, "line %zu: cannot call the mapping closure", n->line); }
+        Val item = val_make(ret, rv);
+        free(rv);
+        if (item.ty && item.ty->kind == TY_BOOL)
+            item = coerce(g, type_prim(TY_INT), item, n->line);
+        Val pr = rt_call(g, type_prim(TY_INT), pushfn, "i8* %s, %s %s",
+                         dst.v, rt_arg_type(item.ty), item.v);
+        free(item.v);
+        if (!pr.v) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                     ERRV(g, "line %zu: cannot append to a list", n->line); }
+        free(pr.v);
+
+        EMIT(g, "  br label %%L%d\n", li);
+        EMIT(g, "L%d:\n", li);
+        char *nxt = emit_instrf(g, type_prim(TY_INT), "add i64 %s, 1", cur);
+        free(cur);
+        if (nxt) {
+            EMIT(g, "  store i64 %s, i64* %s\n", nxt, idx);
+            free(nxt);
+        }
+        EMIT(g, "  br label %%L%d\n", lc);
+        EMIT(g, "L%d:\n", le);
+
+        free(fn.v); free(src.v);
+        { Val r = dst; r.ty = type_list(ret); return r; }
+    }
+
+    if (strcmp(bname, "filter") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: filter() takes exactly two arguments", n->line);
+        Node *lambda = hof_lambda(g, n->as.call.args[0]);
+        if (!lambda)
+            ERRV(g, "line %zu: filter() needs a lambda as its first argument",
+                 n->line);
+        Type *ret = lambda->as.funclit.ret;
+        if (!ret || (ret->kind != TY_BOOL && ret->kind != TY_INT &&
+                     ret->kind != TY_FLOAT))
+            ERRV(g, "line %zu: filter() needs a lambda that returns a bool "
+                    "(the native backend tests the truth of a bool, an int "
+                    "or a float)", n->line);
+        Type *et = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        const char *atfn = list_at_fn(et);
+        if (!atfn)
+            ERRV(g, "line %zu: a list of this element type cannot be filtered",
+                 n->line);
+
+        Val fn = cg_expr(g, n->as.call.args[0]);
+        Val src = cg_expr(g, n->as.call.args[1]);
+        if (!fn.v || !src.v || !src.ty || src.ty->kind != TY_LIST) {
+            free(fn.v); free(src.v);
+            ERRV(g, "line %zu: filter() needs a list as its second argument",
+                 n->line);
+        }
+
+        Val dst = rt_call(g, list_type(), "lume_list_new", "");
+        if (!dst.v) { free(fn.v); free(src.v); ERRV(g, "line %zu: cannot allocate a list", n->line); }
+
+        char idx[64], lenalloc[64];
+        snprintf(idx, sizeof idx, "%%li%d", g->tid++);
+        snprintf(lenalloc, sizeof lenalloc, "%%li%d", g->tid++);
+        EMIT(g, "  %s = alloca i64\n", idx);
+        EMIT(g, "  store i64 0, i64* %s\n", idx);
+        EMIT(g, "  %s = alloca i64\n", lenalloc);
+        Val len0 = rt_call(g, type_prim(TY_INT), "lume_list_len", "i8* %s", src.v);
+        if (!len0.v) {
+            free(fn.v); free(src.v); free(dst.v);
+            ERRV(g, "line %zu: cannot read the list's length", n->line);
+        }
+        EMIT(g, "  store i64 %s, i64* %s\n", len0.v, lenalloc);
+        free(len0.v);
+
+        int lc = g->lid++, lb = g->lid++, li = g->lid++, le = g->lid++;
+        EMIT(g, "  br label %%L%d\n", lc);
+        EMIT(g, "L%d:\n", lc);
+        char *len = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", lenalloc);
+        char *cur = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", idx);
+        char *cond = len && cur
+            ? emit_instrf(g, type_prim(TY_BOOL), "icmp slt i64 %s, %s", cur, len)
+            : NULL;
+        free(len);
+        if (!cond) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                     ERRV(g, "line %zu: cannot spell the filter loop", n->line); }
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", cond, lb, le);
+        free(cond);
+
+        EMIT(g, "L%d:\n", lb);
+        Val e = rt_call(g, elem_rty(et), atfn, "i8* %s, i64 %s", src.v, cur);
+        if (!e.v) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                    ERRV(g, "line %zu: cannot read an element", n->line); }
+        /* The element travels twice: once into the closure (narrowed to the
+         * parameter's spelling) and once — the raw runtime value as read —
+         * into the result list when the test passes. The closure argument is
+         * a *copy* of the register name precisely because coerce() consumes
+         * the string it converts: the raw spelling has to survive for the
+         * push below. */
+        Val arg = { xstrdup(e.v), e.ty, 0 };
+        Type *p0 = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        if (p0) arg = coerce(g, p0, arg, n->line);
+        if (!arg.v) {
+            free(e.v); free(cur); free(fn.v); free(src.v); free(dst.v);
+            ERRV(g, "line %zu: cannot coerce the filter argument", n->line);
+        }
+        Val argv[1] = { arg };
+        char *rv = cg_clo_invoke(g, lambda, fn.v, argv, 1);
+        free(arg.v);
+        if (!rv) { free(e.v); free(cur); free(fn.v); free(src.v); free(dst.v);
+                   ERRV(g, "line %zu: cannot call the filter closure", n->line); }
+
+        /* truthy test on the lambda's return, spelled by its kind. For a
+         * bool return the register IS the test, so `test` takes ownership
+         * of rv and the free below must not run — aliasing it and freeing
+         * it was a use-after-free ASan caught on the first filter(). */
+        char *test = NULL;
+        if (ret->kind == TY_BOOL)
+            test = rv;                       /* already i1; takes ownership */
+        else if (ret->kind == TY_FLOAT)
+            test = emit_instrf(g, type_prim(TY_BOOL),
+                               "fcmp une double %s, 0.0", rv);
+        else
+            test = emit_instrf(g, type_prim(TY_BOOL),
+                               "icmp ne i64 %s, 0", rv);
+        if (ret->kind != TY_BOOL) free(rv);
+        if (!test) { free(e.v); free(cur); free(fn.v); free(src.v); free(dst.v);
+                     ERRV(g, "line %zu: cannot test the filter result", n->line); }
+
+        int lpush = g->lid++, lnext = g->lid++;
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, lpush, lnext);
+        free(test);
+        EMIT(g, "L%d:\n", lpush);
+        Val pr = rt_call(g, type_prim(TY_INT), list_push_fn(et),
+                         "i8* %s, %s %s", dst.v, rt_arg_type(e.ty), e.v);
+        free(e.v);
+        if (!pr.v) { free(cur); free(fn.v); free(src.v); free(dst.v);
+                     ERRV(g, "line %zu: cannot append to a list", n->line); }
+        free(pr.v);
+        EMIT(g, "  br label %%L%d\n", lnext);
+        EMIT(g, "L%d:\n", lnext);
+
+        EMIT(g, "  br label %%L%d\n", li);
+        EMIT(g, "L%d:\n", li);
+        char *nxt = emit_instrf(g, type_prim(TY_INT), "add i64 %s, 1", cur);
+        free(cur);
+        if (nxt) {
+            EMIT(g, "  store i64 %s, i64* %s\n", nxt, idx);
+            free(nxt);
+        }
+        EMIT(g, "  br label %%L%d\n", lc);
+        EMIT(g, "L%d:\n", le);
+
+        free(fn.v); free(src.v);
+        { Val r = dst; r.ty = type_list(et); return r; }
+    }
+
+    if (strcmp(bname, "reduce") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: reduce() takes exactly three arguments", n->line);
+        Node *lambda = hof_lambda(g, n->as.call.args[0]);
+        if (!lambda)
+            ERRV(g, "line %zu: reduce() needs a lambda as its first argument",
+                 n->line);
+        if (lambda->as.funclit.arity != 2)
+            ERRV(g, "line %zu: reduce()'s lambda takes (accumulator, item)",
+                 n->line);
+        Type *et = lambda->as.funclit.param_types && lambda->as.funclit.arity > 1
+            ? lambda->as.funclit.param_types[1] : NULL;
+        const char *atfn = list_at_fn(et);
+        if (!atfn)
+            ERRV(g, "line %zu: a list of this element type cannot be reduced",
+                 n->line);
+
+        Val fn = cg_expr(g, n->as.call.args[0]);
+        Val src = cg_expr(g, n->as.call.args[1]);
+        Val acc0 = cg_expr(g, n->as.call.args[2]);
+        if (!fn.v || !src.v || !src.ty || src.ty->kind != TY_LIST || !acc0.v ||
+            !acc0.ty || acc0.ty->kind == TY_STRUCT) {
+            free(fn.v); free(src.v); free(acc0.v);
+            ERRV(g, "line %zu: reduce() needs a list and a scalar or list "
+                    "accumulator", n->line);
+        }
+        const char *at_acc = llvm_type_of(acc0.ty);
+        if (!at_acc) { free(fn.v); free(src.v); free(acc0.v);
+                       ERRV(g, "line %zu: the accumulator has no codegen type",
+                            n->line); }
+
+        char accslot[64];
+        snprintf(accslot, sizeof accslot, "%%la%d", g->tid++);
+        EMIT(g, "  %s = alloca %s\n", accslot, at_acc);
+        Val acc_init = acc0.ty && lambda->as.funclit.param_types &&
+                       lambda->as.funclit.param_types[0]
+            ? coerce(g, lambda->as.funclit.param_types[0], acc0, n->line)
+            : acc0;
+        if (!acc_init.v) { free(fn.v); free(src.v);
+                           ERRV(g, "line %zu: cannot seed the accumulator",
+                                n->line); }
+        EMIT(g, "  store %s %s, %s* %s\n", at_acc, acc_init.v, at_acc, accslot);
+        free(acc_init.v);
+
+        char idx[64], lenalloc[64];
+        snprintf(idx, sizeof idx, "%%li%d", g->tid++);
+        snprintf(lenalloc, sizeof lenalloc, "%%li%d", g->tid++);
+        EMIT(g, "  %s = alloca i64\n", idx);
+        EMIT(g, "  store i64 0, i64* %s\n", idx);
+        EMIT(g, "  %s = alloca i64\n", lenalloc);
+        Val len0 = rt_call(g, type_prim(TY_INT), "lume_list_len", "i8* %s", src.v);
+        if (!len0.v) { free(fn.v); free(src.v);
+                       ERRV(g, "line %zu: cannot read the list's length", n->line); }
+        EMIT(g, "  store i64 %s, i64* %s\n", len0.v, lenalloc);
+        free(len0.v);
+
+        int lc = g->lid++, lb = g->lid++, li = g->lid++, le = g->lid++;
+        EMIT(g, "  br label %%L%d\n", lc);
+        EMIT(g, "L%d:\n", lc);
+        char *len = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", lenalloc);
+        char *cur = emit_instrf(g, type_prim(TY_INT), "load i64, i64* %s", idx);
+        char *cond = len && cur
+            ? emit_instrf(g, type_prim(TY_BOOL), "icmp slt i64 %s, %s", cur, len)
+            : NULL;
+        free(len);
+        if (!cond) { free(cur); free(fn.v); free(src.v);
+                     ERRV(g, "line %zu: cannot spell the reduce loop", n->line); }
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", cond, lb, le);
+        free(cond);
+
+        EMIT(g, "L%d:\n", lb);
+        Val e = rt_call(g, elem_rty(et), atfn, "i8* %s, i64 %s", src.v, cur);
+        char *accv = emit_instrf(g, acc0.ty, "load %s, %s* %s", at_acc, at_acc,
+                                 accslot);
+        if (!e.v || !accv) {
+            free(e.v); free(accv); free(cur); free(fn.v); free(src.v);
+            ERRV(g, "line %zu: cannot read an element or the accumulator",
+                 n->line);
+        }
+        Val argv[2] = { { accv, acc0.ty, 0 }, e };
+        Type *p0 = lambda->as.funclit.param_types
+            ? lambda->as.funclit.param_types[0] : NULL;
+        Type *p1 = lambda->as.funclit.param_types &&
+                   lambda->as.funclit.arity > 1
+            ? lambda->as.funclit.param_types[1] : NULL;
+        if (p0) argv[0] = coerce(g, p0, argv[0], n->line);
+        if (p1) argv[1] = coerce(g, p1, argv[1], n->line);
+        if (!argv[0].v || !argv[1].v) {
+            free(argv[0].v); free(argv[1].v); free(cur); free(fn.v); free(src.v);
+            ERRV(g, "line %zu: cannot coerce the reduce arguments", n->line);
+        }
+        char *rv = cg_clo_invoke(g, lambda, fn.v, argv, 2);
+        free(argv[0].v); free(argv[1].v);
+        if (!rv) { free(cur); free(fn.v); free(src.v);
+                   ERRV(g, "line %zu: cannot call the reducing closure", n->line); }
+        Val acc_next = val_make(acc0.ty, rv);
+        free(rv);
+        acc_next = coerce(g, acc0.ty, acc_next, n->line);
+        if (!acc_next.v) { free(cur); free(fn.v); free(src.v);
+                           ERRV(g, "line %zu: the reducing closure's result "
+                                "does not fit the accumulator", n->line); }
+        EMIT(g, "  store %s %s, %s* %s\n", at_acc, acc_next.v, at_acc, accslot);
+        free(acc_next.v);
+
+        EMIT(g, "  br label %%L%d\n", li);
+        EMIT(g, "L%d:\n", li);
+        char *nxt = emit_instrf(g, type_prim(TY_INT), "add i64 %s, 1", cur);
+        free(cur);
+        if (nxt) {
+            EMIT(g, "  store i64 %s, i64* %s\n", nxt, idx);
+            free(nxt);
+        }
+        EMIT(g, "  br label %%L%d\n", lc);
+        EMIT(g, "L%d:\n", le);
+
+        free(fn.v); free(src.v);
+        char *res = emit_instrf(g, acc0.ty, "load %s, %s* %s", at_acc, at_acc,
+                                accslot);
+        if (!res) ERRV(g, "line %zu: cannot read the accumulator", n->line);
+        return val_take(acc0.ty, res);
     }
 
     /* len() — a list answers with its length, a string with its byte length.
@@ -1559,6 +2088,17 @@ static Val cg_call(CG *g, Node *n)
     if (!n->as.call.callee || n->as.call.callee->type != N_VAR)
         ERRV(g, "line %zu: only direct calls to named functions are supported", n->line);
 
+    /* A closure-valued variable: `f(3)` where f was bound to a lambda. The
+     * variable's TY_FUNC type carries the back-pointer to the lambda node
+     * the signature pass pinned; a plain named-function reference has no
+     * back-pointer and falls through to the sig_find path below. */
+    {
+        Type *ct = infer_node_type(g, n->as.call.callee);
+        if (ct && ct->kind == TY_FUNC && ct->func &&
+            ct->func->type == N_FUNC_LIT)
+            return cg_clo_call(g, n, ct->func);
+    }
+
     const char *name = n->as.call.callee->as.var.name;
     Sig *s = sig_find(&g->sigs, name);
     if (!s) {
@@ -1705,6 +2245,7 @@ Val cg_expr(CG *g, Node *n)
     case N_ASSIGN_MEMBER: return cg_assign_mem(g, n);
     case N_EXPR_STMT: return cg_expr(g, n->as.expr_stmt.expr);
     case N_VAR:     return cg_var(g, n);
+    case N_FUNC_LIT: return cg_funclit(g, n);
     case N_UNARY:   return cg_unary(g, n);
     case N_BINARY:  return cg_binary(g, n);
     case N_MEMBER:  return cg_member(g, n);

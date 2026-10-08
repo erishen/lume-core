@@ -86,7 +86,8 @@ typedef struct { LTyp *v; int n, cap; } LTys;
  * call sites / return statements, and only reports at the end if it could
  * not. `body` and `pnames` are what make that possible. */
 typedef struct { char *name; Type *ret; Type **params; char **pnames;
-                 int arity; struct Node *body; struct Node *node; } Sig;
+                 int arity; struct Node *body; struct Node *node;
+                 int is_lambda; } Sig;
 typedef struct { Sig *v; int n, cap; } Sigs;
 
 typedef struct {
@@ -117,6 +118,7 @@ typedef struct {
     int    lid;             /* label id counter            */
     int    tid;             /* temp/id counter            */
     int    sid;             /* string constant counter    */
+    int    nclo;            /* closure mangled-name counter */
 
     int   *brk; int nbrk, cbrk;    /* stack of enclosing loop labels */
     int   *cnt; int ncnt, ccnt;
@@ -150,6 +152,12 @@ Val cg_assign_mem(CG *g, Node *n);
 Val cg_expr(CG *g, Node *n);
 char *cg_string_val(CG *g, const char *text, size_t len);
 void cg_function(CG *g, Node *fn);
+void cg_closure(CG *g, Node *fn);
+/* The list element accessor table, shared between the for-in emitter
+ * (codegen_stmt.c) and the map/filter/reduce emitters (codegen_expr.c):
+ * one dispatch, so a type that iterates is a type the HOFs can also read. */
+const char *list_at_fn(Type *ty);
+Type *elem_rty(Type *ty);
 int codegen_infer_signatures(Node *prog, char *err, size_t err_size);
 Val coerce(CG *g, Type *to, Val v, size_t line);
 void emit_builtin_declares(CG *g);

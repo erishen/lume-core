@@ -179,11 +179,32 @@ typedef struct { long num; const char *str; int tag; } LumeSlot;
 typedef struct { long len, cap; int kind; LumeSlot *items; }    LumeList;
 typedef struct { long len, cap; int kind; char **keys; LumeSlot *vals; } LumeMap;
 
+/* A first-class function value for the native backends. `fn` is the raw
+ * function pointer (a bitcast i8* in IR); `cap` is reserved for capture and
+ * is always null in phase 1 (no-capture closures only). The whole struct is
+ * opaque to the emitted IR — it travels as an i8* and the backends read
+ * `.fn` / `.cap` by fixed byte offset (two pointers, so cap sits at +8). The
+ * closure ABI is shared by both native backends so a `let f = (x) => ...`
+ * yields the same record whether it runs through the text emitter or the
+ * libLLVM emitter. */
+typedef struct { void *fn; void *cap; } LumeClosure;
+
 static void *rt_alloc(size_t n)
 {
     void *p = calloc(1, n ? n : 1);
     if (!p) { fputs("lume(native): out of memory\n", stderr); exit(70); }
     return p;
+}
+
+/* Build a closure record. Called once per evaluation of a function literal;
+ * each call returns a distinct heap record so closures stored in variables
+ * keep stable addresses. Returns an opaque i8* to the compiled IR. */
+LumeClosure *lume_closure_make(void *fn, void *cap)
+{
+    LumeClosure *c = rt_alloc(sizeof(LumeClosure));
+    c->fn = fn;
+    c->cap = cap;
+    return c;
 }
 
 static void list_grow(LumeList *l)

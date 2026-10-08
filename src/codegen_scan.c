@@ -53,15 +53,58 @@ Type *infer_node_type(CG *g, Node *n)
          * already typed is the only other source. */
         return lt_find(&g->scope, n->as.var.name);
     }
+    case N_FUNC_LIT: {
+        /* A function literal is a closure value. Thread the node through
+         * `Type.func` so a later call through a variable bound to it can
+         * recover the lambda's own parameter / return types. */
+        Type *ft = type_func(n->as.funclit.arity, n->as.funclit.param_types,
+                             n->as.funclit.ret);
+        ft->func = n;
+        return ft;
+    }
     case N_CALL: {
         /* `let b = f(...)` takes the return type of f — struct returns included,
          * which is how `let b = scale(a, 5)` gets its %Rect slot. */
         if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
+        const char *name = n->as.call.callee->as.var.name;
+
+        /* Closure-valued variable call: `f(3)` where f : func. The variable's
+         * type carries a back-pointer to the lambda node. */
+        {
+            Type *ct = infer_node_type(g, n->as.call.callee);
+            if (ct && ct->kind == TY_FUNC && ct->func &&
+                ct->func->type == N_FUNC_LIT)
+                return ct->func->as.funclit.ret;
+        }
+
+        /* Higher-order builtins that consume a closure: map/filter/reduce.
+         * Their result type is shaped by the closure's own types. */
+        if (strcmp(name, "map") == 0) {
+            Node *clo = n->as.call.argc > 0 ? n->as.call.args[0] : NULL;
+            Node *lambda = NULL;
+            if (clo && clo->type == N_FUNC_LIT) lambda = clo;
+            else if (clo && clo->type == N_VAR) {
+                Type *ct = infer_node_type(g, clo);
+                if (ct && ct->kind == TY_FUNC && ct->func &&
+                    ct->func->type == N_FUNC_LIT)
+                    lambda = ct->func;
+            }
+            if (lambda && lambda->as.funclit.ret)
+                return type_list(lambda->as.funclit.ret);
+            return type_list(any_type());
+        }
+        if (strcmp(name, "filter") == 0) {
+            Type *lt = infer_node_type(g, n->as.call.args[1]);
+            if (lt && lt->kind == TY_LIST) return lt;
+            return type_list(any_type());
+        }
+        if (strcmp(name, "reduce") == 0)
+            return infer_node_type(g, n->as.call.args[2]);
+
         /* Native server handler: int() lowers to atoi -> int. */
-        if (g->in_handler &&
-            strcmp(n->as.call.callee->as.var.name, "int") == 0)
+        if (g->in_handler && strcmp(name, "int") == 0)
             return type_prim(TY_INT);
-        Sig *s = sig_find(&g->sigs, n->as.call.callee->as.var.name);
+        Sig *s = sig_find(&g->sigs, name);
         if (!s) return NULL;
         /* `f()?` is not a Result -- it is the `ok` payload, so the slot has to
          * be typed from that. Reading the callee's declared return type instead

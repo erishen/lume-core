@@ -48,6 +48,9 @@ static int types_eq(Type *a, Type *b);
 /* forward: same tu, defined below this point. */
 static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s);
 
+/* forward: same tu, defined below this point. */
+static void ensure_lambda_registered(CG *g, Node *lambda);
+
 /* Types already known for the names one function body can see. The pass below
  * has to type an argument like `f(n)` before the body is emitted, and `n` may
  * be one of that function's own parameters (whose type is the thing being
@@ -129,6 +132,31 @@ static Type *infer_arg_type(CG *g, Node *a, LTys *t)
     return infer_node_type(g, a);
 }
 
+/* Assign a lambda its synthetic mangled name (once) and register a `Sig` for
+ * it so the rest of the pass can pin its parameters and infer its return type
+ * on the same fixed point as a named function. The name is written onto the
+ * node (`funclit.cname`) so both native backends read the same spelling when
+ * they later emit the closure's `define`. Idempotent: a lambda visited twice
+ * (e.g. once as a let initializer, once via a call site) keeps its first name. */
+
+static void ensure_lambda_registered(CG *g, Node *lambda)
+{
+    if (!lambda || lambda->type != N_FUNC_LIT) return;
+    if (lambda->as.funclit.cname) return;
+
+    char buf[32];
+    snprintf(buf, sizeof buf, "__lume_clo_%d", g->nclo++);
+    lambda->as.funclit.cname = xstrdup(buf);
+
+    sig_push(&g->sigs, buf, lambda->as.funclit.ret,
+             lambda->as.funclit.param_types, lambda->as.funclit.arity);
+    Sig *s = &g->sigs.v[g->sigs.n - 1];
+    s->is_lambda = 1;
+    s->body   = lambda->as.funclit.body;
+    s->pnames = lambda->as.funclit.names;
+    s->node   = lambda;
+}
+
 /* Types are allocated per use — there is no interning — so pointer equality
  * would call two `int`s different. Structural, and shallow enough that two
  * differing shapes can only disagree on the kind. */
@@ -177,8 +205,91 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
     switch (n->type) {
     case N_CALL: {
         Node *c = n->as.call.callee;
-        Sig *cs = (c && c->type == N_VAR) ? sig_find(&g->sigs, c->as.var.name) : NULL;
         int argc = n->as.call.argc;
+
+        /* Closure-valued variable call: `f(3)` where f : func. Pin the lambda's
+         * parameters from the call arguments (the same fixed-point game as a
+         * named function), then keep walking. The lambda node is reached
+         * through the variable's TY_FUNC type, which carries a back-pointer to
+         * the N_FUNC_LIT it was spelled from. */
+        if (c && c->type == N_VAR) {
+            Type *ct = infer_node_type(g, c);
+            if (ct && ct->kind == TY_FUNC && ct->func &&
+                ct->func->type == N_FUNC_LIT) {
+                Node *lambda = ct->func;
+                ensure_lambda_registered(g, lambda);
+                Sig *ls = sig_find(&g->sigs, lambda->as.funclit.cname);
+                if (ls) {
+                    for (int i = 0; i < argc && i < ls->arity; i++) {
+                        Type *at = infer_arg_type(g, n->as.call.args[i], t);
+                        if (!at) continue;
+                        if (ls->params[i] && !types_eq(ls->params[i], at)) {
+                            char want[32], got[32];
+                            type_desc(ls->params[i], want, sizeof want);
+                            type_desc(at, got, sizeof got);
+                            ERR_SET(g, "line %zu: argument %d of the closure is a "
+                                       "%s, but the parameter was already resolved "
+                                       "as a %s", n->line, i + 1, got, want);
+                            return changed;
+                        }
+                        if (ls->params[i]) continue;
+                        ls->params[i] = at;
+                        changed++;
+                    }
+                }
+                changed += walk_sigs(g, c, t, s);
+                for (int i = 0; i < argc; i++)
+                    changed += walk_sigs(g, n->as.call.args[i], t, s);
+                return changed;
+            }
+        }
+
+        /* Higher-order builtins that consume a closure: map/filter/reduce.
+         * Pin the lambda's parameter(s) from the list / accumulator argument
+         * — `map(f, list)` pins param[0] from the list element type,
+         * `reduce(f, list, init)` pins param[0] from the init (acc) type and
+         * param[1] from the list element type. */
+        if (c && c->type == N_VAR) {
+            const char *bn = c->as.var.name;
+            if (strcmp(bn, "map") == 0 || strcmp(bn, "filter") == 0 ||
+                strcmp(bn, "reduce") == 0) {
+                Node *clo = argc > 0 ? n->as.call.args[0] : NULL;
+                Node *lambda = NULL;
+                if (clo && clo->type == N_FUNC_LIT) lambda = clo;
+                else if (clo && clo->type == N_VAR) {
+                    Type *ct = infer_node_type(g, clo);
+                    if (ct && ct->kind == TY_FUNC && ct->func &&
+                        ct->func->type == N_FUNC_LIT)
+                        lambda = ct->func;
+                }
+                if (lambda) {
+                    ensure_lambda_registered(g, lambda);
+                    Sig *ls = sig_find(&g->sigs, lambda->as.funclit.cname);
+                    if (ls) {
+                        if (strcmp(bn, "reduce") == 0) {
+                            Type *init_t = argc >= 3
+                                ? infer_arg_type(g, n->as.call.args[2], t) : NULL;
+                            Type *list_t = argc >= 2
+                                ? infer_arg_type(g, n->as.call.args[1], t) : NULL;
+                            if (init_t && !ls->params[0]) { ls->params[0] = init_t; changed++; }
+                            if (list_t && list_t->kind == TY_LIST && list_t->elem &&
+                                !ls->params[1]) { ls->params[1] = list_t->elem; changed++; }
+                        } else {
+                            Type *list_t = argc >= 2
+                                ? infer_arg_type(g, n->as.call.args[1], t) : NULL;
+                            if (list_t && list_t->kind == TY_LIST && list_t->elem &&
+                                !ls->params[0]) { ls->params[0] = list_t->elem; changed++; }
+                        }
+                    }
+                }
+                changed += walk_sigs(g, c, t, s);
+                for (int i = 0; i < argc; i++)
+                    changed += walk_sigs(g, n->as.call.args[i], t, s);
+                return changed;
+            }
+        }
+
+        Sig *cs = (c && c->type == N_VAR) ? sig_find(&g->sigs, c->as.var.name) : NULL;
         if (cs) {
             /* One argument at a time: filling a parameter's type makes that
              * name known for the *arguments after* it in the same call. */
@@ -296,14 +407,10 @@ static void infer_one_sig(CG *g, Sig *s)
     g->scope = (LTys){0};
     lt_free(&t);
 
-    /* Anything still unknown is a real error, not a placeholder: the emitter
-     * cannot spell a type for it. */
-    for (int i = 0; i < s->arity; i++)
-        if (!s->params[i])
-            ERRX(g, "line %zu: parameter '%s' of '%s' has no known type — annotate "
-                    "it or call the function with a value of a known type",
-                 s->body ? s->body->line : 0,
-                 s->pnames && s->pnames[i] ? s->pnames[i] : "?", s->name);
+    /* The "parameter has no known type" check is deliberately NOT here: it
+     * would fire on the first fixed-point round, before a call site in another
+     * function body has had a chance to pin the parameter. It is deferred to
+     * a single post-loop validation in infer_sigs() instead. */
 }
 
 /* Unannotated parameters and return types, filled from the call sites and the
@@ -318,6 +425,10 @@ static void infer_sigs(CG *g)
      * that pins a parameter's type. */
     if (g->prog && g->prog->type == N_PROGRAM) {
         LTys t = {0};
+        /* Seed the top-level scope with the types of top-level `let`s — a
+         * closure bound at top level (`let f = (x) => ...; f(3)`) has to be
+         * visible so its call site can find the lambda's TY_FUNC type. */
+        collect_known(g, g->prog, &t);
         for (int i = 0; i < g->prog->as.program.count; i++) {
             Node *st = g->prog->as.program.stmts[i];
             if (st && st->type == N_EXPR_STMT) st = st->as.expr_stmt.expr;
@@ -355,11 +466,31 @@ static void infer_sigs(CG *g)
     for (int i = 0; i < g->sigs.n; i++) {
         Sig *s = &g->sigs.v[i];
         if (!s->node) continue;
-        if (!s->node->as.func.ret) s->node->as.func.ret = s->ret;
+        if (s->is_lambda) {
+            Node *fn = s->node;
+            if (!fn->as.funclit.ret) fn->as.funclit.ret = s->ret;
+            for (int k = 0; k < s->arity; k++)
+                if (!fn->as.funclit.param_types[k])
+                    fn->as.funclit.param_types[k] = s->params[k];
+        } else {
+            if (!s->node->as.func.ret) s->node->as.func.ret = s->ret;
+            for (int k = 0; k < s->arity; k++)
+                if (!s->node->as.func.param_types[k]) {
+                    s->node->as.func.param_types[k] = s->params[k];
+                }
+        }
+    }
+
+    /* Done: anything still unresolved is a genuine error (a parameter no call
+     * site typed), not a placeholder a later round would have filled. */
+    for (int i = 0; i < g->sigs.n; i++) {
+        Sig *s = &g->sigs.v[i];
         for (int k = 0; k < s->arity; k++)
-            if (!s->node->as.func.param_types[k]) {
-                s->node->as.func.param_types[k] = s->params[k];
-            }
+            if (!s->params[k])
+                ERRX(g, "line %zu: parameter '%s' of '%s' has no known type — "
+                        "annotate it or call it with a value of a known type",
+                     s->body ? s->body->line : 0,
+                     s->pnames && s->pnames[k] ? s->pnames[k] : "?", s->name);
     }
 }
 

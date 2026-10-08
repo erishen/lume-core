@@ -111,6 +111,12 @@ typedef struct Type {
     int count;
     int cap;
     Type *ret;              /* TY_FUNC return type */
+    struct Node *func;      /* TY_FUNC only: the node (N_FUNC_LIT or
+                             * N_FUNC_DECL) this function type was spelled from.
+                             * The native backends thread a closure's lambda
+                             * node through here so a closure-variable call can
+                             * recover the lambda's own param/ret types. NULL
+                             * for a plain `func` name reference. */
     struct Type *tnext;     /* type_release_all()'s reclaim list — internal,
                              * not part of any type's meaning */
 } Type;
@@ -524,7 +530,11 @@ typedef struct Node {
         struct { char **keys; struct Node **vals; int count; } map;
         struct { struct Node **items; int count; } list;
         struct { char **names; Type **param_types; Type *ret; int arity;
-                 struct Node *body; } funclit;
+                 struct Node *body;
+                 char *cname; /* synthetic mangled name for the closure's
+                               * emitted `define`, assigned by the signature
+                               * pass; NULL until then */
+               } funclit;
         struct { struct Node *callee; struct Node **args; int argc;
                  bool propagate; } call; /* propagate: trailing `?` */
         struct { struct Node *obj; char *name; struct Type *type; } member;

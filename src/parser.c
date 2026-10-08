@@ -525,6 +525,9 @@ static void node_free_own(Node *n) {
     case N_FUNC_LIT:
         free_name_array(n->as.funclit.names, n->as.funclit.arity);
         free(n->as.funclit.param_types);
+        /* The mangled name the signature pass stamped on (NULL for a route
+         * handler, which never goes through that pass). */
+        free(n->as.funclit.cname);
         break;
     case N_TYPE_DECL:
         free(n->as.type_decl.name);
