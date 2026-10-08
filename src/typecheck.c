@@ -331,7 +331,7 @@ void scope_put(CScope *s, const char *name, Type *t) {
  * the is_builtin_name() guard and the loose scope seeding in type_check_init —
  * each used to carry their own copy, so adding a builtin meant editing two
  * lists that nobody checked against each other. */
-static const char *const LUME_BUILTIN_NAMES[] = {
+const char *const LUME_BUILTIN_NAMES[] = {
     "run", "print", "str", "int", "len", "keys", "get",
     "json", "stringify", "now", "el", "render", "html",
     "float", "bool", "string", "type", "Result", /* type words usable as idents */
@@ -355,8 +355,11 @@ static const char *const LUME_BUILTIN_NAMES[] = {
     "http_delete", /* same as http_get: no body */
 };
 
+const size_t LUME_BUILTIN_COUNT =
+    sizeof(LUME_BUILTIN_NAMES) / sizeof(LUME_BUILTIN_NAMES[0]);
+
 bool is_builtin_name(const char *name) {
-    for (size_t i = 0; i < sizeof(LUME_BUILTIN_NAMES) / sizeof(LUME_BUILTIN_NAMES[0]); i++)
+    for (size_t i = 0; i < LUME_BUILTIN_COUNT; i++)
         if (strcmp(LUME_BUILTIN_NAMES[i], name) == 0) return true;
     return false;
 }

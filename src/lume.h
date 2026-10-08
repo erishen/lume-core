@@ -144,6 +144,7 @@ void type_release_all(void);
 /* Static type checking pass (compile-time). Returns false + errbuf on the
  * first error. Runs after parsing, before execution. */
 bool type_check_program(Node *prog, char *errbuf, size_t errbuf_size);
+bool is_builtin_name(const char *name);
 /* Module-aware variant (loader.c): self = module being checked, mods =
  * registry of every loaded module (used to resolve `import "x" as ns`). */
 bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
@@ -307,6 +308,10 @@ void env_set(VM *vm, Env *env, const char *name, Value v);
  * themselves; writing through it is exactly what the type is now honest about. */
 char *obj_string(Obj *o);
 size_t obj_string_len(Obj *o);
+
+/* JSON-escaping helper shared by the stdio bridges (bridge_mcp.c /
+ * bridge_lsp.c): writes a quoted JSON string literal for `s` into `b`. */
+void json_esc(sbuf *b, const char *s);
 
 /* Truthiness for `if` / `and` / `or`. */
 bool value_truthy(Value v);
@@ -567,6 +572,11 @@ typedef struct Node {
  * human-readable error in errbuf (errbuf_size). */
 Node *parse_program(const char *source, char *errbuf, size_t errbuf_size);
 
+/* Builtin name table (typecheck.c): shared with the LSP bridge for hover /
+ * completion. Count is derived at compile time. */
+extern const char *const LUME_BUILTIN_NAMES[];
+extern const size_t LUME_BUILTIN_COUNT;
+
 /* Shared lexer entry (also used by the REPL builtins). Caller frees the
  * returned token array. NULL + errbuf filled on lexical errors. */
 Token *al_lex(const char *source, char *errbuf, size_t errbuf_size,
@@ -611,5 +621,6 @@ int bridge_define_tool(VM *vm, const char *name, const char *desc,
                        const char *params_json, Value handler);
 void bridge_run(VM *vm);
 void mcp_run(VM *vm);
+void lsp_run(VM *vm);
 
 #endif /* LUME_H */

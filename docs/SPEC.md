@@ -1002,3 +1002,30 @@ GC 根，进程生命周期内持续有效（重启即清空，不做持久化�
 2. 改实现，直到三后端与测试同时变绿；
 3. 改本文档对应小节；
 4. 在 [CHANGELOG.md](../CHANGELOG.md) 记一条，标注影响面（解释器 / 原生后端 / 两棵树）。
+
+## 12. LSP 服务器（`--lsp`）
+
+`lume-core --lsp` 启动语言服务器：stdio + LSP **Content-Length 帧**协议
+（与 `--mcp` 的换行 JSON 不同，帧头 `Content-Length: <n>\r\n\r\n`）。
+
+已实现：
+
+- 生命周期：`initialize`（capabilities：全文同步、hover、补全）/ `initialized` /
+  `shutdown` / `exit`；
+- `textDocument/didOpen`、`textDocument/didChange`（全文同步）→ 对最新文本
+  做 `parse_program` + `type_check_program` → 推送
+  `textDocument/publishDiagnostics`；错误行号取自 `line N: ...` 前缀
+  （1-based），映射为 LSP 0-based 行，暂无列信息；无错时推送空数组清掉旧诊断；
+- `textDocument/hover`：光标处的标识符若在内建表（§6 的
+  `LUME_BUILTIN_NAMES`）→ 返回 markdown 说明，否则 `null`；
+- `textDocument/completion`：返回全部内建名（kind=Function）。
+
+编辑器接入示例（VS Code 客户端配置指向本二进制）：
+
+```json
+{
+  "lume.languageServer": {
+    "command": ["E:/Workspace/lume-core/bin/lume-core", "--lsp"]
+  }
+}
+```

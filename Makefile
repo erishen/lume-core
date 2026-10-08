@@ -129,7 +129,7 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/value.c src/typecheck.c src/typecheck_expr.c src/typecheck_stmt.c \
             src/interp.c src/builtins.c src/builtins_fs.c src/os_win32.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
-            src/token.c src/bridge_stub.c src/bridge_serve.c src/bridge_mcp.c src/bridge_native.c src/builtins_http.c \
+            src/token.c src/bridge_stub.c src/bridge_serve.c src/bridge_mcp.c src/bridge_lsp.c src/bridge_native.c src/builtins_http.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/irbuf.c src/backend.c
 # --- 第二个原生后端:libLLVM C API(可选) ---------------------------------
 # 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume-core 保持 ~2MB。

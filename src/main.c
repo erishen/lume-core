@@ -39,7 +39,7 @@ enum { NAT_DEFAULT = 0, NAT_LLVM = 1, NAT_TEXT = 2 };
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text|--mcp] [--no-fs] [--no-net] [--no-pass] <script.lume>\n"
+            "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text|--mcp|--lsp] [--no-fs] [--no-net] [--no-pass] <script.lume>\n"
             "  --check   parse + type check (no side effects)\n"
 "  --no-fs   runtime filesystem lock: read_file/write_file/files/\n"
 "            mkdir/lock_file fail at runtime instead of touching\n"
@@ -387,6 +387,7 @@ int main(int argc, char **argv) {
      * read on the text path too (as a note), so neither build sees it unused. */
     bool no_pass = false;
     bool do_mcp = false;
+    bool do_lsp = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--check") == 0) do_check = true;
@@ -405,6 +406,7 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(argv[i], "--no-pass") == 0) no_pass = true;
         else if (strcmp(argv[i], "--mcp") == 0) do_mcp = true;
+        else if (strcmp(argv[i], "--lsp") == 0) do_lsp = true;
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) out_path = argv[++i];
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
@@ -416,7 +418,7 @@ int main(int argc, char **argv) {
         }
         else { usage(argv[0]); return 2; }
     }
-    if (!script) { usage(argv[0]); return 2; }
+    if (!script && !do_lsp) { usage(argv[0]); return 2; }
 
     /* LUME_NO_FS is the same switch as --no-fs, so a supervisor can lock the
      * language down without rewriting the argv it execs. Anything but the
@@ -484,6 +486,15 @@ int main(int argc, char **argv) {
         for (int i = 0; i < cli_argc; i++)
             list_push(&vm, vm.argv, make_string_cstr(&vm, cli_args[i]));
         vm_pop(&vm);
+    }
+
+    /* --lsp: no entry script needed — the language server serves the whole
+     * workspace and checks documents as they are opened (parse+typecheck),
+     * with hover/completion over the builtin table. */
+    if (do_lsp) {
+        lsp_run(&vm);
+        vm_teardown(&vm);
+        return 0;
     }
 
     /* Multi-file import/export: the loader parses + type-checks the entry

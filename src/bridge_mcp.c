@@ -22,8 +22,9 @@
 #include <io.h>
 #endif
 
-/* JSON-escape a C string into a JSON string literal. */
-static void json_esc(sbuf *b, const char *s) {
+/* JSON-escape a C string into a JSON string literal. Shared with the LSP
+ * bridge (declared in lume.h). */
+void json_esc(sbuf *b, const char *s) {
     sb_chr(b, '"');
     for (const char *p = s; *p; p++) {
         unsigned char c = (unsigned char)*p;

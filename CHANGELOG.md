@@ -6,6 +6,17 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — LSP language server (`--lsp`)
+
+- New `--lsp` mode: a stdio Language Server Protocol server
+  (Content-Length framing) with the initialize/shutdown/exit lifecycle,
+  `didOpen`/`didChange` → parse + typecheck → `publishDiagnostics`
+  (the `line N:` error prefix maps onto 0-based LSP lines; no columns
+  yet), builtin hover notes and completion over the builtin table.
+  Editor wiring: point a client at `lume-core --lsp` (SPEC §12).
+- The builtin name table is exported (`LUME_BUILTIN_NAMES` / count) and
+  `json_esc` moved into lume.h, shared with bridge_mcp.c.
+
 ### Added — MCP tools/call argument validation
 
 - `tools/call` now rejects arguments whose type does not match the tool's
