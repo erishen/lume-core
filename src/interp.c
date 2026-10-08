@@ -1021,6 +1021,7 @@ void bridge_seed_builtins(VM *vm) {
         {"stringify", b_stringify},
         {"now", b_now},
         {"env", b_env},
+        {"argv", b_argv},
         {"files", b_files},
         {"read_file", b_read_file},
         {"write_file", b_write_file},

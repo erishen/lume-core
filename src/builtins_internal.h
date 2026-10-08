@@ -25,6 +25,7 @@ int skill_entry_cmp(const void *a, const void *b);
 
 /* ---- 文件 / 环境 / 锁 / 时间(builtins_fs.c) ---- */
 void native_env(VM *vm, int argc, Value *args, Value *out);
+void native_argv(VM *vm, int argc, Value *args, Value *out);
 void native_files(VM *vm, int argc, Value *args, Value *out);
 void native_read_file(VM *vm, int argc, Value *args, Value *out);
 void native_write_file(VM *vm, int argc, Value *args, Value *out);

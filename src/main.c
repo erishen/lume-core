@@ -1,6 +1,7 @@
 #include "lume.h"
 #include "backend.h"
 #include "codegen.h"          /* codegen_infer_signatures: shared pass */
+#include "builtins_internal.h" /* list_push: vm.argv seeding */
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -375,6 +376,10 @@ int main(int argc, char **argv) {
     int  native_choice = NAT_DEFAULT;
     const char *out_path = NULL;
     const char *script = NULL;
+    /* Script trailing CLI arguments (everything after the first non-flag
+     * argument); seeded into vm.argv so scripts can read them via argv(). */
+    const char *cli_args[64];
+    int cli_argc = 0;
     bool no_fs = false;
     bool no_net = false;
     /* Accepted in both builds: --no-pass is a no-op without libLLVM, and
@@ -403,7 +408,10 @@ int main(int argc, char **argv) {
             usage(argv[0]);
             return 0;
         }
-        else if (argv[i][0] != '-') script = argv[i];
+        else if (argv[i][0] != '-') {
+            if (!script) script = argv[i];      /* first non-flag arg = script */
+            else if (cli_argc < 64) cli_args[cli_argc++] = argv[i];
+        }
         else { usage(argv[0]); return 2; }
     }
     if (!script) { usage(argv[0]); return 2; }
@@ -464,6 +472,17 @@ int main(int argc, char **argv) {
     vm.no_fs = no_fs;
     vm.no_net = no_net;
     bridge_init(&vm);
+
+    /* Seed argv() with the script's trailing CLI arguments (after the script
+     * name). Rooted on the VM stack while filling, then reachable via the
+     * vm.argv field (marked by gc_collect). */
+    if (cli_argc > 0) {
+        vm.argv = AS_OBJ(make_list(&vm));
+        vm_push(&vm, val_obj(vm.argv));
+        for (int i = 0; i < cli_argc; i++)
+            list_push(&vm, vm.argv, make_string_cstr(&vm, cli_args[i]));
+        vm_pop(&vm);
+    }
 
     /* Multi-file import/export: the loader parses + type-checks the entry
      * script and every module it imports (dependencies first), then executes

@@ -411,6 +411,11 @@ struct VM {
     const char **load_stack;  /* paths currently being loaded (cycle check) */
     int load_depth;
     Env *export_env;          /* export table of the module being executed */
+
+    /* CLI script arguments after the script name (`lume-core script.lume a b`
+     * → ["a", "b"]), exposed to scripts as argv(). GC root — the list is
+     * reachable only through this field once seeded by main(). */
+    Obj *argv;
 };
 
 /* ===================== modules / loader ===================== */

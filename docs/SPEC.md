@@ -453,8 +453,8 @@ func report(): Result {
 | `int(x)` | 1 参 | `int` | **`int` 原样；`float` 截断；非数字字符串静默返回 `0`** |
 | `float(x)` | 1 参 | `float` | `int`→float；⚠️ **非数字字符串静默返回 `0.0`** |
 | `bool(x)` | 1 参 | `bool` | 真值性：空串/`0`/`null`/空集合为 `false` |
-| `json(x)` | 1 参 | `string` | **只覆盖序列化方向**；无反序列化 |
-| `stringify(x)` | 1 参 | `string` | 与 `json` 同（别名） |
+| `json(x)` | 1 参 | `value` | **反序列化**：JSON 文本 → map/list/string/number/bool/null；解析失败置 VM error（可用 `try()` 接住） |
+| `stringify(x)` | 1 参 | `string` | 序列化：任意值 → JSON 文本（与 `str()` 的 map/list 路径一致） |
 | `now()` | 0 参 | `int` | Unix 秒 |
 | `strftime(fmt, ts)` | 2 参 | `string` | ⚠️ **参数序是 `(格式, 时间戳)`**，不是反过来 |
 
@@ -539,7 +539,7 @@ print(str(try(() => 42)));                         // {"ok":42,"err":null}
 | `read_file(p)` | 1 参 | `string` | ⚠️ **文件不存在静默返回 `null`**，不报错 |
 | `write_file(p, data)` | 2 参 | `bool` | **原子写**（临时文件 + rename）；数据文件默认 `0600` |
 | `mkdir(p)` | 1 参 | `bool` | 递归创建（等价 `mkdir -p`）；已存在返回 `true` |
-| `files(p)` | 1 参 | `string[]` | 目录条目；目录带尾部 `/` |
+| `files(p[, rec])` | 1–2 参 | `string[]` | 目录条目；目录带尾部 `/`；第二参真值时**递归**（条目变相对路径 `sub/file.txt`，深度上限 64） |
 | `lock_file(p, ms)` | 2 参 | `bool` | 跨进程建议锁；超时返回 `false` |
 | `unlock_file()` | 0 参 | `bool` | 释放本进程持有的锁 |
 
@@ -551,6 +551,7 @@ print(str(try(() => 42)));                         // {"ok":42,"err":null}
 | 内建 | 签名 | 返回 | 边界 |
 | --- | --- | --- | --- |
 | `env(name)` | 1 参 | `string` | ⚠️ **未设置静默返回 `null`** |
+| `argv()` | 0 参 | `string[]` | 脚本名之后的 CLI 参数（`lume-core s.lume a b` → `["a","b"]`）；无参数为空列表；⚠️ **解释器专属**（native 后端暂不支持） |
 | `crypt_sha512(pw)` | 1 参 | `string` | ⚠️ **平台相关**：无 `crypt(3)` 的平台（含 macOS）报 `SHA-512 crypt unavailable on this platform` |
 
 ### 6.6 数学

@@ -34,6 +34,7 @@ Value b_json(VM *vm, int argc, Value *args);
 Value b_stringify(VM *vm, int argc, Value *args);
 Value b_now(VM *vm, int argc, Value *args);
 Value b_env(VM *vm, int argc, Value *args);
+Value b_argv(VM *vm, int argc, Value *args);
 Value b_files(VM *vm, int argc, Value *args);
 Value b_read_file(VM *vm, int argc, Value *args);
 Value b_write_file(VM *vm, int argc, Value *args);

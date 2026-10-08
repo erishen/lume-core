@@ -4,6 +4,35 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added — CLI script arguments (`argv()`)
+
+- `lume-core script.lume a b` now collects everything after the script name
+  into `argv()` — a `string[]` (empty when the run carried none). Previously
+  extra non-flag arguments were silently swallowed; the **last** one even
+  overwrote the script path. The first non-flag argument is the script now,
+  and the rest are script arguments.
+- Interpreter only; both native backends report `argv` as not supported yet
+  (SPEC §6.5).
+
+### Added — recursive `files(dir, 1)`
+
+- A second truthy argument walks the tree depth-first: entries become
+  relative paths (`sub/file.txt`, `sub/dir/`) ready for `read_file()`, with
+  directories still carrying the trailing `/`. Single-argument `files(dir)`
+  is unchanged (SPEC §6.4).
+- Depth capped at 64 and each directory's own entry count at 1024 (the
+  single-level listing's cap), so a hostile deep tree cannot blow the stack
+  or the list.
+
+### Fixed — `json()` documentation (SPEC §6.1)
+
+- The table said `json(x)` was serialization-only; the builtin has always
+  been the reverse — `json()` parses **JSON text into a value**, while
+  `stringify()` is the serializer. Both rows now document the real
+  directions, including the parse-failure VM error catchable with `try()`.
+
 ## [0.4.0] - 2026-10-08
 
 ### Added — index syntax `m["k"]` / `l[0]` (规范变更)

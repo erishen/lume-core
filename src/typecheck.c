@@ -336,7 +336,7 @@ static const char *const LUME_BUILTIN_NAMES[] = {
     "json", "stringify", "now", "el", "render", "html",
     "float", "bool", "string", "type", "Result", /* type words usable as idents */
     "write", "read", /* built-in verb groups (see seed_verb_groups) */
-    "env", "files", "read_file", "write_file", "mkdir", "strftime", "put",
+    "env", "argv", "files", "read_file", "write_file", "mkdir", "strftime", "put",
     "range", "map", "filter", "reduce", /* collection tools */
     /* sql_query / sql_write: host build only. */
     "lock_file", "unlock_file", /* flock advisory lock (invest ledger) */
