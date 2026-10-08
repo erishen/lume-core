@@ -291,7 +291,8 @@ static void serve_dispatch(VM *vm, net_fd conn, const char *method,
 
     if (!route) {
         serve_respond(conn, 404, "application/json",
-                      "{\"error\":\"not found\"}", 26);
+                      "{\"error\":\"not found\"}",
+                      sizeof("{\"error\":\"not found\"}") - 1);
         return;
     }
 
@@ -361,16 +362,28 @@ static void serve_one(VM *vm, net_fd conn)
 
     /* request line: METHOD SP PATH SP HTTP/x.y */
     char *sp1 = strchr(line, ' ');
-    if (!sp1) { serve_respond(conn, 400, "application/json", "{\"error\":\"bad request\"}", 22); return; }
+    if (!sp1) { serve_respond(conn, 400, "application/json", "{\"error\":\"bad request\"}", sizeof("{\"error\":\"bad request\"}") - 1); return; }
     char *path_start = sp1 + 1;
     char *sp2 = strchr(path_start, ' ');
     if (sp2) *sp2 = '\0';
     char method[64];
     size_t mlen = (size_t)(path_start - line - 1);
-    if (mlen == 0 || mlen >= sizeof method) { serve_respond(conn, 400, "application/json", "{\"error\":\"bad request\"}", 22); return; }
+    if (mlen == 0 || mlen >= sizeof method) { serve_respond(conn, 400, "application/json", "{\"error\":\"bad request\"}", sizeof("{\"error\":\"bad request\"}") - 1); return; }
     memcpy(method, line, mlen);
     method[mlen] = '\0';
     for (char *p = method; *p; p++) *p = (char)toupper((unsigned char)*p);
+
+    /* Copy the path out of `line` NOW: the header loop below reuses the line
+     * buffer, which would leave full_path dangling into the next header. */
+    char full_path[4096];
+    size_t full_path_len = strlen(path_start);
+    if (full_path_len >= sizeof full_path) {
+        serve_respond(conn, 414, "application/json",
+                      "{\"error\":\"uri too long\"}",
+                      sizeof("{\"error\":\"uri too long\"}") - 1);
+        return;
+    }
+    memcpy(full_path, path_start, full_path_len + 1);
 
     /* headers until the blank line; find Content-Length */
     size_t content_length = 0;
@@ -388,28 +401,27 @@ static void serve_one(VM *vm, net_fd conn)
 
     if (have_cl && content_length > SERVE_MAX_BODY) {
         serve_respond(conn, 413, "application/json",
-                      "{\"error\":\"payload too large\"}", 27);
+                      "{\"error\":\"payload too large\"}",
+                      sizeof("{\"error\":\"payload too large\"}") - 1);
         return;
     }
 
     char *body = NULL;
     if (have_cl && content_length > 0) {
         body = malloc(content_length + 1);
-        if (!body) { serve_respond(conn, 500, "application/json", "{\"error\":\"oom\"}", 16); return; }
+        if (!body) { serve_respond(conn, 500, "application/json", "{\"error\":\"oom\"}", sizeof("{\"error\":\"oom\"}") - 1); return; }
         int r = rr_read_exact(&rr, body, content_length);
         if (r != 0) { free(body); return; }
         body[content_length] = '\0';
     }
 
     /* query: everything after the first '?' in the path */
-    const char *full_path = path_start;
-    size_t full_path_len = strlen(path_start);
     const char *raw_query = NULL;
     size_t raw_query_len = 0;
-    const char *qm = strchr(path_start, '?');
+    const char *qm = strchr(full_path, '?');
     if (qm) {
         raw_query = qm + 1;
-        raw_query_len = full_path_len - (size_t)(raw_query - path_start);
+        raw_query_len = full_path_len - (size_t)(raw_query - full_path);
     }
 
     serve_dispatch(vm, conn, method, full_path, full_path_len,
