@@ -51,6 +51,12 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s);
 /* forward: same tu, defined below this point. */
 static void ensure_lambda_registered(CG *g, Node *lambda);
 
+/* forward: same tu, defined below this point. */
+static void preregister_lambdas(CG *g, Node *n, int in_handler);
+
+/* forward: same tu, defined below this point. */
+static void lt_copy(LTys *dst, const LTys *src);
+
 /* Types already known for the names one function body can see. The pass below
  * has to type an argument like `f(n)` before the body is emitted, and `n` may
  * be one of that function's own parameters (whose type is the thing being
@@ -74,6 +80,16 @@ static void lt_free(LTys *t)
 {
     for (int i = 0; i < t->n; i++) free(t->v[i].name);
     free(t->v);
+}
+
+/* A fresh, owning copy: every name is strdup'd again so the source table can
+ * outlive the copy (infer_one_sig copies `globals` per body and frees the
+ * copy when the body is done). */
+
+static void lt_copy(LTys *dst, const LTys *src)
+{
+    for (int i = 0; i < src->n; i++)
+        lt_push(dst, src->v[i].name, src->v[i].ty);
 }
 
 Type *lt_find(LTys *t, const char *name)
@@ -155,6 +171,102 @@ static void ensure_lambda_registered(CG *g, Node *lambda)
     s->body   = lambda->as.funclit.body;
     s->pnames = lambda->as.funclit.names;
     s->node   = lambda;
+}
+
+/* Register every lambda in the tree before inference starts.
+ *
+ * Registration used to happen only where a call site reached a lambda, which
+ * misses the shapes that evaluate a lambda without calling it: an assignment
+ * right-hand side (`f = (x) => ...`), a lambda body calling another lambda
+ * (the callee is not a local of the body being walked, so the closure branch
+ * never fires), a let whose variable is used later. Any of those reached the
+ * emitter with a NULL cname and died on an "internal:" message. Registering
+ * up front also removes a subtler hazard: mid-round registration pushes onto
+ * `g->sigs`, whose realloc would dangle the `Sig *s` the walk is carrying.
+ *
+ * Route/tool/verb handler literals are skipped (`in_handler`): they are
+ * emitted through the handler path, and stamping a cname on them would make
+ * the emitters' cname-gated collection emit a second `define` for the same
+ * literal. Lambdas nested *inside* a handler body are registered — only the
+ * handler literal itself is skipped. */
+
+static void preregister_lambdas(CG *g, Node *n, int in_handler)
+{
+    if (!n) return;
+    switch (n->type) {
+    case N_FUNC_LIT:
+        if (!in_handler)
+            ensure_lambda_registered(g, n);
+        preregister_lambdas(g, n->as.funclit.body, 0);
+        return;
+    case N_PROGRAM: case N_BLOCK:
+        for (int i = 0; i < n->as.block.count; i++)
+            preregister_lambdas(g, n->as.block.stmts[i], in_handler);
+        return;
+    case N_FUNC_DECL:
+        preregister_lambdas(g, n->as.func.body, 0);
+        return;
+    case N_LET:        preregister_lambdas(g, n->as.let.init, 0); return;
+    case N_IF:
+        preregister_lambdas(g, n->as.ifs.cond, 0);
+        preregister_lambdas(g, n->as.ifs.then, 0);
+        preregister_lambdas(g, n->as.ifs.els,  0);
+        return;
+    case N_WHILE:
+        preregister_lambdas(g, n->as.whiles.cond, 0);
+        preregister_lambdas(g, n->as.whiles.body, 0);
+        return;
+    case N_FOR:
+        preregister_lambdas(g, n->as.fors.init,     0);
+        preregister_lambdas(g, n->as.fors.cond,     0);
+        preregister_lambdas(g, n->as.fors.incr,     0);
+        preregister_lambdas(g, n->as.fors.iterable, 0);
+        preregister_lambdas(g, n->as.fors.body,     0);
+        return;
+    case N_RETURN:     preregister_lambdas(g, n->as.ret.expr, 0); return;
+    case N_EXPR_STMT:  preregister_lambdas(g, n->as.expr_stmt.expr, 0); return;
+    case N_ASSIGN:
+        preregister_lambdas(g, n->as.assign.value, 0);
+        return;
+    case N_ASSIGN_MEMBER:
+        preregister_lambdas(g, n->as.assign_mem.obj,   0);
+        preregister_lambdas(g, n->as.assign_mem.value, 0);
+        return;
+    case N_CALL:
+        preregister_lambdas(g, n->as.call.callee, 0);
+        for (int i = 0; i < n->as.call.argc; i++)
+            preregister_lambdas(g, n->as.call.args[i], 0);
+        return;
+    case N_MEMBER:     preregister_lambdas(g, n->as.member.obj, 0); return;
+    case N_INDEX:
+        preregister_lambdas(g, n->as.index.obj,   0);
+        preregister_lambdas(g, n->as.index.index, 0);
+        return;
+    case N_UNARY:      preregister_lambdas(g, n->as.unary.operand, 0); return;
+    case N_BINARY:
+        preregister_lambdas(g, n->as.binary.left,  0);
+        preregister_lambdas(g, n->as.binary.right, 0);
+        return;
+    case N_LIST_LIT:
+        for (int i = 0; i < n->as.list.count; i++)
+            preregister_lambdas(g, n->as.list.items[i], 0);
+        return;
+    case N_MAP_LIT:
+        for (int i = 0; i < n->as.map.count; i++)
+            preregister_lambdas(g, n->as.map.vals[i], 0);
+        return;
+    case N_SERVER:
+        for (int i = 0; i < n->as.server.count; i++)
+            preregister_lambdas(g, n->as.server.assigns[i], 0);
+        return;
+    case N_ROUTE:      preregister_lambdas(g, n->as.route.handler, 1); return;
+    case N_TOOL:
+        preregister_lambdas(g, n->as.tool.params,  0);
+        preregister_lambdas(g, n->as.tool.handler, 1);
+        return;
+    case N_VERBS:      preregister_lambdas(g, n->as.verbs.methods, 1); return;
+    default: return;   /* literals, imports, type decls, break/continue */
+    }
 }
 
 /* Types are allocated per use — there is no interning — so pointer equality
@@ -350,8 +462,25 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
             changed++;
         }
         return changed + walk_sigs(g, n->as.ret.expr, t, s);
-    case N_ASSIGN:          changed += walk_sigs(g, n->as.assign.value, t, s);
-                            return changed;
+    case N_ASSIGN:
+        /* A closure variable keeps the first lambda it was bound to as its
+         * type's back pointer; every call through the variable lowers
+         * against THAT signature while the runtime box holds whatever was
+         * assigned last. If the new lambda's shape differs, the call is
+         * silently wrong, so reassignment is refused on the native paths
+         * (the interpreter, which is dynamically typed, still accepts it). */
+        {
+            Type *vt = lt_find(t, n->as.assign.name);
+            if (vt && vt->kind == TY_FUNC && n->as.assign.value &&
+                n->as.assign.value->type == N_FUNC_LIT) {
+                ERR_SET(g, "line %zu: reassigning a closure variable is not "
+                           "supported on the native backends — the variable "
+                           "keeps the first lambda's signature", n->line);
+                return changed;
+            }
+        }
+        changed += walk_sigs(g, n->as.assign.value, t, s);
+        return changed;
     case N_ASSIGN_MEMBER:
         changed += walk_sigs(g, n->as.assign_mem.obj, t, s);
         return changed + walk_sigs(g, n->as.assign_mem.value, t, s);
@@ -397,6 +526,13 @@ static void infer_one_sig(CG *g, Sig *s)
 {
     if (!s->body) return;
     LTys t = {0};
+
+    /* Top-level bindings come first: a lambda body calling another lambda
+     * resolves the callee through them (the callee is not a local of the
+     * body being walked). Parameters are pushed after and replace any
+     * same-named global, so the innermost binding wins, and body locals are
+     * collected last for the same reason. */
+    lt_copy(&t, &g->globals);
 
     for (int i = 0; i < s->arity; i++)
         if (s->params[i] && s->pnames && s->pnames[i])
@@ -487,10 +623,11 @@ static void infer_sigs(CG *g)
         Sig *s = &g->sigs.v[i];
         for (int k = 0; k < s->arity; k++)
             if (!s->params[k])
-                ERRX(g, "line %zu: parameter '%s' of '%s' has no known type — "
+                ERRX(g, "line %zu: parameter '%s' of %s has no known type — "
                         "annotate it or call it with a value of a known type",
                      s->body ? s->body->line : 0,
-                     s->pnames && s->pnames[k] ? s->pnames[k] : "?", s->name);
+                     s->pnames && s->pnames[k] ? s->pnames[k] : "?",
+                     s->is_lambda ? "the lambda" : s->name);
     }
 }
 
@@ -535,6 +672,13 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
                       n->as.type_decl.field_types, n->as.type_decl.count);
     }
 
+    /* Every lambda gets its mangled name and its Sig before inference starts
+     * (see preregister_lambdas), and the top-level `let` types are collected
+     * once so every function body's scope can see them. Both are safe here:
+     * nothing holds a `Sig *` or aliases `g.globals` while they grow. */
+    preregister_lambdas(&g, prog, 0);
+    collect_known(&g, prog, &g.globals);
+
     infer_sigs(&g);          /* fills g.sigs, writes through to the AST below */
 
     if (err && err_size && g.err[0])
@@ -545,9 +689,11 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
     for (int i = 0; i < g.structs.n; i++) free(g.structs.v[i].name);
     free(g.structs.v);
     lt_free(&g.scope);
+    lt_free(&g.globals);
     memset(&g.sigs, 0, sizeof g.sigs);
     memset(&g.structs, 0, sizeof g.structs);
     memset(&g.scope, 0, sizeof g.scope);
+    memset(&g.globals, 0, sizeof g.globals);
 
     return g.err[0] ? -1 : 0;
 }

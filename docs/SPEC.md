@@ -371,6 +371,8 @@ lambda 在字面量处装箱成不透明闭包记录（函数指针 + 捕获上�
   返回 string / 容器则拒绝。
 - `reduce` 的累加器必须是标量或列表（struct 不可作累加器）。
 - 元素为容器的列表（如 `[[1,2],[3]]`）不能 map/filter/reduce。
+- **闭包变量不能重赋值**；lambda 调 lambda 只有被调者对调用方可见（顶层可见性缺口见
+  §8.1 第 10 条）；空列表字面量 `[]` 直接进 HOF 拒绝（§8.1 第 11 条）。
 - **lambda 字面量本身不带类型标注**；给闭包变量写 `let f: ??? = ...` 依旧没有对应语法
   （`any` 不是类型关键字，见 §3.1）。**具名 `func` 两边都支持**，要编译成原生二进制的
   脚本二者皆可用。
@@ -735,6 +737,10 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
 （`null` 变 `0`）改成两后端一致拒绝——它修复前最严重，因为 libLLVM 后端给的是**自信的错误答案**
 而不是拒绝。
 
+闭包落地（§4.8）后的排查又新增第 9–12 条：第 9–11 条都是「解释器接受、两个原生后端以
+**同一条清晰消息**拒绝」的开放缺口——不是静默错值，属可接受的 phase-1 边界，但都记录在案；
+第 12 条是排查时撞出来的**预先存在**的类型查找缺陷（可能静默给错类型），已如实记录、未修。
+
 1. **[已修复] `float %` 的报错位置**（§1.6）：`--compile-text` 与解释器报
    `'%' does not apply to floats`，`--compile-llvm` 原在更早的类型推断处报
    `print() cannot print this value`（下游 `cg_print` 把 `cg_binary` 先发出的正确错误覆盖了）。
@@ -873,6 +879,68 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    相同）与 `null-as-string`（要求每个 leg 都印 `null`）。这两条**不能**放进
    `native-consistency.lume`——那个 fixture 只 diff 三个 leg 都接受的程序，而这里要断言的正是
    「不运行」。
+
+9. **[开放] 闭包变量重赋值，两个原生后端拒绝**（§4.8 落地时顺带定界）：
+
+   ```lume
+   let f = (x) => x + 1;
+   f = (x) => x * 10;
+   print(map(f, [1, 2]));    // 解释器 [10,20]；两个原生后端拒绝
+   ```
+
+   闭包变量的类型回指针记的是**第一个** lambda 的签名，而运行期盒子里装的是**最后一次**
+   赋进去的闭包——两个 lambda 签名一旦不同，调用就会静默按错误签名 lowering。解释器动态
+   无此问题。原生路径在签名 pass 里显式拒绝：`reassigning a closure variable is not
+   supported on the native backends — the variable keeps the first lambda's signature`。
+   修复前这条路径报的是 `internal: lambda was never named...`（第二个 lambda 从未被签名
+   pass 命名，`internal:` 消息泄漏给用户）。
+
+10. **[开放] 顶层/外层绑定在函数体内不可见**（预先存在，非闭包引入）：
+
+    ```lume
+    let base = 10;
+    func add(x: int): int { return x + base; }
+    print(add(5));            // 解释器 15；两个原生后端 `unknown variable 'base'`
+    ```
+
+    顶层的 `let` 在两个原生后端里是 `L_top` 的局部 alloca，具名函数体无法引用；「lambda 调
+    lambda」若是同一形态（被调 lambda 定义在顶层或外层函数体、不是调用者的局部/参数）也是
+    这同一条墙。根修需要把顶层绑定提升为 LLVM 真全局，属大改，未排期。函数体内兄弟 lambda
+    互调（都是同一函数体的局部）同理：签名 pass 按函数独立建作用域，看不见词法外层的局部。
+
+11. **[开放] 空列表字面量直接进 `map`/`filter`/`reduce`**：
+
+    ```lume
+    print(map((x) => x, []));   // 解释器 []；两个原生后端拒绝
+    ```
+
+    `[]` 没有元素类型，lambda 的参数与返回值都推不出来，原生后端无法定元素的静态类型。
+    替代写法已验证三后端一致：给列表变量写标注再传变量——
+
+    ```lume
+    let e: int[] = [];
+    print(map((x) => x * 2, e));    // [] 三后端一致
+    print(reduce((a, x) => a + x, e, 100));  // 100 三后端一致
+    ```
+
+12. **[开放] 同名后绑定会让先前的 for-in 循环变量拿到错误类型**（§8.1 第 4 条的尾巴）：
+
+    ```lume
+    let xi = [1, 2, 3, 4];
+    for (e in xi) { print(e); }   // 这里 e 应是 int（元素类型）
+    ...
+    let e: string = "x";          // 文件后部出现同名 let
+    ```
+
+    两个原生后端把全程序绑定**平铺**进一张 locals 表（`asg_push` 追加、`asg_find`
+    从后往前找——「后者胜」），而发射是按位置的：for-in 循环变量的元素类型在发射时经
+    `asg_find(名字)` 取回，命中的却是**文件更后处**同名 let 的类型。第 4 条当年只给 IR
+    槽名加了绑定序号（`%lv_e_0` / `%lv_e_1`），类型查找仍是位置盲的。若后绑定的类型让
+    `list_at_fn` 恰好可读（如都是 int），程序静默通过；若是 string/list 等不同类，
+    for-in 要么报 `a list of this element type cannot be iterated`（本条被发现的形态，
+    `native-consistency.lume` 的空列表用例首写时误用了 `e` 这个名字而撞上），要么按错误
+    类型读元素——**静默错值**。正确修法是给 locals 表加作用域区间（每条绑定记自己的
+    存活范围），未排期。
 
 ---
 

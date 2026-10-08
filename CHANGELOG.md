@@ -28,6 +28,17 @@ All notable changes to Lume are documented here. The format follows
   垃圾把具名函数错走 lambda 回写分支，经 union 偏移踩坏 `param_types`，表现为
   `native-fact.lume` 的 UAF）；libLLVM reduce 把 `Val[]` 误作 `LLVMValueRef[]` 传参
   （第二实参拿到 `Type*`，验证器打印该 call 时段错误）。
+- **边缘形态排查后的签名 pass 加固**：① lambda 预注册 pre-pass——`f = (x) => ...` 赋值
+  右侧、lambda 体调用另一 lambda 等从未被调用点触及的 lambda 原先到达发射器时没有
+  mangled 名，报 `internal:` 级消息；现在推断开始前全 AST 预注册（同时消除 mid-round
+  `sig_push` realloc 悬垂 `Sig*` 的隐患）；② 函数体作用域并入顶层 `let` 类型（每 body
+  拷贝一份 globals），顶层闭包变量在 lambda 体内可解析；③ 尾部校验消息对 lambda 说
+  「the lambda」而非内部名。
+- **同轮定界的开放缺口（SPEC §8.1 #9–#12，均有干净拒绝或记录）**：闭包变量重赋值在原生
+  路径显式拒绝（运行期盒子与类型回指针的签名可能错配，防静默错签名调用）；顶层/外层绑定
+  在函数体内不可见（预先存在，含标量）；空列表字面量直接进 HOF 拒绝（标注变量替代写法
+  三后端一致）；locals 表类型查找位置盲（§8.1 #4 的尾巴，后绑定同名可让先前 for-in 拿错
+  元素类型）。
 
 ### Fixed — two §8.1 native-backend consistency gaps (#1 / #2)
 

@@ -442,5 +442,21 @@ print(map(twice, [1, 2, 3]));                  // [2,4,6]
 print(map((s) => s, ["a", "b"]));              // ["a","b"]
 print(reduce((a, x) => a + x, [1, 2], 10));    // 13
 
+// Zero-argument lambdas (the record's fn type has just the context slot).
+let seven = () => 7;
+print(seven());                                // 7
+
+// A bool-returning filter predicate (truthy test reads the register as-is)
+// and float element/accumulator shapes (at/push dispatch on the element).
+print(filter((x) => x % 2 == 0, [1, 2, 3, 4]));         // [2,4]
+print(map((x) => x * 1.5, [1, 2, 3]));                  // [1.5,3,4.5]
+print(reduce((a, x) => a + x, [1, 2, 3], 0.5));         // 6.5
+
+// An annotated empty list gives the HOF loops their element type; the bare
+// `[]` literal does not and is refused (SPEC §8.1 #11).
+let ez: int[] = [];
+print(map((x) => x * 2, ez));                   // []
+print(reduce((a, x) => a + x, ez, 100));        // 100
+
 warmup();
 main();

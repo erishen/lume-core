@@ -105,6 +105,12 @@ typedef struct {
 
     LTys   scope;           /* names the signature pass has typed so far; only
                              * set while that pass runs, then unused */
+    LTys   globals;         /* top-level `let` types, built once by the
+                             * signature pass and copied into every body's
+                             * scope — a lambda body calling another lambda
+                             * (`g = (x) => inc(x)`) resolves the callee
+                             * through this, since `inc` is not a local of
+                             * the body being walked */
 
     Node  *prog;            /* the whole program, so the signature pass can
                              * walk the top-level calls as well as the bodies */
