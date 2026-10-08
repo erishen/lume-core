@@ -386,5 +386,29 @@ print({ a: [1.5, 2.5] });                     // {"a":[1.5,2.5]}
 let nested = { a: { b: 1 } };
 print(get(nested, "a", { z: 0 }));            // {"b":1}
 
+// ---- index syntax `m["k"]` / `l[0]` (docs/SPEC.md §6.2) -----------------
+//
+// Both native backends now lower index syntax. List indexing is fully typed
+// (the element type is statically known), so the result prints directly and
+// the three backends agree byte-for-byte. Map reads return an opaque i8* the
+// emitter cannot type (map value types are not tracked), so the portable use
+// is to bind the result to a typed variable -- which is what the lines below
+// do, and what all three backends accept and print the same way.
+let il = [10, 20, 30];
+print(il[0]);            // 10
+print(il[2]);            // 30
+print(il[-1]);           // 30
+let is = ["p", "q", "r"];
+print(is[1]);            // q
+let im = { name: "lume", nums: [1, 2, 3] };
+let iname: string = im["name"];
+print(iname);            // lume
+let inums: int[] = im["nums"];
+print(inums[0]);         // 1
+print(inums[2]);         // 3
+let ikey = "name";
+let ikeyed: string = im[ikey];
+print(ikeyed);           // lume
+
 warmup();
 main();

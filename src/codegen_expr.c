@@ -77,6 +77,7 @@ static Val cg_map_or_struct_lit(CG *g, Node *n);
 
 /* forward: same tu, defined below this point. */
 static Val cg_member(CG *g, Node *n);
+static Val cg_index(CG *g, Node *n);
 
 /* forward: same tu, defined below this point. */
 static Val cg_print(CG *g, Node *n, Val a);
@@ -609,6 +610,113 @@ static Val cg_handler_req_field(CG *g, Node *n)
     return val_take(st, ld);
 }
 
+/* `m["k"]` / `l[0]`.
+ *
+ * Index first, then container, matching the interpreter's order so a key with a
+ * side effect runs before the container is read.
+ *
+ * The read goes through the unified lume_index_* entry points rather than a
+ * per-shape accessor chosen here, because the emitter often cannot tell a list
+ * from a map: `m["p"][1]` hands over an opaque i8* and a runtime map's value
+ * type is not written down anywhere. The container knows its own kind, so that
+ * branch lives in the runtime and this stays a straight-line lowering.
+ *
+ * Strictness -- a missing key or an out-of-range index stopping the program --
+ * has to be a call the emitted program makes. ERRV() cannot do it: it returns
+ * from cg_index() and turns g->err into a compile error, which would reject
+ * every index expression at build time, including the ones that would have
+ * succeeded. The runtime reports and exits non-zero, like every other fatal
+ * condition in a compiled program. */
+static Val cg_index(CG *g, Node *n)
+{
+    Val ix  = cg_expr(g, n->as.index.index);
+    if (!ix.v) ERRV(g, "line %zu: bad index expression", n->line);
+    Val obj = cg_expr(g, n->as.index.obj);
+    if (!obj.v) { free(ix.v); ERRV(g, "line %zu: bad index operand", n->line); }
+
+    /* A list knows its element type; a runtime map does not, so the result is
+     * the same opaque type a map literal produces and lume_index_ptr decides. */
+    int known_map  = obj.ty && obj.ty->kind == TY_STRUCT && !obj.ty->name;
+    int known_list = obj.ty && obj.ty->kind == TY_LIST;
+    if (!known_map && !known_list) {
+        Type *k = obj.ty;
+        /* An opaque i8* is what a chained read leaves behind. Let it through --
+         * the runtime asks the container which kind it is. */
+        int opaque = k && (k->kind == TY_STRUCT || k->kind == TY_LIST);
+        if (!opaque) {
+            free(ix.v); free(obj.v);
+            ERRV(g, "line %zu: cannot index into a value of type '%s'", n->line,
+                 k ? src_type_name(k) : "unknown");
+        }
+    }
+
+    Type *rty = known_list ? (obj.ty->elem ? obj.ty->elem : any_type())
+                           : type_anon_struct();
+    const char *pty = rt_arg_type(rty);
+
+    const char *fn = strcmp(pty, "double") == 0 ? "lume_index_float"
+                  : strcmp(pty, "i8*")   == 0 ? "lume_index_ptr"
+                                               : "lume_index_int";
+    /* A list index is an i64 and a map key a char*, so both are passed and the
+     * runtime uses the one its container needs (see lume_index_int). The index
+     * expression was type-checked as an int for a list and a string for a map,
+     * so each is already in the right shape here. */
+    /* Both key shapes are passed -- an i64 index and a char* key -- and
+     * lume_index_* uses whichever its container needs. When the container kind
+     * is not statically known (a chained read leaves an opaque i8*) the index
+     * expression was type-checked as `any`, so it is passed as an i64: the
+     * runtime will not use it, and a pointer-typed constant would not even
+     * assemble. `known_list` is the only case where the index is known to be an
+     * int, and it is also the only case where the element type can be spelled. */
+    /* Both key shapes always go over: an i64 index and a char* key, and
+     * lume_index_* uses whichever its container turns out to need. Nothing
+     * decides that here, and it cannot:
+     *
+     *   - a *list* index is statically an int, but
+     *   - a *map* read is not statically a map. `{ p: [1, 2] }` has a map value
+     *     whose type is nowhere written down, so infer_node_type() answers
+     *     "an anonymous struct" -- the map shape -- for `n["p"]` even when what
+     *     came back is a list. Committing to the map branch there is what made
+     *     `n["p"][1]` emit `i8* 1` and fail to assemble.
+     *
+     * rt_arg_type says how the index expression itself travels, which is the
+     * one thing that *is* knowable here: a string goes in the key slot, anything
+     * else in the index slot. */
+    const char *ishape = rt_arg_type(ix.ty);
+    int ix_is_str = strcmp(ishape, "i8*") == 0;
+    char args[224];
+    snprintf(args, sizeof args, "i8* %s, %s %s, i8* %s", obj.v,
+             ix_is_str ? "i64" : ishape, ix_is_str ? "0" : ix.v,
+             ix_is_str ? ix.v : "null");
+
+    Val r = rt_call(g, rty, fn, "%s", args);
+    free(ix.v); free(obj.v);
+    if (!r.v) ERRV(g, "line %zu: index read failed", n->line);
+
+    /* Strictness, at run time. Every flavour sets the flag when the read did not
+     * happen -- including the pointer flavour, where a NULL is either an absent
+     * element or a slot holding something the type checker would have rejected,
+     * and both are errors rather than values. */
+    char flag[48], test[48];
+    snprintf(flag, sizeof flag, "%%c%d", g->tid++);
+    snprintf(test, sizeof test, "%%c%d", g->tid++);
+    EMIT(g, "  %s = call i64 @lume_index_failed()\n", flag);
+    EMIT(g, "  %s = icmp ne i64 %s, 0\n", test, flag);
+    int lbad = g->lid++, lok = g->lid++;
+    EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, lbad, lok);
+    EMIT(g, "L%d:\n", lbad);
+    /* Which message: a list says "index out of range", a map names the key. The
+     * container is still live here, so the runtime can tell -- lume_index_error
+     * takes the flag into account through lume_is_map() below. */
+    char *what = known_map ? cg_string_val(g, "no such key in this map", 23)
+                          : cg_string_val(g, "index out of range", 19);
+    EMIT(g, "  call void @lume_index_error(i8* %s)\n", what);
+    free(what);
+    EMIT(g, "  unreachable\n");
+    EMIT(g, "L%d:\n", lok);
+    return r;
+}
+
 static Val cg_member(CG *g, Node *n)
 {
     /* Native server handler: `req.*` lowers onto the FFI arguments instead
@@ -1118,6 +1226,13 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_has(i8*, i8*)\n");
+    /* Index syntax (SPEC 6.2): one entry point per result shape, each deciding
+     * list-vs-map at run time because the emitter cannot always tell. */
+    EMIT(g, "declare i64 @lume_index_int(i8*, i64, i8*)\n");
+    EMIT(g, "declare double @lume_index_float(i8*, i64, i8*)\n");
+    EMIT(g, "declare i8* @lume_index_ptr(i8*, i64, i8*)\n");
+    EMIT(g, "declare i64 @lume_index_failed()\n");
+    EMIT(g, "declare void @lume_index_error(i8*)\n");
     EMIT(g, "declare i8* @lume_map_key_at(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
@@ -1593,6 +1708,7 @@ Val cg_expr(CG *g, Node *n)
     case N_UNARY:   return cg_unary(g, n);
     case N_BINARY:  return cg_binary(g, n);
     case N_MEMBER:  return cg_member(g, n);
+    case N_INDEX:   return cg_index(g, n);
     case N_CALL:    return cg_call(g, n);
     default:        ERRV(g, "%s", bad(g, n, "this expression"));
     }

@@ -71,6 +71,17 @@ Type *infer_node_type(CG *g, Node *n)
         if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
         return s->ret;
     }
+    case N_INDEX: {
+        /* `m["k"]` / `l[0]`. A list yields its element type; a runtime map holds
+         * whatever was put in, so the result is the same opaque type a map
+         * literal produces -- there is nothing written down to be more precise
+         * about. That is what makes a chained `m["p"][1]` an opaque i8*, which
+         * cg_index() hands to the runtime to resolve. */
+        Type *ot = infer_node_type(g, n->as.index.obj);
+        if (ot && ot->kind == TY_LIST)
+            return ot->elem && ot->elem->kind != TY_ANY ? ot->elem : any_type();
+        return type_anon_struct();
+    }
     case N_MAP_LIT: return type_anon_struct();
     case N_MEMBER:  return member_field_type(g, n);
     case N_LIST_LIT: {

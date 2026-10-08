@@ -389,6 +389,12 @@ void *lume_list_at_obj(const LumeList *l, long i)
 long lume_list_print(const LumeList *l)
 {
     if (!l) return emit("[]\n");
+    /* An opaque i8* that is really a string (e.g. the result of a map read)
+     * reaches here with a bogus kind; dereferencing its slots would crash.
+     * The interpreter tags values, the native path does not, so it can only
+     * tell a container from a string by this field. Anything that is not a
+     * list is not printable this way (SPEC 6.2). */
+    if (l->kind != LUME_CTR_LIST) { fputs("(opaque value)\n", stdout); return 0; }
     return emit("[") + container_body(l) + emit("]\n");
 }
 
@@ -548,6 +554,67 @@ const char *lume_map_at_strict_str(const LumeMap *m, const char *k, int *ok)
     return m->vals[i].str;
 }
 
+/* ---------- unified index entry (SPEC 6.2) ----------
+ *
+ * Both emitters lower `m["k"]` and `l[0]` through these, for one reason: the
+ * emitter often cannot know which of the two it is looking at. `m["p"][1]`
+ * reads a container out of a map and what comes back is an opaque i8* -- the
+ * same pointer a string is -- so there is nothing in the IR to dispatch on.
+ *
+ * The container knows, though: `kind` sits at the same offset in LumeList and
+ * LumeMap, so reading one field off the pointer answers it. That branch lives
+ * here, once, rather than being duplicated across two emitters and guessed at
+ * each one.
+ *
+ * Each sets g_index_failed when the read did not happen; the caller checks the
+ * flag and calls lume_index_error(). A negative list index counts from the end.
+ */
+
+int lume_is_map(void *c)
+{
+    return c && ((const LumeList *)c)->kind == LUME_CTR_MAP;
+}
+
+int lume_is_list(void *c)
+{
+    return c && ((const LumeList *)c)->kind == LUME_CTR_LIST;
+}
+
+/* The key travels as its own argument in the shape its container needs: an i64
+ * for a list index (so `l[0]` emits `i64 0`, not `i8* 0` -- an integer constant
+ * spelled as a pointer is rejected by clang), and a char* for a map key. Both are
+ * always passed; the unused one is ignored, which is cheaper than two entry
+ * points per shape. */
+long lume_index_int(void *c, long idx, const char *key)
+{
+    g_index_failed = 0;
+    if (!c) { g_index_failed = 1; return 0; }
+    if (((const LumeList *)c)->kind == LUME_CTR_LIST)
+        return lume_list_at_strict((const LumeList *)c, idx);
+    return lume_map_at_strict_i((const LumeMap *)c, key);
+}
+
+double lume_index_float(void *c, long idx, const char *key)
+{
+    g_index_failed = 0;
+    if (!c) { g_index_failed = 1; return 0; }
+    if (((const LumeList *)c)->kind == LUME_CTR_LIST)
+        return lume_list_at_strict_f((const LumeList *)c, idx);
+    return lume_map_at_strict_f((const LumeMap *)c, key);
+}
+
+/* The i8* result case: a string element and a nested container are the same
+ * pointer in IR, so this dispatches on the slot tag and hands back whichever it
+ * is. */
+void *lume_index_ptr(void *c, long idx, const char *key)
+{
+    g_index_failed = 0;
+    if (!c) { g_index_failed = 1; return NULL; }
+    if (((const LumeList *)c)->kind == LUME_CTR_LIST)
+        return lume_list_at_strict_ptr((const LumeList *)c, idx);
+    return lume_map_at_strict_ptr((const LumeMap *)c, key);
+}
+
 
 long lume_map_len(const LumeMap *m) { return m ? m->len : 0; }
 
@@ -656,5 +723,9 @@ LumeList *lume_map_keys(const LumeMap *m)
 long lume_map_print(const LumeMap *m)
 {
     if (!m) return emit("{}\n");
+    /* Same opaque-i8* guard as lume_list_print: a string the emitter could
+     * not type (map value types are not tracked) looks like a map here but is
+     * not one. Printing it as a map would dereference string bytes as slots. */
+    if (m->kind != LUME_CTR_MAP) { fputs("(opaque value)\n", stdout); return 0; }
     return emit("{") + container_body(m) + emit("}\n");
 }

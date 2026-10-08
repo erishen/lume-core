@@ -338,6 +338,7 @@ typedef struct { LLVMValueRef v; Type *ty; } Val;
 
 static Val coerce(CG *g, Type *to, Val v, size_t line);
 static Val cg_assign_mem(CG *g, Node *n);   /* defined with cg_stmt, used by cg_expr */
+static Val cg_index(CG *g, Node *n);        /* m["k"] / l[0] -- defined after cg_expr */
 static Val cg_expr(CG *g, Node *n);
 static void cg_stmt(CG *g, Node *n);
 static void cg_block(CG *g, Node *blk);
@@ -369,6 +370,7 @@ static const char *node_type_name(NodeType t)
     case N_FUNC_LIT: return "closure";          case N_CALL:   return "call";
     case N_MEMBER:  return "field access";      case N_UNARY:  return "unary";
     case N_BINARY:  return "binary";            case N_IMPORT: return "import";
+    case N_INDEX:   return "index";
     }
     return "node";
 }
@@ -1493,9 +1495,116 @@ static Val cg_expr(CG *g, Node *n)
     case N_UNARY:    return cg_unary(g, n);
     case N_BINARY:   return cg_binary(g, n);
     case N_MEMBER:   return cg_member(g, n);
+    case N_INDEX:    return cg_index(g, n);
     case N_CALL:     return cg_call(g, n);
     default:         ERRV(g, "%s", bad(g, n, "this expression"));
     }
+}
+
+/* `m["k"]` / `l[0]`.
+ *
+ * Lowered the same way as the text backend: index first, then container
+ * (matching the interpreter's evaluation order so a key with a side effect runs
+ * first), and the read goes through the unified lume_index_* entry points
+ * rather than a per-shape accessor chosen here. The emitter often cannot tell a
+ * list from a map -- `m["p"][1]` hands over an opaque i8* and a runtime map's
+ * value type is written down nowhere -- so the container's own kind does the
+ * dispatch, in rt.c, once.
+ *
+ * Strictness (a missing key or out-of-range index stopping the program) has to
+ * be a call the emitted program makes, exactly as in the text backend: the
+ * read sets g_index_failed and lume_index_error() reports and exits, like every
+ * other fatal native condition. The three-block shape (bad / ok, the join is
+ * implicit -- the read's result is used directly from the pre-branch block)
+ * follows the `?` propagation lowering in cg_call. */
+static Val cg_index(CG *g, Node *n)
+{
+    Val ix  = cg_expr(g, n->as.index.index);
+    if (!ix.v) ERRV(g, "line %zu: bad index expression", n->line);
+    Val obj = cg_expr(g, n->as.index.obj);
+    if (!obj.v) ERRV(g, "line %zu: bad index operand", n->line);
+
+    int known_map  = obj.ty && obj.ty->kind == TY_STRUCT && !obj.ty->name;
+    int known_list = obj.ty && obj.ty->kind == TY_LIST;
+    if (!known_map && !known_list) {
+        Type *k = obj.ty;
+        int opaque = k && (k->kind == TY_STRUCT || k->kind == TY_LIST);
+        if (!opaque)
+            ERRV(g, "line %zu: cannot index into a value of type '%s'", n->line,
+                 k ? src_type_name(k) : "unknown");
+    }
+
+    Type *rty = known_list ? (obj.ty->elem ? obj.ty->elem : any_type())
+                           : type_anon_struct();
+    LLVMTypeRef ret_ty;
+    const char *fn;
+    switch (rty->kind) {
+    case TY_FLOAT:
+        ret_ty = g->dbl;  fn = "lume_index_float";  break;
+    case TY_STRING: case TY_STRUCT: case TY_LIST: case TY_NULL: case TY_ANY:
+        ret_ty = g->i8ptr; fn = "lume_index_ptr";  break;
+    default:
+        ret_ty = g->i64;  fn = "lume_index_int";   break;  /* int / bool */
+    }
+
+    /* The index is an i64 for a list and an i8* for a map, passed in that order
+     * so the runtime uses whichever its container needs. Which slot the index
+     * travels in is the one thing knowable here, and it is the same rule the
+     * text backend's rt_arg_type() applies: a string / list / struct / result
+     * index is a pointer (the key), everything else an integer (the index). An
+     * `any` index lowers to i64 on both backends, so a backend that refused it
+     * for the wrong reason refuses it the same way as its sibling. */
+    int ix_is_str;
+    if (ix.ty) {
+        switch (ix.ty->kind) {
+        case TY_STRING: case TY_LIST: case TY_STRUCT: case TY_RESULT:
+            ix_is_str = 1; break;
+        default:
+            ix_is_str = 0;
+        }
+    } else ix_is_str = 0;
+
+    LLVMTypeRef iparams[3] = { g->i8ptr, g->i64, g->i8ptr };
+    LLVMValueRef iargs[3];
+    iargs[0] = obj.v;
+    if (ix_is_str) {
+        iargs[1] = LLVMConstInt(g->i64, 0, 0);
+        iargs[2] = ix.v;
+    } else {
+        iargs[1] = ix.v;
+        iargs[2] = LLVMConstNull(g->i8ptr);
+    }
+
+    LLVMValueRef call = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(ret_ty, iparams, 3, 0),
+            rt_decl(g, fn, ret_ty, iparams, 3),
+            iargs, 3, "idx");
+
+    /* Strictness, at run time. lume_index_failed() is non-zero when the read
+     * did not happen, and lume_index_error() reports and exits. */
+    LLVMBasicBlockRef bb_bad = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "idx_bad");
+    LLVMBasicBlockRef bb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "idx_ok");
+
+    LLVMValueRef failed = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i64, NULL, 0, 0),
+            rt_decl(g, "lume_index_failed", g->i64, NULL, 0),
+            NULL, 0, "idxfail");
+    LLVMValueRef cond = LLVMBuildICmp(g->ab, LLVMIntNE, failed,
+                                      LLVMConstInt(g->i64, 0, 0), "idxbad");
+    if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, cond, bb_bad, bb_ok);
+
+    g->cur = bb_bad; AT(g);
+    LLVMValueRef what = cg_string_val(g,
+            known_map ? "no such key in this map" : "index out of range",
+            known_map ? 23 : 19);
+    LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
+            rt_decl(g, "lume_index_error", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
+            (LLVMValueRef[]){ what }, 1, "");
+    if (!DONE(g->cur)) LLVMBuildUnreachable(g->ab);
+
+    g->cur = bb_ok; AT(g);
+    return val_make(rty, call);
 }
 
 /* -------------------------------------------------------------- scanning ---- */
@@ -1544,6 +1653,15 @@ static Type *infer_node_type(CG *g, Node *n)
         return s->ret;
     }
     case N_LIST_LIT: { Type *et = infer_list_elem(n); return type_list(et ? et : any_type()); }
+    case N_INDEX: {
+        /* Kept in step with codegen_scan.c's copy -- the two backends each carry
+         * their own infer_node_type, and a kind handled in one but not the other
+         * shows up as a backend that refuses what the other accepts. */
+        Type *ot = infer_node_type(g, n->as.index.obj);
+        if (ot && ot->kind == TY_LIST)
+            return ot->elem && ot->elem->kind != TY_ANY ? ot->elem : any_type();
+        return type_anon_struct();
+    }
     case N_MAP_LIT:  return type_anon_struct();
     case N_MEMBER:   return member_field_type(g, n);
     case N_UNARY: {
