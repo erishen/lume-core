@@ -490,6 +490,14 @@ static void node_free_kids(Node *n) {
         node_free(n->as.binary.left);
         node_free(n->as.binary.right);
         break;
+    case N_INDEX:
+        /* Index syntax (m["k"], l[0]) chains like N_MEMBER: without this
+         * case the node fell into the "no children" default and both the
+         * base expression and the index expression leaked (CI asan caught
+         * it the day after the syntax landed). */
+        node_free(n->as.index.obj);
+        node_free(n->as.index.index);
+        break;
     default: break; /* no children (literals, imports, declarations, ...) */
     }
 }
