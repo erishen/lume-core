@@ -358,7 +358,7 @@ static Val cg_literal(CG *g, Node *n)
 
 static Val cg_var(CG *g, Node *n)
 {
-    Asg *a = asg_find(&g->locals, n->as.var.name);
+    Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
     if (!a) ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
 
     const char *lt = llvm_type_of(a->ty);
@@ -965,7 +965,7 @@ Val cg_assign_expr(CG *g, Node *n)
 {
     Val v = cg_expr(g, n->as.assign.value);
 
-    Asg *a = asg_find(&g->locals, n->as.assign.name);
+    Asg *a = asg_find(&g->locals, n->as.assign.name, n->line);
     if (!a) { free(v.v); ERRV(g, "line %zu: assignment to unknown variable '%s'",
                               n->line, n->as.assign.name); }
 

@@ -39,6 +39,10 @@ All notable changes to Lume are documented here. The format follows
   在函数体内不可见（预先存在，含标量）；空列表字面量直接进 HOF 拒绝（标注变量替代写法
   三后端一致）；locals 表类型查找位置盲（§8.1 #4 的尾巴，后绑定同名可让先前 for-in 拿错
   元素类型）。
+- **§8.1 #12 已修（2026-10-08）**：`Asg` 记录声明行号，`asg_find` 位置感知（使用点只见
+  不晚于自己行号的声明，取最新一条），与解释器的 set-or-define 重绑语义逐点对齐；
+  两后端镜像同步。回归用例：`native-consistency.lume` 的 `sz()`（sibling 块同名异型，
+  旧实现首块读到未初始化槽）与 `w2`（for-in 重绑穿透，循环后保持重绑值）。
 
 ### Fixed — two §8.1 native-backend consistency gaps (#1 / #2)
 

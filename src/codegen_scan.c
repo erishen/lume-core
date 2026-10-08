@@ -47,7 +47,7 @@ Type *infer_node_type(CG *g, Node *n)
         default:        return NULL;
         }
     case N_VAR: {
-        Asg *a = asg_find(&g->locals, n->as.var.name);
+        Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
         if (a) return a->ty;
         /* The signature pass runs before any slot is allocated, so a name it
          * already typed is the only other source. */
@@ -214,16 +214,20 @@ static void scan_stmt(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                  n->line, n->as.let.name);
-        asg_push(&g->locals, n->as.let.name, ty, NULL);
+        asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
         break;
     }
 
     case N_FOR: {
         /* A for-in variable is a *binding*, not a `let`, so nothing registers
          * it and the entry-block alloca pass would silently skip it — every
-         * use of the variable then dies as an unknown variable. */
+         * use of the variable then dies as an unknown variable. It binds in
+         * the enclosing scope (the interpreter's for-in assigns through to an
+         * existing name and leaves it bound after the loop), so it takes the
+         * for statement's own line and no block of its own. */
         if (n->as.fors.is_in) {
-            asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL);
+            asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL,
+                     n->line);
             scan_stmt(g, n->as.fors.body);
             break;
         }
@@ -234,7 +238,7 @@ static void scan_stmt(CG *g, Node *n)
             if (!ty)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                      init->line, init->as.let.name);
-            asg_push(&g->locals, init->as.let.name, ty, NULL);
+            asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
         }
         scan_stmt(g, n->as.fors.body);
         break;

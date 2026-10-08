@@ -162,7 +162,7 @@ static void cg_for_in(CG *g, Node *n)
      * iterates its keys, so that spelling is the test. */
     bool is_map = it.ty && it.ty->kind == TY_STRUCT && !it.ty->name;
 
-    Asg *a = asg_find(&g->locals, n->as.fors.var);
+    Asg *a = asg_find(&g->locals, n->as.fors.var, n->line);
     if (!a) { free(it.v); ERRX(g, "line %zu: unknown variable '%s'", n->line, n->as.fors.var); }
     Type *et = a->ty;
     const char *lt = llvm_type_of(et);
@@ -343,7 +343,7 @@ static void cg_stmt(CG *g, Node *n)
         const char *lt = llvm_type_of(ty);
         if (!lt) ERRX(g, "line %zu: cannot store '%s' into a typed local",
                      n->line, n->as.let.name);
-        Asg *a = asg_find(&g->locals, n->as.let.name);
+        Asg *a = asg_find(&g->locals, n->as.let.name, n->line);
         if (!a) { free(v.v); ERRX(g, "line %zu: unknown variable '%s'", n->line, n->as.let.name); }
         EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
         free(v.v);
@@ -666,7 +666,8 @@ static void cg_def(CG *g, const char *sym, const char *title,
             char pslot[48];
             snprintf(pslot, sizeof pslot, "%%p%d", i);
             asg_push(&g->locals, names[i], params[i],
-                     params[i] && params[i]->kind == TY_STRUCT ? pslot : NULL);
+                     params[i] && params[i]->kind == TY_STRUCT ? pslot : NULL,
+                     0);
         }
     }
     scan_block(g, body);
@@ -702,7 +703,7 @@ static void cg_def(CG *g, const char *sym, const char *title,
             if (params[i] && params[i]->kind == TY_STRUCT) continue;
             const char *pt = llvm_type_of(params[i]);
             EMIT(g, "  store %s %%p%d, %s* %s\n", pt, i, pt,
-                 asg_find(&g->locals, names[i])->slot);
+                 asg_find(&g->locals, names[i], 0)->slot);
         }
     }
 

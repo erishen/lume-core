@@ -73,7 +73,7 @@ char *xstrdup(const char *s);
 
 /* ------------------------------------------------------------ codegen ctx --- */
 
-typedef struct { char *name; Type *ty; char *slot; } Asg;
+typedef struct { char *name; Type *ty; char *slot; size_t line; } Asg;
 typedef struct { Asg *v; int n, cap; } Asgs;
 
 /* A name whose type the signature pass already knows, and the table it is
@@ -149,8 +149,9 @@ typedef struct {
 
 /* ------------------------------------------------------------- the emitters --- */
 
-Asg *asg_find(Asgs *a, const char *name);
-void asg_push(Asgs *a, const char *name, Type *ty, const char *slot);
+Asg *asg_find(Asgs *a, const char *name, size_t use_line);
+void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
+              size_t line);
 void asgs_free(Asgs *a);
 const char *bad(CG *g, Node *n, const char *what);
 Val cg_assign_expr(CG *g, Node *n);

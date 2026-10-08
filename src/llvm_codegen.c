@@ -69,7 +69,7 @@ static char *xstrdup(const char *s)
 
 /* ------------------------------------------------------------ codegen ctx --- */
 
-typedef struct { char *name; Type *ty; LLVMValueRef slot; } Asg;
+typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line; } Asg;
 typedef struct { Asg *v; int n, cap; } Asgs;
 
 typedef struct { char *name; Type *ret; Type **params; int arity; } Sig;
@@ -159,7 +159,8 @@ static void asgs_free(Asgs *a)
 }
 
 /* slot == NULL asks for a fresh local slot. */
-static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot)
+static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
+                     size_t line)
 {
     if (a->n == a->cap) {
         a->cap = a->cap ? a->cap * 2 : 8;
@@ -168,13 +169,20 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot)
     a->v[a->n].name = xstrdup(name);
     a->v[a->n].ty   = ty;
     a->v[a->n].slot = slot;
+    /* Declaration line — see codegen.c's asg_push. The flat pre-scanned
+     * table can hold several same-name bindings (loop variable + a later
+     * `let` of a different type); lookup is position-aware so a use site
+     * only sees declarations at or above its own line, matching the
+     * interpreter's sequential set-or-define rebinding. */
+    a->v[a->n].line = line;
     a->n++;
 }
 
-static Asg *asg_find(Asgs *a, const char *name)
+static Asg *asg_find(Asgs *a, const char *name, size_t use_line)
 {
     for (int i = a->n - 1; i >= 0; i--)
-        if (strcmp(a->v[i].name, name) == 0) return &a->v[i];
+        if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line)
+            return &a->v[i];
     return NULL;
 }
 
@@ -426,7 +434,7 @@ static Val cg_literal(CG *g, Node *n)
 
 static Val cg_var(CG *g, Node *n)
 {
-    Asg *a = asg_find(&g->locals, n->as.var.name);
+    Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
     if (!a) ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
     if (!ty_of(g, a->ty))
         ERRV(g, "line %zu: variable '%s' has no codegen type", n->line, n->as.var.name);
@@ -885,7 +893,7 @@ static Val cg_assign_expr(CG *g, Node *n)
     AT(g);
     Val v = cg_expr(g, n->as.assign.value);
 
-    Asg *a = asg_find(&g->locals, n->as.assign.name);
+    Asg *a = asg_find(&g->locals, n->as.assign.name, n->line);
     if (!a) ERRV(g, "line %zu: assignment to unknown variable '%s'",
                  n->line, n->as.assign.name);
 
@@ -2107,7 +2115,7 @@ static Type *infer_node_type(CG *g, Node *n)
         default:        return NULL;
         }
     case N_VAR: {
-        Asg *a = asg_find(&g->locals, n->as.var.name);
+        Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
         return a ? a->ty : NULL;
     }
     case N_FUNC_LIT: {
@@ -2243,14 +2251,16 @@ static void scan_stmt(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                  n->line, n->as.let.name);
-        asg_push(&g->locals, n->as.let.name, ty, NULL);
+        asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
         break;
     }
     case N_FOR: {
         /* `for (x in xs)` binds the loop variable — it is not a `let`, so
-         * without registering it here the body's use of it dies in codegen. */
+         * without registering it here the body's use of it dies in codegen.
+         * It binds in the enclosing scope (mirrors codegen_scan.c). */
         if (n->as.fors.is_in) {
-            asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL);
+            asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL,
+                     n->line);
             scan_stmt(g, n->as.fors.body);
             break;
         }
@@ -2261,7 +2271,7 @@ static void scan_stmt(CG *g, Node *n)
             if (!ty)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                      init->line, init->as.let.name);
-            asg_push(&g->locals, init->as.let.name, ty, NULL);
+            asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
         }
         scan_stmt(g, n->as.fors.body);
         break;
@@ -2410,7 +2420,7 @@ static void cg_for_in(CG *g, Node *n)
     /* Only a map iterates its keys, so that spelling is the test. */
     bool is_map = it.ty && it.ty->kind == TY_STRUCT && !it.ty->name;
 
-    Asg *a = asg_find(&g->locals, n->as.fors.var);
+    Asg *a = asg_find(&g->locals, n->as.fors.var, n->line);
     if (!a) ERRX(g, "line %zu: unknown variable '%s'", n->line, n->as.fors.var);
     Type *et = a->ty;
     const char *fn = is_map ? NULL : list_at_fn(et);
@@ -2567,7 +2577,7 @@ static void cg_stmt(CG *g, Node *n)
         if (!ty_of(g, ty))
             ERRX(g, "line %zu: cannot store this into a typed local", n->line);
 
-        Asg *a = asg_find(&g->locals, n->as.let.name);
+        Asg *a = asg_find(&g->locals, n->as.let.name, n->line);
         if (!a) ERRX(g, "internal: '%s' was not allocated by the scan pass",
                      n->as.let.name);
         if (!a->slot) a->slot = LLVMBuildAlloca(g->ab, ty_of(g, ty), "lv");
@@ -2698,7 +2708,8 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
         for (int i = 0; i < arity; i++)
             asg_push(&g->locals, names[i], params[i],
                      (params[i] && params[i]->kind == TY_STRUCT)
-                         ? pv[i + (has_cap ? 1 : 0)] : NULL);
+                         ? pv[i + (has_cap ? 1 : 0)] : NULL,
+                     0);
     }
 
     scan_block(g, body);
@@ -2728,7 +2739,7 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
         for (int i = 0; i < arity; i++) {
             if (params[i] && params[i]->kind == TY_STRUCT) continue;
             LLVMBuildStore(g->ab, pv[i + (has_cap ? 1 : 0)],
-                           asg_find(&g->locals, names[i])->slot);
+                           asg_find(&g->locals, names[i], 0)->slot);
         }
     }
 

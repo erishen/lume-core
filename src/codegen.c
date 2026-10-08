@@ -62,7 +62,8 @@ void asgs_free(Asgs *a)
 /* `slot` is the LLVM name holding the variable's address; passing NULL asks
  * for the ordinary `%lv_<name>` local slot. */
 
-void asg_push(Asgs *a, const char *name, Type *ty, const char *slot)
+void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
+              size_t line)
 {
     if (a->n == a->cap) {
         a->cap = a->cap ? a->cap * 2 : 8;
@@ -87,13 +88,23 @@ void asg_push(Asgs *a, const char *name, Type *ty, const char *slot)
     a->v[a->n].name = xstrdup(name);
     a->v[a->n].ty   = ty;
     a->v[a->n].slot = xstrdup(default_slot);
+    /* The declaration's source line. The locals table is pre-scanned flat
+     * (the entry block needs every slot before any statement is emitted),
+     * so a name can appear several times — a loop variable and a later
+     * same-name `let` of a different type, say. Lookup is therefore
+     * position-aware: a use site may only see declarations at or above its
+     * own line. That is what makes the native backends agree with the
+     * interpreter, whose set-or-define env rebinds a name sequentially:
+     * the visible binding at a use is the latest one declared before it. */
+    a->v[a->n].line = line;
     a->n++;
 }
 
-Asg *asg_find(Asgs *a, const char *name)
+Asg *asg_find(Asgs *a, const char *name, size_t use_line)
 {
     for (int i = a->n - 1; i >= 0; i--)
-        if (strcmp(a->v[i].name, name) == 0) return &a->v[i];
+        if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line)
+            return &a->v[i];
     return NULL;
 }
 
