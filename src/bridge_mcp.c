@@ -80,6 +80,54 @@ static void value_to_json(VM *vm, sbuf *b, Value v) {
     json_append_value(vm, b, v);
 }
 
+/* Convert a tool's simplified params map ({"k":"string",...}, as written in
+ * `tool "n", "d", {..}, h;`) into a standard JSON Schema object:
+ * {"type":"object","properties":{"k":{"type":"..."}}}. Mainstream MCP
+ * clients (Claude Desktop etc.) validate tools/list against JSON Schema, so
+ * the shorthand is normalised here. All properties are optional: handlers
+ * fall back to defaults via get(params, k, def). */
+static void mcp_schema_json(VM *vm, const char *params_json, sbuf *b) {
+    if (!params_json || !params_json[0]) {
+        sb_str(b, "{\"type\":\"object\"}");
+        return;
+    }
+    char jerr[256] = {0};
+    json_parse(vm, params_json, jerr, sizeof jerr);
+    if (vm->error) {
+        vm->error = false;
+        vm->error_msg[0] = '\0';
+        sb_str(b, "{\"type\":\"object\"}");
+        return;
+    }
+    Value mv = vm_pop(vm);
+    sb_str(b, "{\"type\":\"object\",\"properties\":{");
+    if (IS_OBJ(mv) && AS_OBJ(mv)->type == OBJ_MAP) {
+        Obj *m = AS_OBJ(mv);
+        int first = 1;
+        for (int i = 0; i < m->as.map.count; i++) {
+            const char *k = m->as.map.keys[i];
+            Value v = m->as.map.vals[i];
+            const char *t = "string";
+            if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING) {
+                const char *s = obj_string(AS_OBJ(v));
+                if (strcmp(s, "number") == 0 || strcmp(s, "float") == 0)
+                    t = "number";
+                else if (strcmp(s, "int") == 0) t = "integer";
+                else if (strcmp(s, "bool") == 0) t = "boolean";
+                else if (strcmp(s, "array") == 0) t = "array";
+                else if (strcmp(s, "object") == 0) t = "object";
+            }
+            if (!first) sb_str(b, ",");
+            first = 0;
+            json_esc(b, k);
+            sb_str(b, ":{\"type\":");
+            json_esc(b, t);
+            sb_str(b, "}");
+        }
+    }
+    sb_str(b, "}}");
+}
+
 /* tools/list: name / description / inputSchema for every registered tool. */
 static void mcp_tools_list(VM *vm, long long id) {
     sbuf b = {0};
@@ -92,8 +140,9 @@ static void mcp_tools_list(VM *vm, long long id) {
         sb_str(&b, ",\"description\":");
         json_esc(&b, r->desc);
         sb_str(&b, ",\"inputSchema\":");
-        /* params was stored as JSON text (bridge_define_tool snprintf'd it) */
-        sb_str(&b, r->params[0] ? r->params : "{}");
+        /* params was stored as JSON text (bridge_define_tool snprintf'd it);
+         * normalise the shorthand into a standard JSON Schema. */
+        mcp_schema_json(vm, r->params, &b);
         sb_str(&b, "}");
     }
     sb_str(&b, "]}");
@@ -160,6 +209,10 @@ void mcp_run(VM *vm) {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
+    /* stdout carries the JSON-RPC protocol; stderr is free for diagnostics
+     * so a client can see why a connection is not answering. */
+    fprintf(stderr, "lume-mcp: %d tool(s) registered, ready on stdio\n",
+            vm->tool_count);
     char line[65536];
     while (fgets(line, sizeof line, stdin)) {
         size_t n = strlen(line);
@@ -224,4 +277,5 @@ void mcp_run(VM *vm) {
             if (!notif) mcp_write(id, NULL, -32601, "method not found");
         }
     }
+    fprintf(stderr, "lume-mcp: stdin EOF, exiting\n");
 }

@@ -16,6 +16,13 @@ All notable changes to Lume are documented here. The format follows
   results return as plain text, other values as JSON). JSON-RPC errors use
   the spec codes (-32700/-32600/-32601/-32602); notifications get no reply.
 - Windows: stdin/stdout are switched to binary mode so \n framing is exact.
+- `tools/list` normalises the shorthand params map (`{"k":"string",...}`)
+  into a standard JSON Schema object (`{"type":"object","properties":...}`),
+  so mainstream MCP clients (e.g. Claude Desktop) can validate arguments.
+  All properties are optional; handlers fall back via `get(params, k, def)`.
+- Startup/shutdown diagnostics go to stderr (`lume-mcp: N tool(s)
+  registered...` / `stdin EOF, exiting`) — stdout stays a clean protocol
+  stream for the client.
 
 ### Fixed — write_file() replacing an existing file on Windows
 
