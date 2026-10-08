@@ -35,14 +35,16 @@ UNAME_S := $(shell uname -s)
 # `uname -s` reports MINGW64_NT-..., MSYS_NT-... or CYGWIN_NT-.... The native
 # Windows port targets mingw-w64: the source carries #ifdef _WIN32 shims for
 # the platform-specific spots, and HTTP/TLS is opted out (see below).
+# The $(OS) check comes first: it is a cmd.exe environment variable and stays
+# reliable even when uname is not on PATH (mingw32-make + plain cmd).
 IS_WINDOWS :=
-ifneq ($(findstring MINGW,$(UNAME_S)),)
+ifeq ($(OS),Windows_NT)
 IS_WINDOWS := 1
-endif
-ifneq ($(findstring MSYS,$(UNAME_S)),)
+else ifneq ($(findstring MINGW,$(UNAME_S)),)
 IS_WINDOWS := 1
-endif
-ifneq ($(findstring CYGWIN,$(UNAME_S)),)
+else ifneq ($(findstring MSYS,$(UNAME_S)),)
+IS_WINDOWS := 1
+else ifneq ($(findstring CYGWIN,$(UNAME_S)),)
 IS_WINDOWS := 1
 endif
 # HTTP/TLS is on by default; the Windows/mingw port turns it off and excludes
@@ -200,11 +202,23 @@ INT_HDRS := $(wildcard src/*_internal.h)
 
 all: bin $(TARGET)
 
+# Directory targets: on non-Windows (sh) `mkdir -p` is idempotent and stays
+# in the recipe. On Windows, mingw32-make may run recipes under cmd.exe where
+# mkdir has no -p and errors on existing directories (and the SHELL env var
+# is unreliable - Git Bash injects sh paths even when cmd runs the recipe),
+# so create the dirs once at parse time through `cmd /c` (idempotent, no -p
+# side-effect) and give the targets an empty recipe so `make -B` cannot fail
+# on a directory that already exists.
+ifeq ($(strip $(IS_WINDOWS)),)
 build:
 	mkdir -p build
-
 bin:
 	mkdir -p bin
+else
+$(shell cmd /c "if not exist build mkdir build & if not exist bin mkdir bin")
+build: ;
+bin: ;
+endif
 
 build/%.o: src/%.c src/lume.h $(INT_HDRS) | build $(AH_LIB)
 	$(CC) $(CFLAGS) -c $< -o $@
