@@ -4,7 +4,7 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-08
 
 ### Added — string tools (codegen-oriented)
 
