@@ -2875,6 +2875,12 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
         asgs_free(&g->locals);
     }
     g->locals = saved;
+    /* The body ran with its own break/continue stacks (cg_def NULLs them on
+     * the way in); they were grown by push_bb inside this function, so free
+     * them before the outer pointers come back -- restoring over them used
+     * to drop the blocks and CI's asan leg caught exactly that (a top-level
+     * for-in makes L_top itself a body that grows both stacks). */
+    free(g->brk); free(g->cnt);
     g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
     g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
     g->cur_ret = saved_ret;
