@@ -539,7 +539,7 @@ path so `Conn.ssl` still compiles, and the `SSL_write` / `SSL_read` /
 
 ### Changed — the tree itself is named lume-core
 
-- **The directory is now `work/research/lume-core`** (previously `lume-lang`).
+- **The directory is now `lume-core`** (previously `lume-lang`).
   The artifact, the PATH entry and the package name had already become
   `lume-core`, so the tree, its binary and its tarball went by two different
   names and every doc had to spell out which was which. `core` also reads
@@ -620,9 +620,9 @@ path so `Conn.ssl` still compiles, and the `SSL_write` / `SSL_read` /
 
 ### Changed — this tree is the host-independent standalone compiler
 
-`work/research/lume-core` starts as a two-file research sketch and now carries
+`lume-core` starts as a two-file research sketch and now carries
 the language itself (moved over **without** the host's history, on top of the
-existing `594648b` initial commit). The host tree `work/research/lume` keeps
+existing `594648b` initial commit). The host tree `lume` keeps
 the `agent-httpd` embedding and is untouched; this fork is the tree that owns
 the language from here on, and it links **libc + optional libLLVM only** — no
 HTTP server, no agent runtime, no Docker, no submodules:

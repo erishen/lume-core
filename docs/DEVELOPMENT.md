@@ -4,7 +4,7 @@ Lume 是一门内嵌的可强类型脚本 DSL，宿主语言为 C11，只依赖 
 探测、`llvm-config` 存在时**可选**链 libLLVM）。本树**没有 HTTP 服务器、没有
 agent 运行时、没有前端、没有 Docker、没有 git submodule**。
 
-> 同一份语言还有个宿主树 `work/research/lume`：它把 Lume 嵌进 agent-httpd
+> 同一份语言还有个宿主树 `lume`：它把 Lume 嵌进 agent-httpd
 > （服务器 / agent 工具 / React 前端 / 容器镜像），动词一律**加服务器**，例如
 > `route` 注册的是远端路由、`run()` 真的伺服、`make invest` 起 UI。
 > 本树是同一份源码的**不带历史的切分**：语言本体从那边搬过来，agent-httpd

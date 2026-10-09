@@ -1,6 +1,6 @@
 /* bridge_serve.c — in-tree HTTP server for the standalone lume-core.
  *
- * The host tree (work/research/lume) serves routes through agent-httpd;
+ * The host tree (lume) serves routes through agent-httpd;
  * this tree has no agent-httpd, so bridge_run() implements a minimal
  * single-threaded HTTP server directly on sockets and dispatches requests
  * through vm->routes, exactly like the host bridge's shape:

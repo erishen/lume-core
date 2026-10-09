@@ -2,7 +2,7 @@
 
 > 正向清单：**该怎么写**。`PITFALLS.md` 告诉你「别踩什么」，这里告诉你「踩过的坑之后
 > 正确的写法长什么样」。约定全部经过 `--check` 与真实 HTTP 冒烟验证，示例取自
-> `work/research/lume-crm`（Lume + React CRM，可整份对照）。
+> `lume-crm`（Lume + React CRM，可整份对照）。
 >
 > 适用版本：含 `try` 固定键 / 箭头表达式体 / 字符串键 map / `push` / `spa` 的二进制
 > （git log 自 `39ac355` 起；`make` 重新构建后生效）。

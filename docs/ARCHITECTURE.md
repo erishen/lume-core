@@ -1,11 +1,11 @@
 # Lume 架构文档（本树：脱离宿主的独立语言树）
 
-本文描述 `work/research/lume-core` 这棵 fork 树：它是**一门自研语言的编译器
+本文描述 `lume-core` 这棵 fork 树：它是**一门自研语言的编译器
 + 解释器**，只依赖 libc（外加可选链 libLLVM）。
 
 > 同一份语言在仓库里还有两处：
-> - 本树 `work/research/lume-core` —— 独立语言树，语言改动**先落在这里**；
-> - `work/research/lume` —— 宿主树，把 Lume 嵌进 agent-httpd（HTTP 服务器 /
+> - 本树 `lume-core` —— 独立语言树，语言改动**先落在这里**；
+> - `lume` —— 宿主树，把 Lume 嵌进 agent-httpd（HTTP 服务器 /
 >   agent 运行时 / 前端 / Docker），**保留原样、继续依赖 agent-httpd**。
 >
 > 两棵树是同一批源码的两个切分：本树是「不带历史的那一版」，语言本体从宿主

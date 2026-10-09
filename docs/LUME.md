@@ -1,8 +1,8 @@
 # Lume 用户指南
 
-本树(`work/research/lume-core`)是 **语言本体**:一份 `.lume` 脚本 + 一个编译器
+本树(`lume-core`)是 **语言本体**:一份 `.lume` 脚本 + 一个编译器
 (`bin/lume-core`)。这里**没有 HTTP 服务器、没有前端构建、没有 Agent 运行时**——
-宿主树 `work/research/lume` 才有那套东西。
+宿主树 `lume` 才有那套东西。
 
 - 想知道"这两个仓库分别是什么":见 [README.md](../README.md) 开头的对照表。
 - 写业务/写脚本之前:先读 [PITFALLS.md](PITFALLS.md) 与 [STYLE.md](STYLE.md)。

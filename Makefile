@@ -1,5 +1,5 @@
 # Lume — a strongly-typed research language whose native path is libLLVM.
-# This tree is the host-independent fork of work/research/lume: same front
+# This tree is the host-independent fork of lume: same front
 # end, same emitters, but no dependency on agent-httpd / libagenthttpd.a.
 # Nothing here links against anything besides libc, libLLVM (optional) and
 # libsqlite3 (only when a SQL builtin is linked in, which this fork does not).
@@ -90,7 +90,7 @@ HAVE_LLVM := $(if $(strip $(shell $(LLVM_CONFIG) --version 2>/dev/null)),1,0)
 # 直接挂, 比不重编还糟。先归一成一个落地路径(存在的优先, 其次 PATH 解析)。
 LLVM_CONFIG_PATH := $(or $(wildcard $(LLVM_CONFIG)),$(shell command -v $(LLVM_CONFIG) 2>/dev/null))
 
-# 产物名刻意不叫 lume: 宿主 work/research/lume 编出来的也叫 bin/lume, 两棵树摆
+# 产物名刻意不叫 lume: 宿主 lume 编出来的也叫 bin/lume, 两棵树摆
 # 在同一台机器上时能撞成「分不清哪个是哪个」(旧事故: PATH 上那个 lume 是旧产物、
 # 不认新语法, 报错却怪到新代码头上)。这里统一加 -core 后缀, 宿主与语言本体一眼
 # 分得开。另: 只改链接产物名, 不动 Makefile:17 那两个编译期 -D, 所以普通 make
@@ -98,7 +98,7 @@ LLVM_CONFIG_PATH := $(or $(wildcard $(LLVM_CONFIG)),$(shell command -v $(LLVM_CO
 TARGET   := bin/lume-core
 # The fork ships the language-only examples. The server/demo examples from the
 # host tree (hub.lume, invest.lume, react-ssr, abac, the sqlite demos) live in
-# work/research/lume and are deliberately not carried over.
+# lume and are deliberately not carried over.
 HELLO    := examples/hello.lume
 MODULE_APP := examples/modules/app.lume
 # --check on every example the suite type-checks. The native-* pair lives
@@ -363,7 +363,7 @@ vscode-cpp:
 # crypto unit test and both native emitters are what `test` covers here.
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
-# HTTP/e2e suite) and no `ui` bundle — those only exist in work/research/lume.
+# HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
 test: all backend-parity tests/smoke-bin crypt-test native-consistency \
       native native-text treecheck
 

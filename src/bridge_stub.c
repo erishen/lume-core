@@ -1,6 +1,6 @@
 /* Fork-local stand-in for the host tree's src/bridge.c.
  *
- * In work/research/lume, bridge_define_route()/bridge_define_tool() push the
+ * In lume, bridge_define_route()/bridge_define_tool() push the
  * DSL's `route {}` / `tool {}` registrations into agenthttpd's routing and
  * tool tables, and bridge_run() starts the agent-httpd server. This tree has
  * no agent-httpd, so:

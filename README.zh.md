@@ -10,10 +10,10 @@
 服务器、没有 agent 运行时、没有 Docker 镜像。
 
 把 Lume **嵌进** agent 宿主（`libagenthttpd.a`、活体 HTTP、聊天、工具派发、原生
-SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `work/research/lume`：同一门语言，
+SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `lume`：同一门语言，
 不同的部署形态；语言侧改动先落在这棵，宿主树从这边带过去。
 
-| | 本树（`work/research/lume-core`） | 宿主树（`work/research/lume`） |
+| | 本树（`lume-core`） | 宿主树（`lume`） |
 |---|---|---|
 | 定位 | 独立语言 + libLLVM 原生路线 | 语言嵌进 agent-httpd |
 | 链接 | libc、libLLVM（可选） | 再加 `libagenthttpd.a` |
@@ -32,7 +32,7 @@ SQLite 工具、Docker 镜像）的那棵树是姊妹项目 `work/research/lume`
 ## ⚠️ 安全
 
 **本树不带服务、不监听端口、没有 agent 运行时** —— 它是编译器和命令行工具。
-下面那些关于 HTTP 端口的注意事项描述的是**宿主树**（`work/research/lume`）
+下面那些关于 HTTP 端口的注意事项描述的是**宿主树**（`lume`）
 的运行面，只有你跑那棵树时才需要读。
 
 本树的攻击面就是 `lume` 这个二进制本身，规则也就是本地编译器的常规规则：
@@ -134,7 +134,7 @@ sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 
 ### 本树是上游，宿主是下游
 
-同仓兄弟目录 `work/research/lume` 是**服务器产品**。它把本树以 **vendor+pin**
+同仓兄弟目录 `lume` 是**服务器产品**。它把本树以 **vendor+pin**
 的方式持有在 `lang/`：`lang/PIN` 记着上游 `sha` + 宿主叠在其上的文件清单
 （`host_owned`）；那边 `make sync-lang` 推进 pin、`make check-sync` 报告漂移。
 因此：

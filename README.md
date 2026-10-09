@@ -13,11 +13,11 @@ image here.
 
 The tree that embeds Lume **in** the agent host (`libagenthttpd.a`, live HTTP,
 chat, tool dispatch, SQLite tools, Docker image) is the sibling project
-`work/research/lume`. Same language, different deployment shape; changes to
+`lume`. Same language, different deployment shape; changes to
 the language belong in this tree first, and the host tree carries them from
 here.
 
-| | this tree (`work/research/lume-core`) | host tree (`work/research/lume`) |
+| | this tree (`lume-core`) | host tree (`lume`) |
 |---|---|---|
 | purpose | standalone language + libLLVM native path | language embedded in agent-httpd |
 | links | libc, libLLVM (optional) | + `libagenthttpd.a` |
@@ -40,7 +40,7 @@ Rules that follow from that:
 2. Changing any of the shared files means **editing both copies** in the same
    working session — there is no automatic propagation.
 3. **Prove the sync instead of assuming it.** After editing, compare the two
-   copies (`diff work/research/lume/src/lexer.c work/research/lume-core/src/lexer.c`
+   copies (`diff lume/src/lexer.c lume-core/src/lexer.c`
    and the rest of the front-end files). Identical line counts alone are not
    proof; diff the files.
 4. Host-only capabilities (HTTP/agent surface such as `cache_control`) must
@@ -65,7 +65,7 @@ pipeline when you want to see the lowering an emitter produces.
 
 **This tree ships no server, no port and no agent runtime** — it is a compiler
 and CLI. The notes that follow describe the *host* tree's HTTP surface
-(`work/research/lume`); read them only if you are running that tree.
+(`lume`); read them only if you are running that tree.
 
 Here the whole surface is the `lume` binary itself, and the rules are just the
 usual ones for a local compiler:
@@ -203,7 +203,7 @@ Build variables worth knowing:
 
 ### This tree is the upstream, the host is downstream
 
-`work/research/lume` (same repo, sibling directory) is the **server product**.
+`lume` (same repo, sibling directory) is the **server product**.
 It holds `lang/` as a **vendor+pin copy** of this tree: `lang/PIN` records the
 upstream `sha` plus the file list the host owns on top (`host_owned`). In that
 tree `make sync-lang` advances the pin, `make check-sync` reports what has

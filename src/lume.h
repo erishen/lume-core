@@ -32,7 +32,7 @@
 #include <string.h>
 #include <setjmp.h>
 
-/* This tree is the standalone-language build. The host build (work/research/lume)
+/* This tree is the standalone-language build. The host build (lume)
  * pulls in agenthttpd.h here, which is what brought tools.h / skills.h /
  * sqlite_tool.h / minijson.h along with it; this tree links nothing but libc,
  * so there is no agent-httpd include to make.

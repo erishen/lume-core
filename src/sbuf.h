@@ -3,7 +3,7 @@
 
 /* Fork-local growable string buffer.
  *
- * The host tree (work/research/lume) gets this half of agent-httpd's
+ * The host tree (lume) gets this half of agent-httpd's
  * minijson.h — the reader half (jread_string / jfind_value) is not
  * implemented here. src/value.c only needs the buffer half, and this fork
  * deliberately does not depend on agent-httpd, so the three append calls are

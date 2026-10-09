@@ -4,7 +4,7 @@
 //   ./bin/lume --check examples/hello.lume        # 只解析 + 类型检查
 //
 // 注意:本树是纯语言本体,**没有 server {} 也没有 run()** ——
-// 那两样只存在于宿主树 work/research/lume(它嵌了 agent-httpd)。
+// 那两样只存在于宿主树 lume(它嵌了 agent-httpd)。
 // 这里的脚本从上到下执行完就退出,不起服务器、不碰网络。
 
 // 带返回类型的函数;返回值用 return。
