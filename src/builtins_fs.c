@@ -409,3 +409,46 @@ void native_put(VM *vm, int argc, Value *args, Value *out) {
     map_set(vm, AS_OBJ(args[0]), k, args[2]); /* roots map + value internally */
     *out = args[0];
 }
+
+/* Read from standard input (2026-10-09, lume-nsgm M2 interactive CLI).
+ *   read_stdin()        -> one line, newline stripped ("" at EOF / empty line)
+ *   read_stdin("all")   -> everything until EOF
+ * Used by lume-nsgm's `init` command to collect the module name and field
+ * definitions interactively. EOF and an empty line both yield "" so scripts
+ * only have to test emptiness; the 16 MiB cap matches read_file(). */
+void native_read_stdin(VM *vm, int argc, Value *args, Value *out) {
+    const char *mode = NULL;
+    if (argc >= 1 && !arg_string(vm, args[0], &mode)) return;
+    int all = mode && strcmp(mode, "all") == 0;
+    sbuf b = {0};
+    if (all) {
+        char buf[16384];
+        size_t got;
+        while ((got = fread(buf, 1, sizeof buf, stdin)) > 0) {
+            if (b.len + got > (16u << 20)) {
+                free(b.p);
+                vm_set_error(vm, "read_stdin() too large");
+                *out = val_null();
+                return;
+            }
+            sb_mem(&b, buf, got);
+        }
+    } else {
+        int c;
+        while ((c = fgetc(stdin)) != EOF && c != '\n') {
+            if (b.len + 1 > (16u << 20)) {
+                free(b.p);
+                vm_set_error(vm, "read_stdin() too large");
+                *out = val_null();
+                return;
+            }
+            sb_mem(&b, (const char *)&c, 1);
+        }
+    }
+    if (b.oom) { free(b.p); *out = val_null(); return; }
+    /* EOF / empty input must be "" (an empty line), not null — interactive
+     * scripts test emptiness, and "" + x stays a string concatenation. */
+    if (!b.p || b.len == 0) { *out = make_string(vm, "", 0); return; }
+    *out = make_string(vm, b.p, b.len);
+    free(b.p);
+}

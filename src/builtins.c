@@ -354,6 +354,7 @@ Value b_env(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, a
 Value b_argv(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_argv); }
 Value b_files(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_files); }
 Value b_read_file(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_read_file); }
+Value b_read_stdin(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_read_stdin); }
 Value b_write_file(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_write_file); }
 Value b_mkdir(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_mkdir); }
 Value b_lock_file(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_lock_file); }

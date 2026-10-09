@@ -1032,6 +1032,7 @@ void bridge_seed_builtins(VM *vm) {
         {"argv", b_argv},
         {"files", b_files},
         {"read_file", b_read_file},
+        {"read_stdin", b_read_stdin},
         {"write_file", b_write_file},
         {"mkdir", b_mkdir},
         {"lock_file", b_lock_file},

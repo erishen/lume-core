@@ -45,6 +45,7 @@ Value b_env(VM *vm, int argc, Value *args);
 Value b_argv(VM *vm, int argc, Value *args);
 Value b_files(VM *vm, int argc, Value *args);
 Value b_read_file(VM *vm, int argc, Value *args);
+Value b_read_stdin(VM *vm, int argc, Value *args);
 Value b_write_file(VM *vm, int argc, Value *args);
 Value b_mkdir(VM *vm, int argc, Value *args);
 Value b_lock_file(VM *vm, int argc, Value *args);
