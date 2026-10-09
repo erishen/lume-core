@@ -4,6 +4,22 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [0.5.1] - 2026-10-09
+
+### Added — standalone install + version reporting
+
+- Standalone installer `install.sh`: one-line `curl …/install.sh | sh`
+  drops the binary in `~/.local/bin/lume-core` and carries `examples/` +
+  `docs/` to `~/.local/share/lume-core`. Supports `LUME_CORE_VERSION` /
+  `LUME_CORE_PREFIX` / `LUME_CORE_SHA256` / `LUME_CORE_REPO` overrides.
+- `.github/workflows/release.yml`: push a `v*` tag to build on
+  linux-x64 / linux-arm64 / darwin-arm64 (+ darwin-x64 cross) and attach
+  the per-platform tarballs to the GitHub Release; `ci.yml` gained a
+  `release-build` guard job.
+- `lume-core --version` / `-V` prints the build version; the previously
+  hardcoded `0.5.0` in the LSP/MCP `serverInfo` handshake now reads the
+  same `LUME_CORE_VERSION` macro (single source of truth).
+
 ## [0.5.0] - 2026-10-08
 
 ### Added — string tools (codegen-oriented)

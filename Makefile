@@ -28,7 +28,7 @@ CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 # 不再让 0.5.0 在 main.c / bridge_lsp.c / bridge_mcp.c 多处硬编码漂移。
 # 打 release 前在此递增值, 保证二进制自报与 GitHub Release tag 一致
 # (make pack 走 PACK_CFLAGS, 这个 -D 不在 RT_DEFS 里, 会一并带进去)。
-LUME_CORE_VERSION ?= 0.5.0
+LUME_CORE_VERSION ?= 0.5.1
 CFLAGS   += -DLUME_CORE_VERSION=\"$(LUME_CORE_VERSION)\"
 
 # --- 平台 feature-test: 与宿主版/agent-httpd/Makefile:8-22 同口径, 但这里不 ---
