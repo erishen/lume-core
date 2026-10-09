@@ -359,7 +359,7 @@ void lsp_run(VM *vm) {
                 "\"textDocumentSync\":1,"
                 "\"hoverProvider\":true,"
                 "\"completionProvider\":{\"triggerCharacters\":[\".\"]}"
-                "},\"serverInfo\":{\"name\":\"lume-core\",\"version\":\"0.5.0\"}}");
+                "},\"serverInfo\":{\"name\":\"lume-core\",\"version\":" LUME_CORE_VERSION "}}");
         } else if (strcmp(method, "initialized") == 0) {
             /* notification: no reply */
         } else if (strcmp(method, "shutdown") == 0) {

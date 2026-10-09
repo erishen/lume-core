@@ -323,7 +323,7 @@ void mcp_run(VM *vm) {
             mcp_write(id,
                 "{\"protocolVersion\":\"2024-11-05\","
                 "\"capabilities\":{\"tools\":{\"listChanged\":false}},"
-                "\"serverInfo\":{\"name\":\"lume-core\",\"version\":\"0.5.0\"}}",
+                "\"serverInfo\":{\"name\":\"lume-core\",\"version\":" LUME_CORE_VERSION "}}",
                 0, NULL);
         } else if (strcmp(method, "notifications/initialized") == 0) {
             /* no reply to notifications */

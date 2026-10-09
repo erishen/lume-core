@@ -24,6 +24,13 @@ TARGET_TRIPLE_DEFS := -DTARGET_TRIPLE=\"$(TARGET_TRIPLE)\"
 RT_DEFS            := -DLUME_RT_SRC=\"$(CURDIR)/src/rt.c\" -DLUME_NATIVE_SRC=\"$(CURDIR)/src/bridge_native.c\"
 CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 
+# 版本号单一来源: lume-core --version 与 LSP/MCP serverInfo 都读这个宏,
+# 不再让 0.5.0 在 main.c / bridge_lsp.c / bridge_mcp.c 多处硬编码漂移。
+# 打 release 前在此递增值, 保证二进制自报与 GitHub Release tag 一致
+# (make pack 走 PACK_CFLAGS, 这个 -D 不在 RT_DEFS 里, 会一并带进去)。
+LUME_CORE_VERSION ?= 0.5.0
+CFLAGS   += -DLUME_CORE_VERSION=\"$(LUME_CORE_VERSION)\"
+
 # --- 平台 feature-test: 与宿主版/agent-httpd/Makefile:8-22 同口径, 但这里不 ---
 # main.c 用 sigaction/sigemptyset (--watch 热重载的信号处理), 它们是 POSIX
 # 199309 定义; glibc 不会默认放行, 要 -D_GNU_SOURCE 才显; macOS clang 则

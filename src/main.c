@@ -46,7 +46,8 @@ static void usage(const char *prog) {
 "            the disk (also settable as LUME_NO_FS=1)\n"
 "  --no-net runtime network lock: http_get() fails instead of\n"
 "            opening a socket (also settable as LUME_NO_NET=1)\n"
-            "  --dump    parse and dump the AST, then exit\n"
+"  --version print version and exit\n"
+"  --dump    parse and dump the AST, then exit\n"
 #ifdef HAVE_LIBLLVM
             "  --compile     default native path: ast -> IR built through the\n"
             "                libLLVM C API (LLVM checks its shape while building),\n"
@@ -410,6 +411,10 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) out_path = argv[++i];
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
+            return 0;
+        }
+        else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+            printf("lume-core %s\n", LUME_CORE_VERSION);
             return 0;
         }
         else if (argv[i][0] != '-') {
