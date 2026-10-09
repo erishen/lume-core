@@ -70,13 +70,28 @@ jobs:
           fi
 
       # darwin: rebuild x86_64 via clang cross-compilation and stage a
-      # second tarball (verified locally: CC="clang -target
-      # x86_64-apple-darwin" make works end to end on an arm64 host).
+      # second tarball. The arm64 runner's /opt/homebrew openssl is the
+      # wrong slice for an x86_64 link, so the step below installs the
+      # x86_64 openssl via Rosetta Homebrew and points OPENSSL_PREFIX at it.
+      - name: Install x86_64 OpenSSL for darwin-x64 cross-build
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        run: |
+          # The GitHub arm64 runner also carries an x86_64 (Rosetta) Homebrew
+          # at /usr/local. If present, install openssl@4 there and link the
+          # cross build against its x86_64 libs. If not, leave the var empty ->
+          # HAVE_OPENSSL=0 -> the binary still links, just without http_*.
+          if [ -x /usr/local/bin/brew ]; then
+            arch -x86_64 /usr/local/bin/brew install openssl@4
+            echo "OPENSSL_X64_PREFIX=/usr/local/opt/openssl@4" >> "$GITHUB_ENV"
+          else
+            echo "OPENSSL_X64_PREFIX=" >> "$GITHUB_ENV"
+          fi
+
       - name: Cross-build darwin-x64 and stage tarball
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
         run: |
           make clean
-          make CC="clang -target x86_64-apple-darwin" bin/lume-core
+          make CC="clang -target x86_64-apple-darwin" OPENSSL_PREFIX="$OPENSSL_X64_PREFIX" bin/lume-core
           file bin/lume-core
           mkdir -p "dist/lume-core-darwin-x64/bin"
           cp bin/lume-core "dist/lume-core-darwin-x64/bin/"
