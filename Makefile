@@ -213,18 +213,22 @@ all: bin $(TARGET)
 # in the recipe. On Windows, mingw32-make may run recipes under cmd.exe where
 # mkdir has no -p and errors on existing directories (and the SHELL env var
 # is unreliable - Git Bash injects sh paths even when cmd runs the recipe),
-# so create the dirs once at parse time through `cmd /c` (idempotent, no -p
-# side-effect) and give the targets an empty recipe so `make -B` cannot fail
-# on a directory that already exists.
+# so the Windows branch uses idempotent `cmd /c "if not exist <dir> mkdir
+# <dir>"` *recipes* (not a parse-time $(shell) call): a parse-time
+# `$(shell cmd /c "...")` fails to evaluate under the CI make/SHELL combo,
+# whereas a recipe runs through the normal recipe shell and `cmd` is always
+# on PATH on Windows. The `if not exist` guard keeps it idempotent so
+# `make -B` cannot fail on a directory that already exists.
 ifeq ($(strip $(IS_WINDOWS)),)
 build:
 	mkdir -p build
 bin:
 	mkdir -p bin
 else
-$(shell cmd /c "if not exist build mkdir build & if not exist bin mkdir bin")
-build: ;
-bin: ;
+build:
+	@cmd /c "if not exist build mkdir build"
+bin:
+	@cmd /c "if not exist bin mkdir bin"
 endif
 
 build/%.o: src/%.c src/lume.h $(INT_HDRS) | build $(AH_LIB)
