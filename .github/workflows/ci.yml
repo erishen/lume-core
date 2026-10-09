@@ -56,3 +56,21 @@ jobs:
       # inline guard were dropped, since packcheck does not depend on pack
       # self-checking, only on the tarball existing.
       - run: make packcheck
+
+  # The release tree is produced by `.github/workflows/release.yml` on `v*`
+  # tags; this job keeps the release matrix's plain build (no asset upload)
+  # honest on every push to main / PR so a platform build break surfaces
+  # before someone cuts a tag.
+  release-build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
+      - run: make
+      - run: make check

@@ -165,8 +165,26 @@ What is and isn't supported on Windows:
 
 ## Install
 
-There is nothing to install — no npm registry, no package manager, no release
-tarball for this tree. Clone and build:
+One command — downloads the prebuilt release tarball for your platform and drops
+the binary in `~/.local/bin/lume-core` (examples + docs go to
+`~/.local/share/lume-core`):
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/erishen/lume-core/main/install.sh | sh
+```
+
+Overrides (set before piping):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LUME_CORE_VERSION` | `latest` | version tag to install |
+| `LUME_CORE_PREFIX` | `$HOME/.local` | install root (`$PREFIX/bin`) |
+| `LUME_CORE_SHA256` | — | expected sha256 of the tarball (verified when set) |
+| `LUME_CORE_REPO` | `erishen/lume-core` | GitHub repo to fetch from |
+
+The tarballs are produced by `.github/workflows/release.yml` on every `v*` tag
+(`make pack` + a privacy guard that rejects build-machine paths). Or build from
+source:
 
 ```bash
 git clone <this-repo> lume-core && cd lume-core
@@ -174,11 +192,6 @@ make                 # -> bin/lume-core (~270 KB, two-thirds of it the LLVM glue
 make check           # sanity: the bundled examples type-check
 sudo cp bin/lume-core /usr/local/bin/lume-core    # optional
 ```
-
-The install-time overrides below (`LUME_VERSION`, `LUME_PREFIX`,
-`LUME_SHA256`, the `install.sh` one-liner and the `react-ssr` demo) all
-belong to the **host tree**'s release pipeline; this tree produces just the
-compiler, so `make && cp bin/lume-core` *is* the install.
 
 Build variables worth knowing:
 

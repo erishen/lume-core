@@ -98,8 +98,24 @@ Windows 上什么能用、什么不能用：
 
 ## 安装
 
-没有要装的东西——不需要 npm registry、不需要包管理器、这棵树也没有发布
-tarball。拉下来编就好：
+一行命令——按平台下载预编译的发布 tarball，二进制落到
+`~/.local/bin/lume-core`（examples + docs 落到 `~/.local/share/lume-core`）：
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/erishen/lume-core/main/install.sh | sh
+```
+
+可通过环境变量覆盖（管道前设置）：
+
+| 变量 | 默认 | 含义 |
+|---|---|---|
+| `LUME_CORE_VERSION` | `latest` | 要装的版本 tag |
+| `LUME_CORE_PREFIX` | `$HOME/.local` | 安装根目录（`$PREFIX/bin`） |
+| `LUME_CORE_SHA256` | — | tarball 的预期 sha256（设置后才校验） |
+| `LUME_CORE_REPO` | `erishen/lume-core` | 拉取所用的 GitHub 仓库 |
+
+tarball 由 `.github/workflows/release.yml` 在每个 `v*` tag 上产出
+（`make pack` + 一道「拒绝构建机绝对路径」的隐私闸）。或者从源码编：
 
 ```bash
 git clone <本仓库> lume-core && cd lume-core
@@ -107,10 +123,6 @@ make                                  # -> bin/lume-core（约 270 KB，其中�
 make check                            # 自检：内置示例都能过类型检查
 sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 ```
-
-上面那套 `LUME_VERSION` / `LUME_PREFIX` / `LUME_SHA256` 覆盖项，以及那个
-`install.sh` 一行安装、React SSR 演示，全都是**宿主树**的发布流程；本树只产出
-编译器，所以 `make && cp bin/lume-core` 就是安装动作本身。
 
 构建时可覆盖的变量：
 

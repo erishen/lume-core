@@ -1,0 +1,126 @@
+name: Release
+
+# 发布工作流: push 一个 v* tag(如 v0.5.0)时,在三个平台原生构建 bin/lume-core,
+# 以 lume-core-<os>-<arch> 命名,附加到该 tag 的 GitHub Release(不存在则创建)。
+# install.sh 用同样的命名约定从 releases/latest/download/ 下载,所以新增
+# 平台只需要改这里的矩阵 + install.sh 的平台映射。
+#
+# push main / PR 也会跑同一个构建矩阵(不上传 asset),让平台构建问题在
+# 发布前就暴露,而不是等到打 tag 才第一次编译。
+#
+# 注意: 矩阵并发往同一个 release 上传 asset。gh release upload 按 tag
+# 操作,多 job 并行是安全用法;fail-fast: false 保证单平台失败不影响其它
+# 平台产物。tag 之外的事件 GITHUB_TOKEN 只读,上传步骤全部有 if 守卫。
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: lume-core-linux-x64
+          - os: ubuntu-24.04-arm
+            asset: lume-core-linux-arm64
+          - os: macos-14
+            asset: lume-core-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
+
+      - name: Build lume-core
+        run: make
+
+      - name: Smoke-check all examples
+        run: make check
+
+      - name: Report platform and binary type
+        run: uname -s -m && file bin/lume-core
+
+      # The release asset is a tarball, not a bare binary: the examples/ and
+      # docs/ live in the repo and ride inside the artifact so an installed
+      # binary can run `lume-core examples/hello.lume` out of the box. install.sh
+      # only needs bin/lume-core, but carrying the rest costs nothing and helps.
+      - name: Stage release tarball
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p "dist/${{ matrix.asset }}/bin"
+          cp bin/lume-core "dist/${{ matrix.asset }}/bin/"
+          cp -r examples docs README.md README.zh.md CHANGELOG.md install.sh "dist/${{ matrix.asset }}/"
+          cd dist
+          tar -czf "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.asset }}.tar.gz" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}.tar.gz" > "${{ matrix.asset }}.sha256"
+          fi
+
+      # darwin: rebuild x86_64 via clang cross-compilation and stage a
+      # second tarball (verified locally: CC="clang -target
+      # x86_64-apple-darwin" make works end to end on an arm64 host).
+      - name: Cross-build darwin-x64 and stage tarball
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        run: |
+          make clean
+          make CC="clang -target x86_64-apple-darwin" bin/lume-core
+          file bin/lume-core
+          mkdir -p "dist/lume-core-darwin-x64/bin"
+          cp bin/lume-core "dist/lume-core-darwin-x64/bin/"
+          cp -r examples docs README.md README.zh.md CHANGELOG.md install.sh "dist/lume-core-darwin-x64/"
+          cd dist
+          tar -czf lume-core-darwin-x64.tar.gz lume-core-darwin-x64
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum lume-core-darwin-x64.tar.gz > lume-core-darwin-x64.sha256
+          else
+            shasum -a 256 lume-core-darwin-x64.tar.gz > lume-core-darwin-x64.sha256
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}.*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        with:
+          name: lume-core-darwin-x64
+          path: dist/lume-core-darwin-x64.*
+          if-no-files-found: error
+
+      # softprops/action-gh-release@v2 silently matches no files under the
+      # forced Node-24 runtime (its files glob stops resolving relative to the
+      # workspace), so assets are attached with the runner's own gh CLI.
+      - name: Attach release assets (${{ matrix.asset }})
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/${{ matrix.asset }}.tar.gz" "dist/${{ matrix.asset }}.sha256" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Attach cross-built darwin-x64 assets
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/lume-core-darwin-x64.tar.gz dist/lume-core-darwin-x64.sha256 \
+            --repo "$GITHUB_REPOSITORY" --clobber
