@@ -37,7 +37,8 @@ void native_replace(VM *vm, int argc, Value *args, Value *out) {
         }
     }
     if (!matched) { free(b.p); *out = make_string_cstr(vm, s); return; }
-    if (b.oom || !b.p) { free(b.p); *out = val_null(); return; }
+    if (b.oom) { free(b.p); *out = val_null(); return; }
+    if (!b.p) { *out = make_string(vm, "", 0); return; }
     *out = make_string(vm, b.p, b.len);
     free(b.p);
 }
@@ -153,10 +154,10 @@ static void native_join(VM *vm, int argc, Value *args, Value *out) {
     sbuf b = {0};
     for (int i = 0; i < list->as.list.count; i++) {
         if (i && flen) sb_mem(&b, sep, flen);
-        Value sv;
-        str_of_value(vm, list->as.list.items[i], &sv);
-        if (IS_OBJ(sv) && AS_OBJ(sv)->type == OBJ_STRING) {
-            const char *ps = obj_string(AS_OBJ(sv));
+        Value v = list->as.list.items[i];
+        /* strings join verbatim; non-strings go through str_of_value */
+        if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING) {
+            const char *ps = obj_string(AS_OBJ(v));
             size_t psn = strlen(ps);
             if (b.len + psn > (16u << 20)) {
                 free(b.p);
@@ -165,9 +166,24 @@ static void native_join(VM *vm, int argc, Value *args, Value *out) {
                 return;
             }
             sb_mem(&b, ps, psn);
+        } else {
+            Value sv;
+            str_of_value(vm, v, &sv);
+            if (IS_OBJ(sv) && AS_OBJ(sv)->type == OBJ_STRING) {
+                const char *ps = obj_string(AS_OBJ(sv));
+                size_t psn = strlen(ps);
+                if (b.len + psn > (16u << 20)) {
+                    free(b.p);
+                    vm_set_error(vm, "join() result too large");
+                    *out = val_null();
+                    return;
+                }
+                sb_mem(&b, ps, psn);
+            }
         }
     }
-    if (b.oom || !b.p) { free(b.p); *out = val_null(); return; }
+    if (b.oom) { free(b.p); *out = val_null(); return; }
+    if (!b.p) { *out = make_string(vm, "", 0); return; }
     *out = make_string(vm, b.p, b.len);
     free(b.p);
 }
