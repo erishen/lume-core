@@ -30,9 +30,10 @@ The front end here (`lexer.c`, `parser*.c`, `interp.c`, `value.c`,
 `typecheck*.c`, `loader.c`, `vdom.c`) is a **hand-maintained copy** of the same
 files in the host tree — not a fork that tracks automatically. They have drifted
 already: `lexer.c` / `parser_stmt.c` / `typecheck_stmt.c` / `vdom.c` / `token.c`
-are still byte-for-byte identical, while `parser.c` is 386 lines in the host and
-675 here (the host splits `parser_stmt.c` + `parser_expr.c`, this tree keeps one
-`parser.c`), and `interp.c`, `value.c`, `typecheck.c`, `loader.c` differ too.
+are still byte-for-byte identical, while `interp.c`, `value.c`, `typecheck.c`, `loader.c` and the parser split
+(`parser.c` + `parser_expr.c` + `parser_stmt.c` + `parser_internal.h`) differ
+between the two trees. Both trees organize the parser the same way — the
+divergence is in content, not in file layout.
 
 Rules that follow from that:
 
@@ -297,25 +298,32 @@ clang step. The back ends are compiled into one `bin/lume-core` — the Makefile
 for `llvm-config`, and when it is missing the binary simply has no libLLVM path
 and `--compile` uses the text one (stderr says so).
 
-The known cost of the libLLVM path is that **no optimization pass runs**:
-`LLVMRunPasses` aborts when called from a pure-C translation unit on this
-libLLVM build — a minimal probe reproduces it for every pass string (`verify`,
-`mem2reg`, `instcombine`, `default<O2>`) and every code model — so the output is
-correct but slower than the text path on a loop-heavy target (there, clang's
-`-O2` runs mem2reg). Use `--compile-text` when throughput matters. `make
-native-bench` compiles the same nested-loop program through both back ends and
-prints compile time, IR size, object size and run time for each — live numbers
-from `make native-bench` (nested loop, 1e8 inner iterations):
+The optimization pipeline on the libLLVM path was connected on 2026-10-03. The
+earlier note — that "no optimization pass runs: `LLVMRunPasses` aborts when
+called from a pure-C translation unit" — was wrong on two counts: the entry
+header `llvm-c/Transforms/PassBuilder.h` was already included by
+`backend_llvm.c`, so the crash came from an *implicit declaration* returning
+`int` being stuffed into an `LLVMErrorRef` pointer, not from "C-only"; and it is
+opt level `None` that dies, not `Default` (`verify` / `mem2reg` / `default<O2>`
+all return successfully at `Default`). The libLLVM path now runs `default<O2>`
+before emit, the same tier as the text path's `clang -O2`. `make native-bench`
+compiles the same nested-loop program (1e8 inner iterations) through both back
+ends and prints compile time, IR size, object size, run time and the no-pass
+sentinel for each — live numbers from `make native-bench`:
 
 ```
-backend   compile-ms   ir-KiB  obj-KiB  bin-KiB    run-ms
-text            194        2        1       34         7
-llvm            245        2        1       34       220
+backend   compile-ms   ir-KiB  obj-KiB  bin-KiB    run-ms  nopass-ms
+text            446        3        1       35         9          -
+llvm            184        2        1       35         9        215
 ```
 
-Correctness and every size column tie; the only gap is `run-ms` — without
-mem2reg the locals stay memory slots for all 1e8 iterations. See
-[docs/NATIVE.md](docs/NATIVE.md).
+Correctness and every size column tie; the run sides now land in the same tier
+(the 1e8-iteration locals get promoted out of memory slots by `default<O2>`),
+and the libLLVM path actually **compiles faster** (its IR does not have to be
+re-parsed and re-codegen'd by clang). The last column `nopass-ms` is the
+sentinel: with `--no-pass` (or `LUME_NO_PASS=1`) skipping the pipeline, the
+libLLVM leg jumps from ~9 ms to ~215 ms — if the pipeline ever silently fails,
+this column moves first. See [docs/NATIVE.md](docs/NATIVE.md).
 
 It covers the core subset — scalars, structs, functions, `if` / `while` /
 `for`, arithmetic and comparisons, and a first set of builtins
