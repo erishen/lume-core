@@ -1,0 +1,15 @@
+// 负例: 未标注的「变量 map」标量读。原生后端把 m["k"] 一律 lowering 成
+// i8* 指针存取器, 它只能承载 string / 容器值; int/float/bool 标量无法经由它
+// 返回。key 实际存在, 所以报错绝不能说 "no such key" —— 必须指出值是标量、
+// 引导用 get()。注意: 标量标注绑定 (let v: int = m["k"]) 在原生后端同样
+// 不可用 (i8*->i64 无 coerce 边), 所以 get() 是标量的唯一合规读法。
+// 本文件用于断言两个原生后端都给出准确错误。
+//
+// 解释器不在此列: 它带运行时类型, print(im["count"]) 直接打印 7, 故本文件
+// 只交由 --compile-text / --compile-llvm 编译运行, 不在解释器路径断言。
+func main():int {
+    let im = { count: 7 };
+    print(im["count"]);   // 未标注标量读 -> 原生后端准确报错
+    return 0;
+}
+main();

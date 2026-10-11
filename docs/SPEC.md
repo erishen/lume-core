@@ -499,6 +499,16 @@ print(str(strftime("%Y", 0)));         // 1970
   的静态类型是匿名 struct（即 map 形态），运行期实际可能是字符串或容器。因此：
   - 直接 `print(m["k"])` 在原生后端**不会崩溃**（已加 `kind` 护栏，打印 `(opaque value)`），
     但与解释器（`world`）**不一致**，所以**不要**把它写进一致性测试；
+  - ⚠️ **未标注的「变量 map」标量读（`int`/`float`/`bool`）在原生后端是错误而非值**：
+    `m["k"]` 一律 lowering 成 `i8*` 指针存取器，它只能承载 string / 容器值；遇到标量值
+    读取失败，报错**明确指出值是标量**并引导 `get(m, k, d)`——**不会**再说误导性的
+    `no such key`（key 实际存在）。例如 `let im={count:7}; print(im["count"])`
+    在文本 / libLLVM 后端报：`map value at this key is a scalar; use get(m, k, d) to
+    read it -- typed binding via m["k"] only works for string / container values`。
+    解释器带运行时类型，同一行直接打印 `7`。
+  - ⚠️ 标量的**类型标注绑定同样不可用**：`let v: int = m["k"]` 在原生后端仍走 `i8*`
+    存取器，`i8* → i64` 无 coerce 边，编译期直接拒绝。所以标量 map 值的唯一合规读法
+    就是 `get()`。
   - 可移植的写法是**绑定到带类型的变量**：`let c: string = m["k"]; print(c);` 或
     `let li: int[] = m["items"]; print(li[0]);`——解释器与两原生后端都接受且输出一致。
   - 链式 `m["p"][1]` 之所以可行，正是因为运行期在 `lume_index_ptr` 里按 `kind` 重新分派：

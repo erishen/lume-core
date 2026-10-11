@@ -376,7 +376,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test http-noproxy-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test http-noproxy-test map-index-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -666,6 +666,30 @@ http-noproxy-test: all
 	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-noproxy.out; then \
 	   echo "==> http no_proxy 单测失败 (rc=$$rc)"; exit 1; fi; \
 	 echo "==> http no_proxy 单测通过"
+
+# map 下标标量读: 合规路径(get()/标注/可解析字面量)三后端一致; 未标注的
+# 「变量 map」标量读在原生后端给出准确、可操作的错误(不再是误导性的
+# "no such key")。见 tests/map-index-scalar*.lume 与 src/rt.c 的
+# g_index_fail_kind。
+map-index-test: all
+	@printf '7\nlume\n2\n' > /tmp/mi_expected; \
+	 for be in text llvm; do \
+	   if [ "$$be" = llvm ]; then \
+	     flag=--compile-llvm; \
+	     if ./$(TARGET) --compile-llvm tests/map-index-scalar.lume -o /tmp/mi_p 2>&1 | grep -q "needs a build with libLLVM"; then \
+	       echo "ok   map-index: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	   else flag=--compile-text; fi; \
+	   ./$(TARGET) $$flag tests/map-index-scalar.lume -o /tmp/mi_$$be > /dev/null 2>&1 || { echo "==> map-index $$be 合规路径编译失败"; exit 1; }; \
+	   /tmp/mi_$$be > /tmp/mi_$$be.out 2>&1; rc=$$?; \
+	   if [ $$rc -ne 0 ] || ! diff -q /tmp/mi_expected /tmp/mi_$$be.out > /dev/null; then \
+	     echo "==> map-index $$be 合规路径输出不符 (rc=$$rc):"; cat /tmp/mi_$$be.out; exit 1; fi; \
+	   ./$(TARGET) $$flag tests/map-index-scalar-bad.lume -o /tmp/mib_$$be > /dev/null 2>&1 || true; \
+	   /tmp/mib_$$be > /tmp/mib_$$be.out 2>&1; rc=$$?; \
+	   if [ $$rc -eq 0 ] || ! grep -q "map value at this key is a scalar" /tmp/mib_$$be.out; then \
+	     echo "==> map-index $$be 未标注标量读未给出准确错误 (rc=$$rc):"; cat /tmp/mib_$$be.out; exit 1; fi; \
+	   echo "ok   map-index: $$be 合规路径正确 + 标量读报错准确"; \
+	 done; \
+	 echo "==> map-index 单测通过"
 
 # 静态检查：两个原生后端 (text / libLLVM) 必须覆盖同一组 AST 节点类型，
 # 否则单边新增节点会静默漂移（另一端掉进 default:）。见脚本内注释。

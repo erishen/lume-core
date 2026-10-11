@@ -1,0 +1,21 @@
+// map 下标标量读 —— 合规路径在三个后端必须一致。原生后端对「未标注的 map
+// 下标读」一律发 i8* 存取器: 值是标量时运行期给出准确、可操作的错误(见
+// map-index-scalar-bad.lume)。因此标量值的合规写法只有 get(); string /
+// 容器值则可标注绑定。这里只覆盖应该正常工作的形态。
+func main():int {
+    let im = { name: "lume", count: 7 };
+
+    // 1) get() 是标量值的合规写法, 原生/解释器一致
+    print(str(get(im, "count", 0)));            // 7
+
+    // 2) string 标注绑定: 原生后端据此走 i8* 存取器(值本身就是指针)
+    let nm: string = im["name"];
+    print(nm);                                  // lume
+
+    // 3) 内联字面量 map 的标量读同样走 get() —— 未标注下标在原生后端
+    //    是不透明值, 不可移植, 不放进一致性断言
+    print(str(get({ a: 1, b: 2 }, "b", 0)));    // 2
+
+    return 0;
+}
+main();

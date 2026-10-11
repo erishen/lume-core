@@ -32,6 +32,23 @@ All notable changes to Lume are documented here. The format follows
   (dead-proxy control on `:9` + real server on `:18891`), wired into
   `make test` via `http-noproxy-test`.
 
+### Fixed — accurate error for unannotated scalar `m["k"]` on native backends
+
+- A map value read of an **unannotated variable map** whose value is a scalar
+  (int / float / bool) lowers to the `i8*` pointer accessor, which can only
+  carry string / container values. It used to fail with the misleading
+  `no such key in this map` — the key is present, the value is simply a scalar
+  the pointer accessor cannot return. `src/rt.c` now tags the failure reason
+  (`g_index_fail_kind`) and `lume_index_error` reports:
+  `map value at this key is a scalar; bind m["k"] to a typed variable
+  (let v: int = m["k"]) or use get(m, k)`.
+- The interpreter is unaffected (it carries runtime types and prints the
+  scalar directly); the compliant native forms — `get(m, k)`, a typed binding
+  `let v: int = m["k"]`, or a value-type-resolvable literal map — all work.
+- Regression suite: `tests/map-index-scalar.lume` (compliant paths, three
+  backends agree) + `tests/map-index-scalar-bad.lume` (asserts the accurate
+  message on both native backends), wired into `make test` via `map-index-test`.
+
 ## [0.5.1] - 2026-10-09
 
 ### Added — standalone install + version reporting

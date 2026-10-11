@@ -467,6 +467,17 @@ LumeMap *lume_map_new(void)
  * the return alone. The string flavours take an `ok` out-param instead, since a
  * string has no sentinel of its own. */
 static int g_index_failed = 0;
+/* Distinguishes *why* an opaque (`i8*`) index read failed, so the message can
+ * name the real cause instead of a misleading one. The `m["k"]` syntax lowers
+ * every map read to lume_index_ptr (the i8* accessor), which only carries
+ * string and container values -- a scalar (int / float / bool) value cannot
+ * travel through it. Such a read is *not* "no such key": the key is present,
+ * the value is just a scalar the pointer accessor cannot return. The language
+ * documents binding `m["k"]` to a typed variable or using get(m, k) for that,
+ * so the failure reason steers the user there rather than at a missing key.
+ *   0 = key absent / index out of range (the generic `what` message applies)
+ *   1 = the value is a scalar the pointer accessor cannot return */
+static int g_index_fail_kind = 0;
 
 int lume_index_failed(void) { return g_index_failed; }
 
@@ -478,7 +489,13 @@ int lume_index_failed(void) { return g_index_failed; }
  * and both do (SPEC 6.2). */
 void lume_index_error(const char *what)
 {
-    fprintf(stderr, "lume(native): %s\n", what ? what : "index read failed");
+    if (g_index_fail_kind == 1)
+        fputs("lume(native): map value at this key is a scalar; "
+              "use get(m, k, d) to read it -- typed binding via m[\"k\"] only "
+              "works for string / container values\n",
+              stderr);
+    else
+        fprintf(stderr, "lume(native): %s\n", what ? what : "index read failed");
     exit(1);
 }
 
@@ -557,12 +574,18 @@ double lume_map_at_strict_f(const LumeMap *m, const char *k)
 void *lume_map_at_strict_ptr(const LumeMap *m, const char *k)
 {
     g_index_failed = 0;
+    g_index_fail_kind = 0;
     long i = map_find(m, k);
     if (i < 0) { g_index_failed = 1; return NULL; }
     LumeSlot sv = m->vals[i];
     if (sv.tag == LUME_SLOT_STR) return (void *)(intptr_t)sv.str;
     if (sv.tag == LUME_SLOT_OBJ) return (void *)(intptr_t)sv.num;
+    /* A scalar (int / float / bool) value cannot travel through the i8*
+     * pointer accessor the syntax always lowers to. The key exists; the
+     * value just is not one this accessor can hand back. Flag it so the
+     * message points at get() / a typed binding instead of "no such key". */
     g_index_failed = 1;
+    g_index_fail_kind = 1;
     return NULL;
 }
 
