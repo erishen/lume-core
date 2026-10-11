@@ -247,7 +247,7 @@ $(OBJS): $(LLVM_CONFIG_PATH)
 $(TARGET): $(OBJS) $(AH_LIB) | bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
-check: all crypt-test
+check: all crypt-test builtins-test
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -376,7 +376,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -642,6 +642,14 @@ crypt-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-crypt-test.out; then \
 		echo "==> crypt 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> crypt 单测全部通过"
+
+# sort() / str_match() / regex() 通用内建回归(解释器路径, 与 json() 一致)。
+builtins-test: all
+	@./$(TARGET) tests/builtins-sort-regex.lume > /tmp/lume-builtins-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-builtins-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-builtins-test.out; then \
+		echo "==> builtins 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> builtins 单测全部通过"
 
 # 静态检查：两个原生后端 (text / libLLVM) 必须覆盖同一组 AST 节点类型，
 # 否则单边新增节点会静默漂移（另一端掉进 default:）。见脚本内注释。

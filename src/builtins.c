@@ -9,6 +9,8 @@
 
 #include "builtins_internal.h"
 #include <time.h>   /* native_now: time() */
+#include <string.h> /* strcmp: sort comparator */
+#include <regex.h>  /* str_match: POSIX extended regular expressions */
 
 /* ---------- native builtins ---------- */
 
@@ -321,6 +323,117 @@ static void native_now(VM *vm, int argc, Value *args, Value *out) {
     (void)vm; (void)argc; (void)args;
     *out = val_int((long long)time(NULL));
 }
+
+/* sort(list) — sort a list in place and return it. Homogeneous lists only:
+ * all numbers (ascending by value — all-int compares exactly as i64, any
+ * float falls back to double) or all strings (byte/lexicographic via strcmp).
+ * A list mixing kinds, or holding containers/maps, is rejected. */
+static int g_sort_kind;          /* 0=int, 1=float, 2=string (single-threaded VM) */
+static int cmp_sort_val(const void *a, const void *b) {
+    const Value *va = (const Value *)a, *vb = (const Value *)b;
+    if (g_sort_kind == 2)
+        return strcmp(obj_string(AS_OBJ(*va)), obj_string(AS_OBJ(*vb)));
+    if (g_sort_kind == 0) {      /* all int: exact i64 compare */
+        long long x = AS_INT(*va), y = AS_INT(*vb);
+        return (x > y) - (x < y);
+    }
+    double da = AS_NUM(*va), db = AS_NUM(*vb);   /* contains a float */
+    if (da < db) return -1;
+    if (da > db) return 1;
+    return 0;
+}
+static void native_sort(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 1) {
+        vm_set_error(vm, "sort() needs exactly one argument (a list)");
+        return;
+    }
+    if (!IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_LIST) {
+        vm_set_error(vm, "sort() needs a list");
+        return;
+    }
+    ObjList *L = &AS_OBJ(args[0])->as.list;
+    int n = L->count;
+    if (n <= 1) { *out = args[0]; return; }   /* empty / single: already sorted */
+
+    int kind = -1;
+    for (int i = 0; i < n; i++) {
+        Value v = L->items[i];
+        int k;
+        if (IS_INT(v))       k = 0;
+        else if (IS_FLOAT(v)) k = 1;
+        else if (IS_OBJ(v) && v.as.o->type == OBJ_STRING) k = 2;
+        else {
+            vm_set_error(vm, "sort() needs a list of numbers or strings");
+            return;
+        }
+        if (kind == -1) kind = k;
+        else if (kind != k) {
+            vm_set_error(vm, "sort() needs a homogeneous list "
+                             "(all numbers or all strings)");
+            return;
+        }
+    }
+    g_sort_kind = kind;
+    qsort(L->items, (size_t)n, sizeof(Value), cmp_sort_val);
+    *out = args[0];              /* sorted in place, original list returned */
+}
+
+/* str_match(pattern, text) / regex(pattern, text) — scan `text` with a POSIX
+ * extended regex and return a list of match records, each
+ *   { text: matched substring, index: 0-based offset, groups: [capture groups] }
+ * No match -> empty list. Invalid pattern -> VM error. A zero-width match ends
+ * the scan so a pattern like `a*` cannot loop forever. */
+static void native_str_match(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2) {
+        vm_set_error(vm, "str_match() needs (pattern, text)");
+        return;
+    }
+    const char *pat, *txt;
+    if (!arg_string(vm, args[0], &pat)) return;
+    if (!arg_string(vm, args[1], &txt)) return;
+
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED) != 0) {
+        vm_set_error(vm, "str_match(): invalid regex pattern");
+        return;
+    }
+
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));          /* root while filling */
+
+    const char *p = txt;
+    regmatch_t m[10];                   /* m[0]=whole match, m[1..9]=groups */
+    while (regexec(&re, p, 10, m, 0) == 0) {
+        int so = m[0].rm_so, eo = m[0].rm_eo;
+        if (eo <= so) break;            /* zero-width match: stop the loop */
+        size_t start = (size_t)(p - txt) + (size_t)so;
+        size_t mlen  = (size_t)eo - (size_t)so;
+
+        Obj *mo = AS_OBJ(make_map(vm));
+        vm_push(vm, val_obj(mo));
+        map_set(vm, mo, "text",  make_string(vm, txt + start, mlen));
+        map_set(vm, mo, "index", val_int((long long)start));
+
+        Obj *gs = AS_OBJ(make_list(vm));
+        vm_push(vm, val_obj(gs));
+        for (int gi = 1; gi < 10; gi++) {
+            if (m[gi].rm_so == -1) break;
+            int gso = m[gi].rm_so, geo = m[gi].rm_eo;
+            list_push(vm, gs,
+                      make_string(vm, p + gso, (size_t)geo - (size_t)gso));
+        }
+        map_set(vm, mo, "groups", val_obj(gs));
+        vm_pop(vm);                     /* gs */
+        vm_pop(vm);                     /* mo */
+
+        list_push(vm, res, val_obj(mo));
+        p += eo;
+        if (*p == '\0') break;
+    }
+    regfree(&re);
+    vm_pop(vm);                         /* res */
+    *out = val_obj(res);
+}
 Value vm_native(VM *vm, int argc, Value *args, Native2 impl) {
     Value out = val_null();
     impl(vm, argc, args, &out);
@@ -363,6 +476,8 @@ Value b_strftime(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, a
 Value b_put(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_put); }
 Value b_push(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_push); }
 Value b_try(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_try); }
+Value b_sort(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sort); }
+Value b_str_match(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_str_match); }
 Value b_tools(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_tools); }
 Value b_skills(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_skills); }
 Value b_mcps(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_mcps); }

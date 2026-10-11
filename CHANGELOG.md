@@ -4,6 +4,23 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added — collection + string-search builtins
+
+- `sort(list)` — sort a list **in place** and return it. Homogeneous lists
+  only: all numbers (ascending; all-int compares exactly as i64, any float
+  falls back to double) or all strings (byte/lexicographic via `strcmp`).
+  Mixed-kind or container-holding lists raise a VM error.
+- `str_match(pattern, text)` / `regex(pattern, text)` — POSIX extended-regex
+  findall. Returns a list of match records, each
+  `{ text: matched substring, index: 0-based offset, groups: [capture groups] }`.
+  No match → `[]`; invalid pattern → VM error (catchable with `try()`).
+- These join `json()` as interpreter-path builtins (the compiled native
+  backends do not yet lower them), closing the parse → extract → sort loop
+  for JSON/CLI tooling. Regression suite: `tests/builtins-sort-regex.lume`
+  (17 checks, wired into `make check` / `make test`).
+
 ## [0.5.1] - 2026-10-09
 
 ### Added — standalone install + version reporting

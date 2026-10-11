@@ -1,0 +1,75 @@
+// tests/builtins-sort-regex.lume — sort() / str_match() / regex() regression
+// 运行: make builtins-test (并入 make check)
+//
+// 解析→抽取→排序闭环的最后一块: json() 解析出数组, str_match()/regex() 从
+// 文本抽取字段, sort() 排序。三者都只走解释器(与 json()/split() 一致),
+// 编译型原生后端目前不覆盖这些通用内建。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func main(): int {
+  // --- sort() ---
+  let a = [3, 1, 2];
+  sort(a);
+  check("sort int", stringify(a) == "[1,2,3]");
+
+  let f = [3.5, 1.2, 2.8];
+  sort(f);
+  check("sort float", stringify(f) == "[1.2,2.8,3.5]");
+
+  let s = ["banana", "apple", "cherry"];
+  sort(s);
+  check("sort string", stringify(s) == "[\"apple\",\"banana\",\"cherry\"]");
+
+  // 超过 2^53 的整数也要按 i64 精确排序(不能走 double)
+  let big = [9007199254740993, 1, 9007199254740992];
+  sort(big);
+  check("sort big int exact", stringify(big) == "[1,9007199254740992,9007199254740993]");
+
+  // 空表
+  let e = [];
+  sort(e);
+  check("sort empty", stringify(e) == "[]");
+
+  // 原地排序并返回该列表
+  let orig = [2, 1];
+  let ret = sort(orig);
+  check("sort in-place + return",
+        (stringify(orig) == "[1,2]") and (stringify(ret) == "[1,2]"));
+
+  // 异构列表报错
+  let mix = [1, "two"];
+  let rm = try(() => { sort(mix); return "ok"; });
+  check("sort mixed rejects", get(rm, "err", null) != null);
+
+  // 非列表报错
+  let nonlist = try(() => { sort(42); return "ok"; });
+  check("sort non-list rejects", get(nonlist, "err", null) != null);
+
+  // --- str_match() / regex() ---
+  let ms = str_match("order ([0-9]+)", "order 123, order 456");
+  check("str_match count", len(ms) == 2);
+  check("str_match text", get(ms[0], "text") == "order 123");
+  check("str_match index", get(ms[0], "index") == 0);
+  check("str_match group", get(ms[0], "groups")[0] == "123");
+  check("str_match 2nd index", get(ms[1], "index") == 11);
+
+  // regex 是 str_match 的别名
+  let ra = regex("([a-z]+) ([0-9]+)", "item 5 and foo 9");
+  check("regex alias count", len(ra) == 2);
+  check("regex alias group", get(ra[1], "groups")[0] == "foo");
+
+  // 无匹配 -> 空列表
+  let none = str_match("zzz", "abc");
+  check("str_match no match", len(none) == 0);
+
+  // 非法正则 -> 报错
+  let bad = try(() => { str_match("(", "x"); return "ok"; });
+  check("str_match invalid rejects", get(bad, "err", null) != null);
+
+  return 0;
+}
+main();

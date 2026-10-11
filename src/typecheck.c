@@ -343,6 +343,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "tools", "skills", "mcps",
     "discovery_endpoints", "catalog", /* discovery builtins */
     "push", "try", /* collection / error handling (2026-09-27) */
+    "sort", "str_match", "regex", /* collection / string search (2026-10-11) */
     "replace", /* string builtins (2026-09-27) */
     "upper", "lower", "capitalize", "trim", "contains", "split", "join",
     "substr", /* string tools (2026-10-08, P4a codegen) */

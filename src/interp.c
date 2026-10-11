@@ -1041,6 +1041,9 @@ void bridge_seed_builtins(VM *vm) {
         {"put", b_put},
         {"push", b_push}, /* DSL 层列表追加 (2026-09-27) */
         {"try", b_try}, /* 捕获 VM error -> {ok}/{err} (2026-09-27) */
+        {"sort", b_sort}, /* in-place list sort, homogeneous numbers/strings (2026-10-11) */
+        {"str_match", b_str_match}, /* POSIX ERE findall -> [{text,index,groups}] (2026-10-11) */
+        {"regex", b_str_match}, /* alias of str_match (2026-10-11) */
         /* 出站 HTTP (2026-10-04, builtins_http.c): raw socket, no libcurl.
          * 私有地址默认拒绝,--no-net / LUME_NO_NET=1 整体关掉。 */
 #if LUME_HAS_HTTP

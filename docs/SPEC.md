@@ -457,6 +457,8 @@ func report(): Result {
 | `stringify(x)` | 1 参 | `string` | 序列化：任意值 → JSON 文本（与 `str()` 的 map/list 路径一致） |
 | `now()` | 0 参 | `int` | Unix 秒 |
 | `strftime(fmt, ts)` | 2 参 | `string` | ⚠️ **参数序是 `(格式, 时间戳)`**，不是反过来 |
+| `str_match(pattern, text)` | 2 参 | `{text,index,groups}[]` | **正则抽取**：POSIX ERE 全扫描，每条 `{ text: 匹配子串, index: 0-based 偏移, groups: 捕获组[] }`；无匹配返回 `[]`；非法正则置 VM error（可 `try()` 接住） |
+| `regex(pattern, text)` | 2 参 | `{text,index,groups}[]` | `str_match` 的别名 |
 
 ⚠️ **`int("abc") == 0` 且不报错**，`float("x") == 0.0` 同理。这是转换类最容易踩的坑：
 拼错的字段名会静默变成 0，而不是失败。
@@ -478,6 +480,7 @@ print(str(strftime("%Y", 0)));         // 1970
 | `put(m, k, v)` | 3 参 | **map** | **原地**写 map，并返回写完的 map |
 | `push(l, v)` | 2 参 | **list** | **原地**追加，并返回写完的 list |
 | `range(a, b)` | 2 参 | `int[]` | `[a, b)`，**不含 b** |
+| `sort(l)` | 1 参 | **list** | **原地**排序 `l` 并返回它；仅支持**同构**列表——全数字（升序，全 int 按 i64 精确比较、含 float 走 double）或全字符串（`strcmp` 字节序）；异构或含容器/map 报错 |
 
 **下标语法**（规范变更）：`m["k"]` 与 `l[0]` 现在**存在**了。
 
