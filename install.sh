@@ -101,9 +101,9 @@ mv "$binpath" "$BINDIR/lume-core"
 # Carry the examples + docs along so an installed binary can run the bundled
 # scripts out of the box (lume-core has no server, so this is just files).
 toplevel=$(dirname "$binpath")
+sharedir="$PREFIX/share/lume-core"
 if [ -d "$toplevel/examples" ] || [ -d "$toplevel/docs" ] || \
    [ -f "$toplevel/README.md" ] || [ -f "$toplevel/CHANGELOG.md" ]; then
-  sharedir="$PREFIX/share/lume-core"
   mkdir -p "$sharedir"
   cp -R "$toplevel/examples" "$toplevel/docs" \
         "$toplevel/README.md" "$toplevel/README.zh.md" "$toplevel/CHANGELOG.md" \
