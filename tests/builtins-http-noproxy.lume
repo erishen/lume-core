@@ -1,0 +1,26 @@
+// tests/builtins-http-noproxy.lume — NO_PROXY 绕过代理、直连内网地址
+// 运行: make http-noproxy-test (并入 make test)
+//
+// 验证手段:Makefile 把 HTTP_PROXY 指到死端口 127.0.0.1:9,同时
+// NO_PROXY=127.0.0.1 指向本测试起的本地 server(127.0.0.1:18891)。
+// 若 NO_PROXY 绕过失效,请求会去撞死代理 => ok=false => FAIL;
+// 只有绕过生效(直连 18891)才能拿到 200 => PASS。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func main(): int {
+  let url = "http://127.0.0.1:18891/";
+  // 127.0.0.1 是回环,需 allow_private 才能打出去(本测试就是冲着内网直连去的)
+  let r = http_get(url, { allow_private: true });
+  let ok = get(r, "ok", false);
+  let status = get(r, "status", 0);
+  check("noproxy direct bypass (ok)", ok == true);
+  check("noproxy status 200", status == 200);
+  if (!ok) { print("  err=" + get(r, "err", "")); }
+  return 0;
+}
+
+main();

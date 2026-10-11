@@ -28,6 +28,9 @@
  * 代理:跟随 https_proxy / http_proxy(大小写都认),LUME_HTTP_PROXY 强制覆盖
  * —— 直连 api.github.com 在国内基本不可用,这不是可选功能。http 走绝对 URI
  * 的 GET,https 走 CONNECT 隧道再开 TLS。
+ * 绕过:跟随 NO_PROXY / no_proxy(逗号/空格分隔,支持 .domain 后缀、* 通配、
+ * 可选 :port),LUME_NO_PROXY 优先级最高且无论是否设了 LUME_HTTP_PROXY 都生效
+ * —— 内网地址必须能绕过代理直连。
  *
  * TLS 依赖可选的 libssl(Makefile 用 pkg-config openssl 探测)。没装时
  * http_get 仍可用,但对 https:// 直接报 "needs libssl",不静默降明文。 */
@@ -459,6 +462,70 @@ static const char *proxy_for(int https) {
     return p;
 }
 
+/* ---- NO_PROXY / no_proxy 绕过(与 curl/wget 同语义) ----
+ * 命中即不走代理、直连目标。支持:
+ *   - 域名后缀(.example.com 与 example.com 都匹配 www.example.com / example.com)
+ *   - 精确主机 / 字面 IP(localhost、127.0.0.1)
+ *   - 通配 * 表示全部绕过
+ *   - 可选 :port 约束(http://h:8080 仅该端口命中时绕过;IPv6 字面量跳过端口判定)
+ * 优先级: LUME_NO_PROXY > NO_PROXY > no_proxy。即便显式设了 LUME_HTTP_PROXY,
+ * 命中 NO_PROXY 也强制直连 —— 内网地址绕过是安全诉求,不应被强制代理覆盖。 */
+
+/* 单条 token 与 host 是否匹配。host 是 URL 解析后的裸主机(IPv6 带方括号)。 */
+static bool no_proxy_match_host(const char *host, const char *tok) {
+    if (!host || !tok || !*tok) return false;
+    if (tok[0] == '*') return true;                       /* 通配:全部绕过 */
+    const char *dom = tok;
+    if (dom[0] == '.') dom++;                             /* 去前缀点,二者等价 */
+    size_t hl = strlen(host), dl = strlen(dom);
+    if (dl == 0 || hl < dl) return false;
+    if (hl == dl) return strcmp(host, dom) == 0;          /* 精确 */
+    /* 比域名长:必须 ".dom" 结尾,避免 ample.com 误中 example.com */
+    if (host[hl - dl - 1] == '.' && strcmp(host + hl - dl, dom) == 0) return true;
+    return false;
+}
+
+static bool proxy_should_bypass(const Url *u) {
+    const char *np = getenv("LUME_NO_PROXY");
+    if (!np || !np[0]) np = getenv("NO_PROXY");
+    if (!np || !np[0]) np = getenv("no_proxy");
+    if (!np || !np[0]) return false;
+    char buf[1024];
+    size_t n = strlen(np);
+    if (n >= sizeof buf) n = sizeof buf - 1;   /* 测试规模内不会截到有意义处 */
+    memcpy(buf, np, n);
+    buf[n] = '\0';
+    char *tok = strtok(buf, ", \t\r\n");
+    while (tok) {
+        size_t tl = strlen(tok);
+        while (tl && (tok[tl - 1] == ' ' || tok[tl - 1] == '\t')) tok[--tl] = '\0';
+        if (*tok) {
+            /* 可选 :port;IPv6 字面量([..])跳过端口判定 */
+            if (tok[0] != '[') {
+                char *colon = strrchr(tok, ':');
+                if (colon && colon != tok &&
+                    strspn(colon + 1, "0123456789") == strlen(colon + 1)) {
+                    *colon = '\0';
+                    unsigned p = (unsigned)strtoul(colon + 1, NULL, 10);
+                    if (no_proxy_match_host(u->host, tok) && p == u->port) return true;
+                } else if (no_proxy_match_host(u->host, tok)) {
+                    return true;
+                }
+            } else if (no_proxy_match_host(u->host, tok)) {
+                return true;
+            }
+        }
+        tok = strtok(NULL, ", \t\r\n");
+    }
+    return false;
+}
+
+/* 综合代理解析:命中 NO_PROXY 时强制直连(NULL),否则走 proxy_for。 */
+static const char *effective_proxy(Url *u) {
+    if (proxy_should_bypass(u)) return NULL;
+    return proxy_for(u->https);
+}
+
 /* 连上(必要时先开 CONNECT 隧道)。返回 0 成功,1 = 需要 libssl,-1 = 连不上。 */
 static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
     c->fd = -1;
@@ -824,7 +891,8 @@ static void http_call(VM *vm, int argc, Value *args, Value *out,
         }
         Conn c = { -1, NULL, { 0 } };
         long deadline = now_ms() + timeout_ms;
-        int rc = open_conn(&u, proxy_for(u.https), &c, deadline);
+        const char *px = effective_proxy(&u); /* 命中 NO_PROXY 时为 NULL => 直连 */
+        int rc = open_conn(&u, px, &c, deadline);
         if (rc != 0) {
             conn_close(&c);
             if (rc == 1) snprintf(err, sizeof err, "%s(): https:// needs "
@@ -834,7 +902,7 @@ static void http_call(VM *vm, int argc, Value *args, Value *out,
             break;
         }
         sbuf req = {0};
-        int brc = build_request(&req, &u, proxy_for(u.https), hdrs,
+        int brc = build_request(&req, &u, px, hdrs,
                                 cur_method, &body, skip_hdr);
         if (brc == 0) brc = conn_write(&c, req.p, req.len, deadline);
         free(req.p);

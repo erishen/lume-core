@@ -376,7 +376,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test http-noproxy-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -650,6 +650,22 @@ builtins-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-builtins-test.out; then \
 		echo "==> builtins 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> builtins 单测全部通过"
+
+# NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
+# 把 HTTP_PROXY 指到死端口 127.0.0.1:9 作对照:绕过失效会撞死代理 => FAIL。
+http-noproxy-test: all
+	@PORT=18891; \
+	 python3 tests/http_noproxy_srv.py $$PORT > /tmp/lume-http-noproxy-srv.log 2>&1 & \
+	 SRV=$$!; \
+	 sleep 1; \
+	 HTTP_PROXY=http://127.0.0.1:9 LUME_HTTP_PROXY= NO_PROXY=127.0.0.1 \
+	   ./$(TARGET) tests/builtins-http-noproxy.lume > /tmp/lume-http-noproxy.out 2>&1; \
+	 rc=$$?; \
+	 kill $$SRV 2>/dev/null; \
+	 cat /tmp/lume-http-noproxy.out; \
+	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-noproxy.out; then \
+	   echo "==> http no_proxy 单测失败 (rc=$$rc)"; exit 1; fi; \
+	 echo "==> http no_proxy 单测通过"
 
 # 静态检查：两个原生后端 (text / libLLVM) 必须覆盖同一组 AST 节点类型，
 # 否则单边新增节点会静默漂移（另一端掉进 default:）。见脚本内注释。

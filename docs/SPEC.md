@@ -677,6 +677,9 @@ let r = http_patch(url,  ... 同 post,带 body);
 - 重定向最多 5 跳，每跳重过闸门。`301`/`302`/`303` 把带 body 的方法降级成 `GET` 并丢掉
   `Content-Length`；`307`/`308` 原样保留（RFC 7231 §6.4.4 / §6.4.7）。
 - **总闸**：`--no-net` 或 `LUME_NO_NET=1` 时任何 HTTP 内建直接报错，一个包都不发。
+- **代理 / NO_PROXY 绕过**：出站请求跟随 `LUME_HTTP_PROXY`（强制）> `HTTPS_PROXY`/`HTTP_PROXY`（大小写都认）。
+  设了 `NO_PROXY`/`no_proxy`（逗号/空格分隔，支持 `.domain` 后缀、`*` 通配、可选 `:port`）的主机**直连、不走代理**；
+  `LUME_NO_PROXY` 优先级最高，且无论是否设了 `LUME_HTTP_PROXY` 都生效——内网地址必须能绕过代理直连。
 - ⚠️ **本树无 Winsock**：`LUME_HAS_HTTP=0`，这些内建在 Windows 构建里**存在但调用即报错**
   （见 §6.9 与 §8 的 host/core 差异）。
 

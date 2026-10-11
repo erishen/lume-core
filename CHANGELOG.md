@@ -21,6 +21,17 @@ All notable changes to Lume are documented here. The format follows
   for JSON/CLI tooling. Regression suite: `tests/builtins-sort-regex.lume`
   (17 checks, wired into `make check` / `make test`).
 
+### Added — NO_PROXY bypass for outbound HTTP
+
+- Outbound `http_get/post/put/patch/delete` now honor `NO_PROXY` / `no_proxy`
+  (comma/space separated; supports `.domain` suffix matching, `*` wildcard,
+  optional `:port`). Hosts listed there connect **directly, bypassing the
+  proxy**. `LUME_NO_PROXY` takes highest precedence and wins even when
+  `LUME_HTTP_PROXY` is set — intranet hosts must be able to reach directly.
+- Regression suite: `tests/builtins-http-noproxy.lume` + `tests/http_noproxy_srv.py`
+  (dead-proxy control on `:9` + real server on `:18891`), wired into
+  `make test` via `http-noproxy-test`.
+
 ## [0.5.1] - 2026-10-09
 
 ### Added — standalone install + version reporting
