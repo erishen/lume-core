@@ -1,0 +1,91 @@
+// tests/eq2.lume — 结构相等：list / map / struct / enum 的 == 与 !=
+// 运行: make eq2-test (并入 make test)
+//
+// 语义钉子（本轮落地）：
+//   == / != 对容器是**结构比较**（此前三后端都是指针比或恒定 false）：
+//     list  同长 + 逐元素 ==（递归）
+//     map   同键数 + 每个键在对方存在且值 ==（**键顺序无关**）
+//     enum  就是带 "$" 键的 map， tag + 载荷一起比
+//     struct 是命名的 map，只比结构、不比类型名
+//   标量与字符串语义不动：int/float 加宽、字符串按字节、bool、null。
+//   null 只与 i8* 类（string/容器/func/any/null）比较——空指针身份；
+//   int/float/bool 永不为 null，静态拒绝（原生后端本就拒绝构造 null 标量）。
+// 只走解释器; 三后端一致由 native-consistency.lume 的相等探针段覆盖,
+// 编译期拒绝由 tests/eq2-bad/*.lume 断言。
+// 不覆盖（原生端既存的字面量降级限制，与相等性无关）：异构列表
+// （[1,"a"]）、null 列表元素（[null]）、null map 值（{"a":null}）——
+// 解释器接受，两个原生后端拒发（"list/map values must be ..."）。
+
+enum Color { Red | Green | Blue }
+enum Shape { Circle(r: float) | Rect(w: float, h: float) }
+type P = { x: int, y: int }
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func main(): int {
+  // ---- list：同长逐元素，顺序敏感，递归 ----
+  check("list same", [1, 2, 3] == [1, 2, 3]);
+  check("list diff len", [1, 2] != [1, 2, 3]);
+  check("list diff elem", [1, 2, 3] != [1, 2, 4]);
+  check("list order matters", [1, 2] != [2, 1]);
+  check("list empty", [] == []);
+  check("list nested", [[1, 2], [3]] == [[1, 2], [3]]);
+  check("list nested diff", [[1, 2], [3]] != [[1, 2], [4]]);
+  check("list of enum", [Red, Green] == [Red, Green]);
+  check("list of enum diff", [Red, Green] != [Red, Blue]);
+  check("list of map", [{"a": 1}] == [{"a": 1}]);
+  check("list of map diff", [{"a": 1}] != [{"a": 2}]);
+
+  // ---- map：键顺序无关 ----
+  check("map same", {"a": 1, "b": 2} == {"a": 1, "b": 2});
+  check("map order-free", {"a": 1, "b": 2} == {"b": 2, "a": 1});
+  check("map diff val", {"a": 1} != {"a": 2});
+  check("map extra key", {"a": 1} != {"a": 1, "b": 2});
+  check("map missing key", {"a": 1, "b": 2} != {"a": 1});
+  check("map empty", {} == {});
+  check("map nested", {"a": {"b": [1, 2]}} == {"a": {"b": [1, 2]}});
+  check("map nested diff", {"a": {"b": [1, 2]}} != {"a": {"b": [1, 3]}});
+  check("map bool val", {"a": true} == {"a": true});
+  check("map bool diff", {"a": true} != {"a": false});
+  check("map float val", {"a": 1.5} == {"a": 1.5});
+  check("map str val", {"a": "x"} == {"a": "x"});
+
+  // ---- struct：命名的 map，只比结构 ----
+  let p: P = { x: 1, y: 2 };
+  let q: P = { x: 1, y: 2 };
+  let r: P = { x: 1, y: 3 };
+  check("struct same", p == q);
+  check("struct diff", p != r);
+  check("struct vs literal", p == { x: 1, y: 2 });
+
+  // ---- enum："$" 只是又一个键 ----
+  check("enum bare same", Red == Red);
+  check("enum bare diff", Red != Green);
+  check("enum payload same", Circle(2.0) == Circle(2.0));
+  check("enum payload diff", Circle(2.0) != Circle(3.0));
+  check("enum diff variant", Circle(2.0) != Rect(2.0, 2.0));
+  check("enum vs map literal", Circle(2.0) == { "$": "Circle", "r": 2.0 });
+
+  // ---- 标量与字符串：既有语义不动 ----
+  check("int float widen", 1 == 1.0);
+  check("int ne float", 1 != 1.5);
+  check("string content", "ab" == "ab");
+  check("string diff", "ab" != "ba");
+  check("bool eq", true == true);
+  check("bool ne", true != false);
+  check("null null", null == null);
+
+  // ---- null × 容器/字符串：空指针身份 ----
+  let xs: int[] = null;
+  check("null list", xs == null);
+  check("list vs null", [1] != null);
+  let s: string = null;
+  check("null string", s == null);
+  check("string vs null", "a" != null);
+
+  return 0;
+}
+main();

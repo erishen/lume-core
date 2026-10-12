@@ -399,6 +399,17 @@ static void cg_stmt(CG *g, Node *n);
 static void cg_if_let(CG *g, Node *n);      /* defined with cg_match */
 static void cg_block(CG *g, Node *blk);
 
+/* Structural equality (SPEC 1.8), mutually recursive — a struct field that
+ * is itself a struct recurses back through cg_val_eq. Mirrors
+ * codegen_expr.c's pair branch for branch; see the long comment there. The
+ * struct helpers they lean on are defined further down (with cg_member). */
+static void struct_addr(CG *g, Val *o);
+static int struct_field_idx(CG *g, const char *sname, const char *fname);
+static Type *struct_field_type(CG *g, const char *sname, int idx);
+static LLVMValueRef gep_field(CG *g, Type *sty, LLVMValueRef ptrv, int idx);
+static LLVMValueRef cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line);
+static LLVMValueRef cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line);
+
 static Val val_make(Type *ty, LLVMValueRef v)
 {
     Val r;
@@ -520,6 +531,160 @@ static Val cg_unary(CG *g, Node *n)
     return val_make(o.ty, LLVMBuildNeg(g->ab, o.v, "n"));
 }
 
+/* == / != ask what two values *contain*, never whether two pointers happen to
+ * match — the libLLVM mirror of codegen_expr.c's cg_val_eq, kept in step with
+ * it branch for branch (the long comment there carries the semantics). Both
+ * operands are consumed; NULL is an error, with the reason in g->err.
+ *
+ * A named struct is the one shape that never reaches rt.c: it lowers to a
+ * typed aggregate, not the i8* heap map the runtime walks, so a struct
+ * against a struct goes to cg_struct_eq for a field-by-field compare. */
+static LLVMValueRef cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line)
+{
+    AT(g);
+    TypeKind ak = a.ty ? a.ty->kind : TY_ANY;
+    TypeKind bk = b.ty ? b.ty->kind : TY_ANY;
+    bool a_ctr = ak == TY_LIST || ak == TY_STRUCT ||
+                 ak == TY_ENUM || ak == TY_RESULT;
+    bool b_ctr = bk == TY_LIST || bk == TY_STRUCT ||
+                 bk == TY_ENUM || bk == TY_RESULT;
+    bool a_ptr = a_ctr || ak == TY_STRING || ak == TY_FUNC ||
+                 ak == TY_NULL || ak == TY_ANY;
+    bool b_ptr = b_ctr || bk == TY_STRING || bk == TY_FUNC ||
+                 bk == TY_NULL || bk == TY_ANY;
+    bool a_named = ak == TY_STRUCT && a.ty->name &&
+                   sdef_find(&g->structs, a.ty->name) != NULL;
+    bool b_named = bk == TY_STRUCT && b.ty->name &&
+                   sdef_find(&g->structs, b.ty->name) != NULL;
+
+    if (a_named && b_named)
+        return cg_struct_eq(g, a, b, ne, line);
+
+    if (a_named != b_named)
+        /* A typed aggregate against an i8* heap map: no runtime bridge
+         * between the two representations exists, and the interpreter would
+         * answer by comparing contents. */
+        ERR(g, "line %zu: '%s' between %s and %s is not supported "
+                "by the native backend yet",
+             line, ne ? "!=" : "==", src_type_name(a.ty), src_type_name(b.ty));
+
+    const char *rt_fn = NULL;
+    if (ak == TY_STRING && bk == TY_STRING)
+        rt_fn = "lume_str_eq";
+    else if (a_ctr && b_ctr)
+        rt_fn = "lume_value_eq";   /* structural, SPEC 1.8 */
+    else if ((ak == TY_ANY && b_ptr) || (bk == TY_ANY && a_ptr))
+        rt_fn = "lume_any_eq";     /* runtime probes the kind */
+    if (rt_fn) {
+        LLVMTypeRef at2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, at2, 2, 0),
+                rt_decl(g, rt_fn, g->i64, at2, 2),
+                (LLVMValueRef[]){ a.v, b.v }, 2, "eq");
+        LLVMValueRef b1 = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
+                                        LLVMConstInt(g->i64, 0, 0), "isb");
+        if (ne)
+            b1 = LLVMBuildXor(g->ab, b1, LLVMConstInt(g->i1, 1, 0), "not");
+        return b1;
+    }
+    /* bool == bool, null against another i8*-lowered value, and func identity
+     * all compare as their own IR types. */
+    bool self_typed =
+        (ak == TY_BOOL && bk == TY_BOOL) ||
+        ((ak == TY_NULL || bk == TY_NULL) && a_ptr && b_ptr) ||
+        (ak == TY_FUNC && bk == TY_FUNC);
+    if (self_typed || ((ak == TY_INT || ak == TY_FLOAT) &&
+                       (bk == TY_INT || bk == TY_FLOAT))) {
+        /* Numeric: cg_binary's promotion already widened a mixed int/float
+         * pair to double, so a float here means both sides are float. */
+        unsigned pred[2] = { 0, 0 };
+        if (ak == TY_FLOAT) {
+            pred[0] = LLVMRealOEQ; pred[1] = LLVMRealONE;
+            return LLVMBuildFCmp(g->ab, (LLVMRealPredicate)pred[ne ? 1 : 0],
+                                 a.v, b.v, "c");
+        }
+        pred[0] = LLVMIntEQ; pred[1] = LLVMIntNE;
+        return LLVMBuildICmp(g->ab, (LLVMIntPredicate)pred[ne ? 1 : 0],
+                             a.v, b.v, "c");
+    }
+    ERR(g, "line %zu: '%s' between %s and %s is not supported "
+            "by the native backend yet",
+         line, ne ? "!=" : "==", src_type_name(a.ty), src_type_name(b.ty));
+}
+
+/* Two named structs compare field by field (SPEC 1.8). The interpreter
+ * answers the same question by comparing the key sets of the two maps, and
+ * field names are the keys — so a field-set mismatch is a constant answer,
+ * not an error, and the two sides need not even be the same declared type:
+ * what matters is that the fields line up by name.
+ *
+ * Both sides get a slot (struct_addr), each field is loaded through a
+ * StructGEP and compared recursively — a field that is itself a list, a map
+ * or a nested struct recurses back into cg_val_eq. The result is the AND
+ * over the fields, xored for `!=`; two field-less structs are equal. */
+static LLVMValueRef cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line)
+{
+    AT(g);
+    SDef *sa = sdef_find(&g->structs, a.ty->name);
+    SDef *sb = sdef_find(&g->structs, b.ty->name);
+
+    /* bj[i] is sb's index for sa's field i, or -1 when the name is absent. */
+    int *bj = NULL;
+    if (sa && sb && sa->count == sb->count) {
+        bj = (int *)xmalloc((size_t)sa->count * sizeof *bj);
+        for (int i = 0; i < sa->count; i++) {
+            bj[i] = -1;
+            for (int j = 0; j < sb->count; j++)
+                if (strcmp(sb->names[j], sa->names[i]) == 0) { bj[i] = j; break; }
+        }
+        for (int i = 0; i < sa->count; i++)
+            if (bj[i] < 0) { free(bj); bj = NULL; break; }
+    }
+    if (!bj)
+        return ne ? LLVMConstInt(g->i1, 1, 0) : LLVMConstInt(g->i1, 0, 0);
+
+    struct_addr(g, &a);
+    struct_addr(g, &b);
+    if (!a.v || !b.v) {
+        free(bj);
+        ERR(g, "line %zu: cannot compare these struct values", line);
+    }
+
+    LLVMValueRef acc = LLVMConstInt(g->i1, 1, 0);
+    for (int i = 0; i < sa->count; i++) {
+        int j = bj[i];
+        Type *fty = sa->types[i];
+        Type *gty = sb->types[j];
+        if (!ty_of(g, fty) || !ty_of(g, gty)) {
+            free(bj);
+            ERR(g, "line %zu: field '%s' has no codegen type", line, sa->names[i]);
+        }
+        LLVMValueRef pa = gep_field(g, a.ty, a.v, i);
+        LLVMValueRef pb = gep_field(g, b.ty, b.v, j);
+        if (!pa || !pb) {
+            free(bj);
+            ERR(g, "line %zu: cannot compare field '%s'", line, sa->names[i]);
+        }
+        Val fa = val_make(fty, LLVMBuildLoad2(g->ab, ty_of(g, fty), pa, "f"));
+        Val fb = val_make(gty, LLVMBuildLoad2(g->ab, ty_of(g, gty), pb, "f"));
+        if (!fa.v || !fb.v) {
+            free(bj);
+            ERR(g, "line %zu: cannot read field '%s'", line, sa->names[i]);
+        }
+        LLVMValueRef fe = cg_val_eq(g, fa, fb, false, line);
+        if (!fe) { free(bj); return NULL; }
+        acc = LLVMBuildAnd(g->ab, acc, fe, "and");
+        if (!acc) {
+            free(bj);
+            ERR(g, "line %zu: cannot compare these struct values", line);
+        }
+    }
+    free(bj);
+    if (ne)
+        acc = LLVMBuildXor(g->ab, acc, LLVMConstInt(g->i1, 1, 0), "not");
+    return acc;
+}
+
 /* --------------------------------------------------------------- binary ----- */
 
 static Val cg_binary(CG *g, Node *n)
@@ -585,32 +750,28 @@ static Val cg_binary(CG *g, Node *n)
 
     if (n->as.binary.op >= OP_EQ && n->as.binary.op <= OP_GE) {
         size_t k = (size_t)(n->as.binary.op - OP_EQ);
+        bool is_eq = n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE;
+        static const unsigned iop[] = { LLVMIntEQ, LLVMIntNE, LLVMIntSLT,
+                                        LLVMIntSLE, LLVMIntSGT, LLVMIntSGE };
+        if (is_eq) {
+            /* == / != need content or structure — never pointer luck: the
+             * dispatch lives in cg_val_eq (mirrors codegen_expr.c's
+             * restructured block; see the comment there for why strings stay
+             * a known-broken corner on the relational spellings, which never
+             * reach it). */
+            LLVMValueRef r = cg_val_eq(g, a, b,
+                                       n->as.binary.op == OP_NE, n->line);
+            if (!r) ERRV(g, "line %zu: bad comparison", n->line);
+            return val_make(type_prim(TY_BOOL), r);
+        }
         if (a.ty && a.ty->kind == TY_FLOAT) {
             static const unsigned op[] = { LLVMRealOEQ, LLVMRealONE, LLVMRealOLT,
                                            LLVMRealOLE, LLVMRealOGT, LLVMRealOGE };
             return val_make(type_prim(TY_BOOL),
                             LLVMBuildFCmp(g->ab, (LLVMRealPredicate)op[k], a.v, b.v, "c"));
         }
-        if (a.ty && a.ty->kind == TY_STRING &&
-            (n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE)) {
-            /* String equality is a byte comparison — same branch, same
-             * reasoning, as codegen_expr.c's copy: an ICmp on the two i8*
-             * pointers would agree by pointer-luck at best. */
-            LLVMTypeRef at2[2] = { g->i8ptr, g->i8ptr };
-            LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
-                    LLVMFunctionType(g->i64, at2, 2, 0),
-                    rt_decl(g, "lume_str_eq", g->i64, at2, 2),
-                    (LLVMValueRef[]){ a.v, b.v }, 2, "eq");
-            LLVMValueRef b1 = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
-                                            LLVMConstInt(g->i64, 0, 0), "isb");
-            if (n->as.binary.op == OP_NE)
-                b1 = LLVMBuildXor(g->ab, b1, LLVMConstInt(g->i1, 1, 0), "not");
-            return val_make(type_prim(TY_BOOL), b1);
-        }
-        static const unsigned op[] = { LLVMIntEQ, LLVMIntNE, LLVMIntSLT,
-                                       LLVMIntSLE, LLVMIntSGT, LLVMIntSGE };
         return val_make(type_prim(TY_BOOL),
-                        LLVMBuildICmp(g->ab, (LLVMIntPredicate)op[k], a.v, b.v, "c"));
+                        LLVMBuildICmp(g->ab, (LLVMIntPredicate)iop[k], a.v, b.v, "c"));
     }
 
     /* Same guard the IR-text emitter puts up (see cg_binary there): a string

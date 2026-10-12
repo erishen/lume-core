@@ -4,6 +4,28 @@
 
 #include "typecheck_internal.h"
 
+/* Equality classes for `==` / `!=` (SPEC 1.8). Two operands in different
+ * classes are never comparable: natively that shape is invalid IR (icmp i64
+ * against a ptr), and in the interpreter it was a quiet false. `null` gets
+ * its own class because it is an i8* natively — comparable with the other
+ * i8*-lowered kinds, never with a scalar. TY_ANY (and anything unknown)
+ * returns -1: the wildcard stays permissive, the runtime decides. */
+enum { EQ_NUM, EQ_STR, EQ_BOOL, EQ_CTR, EQ_FUNC, EQ_NULL, EQ_CLASSES };
+
+static int eq_class(Type *t) {
+    if (!t) return -1;
+    switch (t->kind) {
+    case TY_INT: case TY_FLOAT:                   return EQ_NUM;
+    case TY_STRING:                               return EQ_STR;
+    case TY_BOOL:                                 return EQ_BOOL;
+    case TY_LIST: case TY_STRUCT:
+    case TY_ENUM: case TY_RESULT:                 return EQ_CTR;
+    case TY_FUNC:                                 return EQ_FUNC;
+    case TY_NULL:                                 return EQ_NULL;
+    default:                                      return -1;  /* any / unknown */
+    }
+}
+
 static Type *ck_list(Checker *c, Node *n, Type *expected) {
     if (n->as.list.count == 0) {
         /* `[]` — type comes from the expected annotation, else any[] */
@@ -278,8 +300,30 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                 return type_prim(TY_BOOL);
             }
             if (op == OP_EQ || op == OP_NE) {
-                ck_expr(c, n->as.binary.left, NULL);
-                ck_expr(c, n->as.binary.right, NULL);
+                Type *lt = ck_expr(c, n->as.binary.left, NULL);
+                Type *rt = ck_expr(c, n->as.binary.right, NULL);
+                /* `==` used to accept any two operands and let the runtime
+                 * answer — which for mixed classes meant "invalid IR" natively
+                 * (icmp i64 against a ptr) and a quiet false in the
+                 * interpreter. Structural equality (SPEC 1.8) needs a static
+                 * gate: values in different equality classes are never
+                 * comparable, and `null` — an i8* natively — only compares
+                 * against other i8*-lowered kinds (an int is never null: the
+                 * native backends already refuse to build one). */
+                int lc = eq_class(lt), rc = eq_class(rt);
+                bool ok = true;
+                if (lc >= 0 && rc >= 0) {
+                    if (lc == EQ_NULL || rc == EQ_NULL) {
+                        int other = lc == EQ_NULL ? rc : lc;
+                        ok = other != EQ_NUM && other != EQ_BOOL;
+                    } else {
+                        ok = lc == rc;
+                    }
+                }
+                if (!ok)
+                    ck_fail(c, n->line, "'%s' does not apply to %s and %s",
+                            op == OP_EQ ? "==" : "!=",
+                            ty_str(lt), ty_str(rt));
                 return type_prim(TY_BOOL);
             }
             if (op == OP_LT || op == OP_LE || op == OP_GT || op == OP_GE) {

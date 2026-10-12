@@ -340,14 +340,41 @@ static bool value_eq(Value a, Value b) {
         case VAL_BOOL: return AS_BOOL(a) == AS_BOOL(b);
         case VAL_INT: return AS_INT(a) == AS_INT(b);
         case VAL_FLOAT: return AS_NUM(a) == AS_NUM(b);
-        case VAL_OBJ:
-            if (AS_OBJ(a) == AS_OBJ(b)) return true;
-            if (AS_OBJ(a)->type == OBJ_STRING && AS_OBJ(b)->type == OBJ_STRING) {
-                Obj *x = AS_OBJ(a), *y = AS_OBJ(b);
+        case VAL_OBJ: {
+            Obj *x = AS_OBJ(a), *y = AS_OBJ(b);
+            if (x == y) return true;   /* identity covers func/native/env */
+            if (x->type != y->type) return false;
+            if (x->type == OBJ_STRING) {
                 return x->as.str.len == y->as.str.len &&
                        memcmp(obj_string(x), obj_string(y), x->as.str.len) == 0;
             }
+            /* Structural equality for containers (SPEC 1.8). Lists compare
+             * length then element-wise; maps compare key count then every key
+             * of one side against the other — order-independent, the way map
+             * membership works. Enums are maps with a "$" key, so tag and
+             * payload all fall out of the map case; structs are named maps
+             * and the name does not participate. Recursion depth is bounded
+             * only by the data: cyclic structures are not buildable through
+             * the language, same caveat as print(). */
+            if (x->type == OBJ_LIST) {
+                if (x->as.list.count != y->as.list.count) return false;
+                for (int i = 0; i < x->as.list.count; i++)
+                    if (!value_eq(x->as.list.items[i], y->as.list.items[i]))
+                        return false;
+                return true;
+            }
+            if (x->type == OBJ_MAP) {
+                if (x->as.map.count != y->as.map.count) return false;
+                for (int i = 0; i < x->as.map.count; i++) {
+                    int j = map_find(y, x->as.map.keys[i]);
+                    if (j < 0) return false;
+                    if (!value_eq(x->as.map.vals[i], y->as.map.vals[j]))
+                        return false;
+                }
+                return true;
+            }
             return false;
+        }
     }
     return false;
 }

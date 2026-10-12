@@ -605,5 +605,84 @@ print(ifkind(Name("ab")));                       // n:ab
 print(ifkind(Id(5)));                            // i:5
 print(ifkind(None));                             // other
 
+// ---- structural `==` / `!=` (docs/SPEC.md §1.8) -----------------------------
+//
+// `==` used to answer pointer-luck (native: two i8* icmp) or a flat false
+// (interpreter) for containers, and `bool == bool` was a text-vs-llvm fork
+// (`icmp eq i64` on two i1s). Everything below must print byte-identically
+// from all three legs: the interpreter walks the values, rt.c's
+// lume_value_eq walks the slots (list length + element recursion; map key
+// sets + values, order independent — an enum's "$" tag is just another key),
+// and a *named* struct is a typed aggregate, so it is compared field by
+// field through GEPs instead. The heterogeneous / null-element literal
+// shapes eq2.lume documents as unsupported stay out of here on purpose.
+
+// list: same length + elements, order sensitive, recursive, container elems
+print([1, 2, 3] == [1, 2, 3]);                   // true
+print([1, 2] != [1, 2, 3]);                      // true
+print([1, 2, 3] != [1, 2, 4]);                   // true
+print([1, 2] != [2, 1]);                         // true (order matters)
+print([] == []);                                 // true
+print([[1, 2], [3]] == [[1, 2], [3]]);           // true (nested)
+print([[1, 2], [3]] != [[1, 2], [4]]);           // true
+print([Red, Green] == [Red, Green]);             // true (enum elements)
+print([Red, Green] != [Red, Blue]);              // true
+print([{ "a": 1 }] == [{ "a": 1 }]);             // true (map elements)
+print([{ "a": 1 }] != [{ "a": 2 }]);             // true
+
+// map: key sets must match, values compared — key ORDER is irrelevant
+print({ "a": 1, "b": 2 } == { "a": 1, "b": 2 }); // true
+print({ "a": 1, "b": 2 } == { "b": 2, "a": 1 }); // true (order-free)
+print({ "a": 1 } != { "a": 2 });                 // true
+print({ "a": 1 } != { "a": 1, "b": 2 });         // true (extra key)
+print({ "a": 1, "b": 2 } != { "a": 1 });         // true (missing key)
+print({} == {});                                 // true
+print({ "a": { "b": [1, 2] } } == { "a": { "b": [1, 2] } });   // true
+print({ "a": { "b": [1, 2] } } != { "a": { "b": [1, 3] } });   // true
+print({ "a": true } == { "a": true });           // true (bool value)
+print({ "a": true } != { "a": false });          // true
+print({ "a": 1.5 } == { "a": 1.5 });             // true (float value)
+print({ "a": "x" } == { "a": "x" });             // true (string value)
+
+// struct: a named struct is a typed aggregate natively, so this is the
+// field-by-field GEP path, not the runtime map walk. The field names are
+// unique to this type on purpose: a struct literal is resolved by matching
+// the declared field set, and a second {x,y} struct would make every bare
+// `{ x: .., y: .. }` literal in this file ambiguous.
+type EqPt = { px: int, py: int };
+let sa: EqPt = { px: 1, py: 2 };
+let sb: EqPt = { px: 1, py: 2 };
+let sc: EqPt = { px: 1, py: 3 };
+print(sa == sb);                                 // true
+print(sa != sc);                                 // true
+print(sa == { px: 1, py: 2 });                   // true (vs literal)
+
+// enum: tag + payload together; a bare variant is just its "$" key
+print(Red == Red);                               // true
+print(Red != Green);                             // true
+print(Circle(2.0) == Circle(2.0));               // true
+print(Circle(2.0) != Circle(3.0));               // true
+print(Circle(2.0) != Rect(2.0, 2.0));            // true (variant differs)
+print(Circle(2.0) == { "$": "Circle", "r": 2.0 });   // true (vs map literal)
+
+// scalars keep their semantics: int/float widen, strings by content,
+// bool as i1 (this line used to be the text-vs-llvm fork)
+print(1 == 1.0);                                 // true
+print(1 != 1.5);                                 // true
+print("ab" == "ab");                             // true
+print("ab" != "ba");                             // true
+print(true == true);                             // true
+print(true != false);                            // true
+print(null == null);                             // true
+
+// null against an i8*-lowered value is pointer identity, and it is the
+// only null comparison the native side can express
+let nxs: int[] = null;
+print(nxs == null);                              // true
+print([1] != null);                              // true
+let ns: string = null;
+print(ns == null);                               // true
+print("a" != null);                              // true
+
 warmup();
 main();

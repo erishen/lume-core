@@ -6,6 +6,60 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed — structural `==` / `!=` (SPEC §1.8)
+
+- **`==` / `!=` on containers are structural comparisons** — never pointer
+  luck and never a flat `false`. Before this the three backends each answered
+  differently: the interpreter's `value_eq` compared map/list pointers (so
+  `[1,2] == [1,2]` was `false`), and both native emitters sent an `icmp` on
+  two `i8*`s (pointer identity — and invalid IR for mixed-type operands).
+  Semantics, now uniform across all three backends:
+  - `list`: same length + element-wise recursion (order sensitive);
+  - `map`: same key count + every key present in the other with equal
+    values, **key order independent**;
+  - `enum`: an ordinary map whose `"$"` tag is just another key — tag and
+    payload compare together;
+  - `struct`: structure only, **not the type name** — same field set means
+    field-by-field;
+  - `func`: pointer identity; `null` against an i8\*-lowered value: null
+    pointer identity.
+- **The type checker now gates equality classes** (it previously checked
+  nothing for `==`/`!=`). Cross-class comparisons are rejected at compile
+  time with `'==' does not apply to X and Y` (`1 == "x"`, `true == 1`,
+  `[1] == 1`, `1 == null`, ...). `null` compares only against i8\*-lowered
+  kinds (string / containers / func / any / null) — an `int`, `float` or
+  `bool` is never null, which the native backends already enforced by
+  refusing to build null scalars. `any` stays the wildcard class.
+- **Native lowering**: `string × string` → `lume_str_eq` (byte compare);
+  container × container → `lume_value_eq` (rt.c walks the slots — the
+  interpreter's `values_equal` mirrored); `any` against an i8\*-lowered
+  value → `lume_any_eq` (runtime kind probe: two containers structurally, a
+  container vs a non-container never equal, otherwise bytes). A **named
+  struct is the one shape that never reaches rt.c** — it lowers to a typed
+  aggregate `%P = type {...}`, not the i8\* heap map — so two named structs
+  compare field by field (GEP + load, AND over fields, recursive through
+  `cg_val_eq`/`cg_struct_eq`, mirrored in both emitters); a field-set
+  mismatch is the constant answer `false` (`true` for `!=`), matching the
+  interpreter's key-set rule. A named struct against a map is refused by
+  the native backends (no runtime bridge between the two representations).
+- **Parity fix found on the way**: `bool == bool` was `icmp eq i64` on two
+  i1 values in the IR-text backend — clang rejected the module outright
+  while the libLLVM backend accepted it. Both now compare as i1.
+- **Diagnostic fix (pre-existing)**: `ty_str` spelled every type into one
+  static buffer that the *next* call cleared — even one answering from a
+  string literal — so any diagnostic naming two types printed an empty
+  name for the container side (`'' is not assignable to the declared type
+  'int'`). It now uses a ring of buffers. `ty_str` also gained the missing
+  `list` / `map` / `func` spellings (`int[]` when the element type is
+  known), which the same class of message had been rendering as `<?>`.
+- Regression suite: `tests/eq2.lume` (43 assertions) + `tests/eq2-bad/`
+  (7 rejection cases with pinned diagnostics), wired into `make test` via
+  `eq2-test`; an equality probe section was added to
+  `tests/native-consistency.lume` (list / order-free map / struct GEP /
+  enum vs map literal / null identity) and the `.expected` regenerated.
+  SPEC §1.8 documents the full rule table; §3.7's "enum values do not
+  participate in `==`" stance is retired.
+
 ### Added — or-patterns, match guards and `if let` (Lean borrowings)
 
 - **Or-patterns**: `match (c) { Red | Green | Blue => "warm", ... }` — several

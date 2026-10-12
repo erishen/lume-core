@@ -224,7 +224,17 @@ void type_print(Type *t) {
 
 /* Format a type into a static buffer (for error messages). */
 const char *ty_str(Type *t) {
-    static char buf[128];
+    /* A ring of buffers, not one: one diagnostic routinely spells two types
+     * ("'==' does not apply to %s and %s"), and with a single static buffer
+     * the *second* call cleared what the first had returned — even when the
+     * second answered straight from a literal, because the reset at the top
+     * runs on every call. The result was an empty type name in the message
+     * ("does not apply to  and int") for every container operand. Each call
+     * takes the next slot, so a message with a handful of types — including
+     * the recursive `int[]` spelling below — stays intact. */
+    static char bufs[8][128];
+    static unsigned next;
+    char *buf = bufs[next++ % 8];
     buf[0] = '\0';
     if (!t || t->kind == TY_ANY) return "any";
     if (t->kind == TY_NULL) return "null";
@@ -234,6 +244,24 @@ const char *ty_str(Type *t) {
     if (t->kind == TY_BOOL) return "bool";
     if (t->kind == TY_RESULT) return "Result";
     if (t->kind == TY_ENUM) return t->name ? t->name : "enum";
+    if (t->kind == TY_LIST) {
+        /* `int[]` reads better than the raw kind; the element type is only
+         * spelled when it is known, since `[]` alone is any[]. The element
+         * string is copied out first — ty_str spells into a ring slot, and
+         * snprintf with source and destination overlapping is undefined. */
+        if (t->elem && t->elem->kind != TY_ANY) {
+            char eb[64];
+            snprintf(eb, sizeof eb, "%s", ty_str(t->elem));
+            snprintf(buf, sizeof buf, "%s[]", eb);
+        } else {
+            snprintf(buf, sizeof buf, "list");
+        }
+        return buf;
+    }
+    if (t->kind == TY_STRUCT)
+        return t->name ? t->name : "map";
+    if (t->kind == TY_FUNC)
+        return "func";
     snprintf(buf, sizeof(buf), "<%s>", t->name ? t->name : "?");
     return buf;
 }

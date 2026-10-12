@@ -57,6 +57,11 @@ static const Bi *builtin_find(const char *name);
 /* forward: same tu, defined below this point. */
 static Val cg_binary(CG *g, Node *n);
 
+/* forward: same tu, defined below this point. Mutually recursive — a struct
+ * field that is itself a struct recurses back through cg_val_eq. */
+static char *cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line);
+static char *cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line);
+
 /* forward: same tu, defined below this point. */
 static Val cg_builtin(CG *g, Node *n);
 
@@ -584,6 +589,257 @@ static Val cg_unary(CG *g, Node *n)
     return val_take(o.ty, r);
 }
 
+/* == / != ask what two values *contain*, never whether two pointers happen
+ * to match. This dispatches on the pair of static types and emits the call or
+ * icmp that answers the question, returning an i1 SSA name.
+ *
+ * Both operand names are consumed — released here on every path — so the
+ * caller must not free them again. NULL is an error, with the reason in
+ * g->err (the first-error-wins rule of ERR applies).
+ *
+ * A named struct is the one shape that never reaches rt.c: it lowers to a
+ * typed aggregate `%P = type {...}`, not the i8* heap map the runtime walks,
+ * so a struct against a struct goes to cg_struct_eq for a field-by-field
+ * compare. Everything else the runtime already knows how to walk: lists,
+ * maps, enums and Results all arrive as i8* and lume_value_eq compares them
+ * structurally — length plus elements for a list, key sets plus values
+ * (order independent) for a map; an enum's "$" tag is just another key. */
+static char *cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line)
+{
+    Type *boolty = type_prim(TY_BOOL);
+    TypeKind ak = a.ty ? a.ty->kind : TY_ANY;
+    TypeKind bk = b.ty ? b.ty->kind : TY_ANY;
+    bool a_ctr = ak == TY_LIST || ak == TY_STRUCT ||
+                 ak == TY_ENUM || ak == TY_RESULT;
+    bool b_ctr = bk == TY_LIST || bk == TY_STRUCT ||
+                 bk == TY_ENUM || bk == TY_RESULT;
+    bool a_ptr = a_ctr || ak == TY_STRING || ak == TY_FUNC ||
+                 ak == TY_NULL || ak == TY_ANY;
+    bool b_ptr = b_ctr || bk == TY_STRING || bk == TY_FUNC ||
+                 bk == TY_NULL || bk == TY_ANY;
+    bool a_named = ak == TY_STRUCT && a.ty->name &&
+                   sdef_find(&g->structs, a.ty->name) != NULL;
+    bool b_named = bk == TY_STRUCT && b.ty->name &&
+                   sdef_find(&g->structs, b.ty->name) != NULL;
+    /* lume_str_eq/lume_value_eq/lume_any_eq answer 1 for "equal", so ==
+     * tests the call against 0 with `ne` and != with `eq`. The direct
+     * operand comparisons (bool, null, func, numerics) keep the predicate
+     * the operator spells — flipping those would answer `null == null`
+     * with "the pointers differ". */
+    const char *cmp = ne ? "eq" : "ne";
+    const char *idc = ne ? "ne" : "eq";
+    char *r = NULL;
+
+    if (a_named && b_named)
+        return cg_struct_eq(g, a, b, ne, line);
+
+    if (a_named != b_named) {
+        /* A typed aggregate against an i8* heap map (a map literal that
+         * matched no declared type, or a map-typed value): no runtime bridge
+         * between the two representations exists, and the interpreter would
+         * answer by comparing contents. Refuse here rather than emit an icmp
+         * whose operands clang rejects with a line number inside the .ll. */
+        free(a.v); free(b.v);
+        ERR(g, "line %zu: '%s' between %s and %s is not supported "
+               "by the native backend yet",
+            line, ne ? "!=" : "==", src_type_name(a.ty), src_type_name(b.ty));
+    }
+
+    if (ak == TY_STRING && bk == TY_STRING) {
+        /* String equality is a byte comparison — the interpreter's
+         * values_equal walks the bytes. An icmp here would compare two i8*
+         * pointers, which agrees by pointer-luck at best and answers `false`
+         * for the same text in two literals. Only ==/!= carry string
+         * semantics; the relational spellings keep the pointer order they
+         * always had (matched by the libLLVM backend, which does the same). */
+        char *eq64 = emit_instrf(g, type_prim(TY_INT),
+                                 "call i64 @lume_str_eq(i8* %s, i8* %s)",
+                                 a.v, b.v);
+        if (!eq64) { free(a.v); free(b.v); return NULL; }
+        r = emit_instrf(g, boolty, "icmp %s i64 %s, 0", cmp, eq64);
+        free(eq64);
+    }
+    else if (ak == TY_BOOL && bk == TY_BOOL) {
+        /* bool == bool was spelled `icmp eq i64` on two i1 values, which
+         * clang rejects outright ("constant expression type mismatch: got
+         * type 'i1' but expected 'i64'"). Compare as i1 — the libLLVM
+         * backend's builder never had the problem, so this is also a
+         * text-vs-llvm parity fix. */
+        r = emit_instrf(g, boolty, "icmp %s i1 %s, %s", idc, a.v, b.v);
+    }
+    else if (a_ctr && b_ctr) {
+        /* Structural equality (SPEC 1.8): rt.c walks the slots — list length
+         * plus element-wise recursion, map key sets plus values, order
+         * independent. The icmp that used to live here compared two i8*
+         * pointers, so `[1,2] == [1,2]` answered false on every backend. */
+        char *eq64 = emit_instrf(g, type_prim(TY_INT),
+                                 "call i64 @lume_value_eq(i8* %s, i8* %s)",
+                                 a.v, b.v);
+        if (!eq64) { free(a.v); free(b.v); return NULL; }
+        r = emit_instrf(g, boolty, "icmp %s i64 %s, 0", cmp, eq64);
+        free(eq64);
+    }
+    else if ((ak == TY_ANY && b_ptr) || (bk == TY_ANY && a_ptr)) {
+        /* An any against an i8*-lowered value: the runtime probes the kind —
+         * two containers structurally, a container against a non-container
+         * never equal, otherwise bytes (which is what the interpreter's
+         * values_equal answers for the same pair). `get(m, k) == null` lands
+         * here too and used to emit an icmp with a ptr operand, which clang
+         * rejects. */
+        char *eq64 = emit_instrf(g, type_prim(TY_INT),
+                                 "call i64 @lume_any_eq(i8* %s, i8* %s)",
+                                 a.v, b.v);
+        if (!eq64) { free(a.v); free(b.v); return NULL; }
+        r = emit_instrf(g, boolty, "icmp %s i64 %s, 0", cmp, eq64);
+        free(eq64);
+    }
+    else if ((ak == TY_NULL || bk == TY_NULL) && a_ptr && b_ptr) {
+        /* null against another i8*-lowered value is pointer identity:
+         * `x == null` for a string or container asks "is it the null
+         * pointer", which is exactly this — and the only form the native side
+         * can express, since it refuses to build a null scalar at all. */
+        r = emit_instrf(g, boolty, "icmp %s i8* %s, %s", idc, a.v, b.v);
+    }
+    else if (ak == TY_FUNC && bk == TY_FUNC) {
+        /* Function values compare by identity — the interpreter's
+         * values_equal answers true only for the same object. */
+        r = emit_instrf(g, boolty, "icmp %s i8* %s, %s", idc, a.v, b.v);
+    }
+    else if ((ak == TY_INT || ak == TY_FLOAT) && (bk == TY_INT || bk == TY_FLOAT)) {
+        /* Numeric: cg_binary's arithmetic promotion already widened a mixed
+         * int/float pair to double, so a float here means both sides are
+         * float and the fallback icmp would have been an fcmp anyway. */
+        if (ak == TY_FLOAT)
+            r = emit_instrf(g, boolty, "fcmp %s double %s, %s",
+                            ne ? "one" : "oeq", a.v, b.v);
+        else
+            r = emit_instrf(g, boolty, "icmp %s i64 %s, %s", idc, a.v, b.v);
+    }
+    else {
+        /* Whatever is left is a shape the checker's any-wildcard let through
+         * but no lowering exists for (any against a scalar, null against a
+         * scalar). Refuse here instead of emitting an icmp whose operands
+         * clang rejects with a line number inside the generated .ll. */
+        free(a.v); free(b.v);
+        ERR(g, "line %zu: '%s' between %s and %s is not supported "
+               "by the native backend yet",
+            line, ne ? "!=" : "==", src_type_name(a.ty), src_type_name(b.ty));
+    }
+
+    free(a.v); free(b.v);
+    return r;
+}
+
+/* Two named structs compare field by field (SPEC 1.8). The interpreter
+ * answers the same question by comparing the key sets of the two maps, and
+ * field names are the keys — so a field-set mismatch is a constant `false`
+ * (a constant `true` for `!=`), not an error, and the two sides need not
+ * even be the same declared type: what matters is that the fields line up
+ * by name.
+ *
+ * Both sides get a stack slot (struct_addr), each field is loaded through a
+ * GEP and compared recursively — a field that is itself a list, a map or a
+ * nested struct recurses back into cg_val_eq. The result is the AND over
+ * the fields, xored for `!=`; two field-less structs are equal. */
+static char *cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line)
+{
+    Type *boolty = type_prim(TY_BOOL);
+    SDef *sa = sdef_find(&g->structs, a.ty->name);
+    SDef *sb = sdef_find(&g->structs, b.ty->name);
+
+    /* bj[i] is sb's index for sa's field i, or -1 when the name is absent.
+     * A field-set mismatch is a well-formed question with the answer "not
+     * equal" — the interpreter says the same about two maps with different
+     * key sets. */
+    int *bj = NULL;
+    if (sa && sb && sa->count == sb->count) {
+        bj = (int *)xmalloc((size_t)sa->count * sizeof *bj);
+        for (int i = 0; i < sa->count; i++) {
+            bj[i] = -1;
+            for (int j = 0; j < sb->count; j++)
+                if (strcmp(sb->names[j], sa->names[i]) == 0) { bj[i] = j; break; }
+        }
+        for (int i = 0; i < sa->count; i++)
+            if (bj[i] < 0) { free(bj); bj = NULL; break; }
+    }
+    if (!bj) {
+        free(a.v); free(b.v);
+        return xstrdup(ne ? "true" : "false");
+    }
+
+    struct_addr(g, &a);
+    struct_addr(g, &b);
+    const char *at = llvm_type_of(a.ty);
+    const char *bt = llvm_type_of(b.ty);
+    if (!at || !bt || !a.v || !b.v) {
+        free(bj); free(a.v); free(b.v);
+        ERR(g, "line %zu: cannot compare these struct values", line);
+    }
+
+    char *acc = xstrdup("true");
+    for (int i = 0; i < sa->count; i++) {
+        int j = bj[i];
+        Type *fty = sa->types[i];
+        Type *gty = sb->types[j];
+        const char *flt = llvm_type_of(fty);
+        const char *glt = llvm_type_of(gty);
+        if (!flt || !glt) {
+            free(acc); free(bj); free(a.v); free(b.v);
+            ERR(g, "line %zu: field '%s' has no codegen type", line, sa->names[i]);
+        }
+
+        /* Two indices: the leading 0 walks the pointer to the struct, the
+         * second is the field — omitting it turns the subscript into an
+         * array index (cg_member carries the same warning). */
+        char *pa = emit_instrf(g, a.ty,
+                               "getelementptr inbounds %s, %s* %s, i32 0, i32 %d",
+                               at, at, a.v, i);
+        char *pb = emit_instrf(g, b.ty,
+                               "getelementptr inbounds %s, %s* %s, i32 0, i32 %d",
+                               bt, bt, b.v, j);
+        if (!pa || !pb) {
+            free(pa); free(pb); free(acc); free(bj); free(a.v); free(b.v);
+            ERR(g, "line %zu: cannot compare field '%s'", line, sa->names[i]);
+        }
+
+        Val fa = val_take(fty, emit_instrf(g, fty, "load %s, %s* %s",
+                                           flt, flt, pa));
+        Val fb = val_take(gty, emit_instrf(g, gty, "load %s, %s* %s",
+                                           glt, glt, pb));
+        free(pa); free(pb);
+        /* A nested struct arrives as an aggregate *value* — tag it so
+         * struct_addr knows to give it a slot before the recursive compare
+         * GEPs into it (cg_var hands out references instead: agg already 0
+         * and v already an address, which struct_addr leaves alone). */
+        if (flt[0] == '%') fa.agg = 1;
+        if (glt[0] == '%') fb.agg = 1;
+        if (!fa.v || !fb.v) {
+            free(fa.v); free(fb.v); free(acc); free(bj); free(a.v); free(b.v);
+            ERR(g, "line %zu: cannot read field '%s'", line, sa->names[i]);
+        }
+
+        char *fe = cg_val_eq(g, fa, fb, false, line);
+        if (!fe) {
+            free(acc); free(bj); free(a.v); free(b.v);
+            return NULL;   /* g->err already set by cg_val_eq */
+        }
+        char *nx = emit_instrf(g, boolty, "and i1 %s, %s", acc, fe);
+        free(acc); free(fe);
+        if (!nx) {
+            free(bj); free(a.v); free(b.v);
+            ERR(g, "line %zu: cannot compare these struct values", line);
+        }
+        acc = nx;
+    }
+    free(bj); free(a.v); free(b.v);
+
+    if (!ne) return acc;
+    char *out = emit_instrf(g, boolty, "xor i1 %s, true", acc);
+    free(acc);
+    if (!out) ERR(g, "line %zu: cannot negate struct comparison", line);
+    return out;
+}
+
 static Val cg_binary(CG *g, Node *n)
 {
     Val a = cg_expr(g, n->as.binary.left);
@@ -663,31 +919,30 @@ static Val cg_binary(CG *g, Node *n)
         size_t k = (size_t)(n->as.binary.op - OP_EQ);
         const char *icmp[] = {"eq", "ne", "slt", "sle", "sgt", "sge"};
         const char *fcmp[] = {"oeq", "one", "olt", "ole", "ogt", "oge"};
-        char *r;
-        if (a.ty && a.ty->kind == TY_STRING &&
-            (n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE)) {
-            /* String equality is a byte comparison — the interpreter's
-             * values_equal walks the bytes. The `icmp` below would compare
-             * two i8* pointers, which agrees by pointer-luck at best and
-             * answers `false` for the same text in two literals. Only
-             * ==/!= carry string semantics; the relational spellings keep
-             * the pointer order they always had (matched by the libLLVM
-             * backend, which does the same). */
-            char *eq64 = emit_instrf(g, type_prim(TY_INT),
-                                     "call i64 @lume_str_eq(i8* %s, i8* %s)",
-                                     a.v, b.v);
-            if (!eq64) {
-                free(a.v); free(b.v);
-                ERRV(g, "line %zu: string comparison failed", n->line);
-            }
-            r = emit_instrf(g, boolty, "icmp %s i64 %s, 0",
-                            n->as.binary.op == OP_EQ ? "ne" : "eq", eq64);
-            free(eq64);
+        bool is_eq = n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE;
+        char *r = NULL;
+
+        if (is_eq) {
+            /* == / != need content or structure — never pointer luck: the
+             * dispatch lives in cg_val_eq, which consumes both operand names
+             * (freed on every path, including this one), so a.v/b.v are
+             * NULLed here to keep the tail of this block from freeing them a
+             * second time. The relational spellings never reach it — they
+             * keep the numeric/pointer paths they always had (the checker
+             * refuses them for containers, and strings are a known-broken
+             * corner on all three backends). */
+            r = cg_val_eq(g, a, b, n->as.binary.op == OP_NE, n->line);
+            a.v = NULL;
+            b.v = NULL;
+            if (!r) ERRV(g, "line %zu: bad comparison", n->line);
+            return val_take(boolty, r);
         }
-        else if (a.ty && a.ty->kind == TY_FLOAT)
-            r = emit_instrf(g, boolty, "fcmp %s double %s, %s", fcmp[k], a.v, b.v);
-        else
-            r = emit_instrf(g, boolty, "icmp %s i64 %s, %s", icmp[k], a.v, b.v);
+        if (!r) {
+            if (a.ty && a.ty->kind == TY_FLOAT)
+                r = emit_instrf(g, boolty, "fcmp %s double %s, %s", fcmp[k], a.v, b.v);
+            else
+                r = emit_instrf(g, boolty, "icmp %s i64 %s, %s", icmp[k], a.v, b.v);
+        }
         free(a.v); free(b.v);
         if (!r) ERRV(g, "line %zu: bad comparison", n->line);
         return val_take(boolty, r);
@@ -1822,6 +2077,8 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_has(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_str_eq(i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_value_eq(i8*, i8*)\n");   /* structural, SPEC 1.8 */
+    EMIT(g, "declare i64 @lume_any_eq(i8*, i8*)\n");     /* any vs i8*-lowered */
     /* Index syntax (SPEC 6.2): one entry point per result shape, each deciding
      * list-vs-map at run time because the emitter cannot always tell. */
     EMIT(g, "declare i64 @lume_index_int(i8*, i64, i8*)\n");

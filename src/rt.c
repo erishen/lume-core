@@ -91,9 +91,16 @@ long lume_print_null(void)
 
 static char *dup_str(const char *s)
 {
+    /* Every heap string gets at least LUME_STR_MIN zeroed bytes, even a
+     * 1-char one: lume_any_eq tells a string from a container by reading the
+     * container `kind` tag at a fixed offset, and a short malloc would make
+     * that read run off the allocation. calloc also keeps those bytes
+     * determinate rather than indeterminate. */
+    enum { LUME_STR_MIN = 32 };
     size_t n = strlen(s) + 1;
-    char *p = malloc(n);
-    if (p) memcpy(p, s, n);
+    if (n < LUME_STR_MIN) n = LUME_STR_MIN;
+    char *p = (char *)calloc(1, n);
+    if (p) memcpy(p, s, strlen(s) + 1);
     return p;
 }
 
@@ -743,6 +750,95 @@ long lume_str_eq(const char *a, const char *b)
     if (a == b) return 1;
     if (!a || !b) return 0;
     return strcmp(a, b) == 0;
+}
+
+/* ---- structural equality (SPEC 1.8) ------------------------------------
+ * The emitters spell container `==` as a call to lume_value_eq. Before this
+ * it was an icmp on the two i8* pointers, which answers false for two maps
+ * that hold the same keys — `[1,2] == [1,2]` was false on every backend.
+ * LumeList and LumeMap both start with `long len, cap;` and keep their kind
+ * tag at the same offset, so one probe tells them apart. */
+
+/* The `kind` field sits after two longs in both container headers. Reading
+ * it is only sound for a real container or a dup_str'd string (which is
+ * zero-padded to at least 32 bytes, see dup_str) — the emitters only route
+ * values here whose static type is a container, or an any that came out of
+ * the runtime's own heap. */
+static int ctr_kind(const void *p)
+{
+    if (!p) return -1;
+    return *(const int *)((const char *)p + 2 * sizeof(long));
+}
+
+static int is_ctr_kind(int k)
+{
+    return k == LUME_CTR_LIST || k == LUME_CTR_MAP;
+}
+
+long lume_value_eq(void *a, void *b);   /* defined below; slot_eq recurses */
+
+static long slot_eq(const LumeSlot *x, const LumeSlot *y)
+{
+    if (x->tag != y->tag) return 0;
+    switch (x->tag) {
+    case LUME_SLOT_INT:
+        return x->num == y->num;
+    case LUME_SLOT_FLOAT: {
+        double a, b;
+        memcpy(&a, &x->num, sizeof a);
+        memcpy(&b, &y->num, sizeof b);
+        return a == b;
+    }
+    case LUME_SLOT_STR:
+        return lume_str_eq(x->str, y->str);
+    case LUME_SLOT_OBJ:
+        return lume_value_eq((void *)(intptr_t)x->num,
+                             (void *)(intptr_t)y->num);
+    }
+    return 0;
+}
+
+long lume_value_eq(void *a, void *b)
+{
+    if (a == b) return 1;            /* same object (also covers null == null) */
+    if (!a || !b) return 0;          /* one side null: not equal */
+    int ka = ctr_kind(a), kb = ctr_kind(b);
+    if (ka != kb || !is_ctr_kind(ka)) return 0;   /* different kinds / opaque */
+    if (ka == LUME_CTR_LIST) {
+        const LumeList *x = (const LumeList *)a, *y = (const LumeList *)b;
+        if (x->len != y->len) return 0;
+        for (long i = 0; i < x->len; i++)
+            if (!slot_eq(&x->items[i], &y->items[i])) return 0;
+        return 1;
+    }
+    const LumeMap *x = (const LumeMap *)a, *y = (const LumeMap *)b;
+    if (x->len != y->len) return 0;
+    /* Order-independent, the way map membership works: equal lengths plus
+     * every key of one side present in the other pins both key sets. An
+     * enum's "$" tag is just another key, so tag and payload both count. */
+    for (long i = 0; i < x->len; i++) {
+        long j = map_find(y, x->keys[i]);
+        if (j < 0) return 0;
+        if (!slot_eq(&x->vals[i], &y->vals[j])) return 0;
+    }
+    return 1;
+}
+
+/* `==` where one side is statically `any`. The any is an opaque i8* with no
+ * tag of its own, so the kind probe decides: two containers compare
+ * structurally (lume_value_eq), a container against a non-container is never
+ * equal, and otherwise both sides are treated as strings — which is what an
+ * any holding a string needs, and what the interpreter's values_equal does
+ * for the same pair. */
+long lume_any_eq(void *a, void *b)
+{
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    int ka = ctr_kind(a), kb = ctr_kind(b);
+    int ca = is_ctr_kind(ka), cb = is_ctr_kind(kb);
+    if (ca != cb) return 0;          /* container vs non-container */
+    if (ca) return lume_value_eq(a, b);
+    return lume_str_eq((const char *)a, (const char *)b);
 }
 
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)

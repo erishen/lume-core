@@ -398,7 +398,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test eq2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -754,6 +754,43 @@ match2-test: all
 	  echo "ok   match2: $$be 后端 20/20"; \
 	done; \
 	echo "==> match2 单测通过"
+
+# 结构性相等单测(tests/eq2.lume + tests/eq2-bad/*)。SPEC §1.8:
+# == / != 对容器是结构比较(list 逐元素、map 键顺序无关、enum 比 "$"+载荷、
+# struct 按字段), null 只与 i8* 类比较, 跨等价类静态拒绝。
+# 正向: 解释器 43 条断言 + 两个原生后端各编各跑全 PASS;
+# 负例: 7 个 --check 拒绝, 诊断逐个钉死(改名/改措辞都会在这里红)。
+eq2-test: all
+	@./$(TARGET) tests/eq2.lume > /tmp/lume-eq2-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-eq2-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-eq2-test.out; then \
+		echo "==> eq2 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-eq2-test.out) -ne 43 ]; then \
+		echo "==> eq2 断言数不符 (期望 43)"; exit 1; fi; \
+	set -e; \
+	check_bad() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/eq2-bad/$$f.lume > /tmp/lume-eq2-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-eq2-bad.out; then \
+	    echo "==> eq2 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-eq2-bad.out; exit 1; fi; \
+	  echo "ok   eq2-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad num-str "does not apply to int and string"; \
+	check_bad bool-num "does not apply to bool and int"; \
+	check_bad str-bool "does not apply to string and bool"; \
+	check_bad ctr-num "does not apply to int\[\] and int"; \
+	check_bad map-str "does not apply to map and string"; \
+	check_bad num-null "does not apply to int and null"; \
+	check_bad bool-null "does not apply to bool and null"; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/eq2.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   eq2: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/eq2.lume -o /tmp/eq2_$$be > /dev/null 2>&1 || { echo "==> eq2 $$be 编译失败"; exit 1; }; \
+	  /tmp/eq2_$$be > /tmp/eq2_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/eq2_$$be.out || [ $$(grep -c PASS /tmp/eq2_$$be.out) -ne 43 ]; then \
+	    echo "==> eq2 $$be 输出不符 (rc=$$rc):"; cat /tmp/eq2_$$be.out; exit 1; fi; \
+	  echo "ok   eq2: $$be 后端 43/43"; \
+	done; \
+	echo "==> eq2 单测通过"
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
 # 把 HTTP_PROXY 指到死端口 127.0.0.1:9 作对照:绕过失效会撞死代理 => FAIL。
