@@ -277,6 +277,16 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
         case N_BINARY:
             eval_expr_binary(vm, n, env);
             return;
+        case N_TERNARY:
+            /* 只求值选中分支——`flag ? 1 : 1/0` 在 flag 为真时不得除零。 */
+            eval_expr(vm, n->as.ternary.cond, env);
+            if (vm->error) return;
+            {
+                Value c = vm_pop(vm);
+                eval_expr(vm, value_truthy(c) ? n->as.ternary.then
+                                              : n->as.ternary.els, env);
+            }
+            return;
         case N_CALL:
             eval_expr_call(vm, n, env);
             return;

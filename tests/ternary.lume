@@ -1,0 +1,81 @@
+// tests/ternary.lume — 三元运算符 `cond ? then : els` 回归
+// 运行: make ternary-test (并入 make test)
+//
+// 覆盖: 值选择、优先级（低于 or、高于赋值）、右结合嵌套、int/float 加宽、
+// map 值位置、调用结果作条件（与 `f()?` 传播后缀的前瞻消歧）、传播后缀
+// 不回归、多行书写。
+// 只走解释器；三后端一致的值语义由 native-consistency.lume 覆盖。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+// `?` 传播必须在函数体内（顶层无处传播，直接终止程序），且宿主函数
+// 返回 Result（typecheck 强制）。`?` 紧贴调用 = 传播（贴邻规则）。
+func divide(a: int, b: int): Result {
+  if (b == 0) { return { err: "division by zero" }; }
+  return { ok: a / b };
+}
+func use_ok(): Result {
+  return { ok: divide(8, 2)? - 1 };          // 4 - 1 = 3
+}
+func use_combo(): Result {
+  // 传播 + 三元连用：`f()? > 3 ? ...`（贴邻 `?` 传播，空格 `?` 三元）
+  return { ok: divide(8, 2)? > 3 ? 100 : 200 };
+}
+func use_err(): Result {
+  let v = divide(1, 0)?;                     // err 在此向上重抛（longjmp 跳过 return）
+  return { ok: v };
+}
+
+func main(): int {
+  // --- 基本选择 ---
+  check("then arm", (1 > 0 ? "yes" : "no") == "yes");
+  check("else arm", (1 > 2 ? "yes" : "no") == "no");
+
+  // --- 优先级: 比较先于 ?: 组成条件; 算术先于比较 ---
+  check("precedence cmp", (1 + 1 == 2 ? 10 : 20) == 10);
+  check("precedence arith", (true ? 1 : 2) + 3 == 4);
+
+  // --- 右结合嵌套 ---
+  check("nested r-assoc 1", (true  ? 1 : false ? 2 : 3) == 1);
+  check("nested r-assoc 2", (false ? 1 : true  ? 2 : 3) == 2);
+  check("nested r-assoc 3", (false ? 1 : false ? 2 : 3) == 3);
+  check("paren middle", (true ? (false ? 1 : 2) : 3) == 2);
+
+  // --- int/float 混合分支 → float 加宽 ---
+  let w: float = 5 > 3 ? 1 : 2.5;
+  check("int/float widen", w == 1.0);
+
+  // --- 字符串分支 ---
+  let s = false ? "a" : "b" + "c";
+  check("string arms", s == "bc");
+
+  // --- map 值位置的三元（冒号歧义场景） ---
+  let m = { "k": 1 > 0 ? 10 : 20 };
+  check("ternary in map value", get(m, "k", 0) == 10);
+
+  // --- 调用结果作条件（postfix `?` 前瞻让位: 调用后跟三元） ---
+  check("call cond", (get(m, "k", 0) > 5 ? "big" : "small") == "big");
+
+  // --- `f()?` 传播后缀不回归: 紧贴 `?` 仍按传播解析（unwrap/重抛） ---
+  check("propagate unwrap", get(use_ok(), "ok", 0) == 3);
+  check("propagate+ternary", get(use_combo(), "ok", 0) == 100);
+  // `?` 重抛的 err 由 try 接住（try 把传播来的 Result 包进 ok）
+  let e = try(() => use_err());
+  check("propagate rethrows", get(get(e, "ok", {}), "err", null) != null);
+
+  // --- 多行书写（扫描跨行找配对冒号） ---
+  let ml = 1 > 0
+    ? "yes"
+    : "no";
+  check("multiline", ml == "yes");
+
+  // --- 分支惰性: 未选中分支不求值（除法不执行即不报错） ---
+  let lz = true ? 42 : json("{not-parsed");
+  check("lazy else", lz == 42);
+
+  return 0;
+}
+main();

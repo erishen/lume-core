@@ -30,7 +30,7 @@ CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 # 不再让 0.5.0 在 main.c / bridge_lsp.c / bridge_mcp.c 多处硬编码漂移。
 # 打 release 前在此递增值, 保证二进制自报与 GitHub Release tag 一致
 # (make pack 走 PACK_CFLAGS, 这个 -D 不在 RT_DEFS 里, 会一并带进去)。
-LUME_CORE_VERSION ?= 0.6.0
+LUME_CORE_VERSION ?= 0.7.0
 CFLAGS   += -DLUME_CORE_VERSION=\"$(LUME_CORE_VERSION)\"
 
 # --- 平台 feature-test: 与宿主版/agent-httpd/Makefile:8-22 同口径, 但这里不 ---
@@ -398,7 +398,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -672,6 +672,16 @@ builtins-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-builtins-test.out; then \
 		echo "==> builtins 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> builtins 单测全部通过"
+
+# 三元运算符 (2026-10-12): 值/优先级/右结合/int-float 加宽/map 值位置/
+# 与 `f()?` 传播后缀的前瞻消歧/惰性分支。解释器口径; 三后端一致值由
+# native-consistency 覆盖。
+ternary-test: all
+	@./$(TARGET) tests/ternary.lume > /tmp/lume-ternary-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-ternary-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ternary-test.out; then \
+		echo "==> ternary 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> ternary 单测全部通过"
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
 # 把 HTTP_PROXY 指到死端口 127.0.0.1:9 作对照:绕过失效会撞死代理 => FAIL。

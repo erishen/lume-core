@@ -71,6 +71,10 @@ func loop_points(): int {
     return acc;
 }
 
+func pick3(flag: bool, a: int, b: int): int {
+    return flag ? a : b;
+}
+
 func main(): int {
     print(classify(170));
     print(classify(1));
@@ -503,6 +507,18 @@ print(shout());                                 // hi!
 let shad = 7;
 func shadow2(shad: int): int { return shad * 2; }
 print(shadow2(3));                              // 6 (parameter shadows)
+
+// ternary: 值选择 / 右结合嵌套 / int-float 加宽 / 调用条件（与 `f()?`
+// 传播后缀的前瞻消歧——call 后跟 `?` 且语句内有配对冒号时按三元解析）
+print(pick3(true, 1, 2));                        // 1
+print(pick3(false, 1, 2));                       // 2
+print(1 + 1 == 2 ? 10 : 20);                    // 10 (precedence)
+print(true ? 1 : false ? 2 : 3);                // 1 (right-assoc)
+print(false ? 1 : true ? 2 : 3);                // 2
+print(false ? 1 : false ? 2 : 3);               // 3
+let tw: float = 5 > 3 ? 1 : 2.5;                // int/float -> float widen
+print(tw);                                      // 1
+print(pick3(4 > 3, 7, 9) + 1);                   // 8
 
 warmup();
 main();

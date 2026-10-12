@@ -314,6 +314,27 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return arith_result(lt, rt);
         }
 
+        case N_TERNARY: {
+            /* 条件要 bool-ok；两分支各自检查后统一：同型→它，int/float
+             * 混合→float（与算术提升一致），任一 any→any，其余报错。 */
+            Type *ct = ck_expr(c, n->as.ternary.cond, NULL);
+            is_bool_ok(c, ct, n->line);
+            Type *tt = ck_expr(c, n->as.ternary.then, NULL);
+            Type *et = ck_expr(c, n->as.ternary.els, NULL);
+            if (!tt || !et || tt->kind == TY_ANY || et->kind == TY_ANY)
+                return any_type();
+            if (tt->kind == et->kind)
+                return tt;
+            bool t_num = tt->kind == TY_INT || tt->kind == TY_FLOAT;
+            bool e_num = et->kind == TY_INT || et->kind == TY_FLOAT;
+            if (t_num && e_num)
+                return type_prim(TY_FLOAT);
+            ck_fail(c, n->line,
+                    "ternary branches have different types ('%s' vs '%s')",
+                    ty_str(tt), ty_str(et));
+            return any_type();
+        }
+
         case N_CALL: {
             Type *callee_t = ck_expr(c, n->as.call.callee, NULL);
             callee_t = resolve(c, callee_t, n->line);

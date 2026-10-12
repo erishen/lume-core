@@ -476,7 +476,7 @@ typedef enum {
     N_VAR, N_ASSIGN, N_ASSIGN_MEMBER,
     N_LITERAL, N_MAP_LIT, N_LIST_LIT, N_FUNC_LIT,
     N_CALL, N_MEMBER, N_INDEX,
-    N_UNARY, N_BINARY,
+    N_UNARY, N_BINARY, N_TERNARY,
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
 
@@ -561,6 +561,10 @@ typedef struct Node {
         struct { struct Node *obj; struct Node *index; } index;
         struct { Op op; struct Node *operand; } unary;
         struct { Op op; struct Node *left, *right; } binary;
+        /* `cond ? then : els` — 右结合；else 分支不逃逸求值（只算选中那支）。
+         * 与 `f()?` 传播后缀的歧义由 parser_expr.c 的 ternary_colon_ahead
+         * 前瞻消解。 */
+        struct { struct Node *cond, *then, *els; } ternary;
         /* import: path is the raw string literal from the source (resolved
          * against the importing file's directory by the loader); ns is the
          * `as` alias. */

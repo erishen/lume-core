@@ -301,7 +301,8 @@ static const char *node_type_name(NodeType t)
     case N_MAP_LIT: return "struct literal";    case N_LIST_LIT: return "list literal";
     case N_FUNC_LIT: return "closure";          case N_CALL:   return "call";
     case N_MEMBER:  return "field access";      case N_UNARY:  return "unary";
-    case N_BINARY:  return "binary";            case N_IMPORT: return "import";
+    case N_BINARY:  return "binary";            case N_TERNARY: return "ternary";
+    case N_INDEX:   return "index";             case N_IMPORT: return "import";
     }
     return "node";
 }
@@ -713,6 +714,55 @@ static Val cg_binary(CG *g, Node *n)
     }
     free(a.v); free(b.v);
     if (!r) ERRV(g, "line %zu: bad arithmetic operands", n->line);
+    return val_take(rty, r);
+}
+
+/* `cond ? then : els`。结果槽的 alloca 需要 upfront 类型，取
+ * infer_node_type 的统一结果（typecheck 已保证两分支可统一，走到这里
+ * 说明有确定型）；分支值在 store 前 coerce 到槽类型（int→float 加宽等）。
+ * 与 and/or 同款三块 alloca+br+load 形状——只求值选中分支，
+ * `flag ? 1 : 1/0` 在 flag 为真时不得除零。 */
+static Val cg_ternary(CG *g, Node *n)
+{
+    Type *rty = infer_node_type(g, n);
+    if (!rty || rty->kind == TY_ANY)
+        ERRV(g, "line %zu: cannot infer ternary result type", n->line);
+    const char *st = llvm_type_of(rty);
+    if (!st) ERRV(g, "line %zu: unsupported ternary result type", n->line);
+
+    Val c = cg_expr(g, n->as.ternary.cond);
+    if (!c.v) ERRV(g, "line %zu: bad ternary condition", n->line);
+
+    int lt = g->lid, lf = g->lid + 1, lj = g->lid + 2;
+    g->lid += 3;
+
+    char res[64];
+    snprintf(res, sizeof res, "%%tv%d", g->tid++);
+    /* Same latitude as the and/or slot: an alloca anywhere in the function
+     * is legal, it only has to dominate the loads of it. */
+    EMIT(g, "  %s = alloca %s\n", res, st);
+    EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", c.v, lt, lf);
+    free(c.v);
+
+    EMIT(g, "L%d:\n", lt);
+    Val tv = cg_expr(g, n->as.ternary.then);
+    if (!tv.v) ERRV(g, "line %zu: bad ternary branch", n->line);
+    tv = coerce(g, rty, tv, n->line);
+    EMIT(g, "  store %s %s, %s* %s\n", st, tv.v, st, res);
+    free(tv.v);
+    EMIT(g, "  br label %%L%d\n", lj);
+
+    EMIT(g, "L%d:\n", lf);
+    Val ev = cg_expr(g, n->as.ternary.els);
+    if (!ev.v) ERRV(g, "line %zu: bad ternary branch", n->line);
+    ev = coerce(g, rty, ev, n->line);
+    EMIT(g, "  store %s %s, %s* %s\n", st, ev.v, st, res);
+    free(ev.v);
+    EMIT(g, "  br label %%L%d\n", lj);
+
+    EMIT(g, "L%d:\n", lj);
+    char *r = emit_instrf(g, rty, "load %s, %s* %s", st, st, res);
+    if (!r) ERRV(g, "line %zu: bad ternary join", n->line);
     return val_take(rty, r);
 }
 
@@ -2253,6 +2303,7 @@ Val cg_expr(CG *g, Node *n)
     case N_FUNC_LIT: return cg_funclit(g, n);
     case N_UNARY:   return cg_unary(g, n);
     case N_BINARY:  return cg_binary(g, n);
+    case N_TERNARY: return cg_ternary(g, n);
     case N_MEMBER:  return cg_member(g, n);
     case N_INDEX:   return cg_index(g, n);
     case N_CALL:    return cg_call(g, n);

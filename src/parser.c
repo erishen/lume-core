@@ -490,6 +490,11 @@ static void node_free_kids(Node *n) {
         node_free(n->as.binary.left);
         node_free(n->as.binary.right);
         break;
+    case N_TERNARY:
+        node_free(n->as.ternary.cond);
+        node_free(n->as.ternary.then);
+        node_free(n->as.ternary.els);
+        break;
     case N_INDEX:
         /* Index syntax (m["k"], l[0]) chains like N_MEMBER: without this
          * case the node fell into the "no children" default and both the

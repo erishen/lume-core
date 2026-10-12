@@ -170,6 +170,45 @@ static Node *parse_primary(Parser *p) {
     return NULL;
 }
 
+/* 三元前瞻：当前位置是 `?`（call 后缀处的传播/三元歧义）。向后扫描——
+ * 在遇到 `;`/EOF、深度回落到 0 以下的闭括号、或 depth 0 的 `,` 之前，
+ * 存在 depth 0 的配对 `:` 则这是三元运算符（条件 ?: 结果）。`?` 后紧跟
+ * `:` 也按传播处理（三元中段不能为空）。
+ *
+ * 消歧主规则是**贴邻**：`f()?` 紧贴（无空白）一律传播；`f() ? a : b`
+ * 空格分隔时再看冒号前瞻。token 流上 `f()? - 1` 与 `f() ? -1 : x` 本征
+ * 不可区分，贴邻给了确定解，也让传播与三元自由连用
+ * （`divide(8,2)? > 3 ? "big" : "small"`）。已知极限：空格分隔且无配对
+ * 冒号的 `f() ? - 1` 会按传播兜底（本就不是合法三元）。 */
+static bool ternary_colon_ahead(Parser *p)
+{
+    size_t save = p->pos; /* 指向 '?' */
+    advance(p);           /* 跳过 '?' */
+    if (check(p, TOK_COLON)) { p->pos = save; return false; }
+    int depth = 0;
+    bool found = false;
+    while (!at_end(p)) {
+        Token t = peek(p);
+        if (t.type == TOK_SEMI) break;
+        if (t.type == TOK_LPAREN || t.type == TOK_LBRACE ||
+            t.type == TOK_LBRACKET) {
+            depth++;
+        } else if (t.type == TOK_RPAREN || t.type == TOK_RBRACE ||
+                   t.type == TOK_RBRACKET) {
+            if (depth == 0) break;
+            depth--;
+        } else if (t.type == TOK_COMMA && depth == 0) {
+            break;
+        } else if (t.type == TOK_COLON && depth == 0) {
+            found = true;
+            break;
+        }
+        advance(p);
+    }
+    p->pos = save;
+    return found;
+}
+
 static Node *parse_postfix(Parser *p) {
     Node *n = parse_primary(p);
     if (!n) return NULL;
@@ -200,8 +239,26 @@ static Node *parse_postfix(Parser *p) {
              * would reach the items array a second time via node_free_own). */
             node_unjournal(args);
             free(args);
-            if (match(p, TOK_QUESTION))
-                call->as.call.propagate = true;
+            /* `?` 歧义裁决（贴邻优先）：`f()?` 紧贴 → Result 传播；空格
+             * 分隔时做冒号前瞻——有配对冒号 → 三元，`?` 不消费、留给
+             * parse_ternary（此处的 `?` 后不可能跟 `(`/`.`/`[` 链，提前
+             * 返回安全）；无配对冒号 → 兜底按传播。 */
+            if (check(p, TOK_QUESTION)) {
+                Token qtok = peek(p);
+                Token prev = p->toks[p->pos - 1];
+                bool adjacent = qtok.line == prev.line &&
+                                qtok.start == prev.start + prev.length;
+                if (adjacent) {
+                    advance(p);
+                    call->as.call.propagate = true;
+                } else if (ternary_colon_ahead(p)) {
+                    n = call;
+                    return n;
+                } else {
+                    advance(p);
+                    call->as.call.propagate = true;
+                }
+            }
             n = call;
         } else if (match(p, TOK_DOT)) {
             if (!is_field_token(peek(p).type)) {
@@ -379,8 +436,30 @@ static Node *parse_or(Parser *p) {
     return left;
 }
 
+/* 三元 `cond ? then : els`：介于逻辑或与赋值之间，右结合。中段是完整
+ * 表达式（允许再套三元/赋值），else 分支递归 parse_ternary 实现
+ * `a ? b : c ? d : e` 的右折叠。postfix 的 `f()?` 传播已由
+ * ternary_colon_ahead 前瞻让位，这里看到的 `?` 一律是三元。 */
+static Node *parse_ternary(Parser *p) {
+    Node *cond = parse_or(p);
+    if (!cond) return NULL;
+    if (!check(p, TOK_QUESTION)) return cond;
+    size_t line = peek(p).line;
+    advance(p);
+    Node *then_e = parse_expression(p);
+    if (!then_e) return NULL;
+    if (!expect(p, TOK_COLON)) return NULL;
+    Node *else_e = parse_ternary(p);
+    if (!else_e) return NULL;
+    Node *n = nalloc(N_TERNARY, line);
+    n->as.ternary.cond = cond;
+    n->as.ternary.then = then_e;
+    n->as.ternary.els  = else_e;
+    return n;
+}
+
 Node *parse_expression(Parser *p) {
-    Node *expr = parse_or(p);
+    Node *expr = parse_ternary(p);
     if (!expr) return NULL;
     /* assignment: lhs must be a variable or a member access. */
     if (match(p, TOK_EQ)) {

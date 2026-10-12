@@ -403,7 +403,8 @@ static const char *node_type_name(NodeType t)
     case N_MAP_LIT: return "struct literal";    case N_LIST_LIT: return "list literal";
     case N_FUNC_LIT: return "closure";          case N_CALL:   return "call";
     case N_MEMBER:  return "field access";      case N_UNARY:  return "unary";
-    case N_BINARY:  return "binary";            case N_IMPORT: return "import";
+    case N_BINARY:  return "binary";            case N_TERNARY: return "ternary";
+    case N_IMPORT: return "import";
     case N_INDEX:   return "index";
     }
     return "node";
@@ -1983,6 +1984,8 @@ static Val cg_call(CG *g, Node *n)
     return val_make(s->ret, res);
 }
 
+static Val cg_ternary(CG *g, Node *n);
+
 static Val cg_expr(CG *g, Node *n)
 {
     if (!n) ERRV(g, "internal: null expression");
@@ -1998,6 +2001,7 @@ static Val cg_expr(CG *g, Node *n)
     case N_FUNC_LIT: return cg_funclit(g, n);
     case N_UNARY:    return cg_unary(g, n);
     case N_BINARY:   return cg_binary(g, n);
+    case N_TERNARY:  return cg_ternary(g, n);
     case N_MEMBER:   return cg_member(g, n);
     case N_INDEX:    return cg_index(g, n);
     case N_CALL:     return cg_call(g, n);
@@ -2109,6 +2113,51 @@ static Val cg_index(CG *g, Node *n)
 
     g->cur = bb_ok; AT(g);
     return val_make(rty, call);
+}
+
+/* `cond ? then : els`。形状与 cg_binary 的 and/or 短路一致：结果停在
+ * alloca 而不是 phi，三个块各写一次。槽类型取 infer_node_type 的统一
+ * 结果（typecheck 已保证可统一），分支值 store 前 coerce（int→float）。
+ * 只求值选中分支。 */
+static Val cg_ternary(CG *g, Node *n)
+{
+    Type *rty = infer_node_type(g, n);
+    if (!rty || rty->kind == TY_ANY)
+        ERRV(g, "line %zu: cannot infer ternary result type", n->line);
+    LLVMTypeRef slot;
+    switch (rty->kind) {
+    case TY_FLOAT:             slot = g->dbl;   break;
+    case TY_BOOL:              slot = g->i1;    break; /* and/or 同款 i1 槽 */
+    case TY_INT:               slot = g->i64;   break;
+    default:                   slot = g->i8ptr; break; /* string/list/map/result/closure */
+    }
+
+    Val c = cg_expr(g, n->as.ternary.cond);
+    if (!c.v) ERRV(g, "line %zu: bad ternary condition", n->line);
+
+    LLVMValueRef res = LLVMBuildAlloca(g->ab, slot, "tv");
+    LLVMBasicBlockRef bt = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "then");
+    LLVMBasicBlockRef be = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "else");
+    LLVMBasicBlockRef lj = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "join");
+
+    if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, c.v, bt, be);
+
+    g->cur = bt; AT(g);
+    Val tv = cg_expr(g, n->as.ternary.then);
+    if (!tv.v) ERRV(g, "line %zu: bad ternary branch", n->line);
+    tv = coerce(g, rty, tv, n->line);
+    LLVMBuildStore(g->ab, tv.v, res);
+    if (!DONE(g->cur)) LLVMBuildBr(g->ab, lj);
+
+    g->cur = be; AT(g);
+    Val ev = cg_expr(g, n->as.ternary.els);
+    if (!ev.v) ERRV(g, "line %zu: bad ternary branch", n->line);
+    ev = coerce(g, rty, ev, n->line);
+    LLVMBuildStore(g->ab, ev.v, res);
+    if (!DONE(g->cur)) LLVMBuildBr(g->ab, lj);
+
+    g->cur = lj; AT(g);
+    return val_make(rty, LLVMBuildLoad2(g->ab, slot, res, "t"));
 }
 
 /* -------------------------------------------------------------- scanning ---- */
@@ -2242,6 +2291,22 @@ static Type *infer_node_type(CG *g, Node *n)
             return type_prim(TY_STRING);
         if (lf || rf) return type_prim(TY_FLOAT);
         return type_prim(TY_INT);
+    }
+    case N_TERNARY: {
+        /* 与 codegen_scan.c / typecheck_expr.c 同一套统一规则：同型→它，
+         * int/float 混合→float，任一 any/未知→any。cg_ternary 拿它给
+         * 结果 alloca 定型。 */
+        Type *tt = infer_node_type(g, n->as.ternary.then);
+        Type *et = infer_node_type(g, n->as.ternary.els);
+        if (!tt || !et || tt->kind == TY_ANY || et->kind == TY_ANY)
+            return any_type();
+        if (tt->kind == et->kind)
+            return tt;
+        bool tf = tt->kind == TY_INT || tt->kind == TY_FLOAT;
+        bool ef = et->kind == TY_INT || et->kind == TY_FLOAT;
+        if (tf && ef)
+            return type_prim(TY_FLOAT);
+        return NULL;
     }
     default:
         return NULL;

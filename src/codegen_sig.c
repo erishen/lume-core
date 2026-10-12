@@ -247,6 +247,11 @@ static void preregister_lambdas(CG *g, Node *n, int in_handler)
         preregister_lambdas(g, n->as.binary.left,  0);
         preregister_lambdas(g, n->as.binary.right, 0);
         return;
+    case N_TERNARY:
+        preregister_lambdas(g, n->as.ternary.cond, 0);
+        preregister_lambdas(g, n->as.ternary.then, 0);
+        preregister_lambdas(g, n->as.ternary.els,  0);
+        return;
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
             preregister_lambdas(g, n->as.list.items[i], 0);
@@ -489,6 +494,10 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
     case N_BINARY:
         changed += walk_sigs(g, n->as.binary.left, t, s);
         return changed + walk_sigs(g, n->as.binary.right, t, s);
+    case N_TERNARY:
+        changed += walk_sigs(g, n->as.ternary.cond, t, s);
+        changed += walk_sigs(g, n->as.ternary.then, t, s);
+        return changed + walk_sigs(g, n->as.ternary.els, t, s);
     case N_MEMBER:      return walk_sigs(g, n->as.member.obj, t, s);
     case N_LET:         return walk_sigs(g, n->as.let.init, t, s);
     case N_LIST_LIT:

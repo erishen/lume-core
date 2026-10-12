@@ -170,6 +170,22 @@ Type *infer_node_type(CG *g, Node *n)
         /* `!x` is bool; `-x` keeps its operand's type. */
         return n->as.unary.op == OP_NOT ? type_prim(TY_BOOL)
                                         : infer_node_type(g, n->as.unary.operand);
+    case N_TERNARY: {
+        /* 与 typecheck_expr.c 同一套统一规则：同型→它，int/float 混合→
+         * float，任一 any/未知→any。文本与 libLLVM 两后端都拿它给结果
+         * alloca 定型，所以这里必须能答出来。 */
+        Type *tt = infer_node_type(g, n->as.ternary.then);
+        Type *et = infer_node_type(g, n->as.ternary.els);
+        if (!tt || !et || tt->kind == TY_ANY || et->kind == TY_ANY)
+            return any_type();
+        if (tt->kind == et->kind)
+            return tt;
+        bool t_num = tt->kind == TY_INT || tt->kind == TY_FLOAT;
+        bool e_num = et->kind == TY_INT || et->kind == TY_FLOAT;
+        if (t_num && e_num)
+            return type_prim(TY_FLOAT);
+        return NULL;
+    }
     case N_ASSIGN:
         /* An assignment expression yields the *target*, which is what `for
          * (i = 0; ...)` and `a = b` want to carry. */

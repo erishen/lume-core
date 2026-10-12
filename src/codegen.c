@@ -295,6 +295,11 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
         collect_lambdas(n->as.binary.left,  out, cnt, cap);
         collect_lambdas(n->as.binary.right, out, cnt, cap);
         return;
+    case N_TERNARY:
+        collect_lambdas(n->as.ternary.cond, out, cnt, cap);
+        collect_lambdas(n->as.ternary.then, out, cnt, cap);
+        collect_lambdas(n->as.ternary.els,  out, cnt, cap);
+        return;
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
             collect_lambdas(n->as.list.items[i], out, cnt, cap);
