@@ -103,4 +103,8 @@ void native_map(VM *vm, int argc, Value *args, Value *out);
 void native_filter(VM *vm, int argc, Value *args, Value *out);
 void native_reduce(VM *vm, int argc, Value *args, Value *out);
 
+/* ---- SQLite(builtins_sql.c; 无 libsqlite3 的构建由 builtins.c 出 stub) ---- */
+void native_sql_query(VM *vm, int argc, Value *args, Value *out);
+void native_sql_write(VM *vm, int argc, Value *args, Value *out);
+
 #endif /* LUME_BUILTINS_INTERNAL_H */

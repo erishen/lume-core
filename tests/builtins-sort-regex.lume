@@ -70,6 +70,18 @@ func main(): int {
   let bad = try(() => { str_match("(", "x"); return "ok"; });
   check("str_match invalid rejects", get(bad, "err", null) != null);
 
+  // --- json() 双向 (2026-10-12): 字符串照旧 parse, 其他值走 stringify 方向 ---
+  check("json parse string", get(json("{\"a\":1}"), "a") == 1);
+  check("json map serialize", json({b: 2}) == "{\"b\":2}");
+  check("json list serialize", json([1, "x", null, true]) == "[1,\"x\",null,true]");
+  check("json nested serialize", json({n: [1, {s: "he\"llo"}]}) == "{\"n\":[1,{\"s\":\"he\\\"llo\"}]}");
+  check("json int serialize", json(42) == "42");
+  check("json null serialize", json(null) == "null");
+  check("json bool serialize", json(false) == "false");
+  // 字符串仍走 parse 方向(要序列化字符串用 stringify)
+  check("json string stays parse", get(try(() => { json("not json"); return "ok"; }), "err", null) != null);
+  check("json serialize matches stringify", json({k: [1, 2]}) == stringify({k: [1, 2]}));
+
   return 0;
 }
 main();

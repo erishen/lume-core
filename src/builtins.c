@@ -252,9 +252,20 @@ static void native_default_route(VM *vm, int argc, Value *args, Value *out) {
 }
 
 static void native_json(VM *vm, int argc, Value *args, Value *out) {
-    if (argc < 1) { vm_set_error(vm, "json() needs a string"); return; }
-    const char *s = NULL;
-    if (!arg_string(vm, args[0], &s)) return;
+    if (argc < 1) { vm_set_error(vm, "json() needs an argument"); return; }
+    /* Two directions, JS-style duality: a string argument is parsed (the
+     * established semantics), any other value is serialized to a JSON
+     * string — the same output stringify() produces. Serializing a string
+     * is still spelled stringify(str) (it quotes it); json(str) keeps
+     * meaning "parse". */
+    if (!(IS_OBJ(args[0]) && AS_OBJ(args[0])->type == OBJ_STRING)) {
+        sbuf b = {0};
+        json_append_value(vm, &b, args[0]);
+        *out = make_string(vm, b.p ? b.p : "", b.len);
+        free(b.p); /* make_string copied out; the builder owns nothing */
+        return;
+    }
+    const char *s = obj_string(AS_OBJ(args[0]));
     char err[256] = {0};
     json_parse(vm, s, err, sizeof(err));
     if (vm->error) {
@@ -458,8 +469,10 @@ Value b_range(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, a
 Value b_map(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_map); }
 Value b_filter(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_filter); }
 Value b_reduce(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_reduce); }
-/* b_sql_query / b_sql_write are host-only (agent-httpd db layer); the sql_*
- * builtins are not registered in this tree. */
+/* b_sql_query / b_sql_write: SQLite builtins (builtins_sql.c), compiled in
+ * when the Makefile probe found libsqlite3; stubs below otherwise. */
+Value b_sql_query(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_query); }
+Value b_sql_write(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_write); }
 Value b_json(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_json); }
 Value b_stringify(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_stringify); }
 Value b_now(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_now); }
@@ -505,6 +518,20 @@ void native_http_post(VM *vm, int argc, Value *args, Value *out)   { native_http
 void native_http_put(VM *vm, int argc, Value *args, Value *out)    { native_http_unavailable(vm, argc, args, out); }
 void native_http_patch(VM *vm, int argc, Value *args, Value *out)  { native_http_unavailable(vm, argc, args, out); }
 void native_http_delete(VM *vm, int argc, Value *args, Value *out) { native_http_unavailable(vm, argc, args, out); }
+#endif
+
+/* Same pattern as the http_* stubs: when the build has no libsqlite3
+ * (LUME_HAS_SQLITE=0 — the Makefile probe failed), the two native_sql_*
+ * symbols still have to exist so the always-compiled b_sql_* wrappers
+ * link. sql_query/sql_write stay registered and type-checkable; calling
+ * them fails clearly at runtime instead of crashing on a missing symbol. */
+#if !LUME_HAS_SQLITE
+static void native_sql_unavailable(VM *vm, int argc, Value *args, Value *out) {
+    (void)argc; (void)args; (void)out;
+    vm_set_error(vm, "sql_* unavailable: this build was compiled without libsqlite3");
+}
+void native_sql_query(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
+void native_sql_write(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
 #endif
 
 Value b_default_route(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_default_route); }

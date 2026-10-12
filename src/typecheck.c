@@ -333,6 +333,9 @@ void scope_put(CScope *s, const char *name, Type *t) {
  * lists that nobody checked against each other. */
 const char *const LUME_BUILTIN_NAMES[] = {
     "run", "print", "str", "int", "len", "keys", "get",
+    /* SQLite (2026-10-12, builtins_sql.c): registered in every build;
+     * without libsqlite3 the runtime stub reports the missing dep. */
+    "sql_query", "sql_write",
     "json", "stringify", "now", "el", "render", "html",
     "float", "bool", "string", "type", "Result", /* type words usable as idents */
     "write", "read", /* built-in verb groups (see seed_verb_groups) */

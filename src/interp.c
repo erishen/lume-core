@@ -1024,7 +1024,10 @@ void bridge_seed_builtins(VM *vm) {
         {"map", b_map},
         {"filter", b_filter},
         {"reduce", b_reduce},
-        /* sql_query / sql_write: host build only. */
+        /* SQLite (2026-10-12, builtins_sql.c): guarded SELECT / write with
+         * ? binding; stubs fail clearly on builds without libsqlite3. */
+        {"sql_query", b_sql_query},
+        {"sql_write", b_sql_write},
         {"json", b_json},
         {"stringify", b_stringify},
         {"now", b_now},

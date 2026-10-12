@@ -1,0 +1,89 @@
+// tests/sqlite.lume — sql_query / sql_write regression (2026-10-12)
+// 运行: make sql-test (并入 make test)。构建没编进 libsqlite3 时整段 SKIP:
+// sql_* 名字在任何构建里都注册(stub 运行时报缺失), 所以探针用 try() 捕获
+// 错误信息判断, 而不是假设名字存在与否。真正干活的第一个语句是 CREATE
+// TABLE(stub 下报 unavailable, 真实现下成功)——只用 READONLY 打不开不存在的
+// 文件库, ":memory:" 也开不了只读连接, 都不能当探针。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func main(): int {
+  // 每次运行一个新库文件(无法 unlink, 靠时间戳避免撞上次的库)。
+  // sql_write 刻意不带 SQLITE_OPEN_CREATE(防手滑建库), 与宿主语义一致:
+  // 先垫 0 字节空库文件——lume-nsgm 生成的 db.init 同款做法。
+  let db = "/tmp/lume-sqlite-" + str(now()) + ".lume-test.db";
+  write_file(db, "");
+
+  let probe = try(() => {
+    sql_write(db, "CREATE TABLE t (id integer primary key autoincrement, name text, score real)");
+    return "ok";
+  });
+  if (get(probe, "err", null) != null) {
+    print("SKIP sqlite: " + get(probe, "err"));
+    return 0;
+  }
+  check("create table", get(probe, "ok") == "ok");
+
+  // 带参 INSERT: 文本绑定, 数字走 affinity
+  let i1 = sql_write(db, "INSERT INTO t (name, score) VALUES (?, ?)", ["张三", 3.5]);
+  let i2 = sql_write(db, "INSERT INTO t (name, score) VALUES (?, ?)", ["李四", "9"]);
+  let i3 = sql_write(db, "INSERT INTO t (name, score) VALUES (?, ?)", [null, 1.25]);
+  check("insert affected 1", i1 == 1 and i2 == 1 and i3 == 1);
+
+  // SELECT -> 行 map 列表
+  let rows = sql_query(db, "SELECT id, name, score FROM t ORDER BY id");
+  check("select count", len(rows) == 3);
+  check("select text cell", get(rows[0], "name") == "张三");
+  check("select float cell", get(rows[0], "score") == 3.5);
+  check("select text-number affinity", get(rows[1], "score") == 9);
+  check("select null cell", get(rows[2], "name") == null);
+
+  // 空结果 -> []
+  let none = sql_query(db, "SELECT id FROM t WHERE name = 'nobody'");
+  check("select empty -> []", stringify(none) == "[]");
+
+  // UPDATE 带 WHERE
+  let u1 = sql_write(db, "UPDATE t SET score = ? WHERE name = ?", [4.75, "张三"]);
+  check("update where affected", u1 == 1);
+  let rows2 = sql_query(db, "SELECT score FROM t WHERE name = '张三'");
+  check("update visible", get(rows2[0], "score") == 4.75);
+
+  // DELETE 带 WHERE
+  let d1 = sql_write(db, "DELETE FROM t WHERE name = ?", ["李四"]);
+  check("delete where affected", d1 == 1);
+  check("delete visible", len(sql_query(db, "SELECT id FROM t WHERE name = '李四'")) == 0);
+
+  // 护栏: 无 WHERE 的 UPDATE / DELETE 拒绝
+  let uw = try(() => { sql_write(db, "UPDATE t SET score = 0"); return "ok"; });
+  check("update without where rejects", get(uw, "err", null) != null);
+  let dw = try(() => { sql_write(db, "DELETE FROM t"); return "ok"; });
+  check("delete without where rejects", get(dw, "err", null) != null);
+
+  // 护栏: 危险 DDL / 多语句 / 非白名单
+  let drop = try(() => { sql_write(db, "DROP TABLE t"); return "ok"; });
+  check("drop rejects", get(drop, "err", null) != null);
+  let pragma = try(() => { sql_query(db, "PRAGMA table_info(t)"); return "ok"; });
+  check("pragma rejects", get(pragma, "err", null) != null);
+  let multi = try(() => { sql_query(db, "SELECT 1; SELECT 2"); return "ok"; });
+  check("multi-statement rejects", get(multi, "err", null) != null);
+  let nonread = try(() => { sql_query(db, "DELETE FROM t"); return "ok"; });
+  check("sql_query is read-only", get(nonread, "err", null) != null);
+
+  // 非 list 参数拒绝
+  let badp = try(() => { sql_write(db, "INSERT INTO t (name) VALUES (?)", "x"); return "ok"; });
+  check("params must be list", get(badp, "err", null) != null);
+
+  // 缺库文件: READWRITE 打不开 -> 明确报错(不静默新建)
+  let missing = try(() => {
+    sql_write("/tmp/lume-sqlite-definitely-missing-" + str(now()) + ".db",
+              "INSERT INTO x VALUES (1)");
+    return "ok";
+  });
+  check("missing db errors clearly", get(missing, "err", null) != null);
+
+  return 0;
+}
+main();

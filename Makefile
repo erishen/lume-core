@@ -1,10 +1,12 @@
 # Lume — a strongly-typed research language whose native path is libLLVM.
 # This tree is the host-independent fork of lume: same front
 # end, same emitters, but no dependency on agent-httpd / libagenthttpd.a.
-# Nothing here links against anything besides libc, libLLVM (optional) and
-# libsqlite3 (only when a SQL builtin is linked in, which this fork does not).
-# 与宿主版的区别只有一处: 摘掉了 agent-httpd 桥(bridge.c / iquest.*)与依赖
-# 宿主 db layer 的 builtins_sql.c, 因此不需要 submodule、不需要 AH_LIB。
+# Nothing here links against anything besides libc, libLLVM (optional),
+# libssl/libcrypto (optional) and libsqlite3 (optional — probed, and only
+# linked when src/builtins_sql.c is compiled in).
+# 与宿主版的区别只有一处: 摘掉了 agent-httpd 桥(bridge.c / iquest.*)与
+# 依赖宿主 db layer 的 builtins_sql.c(sqlite 后端已自包含下沉进本树,
+# 见 src/builtins_sql.c; 探测不到 libsqlite3 的构建出运行时 stub)。
 CC       ?= cc
 CFLAGS   ?= -std=c11 -Wall -Wextra -O2 -g
 CFLAGS   += -I src
@@ -28,7 +30,7 @@ CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 # 不再让 0.5.0 在 main.c / bridge_lsp.c / bridge_mcp.c 多处硬编码漂移。
 # 打 release 前在此递增值, 保证二进制自报与 GitHub Release tag 一致
 # (make pack 走 PACK_CFLAGS, 这个 -D 不在 RT_DEFS 里, 会一并带进去)。
-LUME_CORE_VERSION ?= 0.5.1
+LUME_CORE_VERSION ?= 0.6.0
 CFLAGS   += -DLUME_CORE_VERSION=\"$(LUME_CORE_VERSION)\"
 
 # --- 平台 feature-test: 与宿主版/agent-httpd/Makefile:8-22 同口径, 但这里不 ---
@@ -174,6 +176,26 @@ ifeq ($(HAVE_OPENSSL),1)
     # 免得链接过了、跑起来才 "image not found"。
     LDFLAGS  += -Wl,-rpath,$(OPENSSL_PREFIX)/lib
 endif
+
+# --- SQL(可选):sql_query / sql_write 的 SQLite 后端 ----------------------
+# 与 openssl 同款「有就用、没有只是缺」的口径:能用 $(CC) 编过
+# `#include <sqlite3.h>` 就把 src/builtins_sql.c 编进去(-DHAVE_SQLITE=1 +
+# -lsqlite3);探测不到时本树照样能编,sql_* 仍在类型检查与运行时注册,
+# 调用时明确报 "built without libsqlite3" 而不是静默缺失或 undefined。
+# 探测用编译试编而不是 wildcard:macOS 的 SDK 头不在 /usr/include 下,
+# Linux 只有装了 libsqlite3-dev 才有头文件,一条试编把两种口径都盖住。
+# 注意 conftest 里不能出现 '#': make 解析期把它当注释吃掉会砍断 $(shell),
+# 所以用 -include sqlite3.h 让编译器代为预包含。
+# Windows/mingw 的 sysroot 没有 sqlite3,自然落进 stub 分支(与宿主
+# Makefile 摘 -lsqlite3 的口径一致)。
+SQLITE_CONF := $(shell printf 'int main(void){return 0;}\n' > build_conftest.c 2>/dev/null && $(CC) $(CFLAGS) -include sqlite3.h -c build_conftest.c -o build_conftest.o 2>/dev/null && echo 1; rm -f build_conftest.c build_conftest.o)
+HAVE_SQLITE := $(if $(strip $(SQLITE_CONF)),1,0)
+ifeq ($(HAVE_SQLITE),1)
+    SRCS     += src/builtins_sql.c
+    CFLAGS   += -DHAVE_SQLITE=1
+    LDFLAGS  += -lsqlite3
+endif
+CFLAGS += -DLUME_HAS_SQLITE=$(HAVE_SQLITE)
 
 # --- Windows / mingw-w64 native port -----------------------------------
 # HTTP/TLS is opted out: builtins_http.c is excluded and LUME_HAS_HTTP is
@@ -376,7 +398,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test http-noproxy-test map-index-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -690,6 +712,42 @@ map-index-test: all
 	   echo "ok   map-index: $$be 合规路径正确 + 标量读报错准确"; \
 	 done; \
 	 echo "==> map-index 单测通过"
+
+# SQLite (2026-10-12): tests/sqlite.lume 自带可用性探针, stub 构建整段 SKIP。
+sql-test: all
+	@./$(TARGET) tests/sqlite.lume > /tmp/lume-sql-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-sql-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-sql-test.out; then \
+		echo "==> sqlite 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> sqlite 单测通过"
+
+# docroot 静态服务 (2026-10-12): 路由优先; 静态 200/404; 穿越路径(含
+# URL 编码 %2e%2e)一律 404。--path-as-is 防 curl 把 ../ 归一化掉。
+docroot-test: all
+	@./$(TARGET) tests/docroot-srv.lume > /tmp/lume-docroot-srv.log 2>&1 & \
+	 SRV=$$!; sleep 1; \
+	 fail=0; \
+	 probe() { url="$$1"; want_code="$$2"; want_sub="$$3"; \
+	   out=$$(curl -s --noproxy '*' --path-as-is -w '\n%{http_code}' "http://127.0.0.1:18892$$url"); \
+	   code=$$(printf '%s\n' "$$out" | tail -1); \
+	   body=$$(printf '%s\n' "$$out" | sed '$$d'); \
+	   if [ "$$code" != "$$want_code" ]; then echo "FAIL docroot $$url: code=$$code want=$$want_code"; fail=1; \
+	   elif [ -n "$$want_sub" ] && printf '%s' "$$body" | grep -q "$$want_sub"; then echo "ok   docroot $$url"; \
+	   elif [ -n "$$want_sub" ]; then echo "FAIL docroot $$url: body missing '$$want_sub'"; printf '%s\n' "$$body"; fail=1; \
+	   else echo "ok   docroot $$url ($$code)"; fi; }; \
+	 probe "/" 200 docroot-ok; \
+	 probe "/index.html" 200 docroot-ok; \
+	 probe "/app.css" 200 "color: #333"; \
+	 probe "/sub/" 200 sub-index-ok; \
+	 probe "/api" 200 '"src":"route"'; \
+	 probe "/api/item/42" 200 '"id":"42"'; \
+	 probe "/missing.txt" 404 ""; \
+	 probe "/../secret.txt" 404 ""; \
+	 probe "/%2e%2e/secret.txt" 404 ""; \
+	 probe "/sub/../../secret.txt" 404 ""; \
+	 kill $$SRV 2>/dev/null; \
+	 if [ $$fail -ne 0 ]; then echo "==> docroot 单测失败"; exit 1; fi; \
+	 echo "==> docroot 单测通过"
 
 # 静态检查：两个原生后端 (text / libLLVM) 必须覆盖同一组 AST 节点类型，
 # 否则单边新增节点会静默漂移（另一端掉进 default:）。见脚本内注释。
