@@ -1,0 +1,6 @@
+// if-let 模式必须是已声明枚举的变体
+enum Color5 { Red5 }
+func f(c: Color5): int {
+  if let Nope = c { return 1; }
+  return 0;
+}

@@ -398,7 +398,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -701,7 +701,7 @@ enum-test: all
 	check_bad bad-arity "expects 1 argument(s), got 2"; \
 	check_bad bad-payload-type "cannot use a value of type string where float is expected"; \
 	check_bad dup-arm "duplicate match arm"; \
-	check_bad match-non-enum "expected variant name in match arm"; \
+	check_bad match-non-enum "expected variant name in pattern"; \
 	check_bad missing-variant "does not cover variant"; \
 	check_bad shadow-ctor "shadows an enum constructor"; \
 	check_bad unknown-variant "has no variant"; \
@@ -717,6 +717,43 @@ enum-test: all
 	  echo "ok   enum: $$be 后端 19/19"; \
 	done; \
 	echo "==> enum 单测通过"
+
+# or 模式 / 匹配守卫 / if-let 单测(tests/match2.lume + tests/match2-bad/*)。
+# 正向: 解释器 20 条断言 + 两个原生后端各编各跑, 输出必须全 PASS 无 FAIL;
+# 负例: 9 个 --check 拒绝, 诊断关键字逐个钉死(改名/改措辞都会在这里红)。
+match2-test: all
+	@./$(TARGET) tests/match2.lume > /tmp/lume-match2-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-match2-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-match2-test.out; then \
+		echo "==> match2 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-match2-test.out) -ne 20 ]; then \
+		echo "==> match2 断言数不符 (期望 20)"; exit 1; fi; \
+	set -e; \
+	check_bad() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/match2-bad/$$f.lume > /tmp/lume-match2-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-match2-bad.out; then \
+	    echo "==> match2 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-match2-bad.out; exit 1; fi; \
+	  echo "ok   match2-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad or-bind-names "or-pattern alternatives must bind the same names"; \
+	check_bad or-bind-types "or-pattern binding .* has conflicting types"; \
+	check_bad guard-only "does not cover variant"; \
+	check_bad guard-non-bool "expected bool, got float"; \
+	check_bad iflet-non-enum "if-let needs an enum value"; \
+	check_bad iflet-binds "payload field(s), arm binds"; \
+	check_bad iflet-scope "undefined variable"; \
+	check_bad iflet-unknown "has no variant"; \
+	check_bad or-dup "duplicate match pattern"; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/match2.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   match2: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/match2.lume -o /tmp/match2_$$be > /dev/null 2>&1 || { echo "==> match2 $$be 编译失败"; exit 1; }; \
+	  /tmp/match2_$$be > /tmp/match2_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/match2_$$be.out || [ $$(grep -c PASS /tmp/match2_$$be.out) -ne 20 ]; then \
+	    echo "==> match2 $$be 输出不符 (rc=$$rc):"; cat /tmp/match2_$$be.out; exit 1; fi; \
+	  echo "ok   match2: $$be 后端 20/20"; \
+	done; \
+	echo "==> match2 单测通过"
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
 # 把 HTTP_PROXY 指到死端口 127.0.0.1:9 作对照:绕过失效会撞死代理 => FAIL。

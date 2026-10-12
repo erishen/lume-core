@@ -186,6 +186,32 @@ void ck_stmt(Checker *c, Node *n) {
             if (n->as.ifs.els) ck_stmt(c, n->as.ifs.els);
             return;
         }
+        case N_IF_LET: {
+            /* `if let P [| P] = value { then } [else ...]`. The value must
+             * be an enum (or any — patterns unvalidated, like match). Binds
+             * are declared in a child scope around the then-branch ONLY:
+             * the else-branch and everything after the statement see
+             * nothing, which is what makes the binding block-scoped (match
+             * arms behave the same way). */
+            Type *vt = ck_expr(c, n->as.iflet.value, NULL);
+            vt = resolve(c, vt, n->line);
+            EnumDef *ed = NULL;
+            if (vt && vt->kind == TY_ENUM)
+                ed = find_enum(c, vt->name);
+            else if (vt && vt->kind != TY_ANY) {
+                ck_fail(c, n->line, "if-let needs an enum value (got %s)",
+                        ty_str(vt));
+            }
+            int bindc = ck_pat_list(c, n->as.iflet.pats, n->as.iflet.patc,
+                                    ed, n->line);
+            CScope *saved = c->scope;
+            c->scope = scope_new(saved);
+            ck_put_pat_binds(c, n->as.iflet.pats, bindc, n->line);
+            ck_stmt(c, n->as.iflet.then);
+            c->scope = saved;
+            if (n->as.iflet.els) ck_stmt(c, n->as.iflet.els);
+            return;
+        }
         case N_WHILE: {
             Type *ct = ck_expr(c, n->as.whiles.cond, NULL);
             is_bool_ok(c, ct, n->line);

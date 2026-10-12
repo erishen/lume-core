@@ -1,0 +1,8 @@
+// or 模式内部重复变体（Red6 出现两次）
+enum Color6 { Red6 | Green6 | Blue6 }
+func f(c: Color6): string {
+  return match (c) {
+    Red6 | Red6 => "r",
+    _           => "x"
+  };
+}

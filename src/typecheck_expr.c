@@ -383,53 +383,50 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
 
             Type *result = NULL;
             bool any_arm = false;
-            int wildcard = -1;
             for (int i = 0; i < n->as.matchn.armc; i++) {
                 MatchArm *arm = &n->as.matchn.arms[i];
-                int vi = -1;
-                if (strcmp(arm->vname, "_") == 0) {
-                    wildcard = i;
-                    if (arm->bindc > 0) {
-                        ck_fail(c, arm->line,
-                                "the '_' match arm binds no payload");
-                    }
-                } else if (ed) {
-                    for (int j = 0; j < ed->vcount; j++)
-                        if (strcmp(ed->vnames[j], arm->vname) == 0) { vi = j; break; }
-                    if (vi < 0) {
-                        ck_fail(c, arm->line,
-                                "enum '%s' has no variant '%s'",
-                                ed->name, arm->vname);
-                    } else if (ed->vfield_counts[vi] != arm->bindc) {
-                        ck_fail(c, arm->line,
-                                "variant '%s' carries %d payload field(s), "
-                                "arm binds %d",
-                                arm->vname, ed->vfield_counts[vi], arm->bindc);
+                int bindc = ck_pat_list(c, arm->pats, arm->patc, ed,
+                                        arm->line);
+                /* Cross-arm conflicts: only an UNCONDITIONAL earlier arm
+                 * shadows. A guarded arm may fall through at runtime, so
+                 * `A if g => .., A => ..` is the legal guard idiom, not a
+                 * duplicate. */
+                if (!arm->guard) {
+                    for (int j = 0; j < i; j++) {
+                        MatchArm *prev = &n->as.matchn.arms[j];
+                        if (prev->guard) continue;
+                        bool dead = false;
+                        for (int pj = 0; pj < prev->patc && !dead; pj++) {
+                            if (strcmp(prev->pats[pj].vname, "_") == 0) {
+                                ck_fail(c, arm->line,
+                                        "match arm is unreachable: an "
+                                        "earlier '_' arm catches every "
+                                        "variant");
+                                dead = true;
+                                break;
+                            }
+                            for (int pi = 0; pi < arm->patc; pi++)
+                                if (strcmp(prev->pats[pj].vname,
+                                           arm->pats[pi].vname) == 0) {
+                                    ck_fail(c, arm->line,
+                                            "duplicate match arm '%s'",
+                                            arm->pats[pi].vname);
+                                    dead = true;
+                                    break;
+                                }
+                        }
                     }
                 }
-                /* duplicate arm — a repeated variant silently shadows the
-                 * earlier one's body, so it is reported, not accepted */
-                for (int j = 0; j < i; j++) {
-                    if (strcmp(n->as.matchn.arms[j].vname, arm->vname) == 0) {
-                        ck_fail(c, arm->line,
-                                "duplicate match arm '%s'", arm->vname);
-                    }
-                }
-                /* Bindings live in a fresh scope, exactly like a block. The
-                 * first (collecting) walk uses scope_put for the same reason
-                 * top-level lets do: the second walk re-declares. */
+                /* Bindings (and the guard, which may read them) live in a
+                 * fresh scope, exactly like a block. The first (collecting)
+                 * walk uses scope_put for the same reason top-level lets
+                 * do: the second walk re-declares. */
                 CScope *saved = c->scope;
                 c->scope = scope_new(saved);
-                if (vi >= 0 && ed) {
-                    for (int k = 0; k < arm->bindc; k++) {
-                        Type *pt = ed->vfield_types[vi]
-                                     ? ed->vfield_types[vi][k] : any_type();
-                        if (c->collecting)
-                            scope_put(c->scope, arm->binds[k], pt);
-                        else
-                            scope_decl(c, c->scope, arm->binds[k], pt,
-                                       arm->line);
-                    }
+                ck_put_pat_binds(c, arm->pats, bindc, arm->line);
+                if (arm->guard) {
+                    Type *gt = ck_expr(c, arm->guard, NULL);
+                    is_bool_ok(c, gt, arm->line);
                 }
                 Type *bt = ck_expr(c, arm->body, NULL);
                 c->scope = saved;
@@ -443,15 +440,24 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                         "match arms have different types ('%s' vs '%s')",
                         ty_str(result), ty_str(bt));
             }
-            /* Exhaustiveness: every variant covered, or a `_` arm. Skipped
-             * when the scrutinee is untyped — nothing to be exhaustive
-             * about — and when the check already failed. */
+            /* Exhaustiveness: every variant covered by an UNCONDITIONAL
+             * arm (or a `_` one) — a guard can fail at runtime, so guarded
+             * arms do not count (Lean's rule). Skipped when the scrutinee
+             * is untyped and when the check already failed. */
             if (ed && !c->failed) {
                 for (int j = 0; j < ed->vcount; j++) {
-                    bool covered = wildcard >= 0;
-                    for (int i = 0; i < n->as.matchn.armc && !covered; i++)
-                        if (strcmp(n->as.matchn.arms[i].vname,
-                                   ed->vnames[j]) == 0) covered = true;
+                    bool covered = false;
+                    for (int i = 0; i < n->as.matchn.armc && !covered; i++) {
+                        MatchArm *arm = &n->as.matchn.arms[i];
+                        if (arm->guard) continue;
+                        for (int pi = 0; pi < arm->patc; pi++)
+                            if (strcmp(arm->pats[pi].vname, "_") == 0 ||
+                                strcmp(arm->pats[pi].vname,
+                                       ed->vnames[j]) == 0) {
+                                covered = true;
+                                break;
+                            }
+                    }
                     if (!covered) {
                         ck_fail(c, n->line,
                                 "match on '%s' does not cover variant '%s' "

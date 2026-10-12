@@ -227,6 +227,7 @@ Value make_env(VM *vm, Env *parent) {
     Env *e = (Env *)gc_alloc(vm, OBJ_ENV, sizeof(Env) - sizeof(Obj));
     e->parent = parent;
     e->next_active = NULL;
+    e->is_boundary = false;
     return val_obj((Obj *)e);
 }
 

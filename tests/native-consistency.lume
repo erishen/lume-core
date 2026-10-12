@@ -558,5 +558,52 @@ let wshape = Rect(2.0, 5.0);
 print(carea(wshape) + 1.0);                      // 11
 print(cname(Green) == "g" ? 1 : 0);              // 1
 
+// ---- or 模式 / 守卫 / if-let (match 深化) -----------------------------------
+// or 模式覆盖=变体集合并; 守卫臂不计穷尽性、假则落下一臂;
+// if-let 绑定块作用域。编译期拒绝由 tests/match2-bad/*.lume 覆盖。
+enum Ball2 { Ring(r: float) | Ball(r: float) | Dot }
+
+func ring_area(b: Ball2): float {
+  return match (b) {
+    Ring(r) | Ball(r) => 3.0 * r * r,
+    Dot              => 0.0
+  };
+}
+func is_big(s: Shape): int {
+  return match (s) {
+    Circle(r) if r > 10.0 => 1,
+    _                     => 0
+  };
+}
+func ckind(c: Color): string {
+  return match (c) {
+    Red | Green => "warm",
+    Blue       => "cool"
+  };
+}
+func ifarea(s: Shape): float {
+  if let Circle(r) = s { return 3.0 * r * r; }
+  return 0.0;
+}
+func ifkind(t: Tag): string {
+  if let Name(s) = t { return "n:" + s; }
+  else if let Id(n) = t { return "i:" + str(n); }
+  else { return "other"; }
+}
+print(ring_area(Ring(2.0)));                     // 12
+print(ring_area(Ball(1.0)));                     // 3
+print(ring_area(Dot));                           // 0
+print(is_big(Circle(11.0)));                     // 1
+print(is_big(Circle(9.0)));                      // 0
+print(is_big(Rect(99.0, 99.0)));                 // 0
+print(ckind(Red));                               // warm
+print(ckind(Green));                             // warm
+print(ckind(Blue));                              // cool
+print(ifarea(Circle(2.0)));                      // 12
+print(ifarea(Rect(3.0, 4.0)));                   // 0
+print(ifkind(Name("ab")));                       // n:ab
+print(ifkind(Id(5)));                            // i:5
+print(ifkind(None));                             // other
+
 warmup();
 main();

@@ -54,4 +54,8 @@ Node *parse_route_tail(Parser *p, Node *n);
 Node *parse_statement(Parser *p);
 Node *parse_expression(Parser *p);
 
+/* `V(b, ...)` / bare `V` / `_`, `|`-separated into alternatives (parser.c).
+ * Shared by match arms and if-let; the caller owns the array. */
+bool parse_patterns(Parser *p, MatchPat **out, int *outc);
+
 #endif /* LUME_PARSER_INTERNAL_H */

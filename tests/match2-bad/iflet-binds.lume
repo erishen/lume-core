@@ -1,0 +1,6 @@
+// if-let 绑定数必须与变体载荷数一致（Circle3 只有 1 个载荷）
+enum Shape3 { Circle3(r: float) | Rect3(w: float, h: float) }
+func f(s: Shape3): int {
+  if let Circle3(r, q) = s { return 1; }
+  return 0;
+}

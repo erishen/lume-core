@@ -314,6 +314,8 @@ static int exec_module(VM *vm, Module *m, char *errbuf, size_t errbuf_size) {
          * builtins stay visible), rooted for the process lifetime via the
          * GC's active-env chain */
         m->env = (Env *)AS_OBJ(make_env(vm, vm->globals));
+        m->env->is_boundary = true; /* a module assigning a global/builtin
+                                     * name still defines a module local */
         m->env->next_active = vm->active_envs;
         vm->active_envs = m->env;
     }

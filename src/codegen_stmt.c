@@ -30,8 +30,10 @@ static void cg_for_in(CG *g, Node *n);
 /* forward: same tu, defined below this point. */
 static void cg_if(CG *g, Node *n);
 
-/* forward: same tu, defined below this point. */
-static void cg_stmt(CG *g, Node *n);
+/* forward: same tu, defined below this point. Non-static now that
+ * codegen_expr.c's cg_if_let calls into it — the declaration lives in
+ * codegen_internal.h. */
+void cg_stmt(CG *g, Node *n);
 
 /* forward: same tu, defined below this point. */
 static void cg_while(CG *g, Node *n);
@@ -331,7 +333,7 @@ static void cg_if(CG *g, Node *n)
     EMIT(g, "L%d:\n", lend);
 }
 
-static void cg_stmt(CG *g, Node *n)
+void cg_stmt(CG *g, Node *n)
 {
     if (!n) return;
 
@@ -395,6 +397,7 @@ static void cg_stmt(CG *g, Node *n)
     }
 
     case N_IF:      cg_if(g, n); break;
+    case N_IF_LET:  cg_if_let(g, n); break;
     case N_WHILE:   cg_while(g, n); break;
     case N_FOR:     cg_for(g, n); break;
 

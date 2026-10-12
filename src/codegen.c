@@ -302,8 +302,15 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
         return;
     case N_MATCH:
         collect_lambdas(n->as.matchn.scrutinee, out, cnt, cap);
-        for (int i = 0; i < n->as.matchn.armc; i++)
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            collect_lambdas(n->as.matchn.arms[i].guard, out, cnt, cap);
             collect_lambdas(n->as.matchn.arms[i].body, out, cnt, cap);
+        }
+        return;
+    case N_IF_LET:
+        collect_lambdas(n->as.iflet.value, out, cnt, cap);
+        collect_lambdas(n->as.iflet.then, out, cnt, cap);
+        collect_lambdas(n->as.iflet.els, out, cnt, cap);
         return;
     case N_CTOR:
         for (int i = 0; i < n->as.ctor.argc; i++)

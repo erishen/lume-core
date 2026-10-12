@@ -1,0 +1,8 @@
+// 守卫条件必须是严格布尔（r 是 float）
+enum Shape2 { Circle2(r: float) }
+func f(s: Shape2): int {
+  return match (s) {
+    Circle2(r) if r => 1,
+    _            => 0
+  };
+}

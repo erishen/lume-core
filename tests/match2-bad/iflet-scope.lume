@@ -1,0 +1,6 @@
+// if-let 绑定只在 then 块可见（块外引用 r 必须拒绝）
+enum Shape4 { Circle4(r: float) }
+func f(s: Shape4): float {
+  if let Circle4(r) = s { return r; }
+  return r;
+}

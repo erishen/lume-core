@@ -232,9 +232,13 @@ Type *infer_node_type(CG *g, Node *n)
         for (int i = 0; i < n->as.matchn.armc; i++) {
             MatchArm *arm = &n->as.matchn.arms[i];
             g->arm_scope.n = saved;
-            for (int b = 0; b < arm->bindc; b++)
-                arm_scope_push(g, arm->binds[b],
-                               arm->vfield_types ? arm->vfield_types[b] : NULL);
+            /* the arm's single binding set: the checker guarantees every
+             * alternative binds the same names with the same types, so the
+             * first pattern's stamps describe them all */
+            MatchPat *p0 = &arm->pats[0];
+            for (int b = 0; b < p0->bindc; b++)
+                arm_scope_push(g, p0->binds[b],
+                               p0->vfield_types ? p0->vfield_types[b] : NULL);
             Type *bt = infer_node_type(g, arm->body);
             /* An arm whose type cannot be read statically (a builtin call
              * like str(n), say) is skipped, not fatal: the arm's real type
@@ -422,6 +426,10 @@ static void scan_stmt(CG *g, Node *n)
      * N_BLOCK walks one level and scan_block() recurses into its statements. */
     case N_BLOCK:  scan_block(g, n); break;
     case N_IF:     scan_stmt(g, n->as.ifs.then); scan_stmt(g, n->as.ifs.els); break;
+    /* if-let binds are NOT registered here (same rule as match arms): the
+     * emitter registers them around the then-branch at emit time. The
+     * branches still have to be walked — their lets/assignments need slots. */
+    case N_IF_LET: scan_stmt(g, n->as.iflet.then); scan_stmt(g, n->as.iflet.els); break;
     case N_WHILE:  scan_stmt(g, n->as.whiles.body); break;
     default: break;
     }

@@ -174,6 +174,10 @@ const char *bad(CG *g, Node *n, const char *what);
 Val cg_assign_expr(CG *g, Node *n);
 Val cg_assign_mem(CG *g, Node *n);
 Val cg_expr(CG *g, Node *n);
+/* The statement dispatcher (codegen_stmt.c), called by cg_if_let's
+ * then/else branches. */
+void cg_stmt(CG *g, Node *n);
+void cg_if_let(CG *g, Node *n);
 char *cg_string_val(CG *g, const char *text, size_t len);
 void cg_function(CG *g, Node *fn);
 void cg_closure(CG *g, Node *fn);

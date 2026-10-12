@@ -56,6 +56,34 @@ Node *parse_statement(Parser *p) {
     }
     if (t.type == TOK_IF) {
         advance(p);
+        if (check(p, TOK_LET)) {
+            /* if let Pattern [| Pattern] = expr { then } [else ...]
+             * A statement (if is a statement; the ternary is the expression
+             * form). Binds live in the then-branch only. No guard form —
+             * write a match for that. */
+            advance(p);
+            size_t pline = peek(p).line;
+            MatchPat *pats = NULL;
+            int patc = 0;
+            if (!parse_patterns(p, &pats, &patc)) return NULL;
+            if (!expect(p, TOK_EQ)) return NULL;
+            Node *value = parse_expression(p);
+            if (!value) return NULL;
+            Node *then = parse_statement(p);
+            if (!then) return NULL;
+            Node *els = NULL;
+            if (match(p, TOK_ELSE)) {
+                els = parse_statement(p);
+                if (!els) return NULL;
+            }
+            Node *n = nalloc(N_IF_LET, pline);
+            n->as.iflet.pats = pats;
+            n->as.iflet.patc = patc;
+            n->as.iflet.value = value;
+            n->as.iflet.then = then;
+            n->as.iflet.els = els;
+            return n;
+        }
         if (!expect(p, TOK_LPAREN)) return NULL;
         Node *cond = parse_expression(p);
         if (!cond) return NULL;

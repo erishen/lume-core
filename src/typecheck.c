@@ -464,6 +464,97 @@ void add_enum(Checker *c, EnumDef *d) {
     c->enums = d;
 }
 
+/* Two payload types are "the same" for or-pattern binds: same kind, and
+ * for the named kinds the same name. Deliberately stricter than
+ * type_compat — an or-pattern arm has ONE binding set, so `A(x: int) |
+ * B(x: float)` is rejected rather than silently widened (write two arms). */
+static bool pat_types_same(Type *a, Type *b) {
+    if (!a || !b) return true;              /* unstamped: nothing to compare */
+    if (a->kind != b->kind) return false;
+    if (a->name || b->name) return a->name && b->name &&
+                                  strcmp(a->name, b->name) == 0;
+    return true;
+}
+
+/* Validate one pattern list — a match arm's or-pattern, or an if-let's.
+ *  - every pattern must name a variant of `ed` and bind exactly its
+ *    payload count (skipped when ed is NULL: an untyped scrutinee, where
+ *    nothing can be validated);
+ *  - `_` binds nothing;
+ *  - no variant twice inside the list;
+ *  - the alternatives bind the same names with the same types.
+ * Returns pats[0].bindc — the arm's single binding-set size. */
+int ck_pat_list(Checker *c, MatchPat *pats, int patc, EnumDef *ed,
+                size_t line) {
+    for (int pi = 0; pi < patc; pi++) {
+        MatchPat *pat = &pats[pi];
+        if (strcmp(pat->vname, "_") == 0) {
+            if (pat->bindc > 0)
+                ck_fail(c, line, "the '_' match pattern binds no payload");
+            continue;
+        }
+        if (ed) {
+            int vi = -1;
+            for (int j = 0; j < ed->vcount; j++)
+                if (strcmp(ed->vnames[j], pat->vname) == 0) { vi = j; break; }
+            if (vi < 0) {
+                ck_fail(c, line, "enum '%s' has no variant '%s'",
+                        ed->name, pat->vname);
+                continue;
+            }
+            if (ed->vfield_counts[vi] != pat->bindc)
+                ck_fail(c, line,
+                        "variant '%s' carries %d payload field(s), "
+                        "arm binds %d",
+                        pat->vname, ed->vfield_counts[vi], pat->bindc);
+        }
+        for (int pj = 0; pj < pi; pj++)
+            if (strcmp(pats[pj].vname, pat->vname) == 0)
+                ck_fail(c, line, "duplicate match pattern '%s'", pat->vname);
+    }
+    if (patc > 1) {
+        for (int pi = 1; pi < patc; pi++) {
+            if (pats[pi].bindc != pats[0].bindc)
+                ck_fail(c, line,
+                        "or-pattern alternatives must bind the same names "
+                        "(%d vs %d)", pats[0].bindc, pats[pi].bindc);
+            for (int k = 0; k < pats[0].bindc && k < pats[pi].bindc; k++) {
+                if (strcmp(pats[pi].binds[k], pats[0].binds[k]) != 0)
+                    ck_fail(c, line,
+                            "or-pattern alternatives must bind the same "
+                            "names ('%s' vs '%s')",
+                            pats[0].binds[k], pats[pi].binds[k]);
+                Type *t0 = pats[0].vfield_types ? pats[0].vfield_types[k]
+                                                : NULL;
+                Type *t1 = pats[pi].vfield_types ? pats[pi].vfield_types[k]
+                                                 : NULL;
+                if (!pat_types_same(t0, t1))
+                    ck_fail(c, line,
+                            "or-pattern binding '%s' has conflicting types "
+                            "('%s' vs '%s')",
+                            pats[0].binds[k], ty_str(t0), ty_str(t1));
+            }
+        }
+    }
+    return pats[0].bindc;
+}
+
+/* Declare an arm's (already validated) binding set in the CURRENT scope —
+ * the caller has already switched to a fresh child scope. Types come from
+ * the first alternative's stamp; an untyped scrutinee or an unstamped
+ * variant degrades to any. The first (collecting) walk uses scope_put —
+ * the second walk re-declares. */
+void ck_put_pat_binds(Checker *c, MatchPat *pats, int bindc, size_t line) {
+    for (int k = 0; k < bindc; k++) {
+        Type *pt = pats[0].vfield_types ? pats[0].vfield_types[k]
+                                        : any_type();
+        if (c->collecting)
+            scope_put(c->scope, pats[0].binds[k], pt);
+        else
+            scope_decl(c, c->scope, pats[0].binds[k], pt, line);
+    }
+}
+
 /* A constructor name resolves to its enum + variant. Linear over every
  * variant of every enum — the tables are file-sized, that is fine. */
 EnumDef *find_ctor(Checker *c, const char *name, int *vidx) {

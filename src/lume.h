@@ -285,6 +285,11 @@ struct Env {
     KVPair vars;
     Env *parent;
     Env *next_active;    /* dynamic frame chain for GC traversal */
+    bool is_boundary;    /* function frame / module env: assignment never
+                          * resolves past this point, so "assigning a name
+                          * that only exists further out defines a local"
+                          * (top-level names inside a function, globals
+                          * inside a module) keeps working. */
 };
 
 /* ---- GC / heap ---- */
@@ -484,7 +489,7 @@ typedef enum {
     N_LITERAL, N_MAP_LIT, N_LIST_LIT, N_FUNC_LIT,
     N_CALL, N_MEMBER, N_INDEX,
     N_UNARY, N_BINARY, N_TERNARY,
-    N_MATCH, N_CTOR,
+    N_MATCH, N_CTOR, N_IF_LET,
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
 
@@ -498,20 +503,32 @@ typedef enum {
     OP_AND, OP_OR, OP_NEG, OP_NOT
 } Op;
 
-/* One `Variant(b1, b2) => body` arm of a match. `vname` is the variant name,
- * or "_" for the catch-all arm (binds must be empty there). The binds are the
- * arm-local names the variant's payload fields bind to, positional.
+/* One alternative of a match arm's pattern: a variant name (or "_" for the
+ * catch-all) plus the positional binds. An or-pattern arm (`A | B => body`)
+ * carries one MatchPat per alternative; all alternatives must bind the same
+ * names (types unified per name), so the arm has a single binding set — the
+ * Lean rule where each alternative may bind differently-typed names is an
+ * MVP restriction here (see docs/SPEC.md 3.7).
  * vfields/vfieldc are stamped by parser.c's resolve_ctors: the variant's own
  * field names, borrowed from the enum decl (not owned — freed with it). */
-typedef struct MatchArm {
+typedef struct MatchPat {
     char *vname;
     char **binds;
     int bindc;
-    struct Node *body;
-    size_t line;
     char **vfields;   /* resolve_ctors stamp; borrowed from the enum decl */
     int vfieldc;
     Type **vfield_types;  /* same stamp, payload types (scalars only) */
+} MatchPat;
+
+/* One `Pattern | Pattern [if guard] => body` arm of a match. `guard` is NULL
+ * when the arm is unconditional. A guarded arm does not count towards
+ * exhaustiveness (Lean's rule) and never conflicts with a later arm. */
+typedef struct MatchArm {
+    MatchPat *pats;
+    int patc;
+    struct Node *guard;
+    struct Node *body;
+    size_t line;
 } MatchArm;
 
 typedef struct Node {
@@ -564,6 +581,11 @@ typedef struct Node {
         /* `match (scrutinee) { arm, arm, ... }` — an expression. */
         struct { struct Node *scrutinee; struct MatchArm *arms; int armc;
                  } matchn;
+        /* `if let Pattern [| Pattern] = value { then } [else ...]` — a
+         * statement. Binds live in the then-branch only; guards are not
+         * part of the form. patc >= 1. */
+        struct { MatchPat *pats; int patc; struct Node *value,
+                 *then, *els; } iflet;
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
         struct { struct Node *obj; char *name; struct Node *value; } assign_mem;

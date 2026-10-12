@@ -323,6 +323,63 @@ Node *parse_route_tail(Parser *p, Node *n) {
     return n;
 }
 
+/* ---------- pattern lists (match arms and if-let share this) ---------- */
+
+static void free_name_array(char **a, int n); /* defined with node_free_own */
+
+/* `Variant(b, ...)` / bare `Variant` / `_`, `|`-separated into alternatives.
+ * Shared by match arms (`A | B => body`) and if-let (`if let A | B = e`).
+ * The caller owns the returned array; vnames and binds are heap strings,
+ * the resolve_ctors stamps start NULL (parser.c's post-parse pass fills
+ * them in once the file's enum table is known). Guards are NOT parsed
+ * here — the match-arm caller adds `if cond` after the list. */
+bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
+    MatchPat *pats = NULL;
+    int patc = 0;
+    for (;;) {
+        Token pt = peek(p);
+        if (pt.type != TOK_IDENT) {
+            perror_at(p, pt.line, "expected variant name in pattern", NULL);
+            goto fail;
+        }
+        advance(p);
+        pats = realloc(pats, sizeof(MatchPat) * ((size_t)patc + 1));
+        if (!pats) goto fail;
+        MatchPat *pat = &pats[patc];
+        memset(pat, 0, sizeof *pat);
+        pat->vname = ident_name(p, pt);
+        if (match(p, TOK_LPAREN)) {
+            /* positional binds — plain identifiers separated by commas */
+            do {
+                Token bt = peek(p);
+                if (bt.type != TOK_IDENT) {
+                    perror_at(p, bt.line,
+                              "expected a binding name in pattern", NULL);
+                    goto fail;
+                }
+                advance(p);
+                pat->binds = realloc(pat->binds,
+                        sizeof(char *) * ((size_t)pat->bindc + 1));
+                if (!pat->binds) goto fail;
+                pat->binds[pat->bindc++] = ident_name(p, bt);
+            } while (match(p, TOK_COMMA));
+            if (!expect(p, TOK_RPAREN)) goto fail;
+        }
+        patc++;
+        if (!match(p, TOK_PIPE)) break;
+    }
+    *out = pats;
+    *outc = patc;
+    return true;
+fail:
+    for (int i = 0; i < patc; i++) {
+        free(pats[i].vname);
+        free_name_array(pats[i].binds, pats[i].bindc);
+    }
+    free(pats);
+    return false;
+}
+
 /* ---------- program ---------- */
 
 static void resolve_ctors(Node *prog);
@@ -433,6 +490,17 @@ static CtorEnt *ctor_find(CtorTab *tab, const char *name) {
 
 static void ctor_rewrite(Node *n, CtorTab *tab);
 
+/* Stamp one pattern with its variant's payload field names/types (borrowed
+ * from the enum decl). A "_" pattern and an unknown name stay unstamped —
+ * the checker reports the unknown name, and "_" carries no fields. */
+static void stamp_pat(MatchPat *pat, CtorTab *tab) {
+    CtorEnt *ce = strcmp(pat->vname, "_") == 0
+                    ? NULL : ctor_find(tab, pat->vname);
+    pat->vfields = ce ? ce->fields : NULL;
+    pat->vfieldc = ce ? ce->fieldc : 0;
+    pat->vfield_types = ce ? ce->ftypes : NULL;
+}
+
 static void ctor_rewrite(Node *n, CtorTab *tab) {
     if (!n) return;
     switch (n->type) {
@@ -505,13 +573,19 @@ static void ctor_rewrite(Node *n, CtorTab *tab) {
         ctor_rewrite(n->as.matchn.scrutinee, tab);
         for (int i = 0; i < n->as.matchn.armc; i++) {
             MatchArm *arm = &n->as.matchn.arms[i];
-            CtorEnt *ce = strcmp(arm->vname, "_") == 0
-                            ? NULL : ctor_find(tab, arm->vname);
-            arm->vfields = ce ? ce->fields : NULL;
-            arm->vfieldc = ce ? ce->fieldc : 0;
-            arm->vfield_types = ce ? ce->ftypes : NULL;
+            for (int k = 0; k < arm->patc; k++) stamp_pat(&arm->pats[k], tab);
+            ctor_rewrite(arm->guard, tab);
             ctor_rewrite(arm->body, tab);
         }
+        return;
+    case N_IF_LET:
+        /* patterns are variant-name strings, not expressions — stamp them
+         * like match arms do, then walk the three expression slots */
+        for (int k = 0; k < n->as.iflet.patc; k++)
+            stamp_pat(&n->as.iflet.pats[k], tab);
+        ctor_rewrite(n->as.iflet.value, tab);
+        ctor_rewrite(n->as.iflet.then, tab);
+        ctor_rewrite(n->as.iflet.els, tab);
         return;
     case N_CTOR:
         for (int i = 0; i < n->as.ctor.argc; i++)
@@ -708,8 +782,15 @@ static void node_free_kids(Node *n) {
         break;
     case N_MATCH:
         node_free(n->as.matchn.scrutinee);
-        for (int i = 0; i < n->as.matchn.armc; i++)
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            node_free(n->as.matchn.arms[i].guard);
             node_free(n->as.matchn.arms[i].body);
+        }
+        break;
+    case N_IF_LET:
+        node_free(n->as.iflet.value);
+        node_free(n->as.iflet.then);
+        node_free(n->as.iflet.els);
         break;
     default: break; /* no children (literals, imports, declarations, ...) */
     }
@@ -776,11 +857,22 @@ static void node_free_own(Node *n) {
         break;
     case N_MATCH:
         for (int i = 0; i < n->as.matchn.armc; i++) {
-            free(n->as.matchn.arms[i].vname);
-            free_name_array(n->as.matchn.arms[i].binds,
-                            n->as.matchn.arms[i].bindc);
+            MatchArm *arm = &n->as.matchn.arms[i];
+            for (int k = 0; k < arm->patc; k++) {
+                free(arm->pats[k].vname);
+                free_name_array(arm->pats[k].binds, arm->pats[k].bindc);
+            }
+            free(arm->pats);
         }
         free(n->as.matchn.arms);
+        break;
+    case N_IF_LET:
+        for (int k = 0; k < n->as.iflet.patc; k++) {
+            free(n->as.iflet.pats[k].vname);
+            free_name_array(n->as.iflet.pats[k].binds,
+                            n->as.iflet.pats[k].bindc);
+        }
+        free(n->as.iflet.pats);
         break;
     case N_VAR:               free(n->as.var.name); break;
     case N_ASSIGN:            free(n->as.assign.name); break;

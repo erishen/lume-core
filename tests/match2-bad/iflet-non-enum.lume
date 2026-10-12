@@ -1,0 +1,6 @@
+// if-let 的 scrutinee 必须是 enum 值（5 是 int）
+func f(): int {
+  if let Red3 = 5 { return 1; }
+  return 0;
+}
+enum Color3 { Red3 | Blue3 }

@@ -6,6 +6,35 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — or-patterns, match guards and `if let` (Lean borrowings)
+
+- **Or-patterns**: `match (c) { Red | Green | Blue => "warm", ... }` — several
+  variants share one arm. Coverage unions the alternatives' variant sets; with
+  payloads every alternative must bind the **same names with the same types**
+  (stricter than arm-body unification: no int/float widening — write two arms
+  for that). Duplicate variants inside one or-list are rejected.
+- **Match guards**: `Circle(r) if r > 1.0 => ...`. Evaluated after the binds,
+  before the body; a false guard falls through to the next arm. A guarded arm
+  does **not** count toward exhaustiveness (same rule as Lean), and duplicate-arm
+  detection only considers unconditional arms. A guarded last arm falling off a
+  forged map traps (`unreachable` natively, `no match arm` in the interpreter).
+- **`if let P [| P] = e { ... } else { ... }`** — a statement (not an
+  expression) with single-arm match semantics and no exhaustiveness
+  requirement. Binds are block-scoped (then-branch only); or-patterns allowed,
+  guards not; the scrutinee must be an enum value. Assigning an outer local
+  from inside the then-block updates the outer variable on all three backends.
+- Interpreter fix found on the way: assignment inside a match arm / if-let
+  body used to shadow the outer variable instead of updating it (the arm runs
+  in a child env and `env_set` never walked the chain). `N_ASSIGN` now reuses
+  the nearest visible binding **within the current function/module frame** —
+  the walk stops at a new `Env.is_boundary` flag, so "assigning a top-level
+  name inside a function defines a local" and "a module assigning a
+  global/builtin name stays module-local" both keep working.
+- Regression suite: `tests/match2.lume` (20 checks) + `tests/match2-bad/`
+  (9 rejection cases with pinned diagnostics), wired into `make test` via
+  `match2-test`; match probes extended in `tests/native-consistency.lume`.
+  SPEC §3.7 documents the semantics.
+
 ### Added — collection + string-search builtins
 
 - `sort(list)` — sort a list **in place** and return it. Homogeneous lists

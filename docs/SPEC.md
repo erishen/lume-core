@@ -262,6 +262,24 @@ enum Shape { Circle(r: float) | Rect(w: float, h: float) }
 - **臂内绑定**：`Circle(r) => ...` 的 `r` 只在自己的臂里可见（解释器用臂级环境，
   原生后端发射期注册并在臂尾截断）。绑定数与变体载荷数不符报
   `variant 'Rect' carries 2 payload field(s), arm binds 1`。
+- **or 模式**：`Red | Green | Blue => ...` 多变体共臂。覆盖性按各 alternative 的
+  变体集**合并**计算，`_` 也可参与 or。带载荷时各 alternative 必须绑**同名且同型**
+  的名字（比臂体统一更严：int/float **不加宽**，要加宽就写两条臂），分别报
+  `or-pattern alternatives must bind the same names ('x' vs 'y')` 与
+  `or-pattern binding 'x' has conflicting types ('int' vs 'string')`。同一 or
+  列表内重复变体报 `duplicate match pattern 'Red'`。
+- **匹配守卫**：`Circle(r) if r > 1.0 => ...`。守卫在绑定之后、臂体之前求值，
+  条件为假**落下一臂**（不是错误）；条件必须是 bool（`expected bool, got float`）。
+  **带守卫的臂不计入穷尽性**（Lean 同规）——所有臂都有守卫时必须另有 `_` 或
+  无条件臂兜底（`match on 'Color' does not cover variant 'Red'`）；同理，
+  **重复臂判定只看无条件臂**（`A if g => .., A => ..` 合法）。受守卫的末臂在
+  伪造 map（没有 `"$"` 键的值）上落空：解释器报 `no match arm`，原生后端发
+  `unreachable` trap——三后端都不允许静默穿过。
+- **`if let`**：`if let P [| P] = e { ... } else { ... }`，语义 = 单臂 match 且
+  **不要求穷尽**，但是**语句**（不是表达式）。绑定只在 then 块内可见（块作用域，
+  同 match 臂）；支持 or 模式，**不支持守卫**；scrutinee 须是 enum 值（含 any），
+  非 enum 报 `if-let needs an enum value (got int)`；未命中走 else（可省略），
+  else-if 链可用。块内给外层局部赋值是**更新外层变量**（三后端一致）。
 - **臂体统一**：所有臂按三元同一规则收拢——同型即该型，int/float 混合加宽为 float，
   含 `any` 则整个 match 为 `any`（原生后端拒绝发射 `any` 结果槽，要求至少一个可
   静态定型的臂）。

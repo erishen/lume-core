@@ -1,0 +1,8 @@
+// or 模式各 alternative 必须绑同名的名字（A(x) 与 B(y) 名字不同）
+enum E { A(x: int) | B(y: int) }
+func f(e: E): int {
+  return match (e) {
+    A(x) | B(y) => x + y,
+    _           => 0
+  };
+}

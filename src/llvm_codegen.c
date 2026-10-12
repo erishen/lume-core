@@ -396,6 +396,7 @@ static Val cg_assign_mem(CG *g, Node *n);   /* defined with cg_stmt, used by cg_
 static Val cg_index(CG *g, Node *n);        /* m["k"] / l[0] -- defined after cg_expr */
 static Val cg_expr(CG *g, Node *n);
 static void cg_stmt(CG *g, Node *n);
+static void cg_if_let(CG *g, Node *n);      /* defined with cg_match */
 static void cg_block(CG *g, Node *blk);
 
 static Val val_make(Type *ty, LLVMValueRef v)
@@ -413,6 +414,7 @@ static const char *node_type_name(NodeType t)
     switch (t) {
     case N_PROGRAM: return "program";           case N_BLOCK:  return "block";
     case N_LET:     return "let";               case N_IF:     return "if";
+    case N_IF_LET:  return "if-let";
     case N_WHILE:   return "while";             case N_FOR:    return "for";
     case N_BREAK:   return "break";             case N_CONTINUE: return "continue";
     case N_RETURN:  return "return";            case N_EXPR_STMT: return "expression statement";
@@ -2264,11 +2266,16 @@ static Val cg_ctor(CG *g, Node *n)
                                      : type_anon_struct(), m);
 }
 
-/* `match (s) { V(b, ...) => body, _ => body, ... }` — the libLLVM mirror of
+/* `match (s) { P [| P] [if guard] => body, ... }` — the libLLVM mirror of
  * cg_match() in codegen_expr.c. Same lowering: read "$" once, lume_str_eq
- * per arm (a plain `==` would icmp two pointers), the last arm unconditional
- * (the checker only accepts exhaustive matches), binds allocad inside the
- * arm block and g->locals truncated afterwards. */
+ * per pattern (a plain `==` would icmp two pointers), the last pattern of
+ * the last arm unconditional (the checker only accepts exhaustive matches),
+ * each pattern block storing its own variant's field reads into the arm's
+ * shared bind slots (allocated where every pattern block of the arm is
+ * dominated from), guards branching to the next arm on false, and
+ * g->locals truncated after each arm. */
+#define MATCH_BIND_MAX 32
+
 static Val cg_match(CG *g, Node *n)
 {
     Type *rty = infer_node_type(g, n);
@@ -2298,51 +2305,189 @@ static Val cg_match(CG *g, Node *n)
 
     for (int i = 0; i < n->as.matchn.armc; i++) {
         MatchArm *arm = &n->as.matchn.arms[i];
-        bool last = i == n->as.matchn.armc - 1;
-        LLVMBasicBlockRef larm = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "marm");
-        LLVMBasicBlockRef lnext = last ? NULL
-            : LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mnext");
+        bool last_arm = i == n->as.matchn.armc - 1;
+        MatchPat *p0 = &arm->pats[0];
+        if (p0->bindc > MATCH_BIND_MAX)
+            ERRV(g, "line %zu: too many match bindings (max %d)",
+                 arm->line, MATCH_BIND_MAX);
 
-        if (strcmp(arm->vname, "_") == 0 || last) {
+        /* the arm's bind slots, allocated in the block every pattern block
+         * of this arm is entered from (so they dominate the arm block's
+         * loads); one set serves all alternatives */
+        LLVMValueRef bslots[MATCH_BIND_MAX];
+        for (int kb = 0; kb < p0->bindc; kb++) {
+            Type *bt = p0->vfield_types ? p0->vfield_types[kb] : NULL;
+            LLVMTypeRef blt = bt ? ty_of(g, bt) : NULL;
+            if (!blt)
+                ERRV(g, "line %zu: match binding '%s' has no codegen type",
+                     arm->line, p0->binds[kb]);
+            bslots[kb] = LLVMBuildAlloca(g->ab, blt, p0->binds[kb]);
+        }
+
+        LLVMBasicBlockRef larm = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "marm");
+        LLVMBasicBlockRef lnext =
+            (last_arm && !arm->guard) ? NULL
+            : LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mnext");
+        LLVMBasicBlockRef lbody = arm->guard
+            ? LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mguard") : NULL;
+
+        for (int pi = 0; pi < arm->patc; pi++) {
+            MatchPat *pat = &arm->pats[pi];
+            bool last_pat = pi == arm->patc - 1;
+            bool catch_all = last_arm && last_pat;
+            LLVMBasicBlockRef lpb =
+                LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mpat");
+            LLVMBasicBlockRef lmiss = catch_all ? NULL
+                                   : last_pat ? lnext
+                                   : LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mmiss");
+            if (catch_all || strcmp(pat->vname, "_") == 0) {
+                if (!DONE(g->cur)) LLVMBuildBr(g->ab, lpb);
+            } else {
+                LLVMValueRef patk = cg_string_val(g, pat->vname,
+                                                  strlen(pat->vname));
+                LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
+                        LLVMFunctionType(g->i64, gats, 2, 0),
+                        rt_decl(g, "lume_str_eq", g->i64,
+                                (LLVMTypeRef[]){ g->i8ptr, g->i8ptr }, 2),
+                        (LLVMValueRef[]){ tag, patk }, 2, "eq");
+                LLVMValueRef eq = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
+                                                LLVMConstInt(g->i64, 0, 0), "isv");
+                if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, eq, lpb, lmiss);
+            }
+
+            g->cur = lpb; AT(g);
+            for (int kb = 0; kb < pat->bindc; kb++) {
+                Type *bt = pat->vfield_types ? pat->vfield_types[kb] : NULL;
+                const char *gfn = map_get_fn(bt);
+                if (!gfn)
+                    ERRV(g, "line %zu: match binding '%s' payload must be int, "
+                            "float, string or bool", arm->line, pat->binds[kb]);
+                /* The rt helper's own spelling rules the call:
+                 * lume_map_get_i (the bool reader) returns and takes i64,
+                 * while the slot spells i1. Read as i64, narrow after. */
+                LLVMTypeRef call_ty = ty_of(g, bt);
+                if (bt->kind == TY_BOOL) call_ty = g->i64;
+                LLVMValueRef fk = cg_string_val(g, pat->vfields[kb],
+                                                strlen(pat->vfields[kb]));
+                LLVMTypeRef pf[3] = { g->i8ptr, g->i8ptr, call_ty };
+                LLVMValueRef dflt = bt->kind == TY_FLOAT
+                                      ? LLVMConstReal(ty_of(g, bt), 0.0)
+                                    : call_ty == g->i8ptr
+                                      ? LLVMConstNull(g->i8ptr)
+                                      : LLVMConstInt(call_ty, 0, 0);
+                LLVMValueRef pv = LLVMBuildCall2(g->ab,
+                        LLVMFunctionType(call_ty, pf, 3, 0),
+                        rt_decl(g, gfn, call_ty, pf, 3),
+                        (LLVMValueRef[]){ s.v, fk, dflt }, 3, "pv");
+                if (bt->kind == TY_BOOL)
+                    pv = LLVMBuildICmp(g->ab, LLVMIntNE, pv,
+                                       LLVMConstInt(g->i64, 0, 0), "pb");
+                LLVMBuildStore(g->ab, pv, bslots[kb]);
+            }
             if (!DONE(g->cur)) LLVMBuildBr(g->ab, larm);
-        } else {
-            LLVMValueRef armk = cg_string_val(g, arm->vname, strlen(arm->vname));
-            LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
-                    LLVMFunctionType(g->i64, gats, 2, 0),
-                    rt_decl(g, "lume_str_eq", g->i64,
-                            (LLVMTypeRef[]){ g->i8ptr, g->i8ptr }, 2),
-                    (LLVMValueRef[]){ tag, armk }, 2, "eq");
-            LLVMValueRef eq = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
-                                            LLVMConstInt(g->i64, 0, 0), "isv");
-            if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, eq, larm, lnext);
+            if (lmiss) { g->cur = lmiss; AT(g); }
         }
 
         g->cur = larm; AT(g);
         int saved_n = g->locals.n;
-        for (int kb = 0; kb < arm->bindc; kb++) {
-            Type *bt = arm->vfield_types ? arm->vfield_types[kb] : NULL;
-            LLVMTypeRef blt = bt ? ty_of(g, bt) : NULL;
-            if (!blt)
-                ERRV(g, "line %zu: match binding '%s' has no codegen type",
-                     arm->line, arm->binds[kb]);
+        for (int kb = 0; kb < p0->bindc; kb++)
+            asg_push(&g->locals, p0->binds[kb],
+                     p0->vfield_types ? p0->vfield_types[kb] : NULL,
+                     bslots[kb], arm->line);
+        if (arm->guard) {
+            Val gv = cg_expr(g, arm->guard);
+            if (!gv.v) ERRV(g, "line %zu: bad match guard", arm->line);
+            if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, gv.v, lbody, lnext);
+            g->cur = lbody; AT(g);
+        }
+        Val bv = cg_expr(g, arm->body);
+        if (!bv.v) ERRV(g, "line %zu: bad match arm body", arm->line);
+        bv = coerce(g, rty, bv, arm->line);
+        LLVMBuildStore(g->ab, bv.v, res);
+        g->locals.n = saved_n; /* truncate this arm's binds */
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lj);
+        if (last_arm && arm->guard) {
+            /* a guarded last arm falling through is a forged map */
+            g->cur = lnext; AT(g);
+            LLVMBuildUnreachable(g->ab);
+        } else if (lnext) {
+            g->cur = lnext; AT(g);
+        }
+    }
+
+    g->cur = lj; AT(g);
+    return val_make(rty, LLVMBuildLoad2(g->ab, slot, res, "mv"));
+}
+
+/* `if let P [| P] = value { then } [else ...] }` — the libLLVM mirror of
+ * cg_if_let() in codegen_expr.c: one arm's worth of pattern blocks, the
+ * first hit binds and runs the then-branch, a miss runs the else-branch.
+ * Binds are block-scoped (registered around the then-branch, truncated
+ * after). No guards in this form. */
+static void cg_if_let(CG *g, Node *n)
+{
+    AT(g);
+    Val v = cg_expr(g, n->as.iflet.value);
+    if (!v.v) ERRX(g, "line %zu: bad if-let value", n->line);
+
+    LLVMValueRef dollark = cg_string_val(g, "$", 1);
+    LLVMTypeRef gats[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+    LLVMValueRef tag = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, gats, 3, 0),
+            rt_decl(g, "lume_map_get_s", g->i8ptr, gats, 3),
+            (LLVMValueRef[]){ v.v, dollark, LLVMConstNull(g->i8ptr) }, 3, "tag");
+
+    MatchPat *p0 = &n->as.iflet.pats[0];
+    if (p0->bindc > MATCH_BIND_MAX)
+        ERRX(g, "line %zu: too many if-let bindings (max %d)",
+             n->line, MATCH_BIND_MAX);
+    LLVMValueRef bslots[MATCH_BIND_MAX];
+    for (int kb = 0; kb < p0->bindc; kb++) {
+        Type *bt = p0->vfield_types ? p0->vfield_types[kb] : NULL;
+        LLVMTypeRef blt = bt ? ty_of(g, bt) : NULL;
+        if (!blt)
+            ERRX(g, "line %zu: if-let binding '%s' has no codegen type",
+                 n->line, p0->binds[kb]);
+        bslots[kb] = LLVMBuildAlloca(g->ab, blt, p0->binds[kb]);
+    }
+
+    LLVMBasicBlockRef lt = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "ilt");
+    LLVMBasicBlockRef lel = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "ielse");
+    LLVMBasicBlockRef lend = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "iend");
+
+    for (int pi = 0; pi < n->as.iflet.patc; pi++) {
+        MatchPat *pat = &n->as.iflet.pats[pi];
+        bool last_pat = pi == n->as.iflet.patc - 1;
+        LLVMBasicBlockRef lpb =
+            LLVMAppendBasicBlockInContext(g->ctx, g->fn, "ipat");
+        LLVMBasicBlockRef lmiss = last_pat ? lel
+            : LLVMAppendBasicBlockInContext(g->ctx, g->fn, "imiss");
+        if (strcmp(pat->vname, "_") == 0) {
+            if (!DONE(g->cur)) LLVMBuildBr(g->ab, lpb);
+        } else {
+            LLVMValueRef patk = cg_string_val(g, pat->vname,
+                                              strlen(pat->vname));
+            LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->i64, gats, 2, 0),
+                    rt_decl(g, "lume_str_eq", g->i64,
+                            (LLVMTypeRef[]){ g->i8ptr, g->i8ptr }, 2),
+                    (LLVMValueRef[]){ tag, patk }, 2, "eq");
+            LLVMValueRef eq = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
+                                            LLVMConstInt(g->i64, 0, 0), "isv");
+            if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, eq, lpb, lmiss);
+        }
+
+        g->cur = lpb; AT(g);
+        for (int kb = 0; kb < pat->bindc; kb++) {
+            Type *bt = pat->vfield_types ? pat->vfield_types[kb] : NULL;
             const char *gfn = map_get_fn(bt);
             if (!gfn)
-                ERRV(g, "line %zu: match binding '%s' payload must be int, "
-                        "float, string or bool", arm->line, arm->binds[kb]);
-            /* The rt helper's own spelling rules the call: lume_map_get_i
-             * (the bool reader) returns and takes i64, while the slot — and
-             * every later use of the bind — spells i1. Read as i64, narrow
-             * after; every other kind's helper spells exactly ty_of(bt).
-             * Same reasoning as cg_map_lit's bool coerce above. */
+                ERRX(g, "line %zu: if-let binding '%s' payload must be int, "
+                        "float, string or bool", n->line, pat->binds[kb]);
             LLVMTypeRef call_ty = ty_of(g, bt);
             if (bt->kind == TY_BOOL) call_ty = g->i64;
-            /* The alloca lives in the arm block (it dominates its own loads),
-             * so it is registered here with the value itself as its slot —
-             * this backend's asg_push carries the LLVMValueRef directly. */
-            LLVMValueRef bslot = LLVMBuildAlloca(g->ab, ty_of(g, bt),
-                                                 arm->binds[kb]);
-            LLVMValueRef fk = cg_string_val(g, arm->vfields[kb],
-                                            strlen(arm->vfields[kb]));
+            LLVMValueRef fk = cg_string_val(g, pat->vfields[kb],
+                                            strlen(pat->vfields[kb]));
             LLVMTypeRef pf[3] = { g->i8ptr, g->i8ptr, call_ty };
             LLVMValueRef dflt = bt->kind == TY_FLOAT
                                   ? LLVMConstReal(ty_of(g, bt), 0.0)
@@ -2352,27 +2497,31 @@ static Val cg_match(CG *g, Node *n)
             LLVMValueRef pv = LLVMBuildCall2(g->ab,
                     LLVMFunctionType(call_ty, pf, 3, 0),
                     rt_decl(g, gfn, call_ty, pf, 3),
-                    (LLVMValueRef[]){ s.v, fk, dflt }, 3, "pv");
-            /* lume_map_get_i reads bools back as i64; the slot (and every
-             * later use of the bind) spells i1, so narrow here. */
+                    (LLVMValueRef[]){ v.v, fk, dflt }, 3, "pv");
             if (bt->kind == TY_BOOL)
                 pv = LLVMBuildICmp(g->ab, LLVMIntNE, pv,
                                    LLVMConstInt(g->i64, 0, 0), "pb");
-            LLVMBuildStore(g->ab, pv, bslot);
-            asg_push(&g->locals, arm->binds[kb], bt, bslot, arm->line);
+            LLVMBuildStore(g->ab, pv, bslots[kb]);
         }
-
-        Val bv = cg_expr(g, arm->body);
-        if (!bv.v) ERRV(g, "line %zu: bad match arm body", arm->line);
-        bv = coerce(g, rty, bv, arm->line);
-        LLVMBuildStore(g->ab, bv.v, res);
-        g->locals.n = saved_n; /* truncate this arm's binds */
-        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lj);
-        if (lnext) { g->cur = lnext; AT(g); }
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lt);
+        if (lmiss != lel) { g->cur = lmiss; AT(g); }
     }
 
-    g->cur = lj; AT(g);
-    return val_make(rty, LLVMBuildLoad2(g->ab, slot, res, "mv"));
+    g->cur = lt; AT(g);
+    int saved_n = g->locals.n;
+    for (int kb = 0; kb < p0->bindc; kb++)
+        asg_push(&g->locals, p0->binds[kb],
+                 p0->vfield_types ? p0->vfield_types[kb] : NULL,
+                 bslots[kb], n->line);
+    cg_stmt(g, n->as.iflet.then);
+    g->locals.n = saved_n;
+    if (!DONE(g->cur)) LLVMBuildBr(g->ab, lend);
+
+    g->cur = lel; AT(g);
+    if (n->as.iflet.els) cg_stmt(g, n->as.iflet.els);
+    if (!DONE(g->cur)) LLVMBuildBr(g->ab, lend);
+
+    g->cur = lend; AT(g);
 }
 
 /* -------------------------------------------------------------- scanning ---- */
@@ -2565,9 +2714,12 @@ static Type *infer_node_type(CG *g, Node *n)
         for (int i = 0; i < n->as.matchn.armc; i++) {
             MatchArm *arm = &n->as.matchn.arms[i];
             g->arm_scope.n = saved;
-            for (int b = 0; b < arm->bindc; b++)
-                arm_scope_push(g, arm->binds[b],
-                               arm->vfield_types ? arm->vfield_types[b] : NULL);
+            /* the arm's single binding set: the checker guarantees every
+             * alternative binds the same names with the same types */
+            MatchPat *p0 = &arm->pats[0];
+            for (int b = 0; b < p0->bindc; b++)
+                arm_scope_push(g, p0->binds[b],
+                               p0->vfield_types ? p0->vfield_types[b] : NULL);
             Type *bt = infer_node_type(g, arm->body);
             /* Same rule as codegen_scan.c: an arm with no statically
              * readable type is skipped (its real type exists at emit time);
@@ -2728,6 +2880,9 @@ static void scan_stmt(CG *g, Node *n)
      * ("bad operands" on a read, "unknown variable" on an assignment). */
     case N_BLOCK:  scan_block(g, n); break;
     case N_IF:     scan_stmt(g, n->as.ifs.then); scan_stmt(g, n->as.ifs.els); break;
+    /* if-let binds are registered at emit time (like match arms); the
+     * branches still need walking for their lets/assignments. */
+    case N_IF_LET: scan_stmt(g, n->as.iflet.then); scan_stmt(g, n->as.iflet.els); break;
     case N_WHILE:  scan_stmt(g, n->as.whiles.body); break;
     default: break;
     }
@@ -3066,6 +3221,7 @@ static void cg_stmt(CG *g, Node *n)
     }
 
     case N_IF:      cg_if(g, n); break;
+    case N_IF_LET:  cg_if_let(g, n); break;
     case N_WHILE:   cg_while(g, n); break;
     case N_FOR:     cg_for(g, n); break;
 
@@ -3307,6 +3463,11 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
         collect_lambdas(n->as.ifs.cond, out, cnt, cap);
         collect_lambdas(n->as.ifs.then, out, cnt, cap);
         collect_lambdas(n->as.ifs.els,  out, cnt, cap);
+        return;
+    case N_IF_LET:
+        collect_lambdas(n->as.iflet.value, out, cnt, cap);
+        collect_lambdas(n->as.iflet.then, out, cnt, cap);
+        collect_lambdas(n->as.iflet.els,  out, cnt, cap);
         return;
     case N_WHILE:
         collect_lambdas(n->as.whiles.cond, out, cnt, cap);

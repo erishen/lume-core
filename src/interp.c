@@ -130,6 +130,7 @@ void call_function(VM *vm, Value callee, int argc) {
     Value envv = make_env(vm, f->as.fn.closure);
     vm_push(vm, envv); /* root the fresh frame until activated */
     Env *frame = (Env *)AS_OBJ(envv);
+    frame->is_boundary = true; /* assignment resolves no further out */
 
     for (int i = 0; i < argc; i++)
         env_set(vm, frame, f->as.fn.params[i], vm->stack[slot + 1 + i]);
@@ -213,6 +214,25 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
             eval_expr(vm, n->as.assign.value, env);
             if (vm->error) return;
             Value v = vm_peek(vm, 0); /* keep rooted on the stack */
+            /* `=` reuses the nearest visible binding inside the current
+             * function/module frame — the typechecker models it that way
+             * ("外层已有同名时复用") and the native backends store straight
+             * into that variable's slot. The walk stops at the first
+             * boundary env (function frame / module), which is what keeps
+             * "assigning a top-level name inside a function defines a
+             * local" intact. Without the walk, an assignment inside a
+             * match arm or if-let body (both run in a child env) would
+             * silently shadow the outer variable instead of updating it,
+             * diverging from the other two backends. */
+            for (Env *e = env; e; e = e->parent) {
+                for (int i = 0; i < e->vars.count; i++) {
+                    if (strcmp(e->vars.keys[i], n->as.assign.name) == 0) {
+                        env_set(vm, e, n->as.assign.name, v);
+                        return; /* result: assigned value, already on stack */
+                    }
+                }
+                if (e->is_boundary) break;
+            }
             env_set(vm, env, n->as.assign.name, v);
             return; /* result: assigned value, already on stack */
         }
@@ -304,11 +324,15 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
             return; /* map stays on stack */
         }
         case N_MATCH: {
-            /* 标签分发：读 "$"，逐臂比对（或通配），臂内绑定进子作用域。
-             * typecheck 已保证穷尽；未命中的运行时形状（伪造 map）报错。 */
+            /* 标签分发：读 "$"，逐臂逐模式比对（或通配），臂内绑定进子作用域。
+             * typecheck 已保证穷尽；未命中的运行时形状（伪造 map）报错。
+             * GC 纪律：scrutinee pop 后重新压根——make_env/env_set 可能触发
+             * 回收，而 sv 在臂环境建好前不被任何根引用（ctor 直传值时它只在
+             * 栈上）。根在求值臂体前一刻才弹，臂体结果于是干净地留在栈顶。 */
             eval_expr(vm, n->as.matchn.scrutinee, env);
             if (vm->error) return;
             Value sv = vm_pop(vm);
+            vm_push(vm, sv); /* re-root the scrutinee across the arm setup */
             if (!IS_OBJ(sv) || AS_OBJ(sv)->type != OBJ_MAP) {
                 vm_set_error(vm, "line %zu: match needs an enum value",
                              n->line);
@@ -326,29 +350,47 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
             const char *tag = obj_string(AS_OBJ(tagv));
             for (int i = 0; i < n->as.matchn.armc; i++) {
                 MatchArm *arm = &n->as.matchn.arms[i];
-                bool hit = strcmp(arm->vname, "_") == 0 ||
-                           strcmp(arm->vname, tag) == 0;
-                if (!hit) continue;
-                Value envv = make_env(vm, env);
-                vm_push(vm, envv); /* root the fresh frame until activated */
-                Env *arm_env = (Env *)AS_OBJ(envv);
-                for (int k = 0; k < arm->bindc; k++) {
-                    int f2 = 0;
-                    Value pv = map_get(vm, AS_OBJ(sv), arm->vfields[k], &f2);
-                    env_set(vm, arm_env, arm->binds[k],
-                            f2 ? pv : val_null());
+                for (int pi = 0; pi < arm->patc; pi++) {
+                    MatchPat *pat = &arm->pats[pi];
+                    bool hit = strcmp(pat->vname, "_") == 0 ||
+                               strcmp(pat->vname, tag) == 0;
+                    if (!hit) continue;
+                    Value envv = make_env(vm, env);
+                    vm_push(vm, envv); /* root the fresh frame until activated */
+                    Env *arm_env = (Env *)AS_OBJ(envv);
+                    for (int k = 0; k < pat->bindc; k++) {
+                        int f2 = 0;
+                        Value pv = map_get(vm, AS_OBJ(sv), pat->vfields[k], &f2);
+                        env_set(vm, arm_env, pat->binds[k],
+                                f2 ? pv : val_null());
+                    }
+                    /* Same dynamic-root dance as a call frame: hand the arm env
+                     * to vm->active_envs (the GC marks that chain), drop the
+                     * explicit stack root, and only then evaluate — the value
+                     * the body pushes must be the thing this eval leaves on
+                     * top of the stack. */
+                    arm_env->next_active = vm->active_envs;
+                    vm->active_envs = arm_env;
+                    vm_pop(vm); /* drop the env root; active_envs holds it */
+                    if (arm->guard) {
+                        /* The guard runs in the arm env — it may read the
+                         * binds. False falls through to the next pattern. */
+                        eval_expr(vm, arm->guard, arm_env);
+                        if (vm->error) {
+                            vm->active_envs = arm_env->next_active;
+                            return;
+                        }
+                        bool ok = value_truthy(vm_pop(vm));
+                        if (!ok) {
+                            vm->active_envs = arm_env->next_active;
+                            break; /* next pattern of this arm */
+                        }
+                    }
+                    vm_pop(vm); /* drop the scrutinee root; body is next */
+                    eval_expr(vm, arm->body, arm_env);
+                    vm->active_envs = arm_env->next_active;
+                    return;
                 }
-                /* Same dynamic-root dance as a call frame: hand the arm env
-                 * to vm->active_envs (the GC marks that chain), drop the
-                 * explicit stack root, and only then evaluate the body — the
-                 * value the body pushes must be the thing this eval leaves
-                 * on top of the stack. */
-                arm_env->next_active = vm->active_envs;
-                vm->active_envs = arm_env;
-                vm_pop(vm); /* drop the explicit root; active_envs holds it */
-                eval_expr(vm, arm->body, arm_env);
-                vm->active_envs = arm_env->next_active;
-                return;
             }
             vm_set_error(vm, "line %zu: no match arm for variant '%s'",
                          n->line, tag);
@@ -733,6 +775,46 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
             if (vm->error) return;
             if (value_truthy(vm_pop(vm))) exec_statement(vm, n->as.ifs.then, env);
             else if (n->as.ifs.els) exec_statement(vm, n->as.ifs.els, env);
+            return;
+        }
+        case N_IF_LET: {
+            /* `if let P [| P] = value { then } [else ...]` — a match with one
+             * arm and no exhaustiveness requirement. Binds live in a child
+             * env around the then-branch only (same scoping as a match arm);
+             * the value stays rooted on the stack while the env is built. */
+            eval_expr(vm, n->as.iflet.value, env);
+            if (vm->error) return;
+            Value vv = vm_pop(vm);
+            vm_push(vm, vv);
+            for (int pi = 0; pi < n->as.iflet.patc; pi++) {
+                MatchPat *pat = &n->as.iflet.pats[pi];
+                const char *tag = NULL;
+                if (IS_OBJ(vv) && AS_OBJ(vv)->type == OBJ_MAP) {
+                    int found = 0;
+                    Value tagv = map_get(vm, AS_OBJ(vv), "$", &found);
+                    if (found && IS_OBJ(tagv) &&
+                        AS_OBJ(tagv)->type == OBJ_STRING)
+                        tag = obj_string(AS_OBJ(tagv));
+                }
+                bool hit = tag && (strcmp(pat->vname, "_") == 0 ||
+                                   strcmp(pat->vname, tag) == 0);
+                if (!hit) continue;
+                Value envv = make_env(vm, env);
+                Env *benv = (Env *)AS_OBJ(envv);
+                for (int k = 0; k < pat->bindc; k++) {
+                    int f2 = 0;
+                    Value pv = map_get(vm, AS_OBJ(vv), pat->vfields[k], &f2);
+                    env_set(vm, benv, pat->binds[k], f2 ? pv : val_null());
+                }
+                benv->next_active = vm->active_envs;
+                vm->active_envs = benv;
+                vm_pop(vm); /* drop the value root; the binds hold their own */
+                exec_statement(vm, n->as.iflet.then, benv);
+                vm->active_envs = benv->next_active;
+                return;
+            }
+            vm_pop(vm); /* no pattern matched: drop the value root */
+            if (n->as.iflet.els) exec_statement(vm, n->as.iflet.els, env);
             return;
         }
         case N_WHILE: {

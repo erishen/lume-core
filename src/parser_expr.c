@@ -157,10 +157,10 @@ static Node *parse_primary(Parser *p) {
         return parse_func_literal(p, line);
     }
     if (t.type == TOK_MATCH) {
-        /* match (scrutinee) { Variant(b, ...) => expr, _ => expr, ... }
+        /* match (scrutinee) { Pattern [| Pattern] [if guard] => expr, ... }
          * An expression, not a statement — it carries a value like the
          * ternary does. Arms are comma-separated; the trailing comma is
-         * allowed. `_` is the catch-all variant name (binds forbidden). */
+         * allowed. `_` is the catch-all pattern (binds forbidden). */
         advance(p);
         if (!expect(p, TOK_LPAREN)) return NULL;
         Node *scrutinee = parse_expression(p);
@@ -176,38 +176,30 @@ static Node *parse_primary(Parser *p) {
             return NULL;
         }
         while (!check(p, TOK_RBRACE) && !at_end(p)) {
-            Token pt = peek(p);
-            if (pt.type != TOK_IDENT) {
-                perror_at(p, pt.line,
-                          "expected variant name in match arm", NULL);
-                return NULL;
+            size_t pline = peek(p).line;
+            MatchPat *pats = NULL;
+            int patc = 0;
+            if (!parse_patterns(p, &pats, &patc)) return NULL;
+            /* Optional guard: `if cond` after the pattern list, before `=>`.
+             * The expression parser stops at `=>` (not a binary operator),
+             * so no lookahead games are needed. */
+            Node *guard = NULL;
+            if (match(p, TOK_IF)) {
+                guard = parse_expression(p);
+                if (!guard) return NULL;
             }
-            advance(p);
+            if (!expect(p, TOK_ARROW)) return NULL;
+            Node *body = parse_expression(p);
+            if (!body) return NULL;
             n->as.matchn.arms = realloc(n->as.matchn.arms,
                     sizeof(MatchArm) * ((size_t)n->as.matchn.armc + 1));
             MatchArm *arm = &n->as.matchn.arms[n->as.matchn.armc];
             memset(arm, 0, sizeof *arm);
-            arm->vname = ident_name(p, pt);
-            arm->line = pt.line;
-            if (match(p, TOK_LPAREN)) {
-                /* positional binds — plain identifiers separated by commas */
-                do {
-                    Token bt = peek(p);
-                    if (bt.type != TOK_IDENT) {
-                        perror_at(p, bt.line,
-                                  "expected a binding name in match arm", NULL);
-                        return NULL;
-                    }
-                    advance(p);
-                    arm->binds = realloc(arm->binds,
-                            sizeof(char *) * ((size_t)arm->bindc + 1));
-                    arm->binds[arm->bindc++] = ident_name(p, bt);
-                } while (match(p, TOK_COMMA));
-                if (!expect(p, TOK_RPAREN)) return NULL;
-            }
-            if (!expect(p, TOK_ARROW)) return NULL;
-            arm->body = parse_expression(p);
-            if (!arm->body) return NULL;
+            arm->pats = pats;
+            arm->patc = patc;
+            arm->guard = guard;
+            arm->body = body;
+            arm->line = pline;
             n->as.matchn.armc++;
             if (!match(p, TOK_COMMA)) break;
             if (check(p, TOK_RBRACE)) break; /* trailing comma */

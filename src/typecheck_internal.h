@@ -93,6 +93,11 @@ StructDef *find_struct(Checker *c, const char *name);
 void add_struct(Checker *c, const char *name, Type *t);
 EnumDef *find_enum(Checker *c, const char *name);
 void add_enum(Checker *c, EnumDef *d);
+
+/* Pattern-list validation shared by match arms and if-let (typecheck.c). */
+int  ck_pat_list(Checker *c, MatchPat *pats, int patc, EnumDef *ed,
+                 size_t line);
+void ck_put_pat_binds(Checker *c, MatchPat *pats, int bindc, size_t line);
 /* Resolve a constructor name to its enum def + variant index. */
 EnumDef *find_ctor(Checker *c, const char *name, int *vidx);
 /* Reject a let/param/func whose name would shadow a constructor. */

@@ -1,0 +1,8 @@
+// or 模式同名绑定的类型必须可统一（int 与 string 不可）
+enum E2 { A(x: int) | B(x: string) }
+func f(e: E2): string {
+  return match (e) {
+    A(x) | B(x) => str(x),
+    _           => "?"
+  };
+}

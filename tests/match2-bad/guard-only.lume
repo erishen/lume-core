@@ -1,0 +1,8 @@
+// 带守卫的臂不计入穷尽性：Red2 只有 guarded 臂 => 缺臂
+enum Color2 { Red2 | Green2 }
+func f(c: Color2, n: int): int {
+  return match (c) {
+    Red2 if n > 0 => 1,
+    Green2        => 2
+  };
+}

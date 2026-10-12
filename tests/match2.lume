@@ -1,0 +1,163 @@
+// tests/match2.lume — match 深化：or 模式 / 守卫 / if-let（借鉴 Lean match 日常面）
+// 运行: make match2-test (并入 make test)
+//
+// 语义钉子（本轮落地）：
+//   or 模式   `A | B => body` — 多变体共臂；覆盖 = 各 alternative 变体集**合并**；
+//              带载荷时各 alternative 必须绑**同名的名字**（类型按名统一，
+//              int/float 可加宽），否则编译期拒绝。
+//   守卫     `A(x) if cond => body` — cond 假则落下一臂；**带守卫的臂不计入
+//              穷尽性**（Lean 同规），只有它自己时报缺臂；重复臂判定同样只看
+//              无条件臂（`A if g` 后跟 `A` 合法）。
+//   if-let   `if let A(x) = e { } else { }` — 语句；绑定只在 then 块可见；
+//              支持 or 模式；**不支持**守卫；非 enum scrutinee 拒绝。
+// 只走解释器; 三后端一致的值语义由 native-consistency.lume 覆盖,
+// 编译期拒绝（穷尽性/守卫/if-let 作用域等）由 tests/match2-bad/*.lume 断言。
+
+enum Color { Red | Green | Blue }
+enum Shape { Circle(r: float) | Rect(w: float, h: float) }
+enum Tag { None | Name(s: string) | Id(n: int) | Flag(on: bool) }
+enum Ball2 { Ring(r: float) | Ball(r: float) | Dot }
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+// ---- or 模式：无载荷多变体共臂（单臂即穷尽） ----
+func chromatic(c: Color): string {
+  return match (c) {
+    Red | Green | Blue => "chromatic"
+  };
+}
+
+// ---- or 模式 + 通配 ----
+func warm(c: Color): string {
+  return match (c) {
+    Red | Green => "warm",
+    _           => "cool"
+  };
+}
+
+// ---- or 模式带同名字载荷（Ring/Ball 同 arity 同名同型） ----
+func ball_area(b: Ball2): float {
+  return match (b) {
+    Ring(r) | Ball(r) => 3.14 * r * r,
+    Dot              => 0.0
+  };
+}
+
+// ---- 守卫：条件假落下一臂；守卫见臂内绑定 ----
+func is_big(s: Shape): bool {
+  return match (s) {
+    Circle(r) if r > 10.0 => true,
+    _                     => false
+  };
+}
+
+// ---- 守卫假时由后续**具体臂**接住（不是通配） ----
+// 重复臂判定只看无条件臂：带守卫的 Circle 与后面的 Circle 不冲突。
+func size_word(s: Shape): string {
+  return match (s) {
+    Circle(r) if r > 10.0 => "big",
+    Circle(r)             => "small",
+    Rect(w, h)            => "rect"
+  };
+}
+
+// ---- 守卫 + or 模式 ----
+func warm_plus(c: Color, n: int): string {
+  return match (c) {
+    Red | Green if n > 0 => "warm+",
+    _                   => "other"
+  };
+}
+
+// ---- if-let：无 else ----
+func area_or_zero(s: Shape): float {
+  if let Circle(r) = s { return 3.14 * r * r; }
+  return 0.0;
+}
+
+// ---- if-let：有 else ----
+func label(s: Shape): string {
+  if let Circle(r) = s { return "c:" + str(r); }
+  else { return "rect"; }
+}
+
+// ---- if-let or 模式 ----
+func is_warm(c: Color): bool {
+  if let Red | Green = c { return true; }
+  return false;
+}
+
+// ---- if-let else-if 链 ----
+func tkind(t: Tag): string {
+  if let Name(s) = t { return "n:" + s; }
+  else if let Id(n) = t { return "i:" + str(n); }
+  else { return "other"; }
+}
+
+// ---- if-let 绑定块作用域：连续两个 if-let 绑同名 ----
+func reuse(s: Shape): float {
+  let t = 0.0;
+  if let Circle(r) = s { t = r; }
+  if let Circle(r) = s { t = t + r; }
+  return t;
+}
+
+func scoped(s: Shape): string {
+  let out = "none";
+  if let Circle(r) = s { out = "circle"; }
+  if let Rect(w, h) = s { out = "rect"; }
+  return out;
+}
+
+// ---- if-let 嵌循环 + any scrutinee（for-in 元素未标注） ----
+func sum_circles(xs): float {
+  let total = 0.0;
+  for (let x in xs) {
+    if let Circle(r) = x { total = total + r; }
+  }
+  return total;
+}
+
+// ---- if-let 嵌套在 else 块里 ----
+func nested(t: Tag): string {
+  if let None = t { return "none"; }
+  else {
+    if let Name(s) = t { return "name"; }
+    return "other";
+  }
+}
+
+func main(): int {
+  // --- or 模式 ---
+  check("or all", chromatic(Red) == "chromatic" && chromatic(Blue) == "chromatic");
+  check("or wildcard", warm(Red) == "warm" && warm(Green) == "warm" && warm(Blue) == "cool");
+  check("or binds", ball_area(Ring(2.0)) > 12.55 && ball_area(Ring(2.0)) < 12.57);
+  check("or binds 2", ball_area(Ball(1.0)) > 3.13 && ball_area(Ball(1.0)) < 3.15);
+  check("or binds dot", ball_area(Dot) == 0.0);
+
+  // --- 守卫 ---
+  check("guard hit", is_big(Circle(11.0)));
+  check("guard miss", !is_big(Circle(9.0)));
+  check("guard rect", !is_big(Rect(99.0, 99.0)));
+  check("guard fallthrough", size_word(Circle(11.0)) == "big");
+  check("guard fallthrough 2", size_word(Circle(9.0)) == "small");
+  check("guard fallthrough 3", size_word(Rect(1.0, 2.0)) == "rect");
+  check("guard or", warm_plus(Red, 1) == "warm+" && warm_plus(Red, 0) == "other" && warm_plus(Blue, 1) == "other");
+
+  // --- if-let ---
+  check("iflet no else", area_or_zero(Circle(2.0)) > 12.55 && area_or_zero(Rect(3.0, 4.0)) == 0.0);
+  check("iflet else", label(Circle(1.5)) == "c:1.5" && label(Rect(1.0, 1.0)) == "rect");
+  check("iflet or", is_warm(Red) && is_warm(Green) && !is_warm(Blue));
+  check("iflet chain", tkind(Name("ab")) == "n:ab" && tkind(Id(5)) == "i:5" && tkind(None) == "other");
+  check("iflet reuse", reuse(Circle(2.0)) == 4.0);
+  check("iflet scope", scoped(Circle(1.0)) == "circle" && scoped(Rect(1.0, 1.0)) == "rect");
+  let xs = [Circle(2.0), Rect(3.0, 4.0), Circle(0.5)];
+  check("iflet in loop", sum_circles(xs) == 2.5);
+  check("iflet nested", nested(None) == "none" && nested(Name("x")) == "name" && nested(Id(1)) == "other");
+
+  return 0;
+}
+main();
