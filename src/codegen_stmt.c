@@ -124,6 +124,10 @@ const char *list_at_fn(Type *ty)
     case TY_STRING: return "lume_list_at_s";
     case TY_INT:
     case TY_BOOL:   return "lume_list_at_i";
+    /* An enum value is the same opaque i8* a nested container is: at_obj
+     * hands it back untouched, and the loop variable keeps its enum type
+     * so print/match dispatch on it stay correct. */
+    case TY_ENUM:   return "lume_list_at_obj";
     default:        return NULL;
     }
 }
@@ -138,6 +142,10 @@ Type *elem_rty(Type *ty)
     switch (ty->kind) {
     case TY_FLOAT:  return type_prim(TY_FLOAT);
     case TY_STRING: return type_prim(TY_STRING);
+    /* lume_list_at_obj returns i8* and an enum value IS an i8*; handing the
+     * slot the enum's own type keeps llvm_type_of at i8* while the variable
+     * stays enum-typed for print/match. */
+    case TY_ENUM:   return type_enum(ty->name);
     default:        return type_prim(TY_INT);
     }
 }

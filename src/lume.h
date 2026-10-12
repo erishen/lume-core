@@ -60,6 +60,7 @@ typedef enum {
     TOK_TYPE, TOK_INT, TOK_FLOAT, TOK_KW_STRING, TOK_BOOL, TOK_RESULT,
     TOK_GET, TOK_HEAD, TOK_POST, TOK_PUT, TOK_PATCH, TOK_DELETE, TOK_OPTIONS,
     TOK_VERBS,
+    TOK_ENUM, TOK_MATCH, TOK_PIPE,
 
     TOK_LPAREN, TOK_RPAREN, TOK_LBRACE, TOK_RBRACE,
     TOK_LBRACKET, TOK_RBRACKET,
@@ -96,6 +97,11 @@ typedef enum {
     TY_ANY,    /* untyped: route handlers, builtins, unchecked params */
     TY_LIST,   /* elem is the element type */
     TY_STRUCT, /* name != NULL for declared structs; anonymous otherwise */
+    TY_ENUM,   /* declared `enum X { ... }`: name is the enum name. A value
+                * travels as the same heap map the interpreter builds
+                * (`{ "$": variant, ...payload }`), so it is an opaque i8*
+                * natively — the variant list lives in the checker's enum
+                * table and each emitter's EDef table, keyed by name. */
     TY_FUNC,   /* a named/top-level function value */
     TY_RESULT, /* `{ ok: ... }` or `{ err: ... }` */
     TY_NS      /* module namespace: `import "lib.lume" as ns` — name is the
@@ -125,6 +131,7 @@ Type *type_prim(TypeKind kind);
 Type *type_list(Type *elem);
 Type *type_struct(const char *name);   /* named reference, resolved by checker */
 Type *type_anon_struct(void);
+Type *type_enum(const char *name);     /* enum reference, resolved by checker */
 Type *type_func(int arity, Type **params, Type *ret);
 Type *type_result(void);
 void type_add_member(Type *t, const char *name, Type *ty);
@@ -472,11 +479,12 @@ void loader_free(VM *vm);
 typedef enum {
     N_PROGRAM, N_BLOCK, N_LET, N_IF, N_WHILE, N_FOR, N_BREAK, N_CONTINUE,
     N_RETURN, N_EXPR_STMT,
-    N_SERVER, N_ROUTE, N_TOOL, N_VERBS, N_FUNC_DECL, N_TYPE_DECL,
+    N_SERVER, N_ROUTE, N_TOOL, N_VERBS, N_FUNC_DECL, N_TYPE_DECL, N_ENUM_DECL,
     N_VAR, N_ASSIGN, N_ASSIGN_MEMBER,
     N_LITERAL, N_MAP_LIT, N_LIST_LIT, N_FUNC_LIT,
     N_CALL, N_MEMBER, N_INDEX,
     N_UNARY, N_BINARY, N_TERNARY,
+    N_MATCH, N_CTOR,
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
 
@@ -489,6 +497,22 @@ typedef enum {
     OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
     OP_AND, OP_OR, OP_NEG, OP_NOT
 } Op;
+
+/* One `Variant(b1, b2) => body` arm of a match. `vname` is the variant name,
+ * or "_" for the catch-all arm (binds must be empty there). The binds are the
+ * arm-local names the variant's payload fields bind to, positional.
+ * vfields/vfieldc are stamped by parser.c's resolve_ctors: the variant's own
+ * field names, borrowed from the enum decl (not owned — freed with it). */
+typedef struct MatchArm {
+    char *vname;
+    char **binds;
+    int bindc;
+    struct Node *body;
+    size_t line;
+    char **vfields;   /* resolve_ctors stamp; borrowed from the enum decl */
+    int vfieldc;
+    Type **vfield_types;  /* same stamp, payload types (scalars only) */
+} MatchArm;
 
 typedef struct Node {
     NodeType type;
@@ -521,6 +545,25 @@ typedef struct Node {
                  int arity; struct Node *body; } func;
         struct { char *name; char **field_names; Type **field_types;
                  int count; } type_decl;
+        /* `enum Name { V | V(f: t) | ... }` — variants in source order.
+         * vnames[i] is the variant name; vfields[i]/vfield_types[i] are its
+         * payload field names/types (NULL when the variant carries nothing)
+         * and vfield_counts[i] its arity. */
+        struct { char *name; char **vnames; char ***vfields;
+                 Type ***vfield_types; int *vfield_counts; int vcount;
+                 } enum_decl;
+        /* A constructor application `V(args...)` / bare `V` — created by
+         * parser.c's post-parse rewrite from N_CALL/N_VAR once the file's
+         * enum table is known. `name` is the *variant* name; the ctor's arity
+         * and payload types come from the enum decl. `fields`/`fieldc` and
+         * `ename` are resolve_ctors stamps: the payload field names (borrowed
+         * from the enum decl) and the enum's own name, so the interpreter and
+         * both emitters build values with no enum table of their own. */
+        struct { char *name; struct Node **args; int argc;
+                 char **fields; int fieldc; char *ename; } ctor;
+        /* `match (scrutinee) { arm, arm, ... }` — an expression. */
+        struct { struct Node *scrutinee; struct MatchArm *arms; int armc;
+                 } matchn;
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
         struct { struct Node *obj; char *name; struct Node *value; } assign_mem;

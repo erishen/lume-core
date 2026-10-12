@@ -1,0 +1,105 @@
+// tests/enum.lume — enum 声明 + match 表达式（借鉴 Lean inductive 的日常面）
+// 运行: make enum-test (并入 make test)
+//
+// 覆盖: 裸无载荷变体 / 带载荷构造 / match 表达式（return/let/参数位）、
+// 臂内绑定、通配 `_`、match 结果参与算术、enum 标注的参数与返回、
+// 构造名即全局构造器（同文件处处可用）。
+// 只走解释器; 三后端一致的值语义由 native-consistency.lume 覆盖,
+// 编译期拒绝（穷尽性等）由 tests/enum-bad/*.lume + Makefile 断言。
+
+enum Color { Red | Green | Blue }
+enum Shape { Circle(r: float) | Rect(w: float, h: float) }
+enum Tag { None | Name(s: string) | Id(n: int) | Flag(on: bool) }
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+// enum 标注的参数 + match 作 return 表达式（穷尽, 无通配）
+func area(s: Shape): float {
+  return match (s) {
+    Circle(r) => 3.14 * r * r,
+    Rect(w, h) => w * h
+  };
+}
+
+// match 作 let 初值; 臂内绑定只在自己的臂里可见
+func describe(c: Color): string {
+  let word = match (c) {
+    Red   => "stop",
+    Green => "go",
+    Blue  => "cool"
+  };
+  return word;
+}
+
+// 通配 `_` 吸收其余变体
+func loudness(t: Tag): string {
+  return match (t) {
+    Name(s) => "name:" + s,
+    _       => "other"
+  };
+}
+
+// enum 作返回值: 构造器在函数体内可用
+func make_shape(which: int): Shape {
+  if (which == 0) { return Circle(2.0); }
+  return Rect(3.0, 4.0);
+}
+
+// 载荷为各标量类型
+func tag_value(t: Tag): string {
+  return match (t) {
+    None     => "none",
+    Name(s)  => s,
+    Id(n)    => str(n),
+    Flag(on) => on ? "on" : "off"
+  };
+}
+
+func main(): int {
+  // --- 裸无载荷变体 ---
+  let c1 = Red;
+  check("bare ctor", describe(c1) == "stop");
+  check("bare ctor arg", describe(Green) == "go");
+  check("third variant", describe(Blue) == "cool");
+
+  // --- 带载荷构造 + match 分发 ---
+  check("circle area", area(Circle(1.0)) > 3.13 && area(Circle(1.0)) < 3.15);
+  check("rect area", area(Rect(3.0, 4.0)) == 12.0);
+
+  // --- match 结果参与算术（右结合/优先级不回归） ---
+  check("match arithmetic", area(Rect(2.0, 5.0)) + 1.0 == 11.0);
+
+  // --- 通配臂 ---
+  check("wildcard binds", loudness(Name("bob")) == "name:bob");
+  check("wildcard other", loudness(Id(7)) == "other");
+
+  // --- enum 作返回值再喂给 match ---
+  check("ctor from func", area(make_shape(0)) == 12.56);
+  check("ctor from func 2", area(make_shape(1)) == 12.0);
+
+  // --- 各标量载荷 ---
+  check("none payload", tag_value(None) == "none");
+  check("string payload", tag_value(Name("zig")) == "zig");
+  check("int payload", tag_value(Id(42)) == "42");
+  check("bool payload true", tag_value(Flag(true)) == "on");
+  check("bool payload false", tag_value(Flag(false)) == "off");
+
+  // --- 变体进列表（值即 map, 容器可装） ---
+  let xs = [Red, Green];
+  check("enum in list", describe(xs[0]) == "stop" && describe(xs[1]) == "go");
+
+  // --- 同一构造名处处可用（无 import 边界） ---
+  let s2 = Circle(0.5);
+  check("ctor in let", area(s2) == 0.785);
+
+  // --- match 嵌在三元条件里 / 三元嵌在臂里 ---
+  let v = area(Rect(1.0, 1.0)) > 0.5 ? "big" : "small";
+  check("ternary over match", v == "big");
+  check("ternary in arm", tag_value(Flag(1 == 1)) == "on");
+
+  return 0;
+}
+main();

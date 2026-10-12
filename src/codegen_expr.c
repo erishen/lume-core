@@ -64,6 +64,12 @@ static Val cg_builtin(CG *g, Node *n);
 static Val cg_call(CG *g, Node *n);
 
 /* forward: same tu, defined below this point. */
+static Val cg_ctor(CG *g, Node *n);
+
+/* forward: same tu, defined below this point. */
+static Val cg_match(CG *g, Node *n);
+
+/* forward: same tu, defined below this point. */
 static Val cg_list_lit(CG *g, Node *n);
 
 /* forward: same tu, defined below this point. */
@@ -296,12 +302,14 @@ static const char *node_type_name(NodeType t)
     case N_SERVER:  return "server";            case N_ROUTE:  return "route";
     case N_TOOL:    return "tool";              case N_VERBS:  return "verbs";
     case N_FUNC_DECL: return "func";            case N_TYPE_DECL: return "type";
+    case N_ENUM_DECL: return "enum";
     case N_VAR:     return "variable";          case N_ASSIGN: return "assign";
     case N_ASSIGN_MEMBER: return "member assign";              case N_LITERAL: return "literal";
     case N_MAP_LIT: return "struct literal";    case N_LIST_LIT: return "list literal";
     case N_FUNC_LIT: return "closure";          case N_CALL:   return "call";
     case N_MEMBER:  return "field access";      case N_UNARY:  return "unary";
     case N_BINARY:  return "binary";            case N_TERNARY: return "ternary";
+    case N_MATCH:   return "match";             case N_CTOR:   return "constructor";
     case N_INDEX:   return "index";             case N_IMPORT: return "import";
     }
     return "node";
@@ -655,7 +663,27 @@ static Val cg_binary(CG *g, Node *n)
         const char *icmp[] = {"eq", "ne", "slt", "sle", "sgt", "sge"};
         const char *fcmp[] = {"oeq", "one", "olt", "ole", "ogt", "oge"};
         char *r;
-        if (a.ty && a.ty->kind == TY_FLOAT)
+        if (a.ty && a.ty->kind == TY_STRING &&
+            (n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE)) {
+            /* String equality is a byte comparison — the interpreter's
+             * values_equal walks the bytes. The `icmp` below would compare
+             * two i8* pointers, which agrees by pointer-luck at best and
+             * answers `false` for the same text in two literals. Only
+             * ==/!= carry string semantics; the relational spellings keep
+             * the pointer order they always had (matched by the libLLVM
+             * backend, which does the same). */
+            char *eq64 = emit_instrf(g, type_prim(TY_INT),
+                                     "call i64 @lume_str_eq(i8* %s, i8* %s)",
+                                     a.v, b.v);
+            if (!eq64) {
+                free(a.v); free(b.v);
+                ERRV(g, "line %zu: string comparison failed", n->line);
+            }
+            r = emit_instrf(g, boolty, "icmp %s i64 %s, 0",
+                            n->as.binary.op == OP_EQ ? "ne" : "eq", eq64);
+            free(eq64);
+        }
+        else if (a.ty && a.ty->kind == TY_FLOAT)
             r = emit_instrf(g, boolty, "fcmp %s double %s, %s", fcmp[k], a.v, b.v);
         else
             r = emit_instrf(g, boolty, "icmp %s i64 %s, %s", icmp[k], a.v, b.v);
@@ -1146,7 +1174,8 @@ static const char *rt_arg_type(Type *ty)
      * correctly and then mis-typed on the way into the runtime. */
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "i8*";
+    case TY_RESULT:
+    case TY_ENUM:   return "i8*";
     default:        return "i64";
     }
 }
@@ -1163,7 +1192,8 @@ static const char *map_get_fn(Type *ty)
     case TY_BOOL:   return "lume_map_get_i";
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "lume_map_get_obj";
+    case TY_RESULT:
+    case TY_ENUM:   return "lume_map_get_obj";
     default:        return NULL;
     }
 }
@@ -1185,7 +1215,8 @@ static const char *list_push_fn(Type *ty)
      * is the helper's business. This is what makes `[[1,2],[3]]` buildable. */
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "lume_list_push_obj";
+    case TY_RESULT:
+    case TY_ENUM:   return "lume_list_push_obj";
     default:        return NULL;
     }
 }
@@ -1204,7 +1235,8 @@ static const char *map_put_fn(Type *ty)
      * `{ a: { b: 1 } }` buildable. */
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "lume_map_put_obj";
+    case TY_RESULT:
+    case TY_ENUM:   return "lume_map_put_obj";
     default:        return NULL;
     }
 }
@@ -1234,6 +1266,12 @@ Type *infer_list_elem(Node *lit)
             case LIT_FALSE: t = type_prim(TY_BOOL); break;
             default: break;
             }
+        }
+        else if (e->type == N_CTOR) {
+            /* A bare constructor value (`[Red, Green]`): resolve_ctors
+             * stamped the enum's name onto the node, so the element type is
+             * statically spelled and the list does not decay to list<any>. */
+            t = e->as.ctor.ename ? type_enum(e->as.ctor.ename) : NULL;
         }
         /* Anything else (a call, another list, ...) is a kind this emitter
          * cannot read statically. */
@@ -1312,6 +1350,181 @@ static Val cg_map_or_struct_lit(CG *g, Node *n)
     return cg_map_lit(g, n);
 }
 
+/* An enum constructor: the interpreter's `{ "$": V, ...payload }` map, built
+ * with the exact same runtime helpers a map literal uses. The value's type is
+ * the enum's own (TY_ENUM), whose IR spelling is i8*. */
+static Val cg_ctor(CG *g, Node *n)
+{
+    Val m = rt_call(g, list_type(), "lume_map_new", "");
+    if (!m.v) ERRV(g, "line %zu: cannot allocate an enum value", n->line);
+    m.ty = n->as.ctor.ename ? type_enum(n->as.ctor.ename) : type_anon_struct();
+
+    Val k = val_take(type_prim(TY_STRING), cg_string_val(g, "$", 1));
+    Val tv = val_take(type_prim(TY_STRING),
+                      cg_string_val(g, n->as.ctor.name,
+                                    strlen(n->as.ctor.name)));
+    Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_s",
+                    "i8* %s, i8* %s, %s %s", m.v, k.v,
+                    rt_arg_type(type_prim(TY_STRING)), tv.v);
+    free(k.v); free(tv.v);
+    if (!r.v) { free(m.v); ERRV(g, "line %zu: cannot store the variant tag", n->line); }
+    free(r.v);
+
+    for (int i = 0; i < n->as.ctor.argc; i++) {
+        Val v = cg_expr(g, n->as.ctor.args[i]);
+        k = val_take(type_prim(TY_STRING),
+                     cg_string_val(g, n->as.ctor.fields[i],
+                                   strlen(n->as.ctor.fields[i])));
+        const char *fn = map_put_fn(v.ty);
+        if (!fn) {
+            free(k.v); free(v.v); free(m.v);
+            ERRV(g, "line %zu: enum payload must be int, float, string or bool",
+                 n->line);
+        }
+        if (v.ty && v.ty->kind == TY_BOOL) v = coerce(g, type_prim(TY_INT), v, n->line);
+        r = rt_call(g, type_prim(TY_INT), fn, "i8* %s, i8* %s, %s %s",
+                    m.v, k.v, rt_arg_type(v.ty), v.v);
+        free(k.v); free(v.v);
+        if (!r.v) { free(m.v); ERRV(g, "line %zu: cannot store the payload", n->line); }
+        free(r.v);
+    }
+    return m;
+}
+
+/* `match (s) { V(b, ...) => body, _ => body, ... }`.
+ *
+ * Tag dispatch: the scrutinee's "$" string is read once, then each arm
+ * compares it with lume_str_eq (the interpreter's values_equal walks the
+ * bytes — a plain `==` here would icmp two i8* pointers, which agrees by
+ * pointer-luck at best). The LAST arm is branched to unconditionally: the
+ * checker only accepts an exhaustive match, so the last arm is always the
+ * one a well-typed value lands in, and a forged map falls there instead of
+ * into UB.
+ *
+ * Arm binds are registered at emit time — match is an expression, so the
+ * scan pass never walks it — with allocas right inside the arm block (an
+ * alloca anywhere in the function dominates its own loads). g->locals is
+ * truncated after each arm, which both scopes the binds and keeps two arms
+ * binding the same name from aliasing one slot. */
+static Val cg_match(CG *g, Node *n)
+{
+    Type *rty = infer_node_type(g, n);
+    if (!rty || rty->kind == TY_ANY)
+        ERRV(g, "line %zu: cannot infer the match result type", n->line);
+    const char *st = llvm_type_of(rty);
+    if (!st) ERRV(g, "line %zu: unsupported match result type", n->line);
+
+    Val s = cg_expr(g, n->as.matchn.scrutinee);
+    if (!s.v) ERRV(g, "line %zu: bad match scrutinee", n->line);
+
+    Val k = val_take(type_prim(TY_STRING), cg_string_val(g, "$", 1));
+    char *tag = emit_instrf(g, type_prim(TY_STRING),
+                            "call i8* @lume_map_get_s(i8* %s, i8* %s, i8* null)",
+                            s.v, k.v);
+    free(k.v);
+    if (!tag) ERRV(g, "line %zu: cannot read the variant tag", n->line);
+
+    char res[64];
+    snprintf(res, sizeof res, "%%tv%d", g->tid++);
+    EMIT(g, "  %s = alloca %s\n", res, st);
+
+    int lj = g->lid++;
+    static int s_bind_uid = 0;
+    int prev_lnext = -1;
+    for (int i = 0; i < n->as.matchn.armc; i++) {
+        MatchArm *arm = &n->as.matchn.arms[i];
+        bool last = i == n->as.matchn.armc - 1;
+        int larm = g->lid++, lnext = g->lid++;
+
+        /* The previous arm's false-edge lands here. The label has to exist
+         * even when nothing branches to it (a mid-match `_` strands the
+         * rest of the chain), or the conditional branch below names a
+         * block the IR never defines. */
+        if (prev_lnext >= 0) EMIT(g, "L%d:\n", prev_lnext);
+        prev_lnext = lnext;
+
+        if (strcmp(arm->vname, "_") == 0 || last) {
+            /* The checker only accepts an exhaustive match, so the last arm
+             * is where any well-typed value lands — no compare needed. */
+            EMIT(g, "  br label %%L%d\n", larm);
+        } else {
+            Val at = val_take(type_prim(TY_STRING),
+                              cg_string_val(g, arm->vname,
+                                            strlen(arm->vname)));
+            char *eq64 = emit_instrf(g, type_prim(TY_INT),
+                                     "call i64 @lume_str_eq(i8* %s, i8* %s)",
+                                     tag, at.v);
+            free(at.v);
+            if (!eq64) ERRV(g, "line %zu: cannot compare the variant tag",
+                            arm->line);
+            char *eq = emit_instrf(g, type_prim(TY_BOOL),
+                                   "icmp ne i64 %s, 0", eq64);
+            free(eq64);
+            if (!eq) ERRV(g, "line %zu: cannot compare the variant tag",
+                          arm->line);
+            EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", eq, larm, lnext);
+            free(eq);
+        }
+
+        EMIT(g, "L%d:\n", larm);
+        int saved_n = g->locals.n;
+        for (int kb = 0; kb < arm->bindc; kb++) {
+            Type *bt = arm->vfield_types ? arm->vfield_types[kb] : NULL;
+            const char *blt = bt ? llvm_type_of(bt) : NULL;
+            if (!blt)
+                ERRV(g, "line %zu: match binding '%s' has no codegen type",
+                     arm->line, arm->binds[kb]);
+            char slot[64];
+            snprintf(slot, sizeof slot, "%%lv_%s_%d",
+                     arm->binds[kb], s_bind_uid++);
+            EMIT(g, "  %s = alloca %s\n", slot, blt);
+            Val fk = val_take(type_prim(TY_STRING),
+                              cg_string_val(g, arm->vfields[kb],
+                                            strlen(arm->vfields[kb])));
+            const char *gfn = map_get_fn(bt);
+            if (!gfn) {
+                free(fk.v);
+                ERRV(g, "line %zu: match binding '%s' payload must be int, "
+                        "float, string or bool", arm->line, arm->binds[kb]);
+            }
+            const char *pty = rt_arg_type(bt);
+            const char *darg = strcmp(pty, "i8*") == 0   ? "i8* null"
+                             : strcmp(pty, "double") == 0 ? "double 0.0"
+                                                          : "i64 0";
+            char *pv = emit_instrf(g, bt, "call %s @%s(i8* %s, i8* %s, %s)",
+                                   pty, gfn, s.v, fk.v, darg);
+            free(fk.v);
+            if (!pv) ERRV(g, "line %zu: cannot read the payload", arm->line);
+            /* bool reads come back i64 (lume_map_get_i); the slot — and
+             * every later cg_var of the bind — spells i1, so narrow here. */
+            if (bt->kind == TY_BOOL) {
+                char *b1 = emit_instrf(g, bt, "icmp ne i64 %s, 0", pv);
+                free(pv);
+                if (!b1) ERRV(g, "line %zu: cannot read the payload", arm->line);
+                pv = b1;
+            }
+            EMIT(g, "  store %s %s, %s* %s\n", blt, pv, blt, slot);
+            free(pv);
+            asg_push(&g->locals, arm->binds[kb], bt, slot, arm->line);
+        }
+
+        Val bv = cg_expr(g, arm->body);
+        if (!bv.v) ERRV(g, "line %zu: bad match arm body", arm->line);
+        bv = coerce(g, rty, bv, arm->line);
+        EMIT(g, "  store %s %s, %s* %s\n", st, bv.v, st, res);
+        free(bv.v);
+        g->locals.n = saved_n; /* truncate this arm's binds */
+        EMIT(g, "  br label %%L%d\n", lj);
+    }
+
+    EMIT(g, "L%d:\n", lj);
+    free(s.v);
+    free(tag);
+    char *r = emit_instrf(g, rty, "load %s, %s* %s", st, st, res);
+    if (!r) ERRV(g, "line %zu: bad match join", n->line);
+    return val_take(rty, r);
+}
+
 static Val cg_print(CG *g, Node *n, Val a)
 {
     /* print() lowers to a non-variadic runtime helper (src/rt.c), never to
@@ -1359,6 +1572,9 @@ static Val cg_print(CG *g, Node *n, Val a)
      * the same runtime helper. Without this it fell to the default arm and the
      * interpreter could print a Result that the emitters refused to build. */
     case TY_RESULT: fn = "lume_map_print"; pty = "i8*"; break;
+    /* An enum value is the same heap map with a "$" tag, so it prints the
+     * same way — matching the interpreter, which prints the raw map. */
+    case TY_ENUM:   fn = "lume_map_print"; pty = "i8*"; break;
     default:
         ERRV(g, "line %zu: print() cannot print this value", n->line);
     }
@@ -1448,6 +1664,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_has(i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_str_eq(i8*, i8*)\n");
     /* Index syntax (SPEC 6.2): one entry point per result shape, each deciding
      * list-vs-map at run time because the emitter cannot always tell. */
     EMIT(g, "declare i64 @lume_index_int(i8*, i64, i8*)\n");
@@ -2304,6 +2521,8 @@ Val cg_expr(CG *g, Node *n)
     case N_UNARY:   return cg_unary(g, n);
     case N_BINARY:  return cg_binary(g, n);
     case N_TERNARY: return cg_ternary(g, n);
+    case N_MATCH:   return cg_match(g, n);
+    case N_CTOR:    return cg_ctor(g, n);
     case N_MEMBER:  return cg_member(g, n);
     case N_INDEX:   return cg_index(g, n);
     case N_CALL:    return cg_call(g, n);
@@ -2326,7 +2545,8 @@ Val coerce(CG *g, Type *to, Val v, size_t line)
      * libLLVM backend uses, rather than letting the two backends disagree
      * about whether `let x: int = null` compiles. */
     if (v.ty && v.ty->kind == TY_NULL && to && to->kind != TY_STRING &&
-        to->kind != TY_LIST && to->kind != TY_STRUCT && to->kind != TY_ANY) {
+        to->kind != TY_LIST && to->kind != TY_STRUCT && to->kind != TY_ANY &&
+        to->kind != TY_ENUM) {
         free(v.v);
         ERRV(g, "line %zu: cannot use 'null' as a %s value in the native backend",
              line, src_type_name(to));

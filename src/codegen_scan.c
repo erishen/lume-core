@@ -27,6 +27,35 @@ static Type *for_in_elem_type(CG *g, Node *n);
 /* forward: same tu, defined below this point. */
 static void scan_stmt(CG *g, Node *n);
 
+/* Match-arm binds, for the window their arm body's type is inferred in.
+ * Same shape as the signature pass's lt_push: a repeated name overwrites
+ * (no new strdup), distinct names are strdup'd once and freed by
+ * arm_scope_clear when the outermost match is done. */
+static void arm_scope_push(CG *g, const char *name, Type *ty)
+{
+    if (!name || !ty) return;
+    for (int i = 0; i < g->arm_scope.n; i++)
+        if (strcmp(g->arm_scope.v[i].name, name) == 0) {
+            g->arm_scope.v[i].ty = ty;
+            return;
+        }
+    if (g->arm_scope.n == g->arm_scope.cap) {
+        g->arm_scope.cap = g->arm_scope.cap ? g->arm_scope.cap * 2 : 8;
+        g->arm_scope.v = (LTyp *)xrealloc(g->arm_scope.v,
+                                          (size_t)g->arm_scope.cap * sizeof *g->arm_scope.v);
+    }
+    g->arm_scope.v[g->arm_scope.n].name = xstrdup(name);
+    g->arm_scope.v[g->arm_scope.n].ty   = ty;
+    g->arm_scope.n++;
+}
+
+static void arm_scope_clear(CG *g)
+{
+    for (int i = 0; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
+    free(g->arm_scope.v);
+    g->arm_scope = (LTys){0};
+}
+
 /* The AST records an explicit `: T` annotation on `let` nodes; a type inferred
  * from the initializer is never stored on the node. Without this the entry
  * block would have nothing to `alloca` — and the alloca pass bails out, which
@@ -55,7 +84,10 @@ Type *infer_node_type(CG *g, Node *n)
         if (a) return a->ty;
         /* The signature pass runs before any slot is allocated, so a name it
          * already typed is the only other source. */
-        return lt_find(&g->scope, n->as.var.name);
+        Type *st = lt_find(&g->scope, n->as.var.name);
+        if (st) return st;
+        /* A match arm whose body is being type-inferred: its binds. */
+        return lt_find(&g->arm_scope, n->as.var.name);
     }
     case N_FUNC_LIT: {
         /* A function literal is a closure value. Thread the node through
@@ -186,6 +218,43 @@ Type *infer_node_type(CG *g, Node *n)
             return type_prim(TY_FLOAT);
         return NULL;
     }
+    case N_CTOR:
+        /* 构造值的类型 = 它的 enum（resolve_ctors 盖了 ename）。 TY_ENUM
+         * 的 IR 拼写是 i8*（值即标签 map），见 codegen_types.c。 */
+        return n->as.ctor.ename ? type_enum(n->as.ctor.ename) : NULL;
+    case N_MATCH: {
+        /* 臂体按三元的统一规则收拢——scrutinee 的类型不影响结果槽。臂内
+         * 绑定只在它自己的臂里可见：推断窗口内压进 arm_scope，臂与臂之间
+         * 截断回 saved（嵌套 match 因此仍能看见外层臂的绑定），最外层
+         * match 收尾时统一释放。 */
+        int saved = g->arm_scope.n;
+        Type *result = NULL;
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            MatchArm *arm = &n->as.matchn.arms[i];
+            g->arm_scope.n = saved;
+            for (int b = 0; b < arm->bindc; b++)
+                arm_scope_push(g, arm->binds[b],
+                               arm->vfield_types ? arm->vfield_types[b] : NULL);
+            Type *bt = infer_node_type(g, arm->body);
+            /* An arm whose type cannot be read statically (a builtin call
+             * like str(n), say) is skipped, not fatal: the arm's real type
+             * exists at emit time, and one concrete arm among them still
+             * fixes the result slot. Only an explicit `any` arm (a value
+             * that IS untyped) widens the whole match. */
+            if (!bt) continue;
+            if (bt->kind == TY_ANY) { result = any_type(); break; }
+            if (!result) { result = bt; continue; }
+            if (result->kind == bt->kind) continue;
+            bool r_num = result->kind == TY_INT || result->kind == TY_FLOAT;
+            bool b_num = bt->kind == TY_INT || bt->kind == TY_FLOAT;
+            if (r_num && b_num) { result = type_prim(TY_FLOAT); continue; }
+            result = NULL;
+            break;
+        }
+        g->arm_scope.n = saved;
+        if (saved == 0) arm_scope_clear(g);
+        return result ? result : any_type();
+    }
     case N_ASSIGN:
         /* An assignment expression yields the *target*, which is what `for
          * (i = 0; ...)` and `a = b` want to carry. */
@@ -270,8 +339,7 @@ static void scan_stmt(CG *g, Node *n)
          * for statement's own line and no block of its own. At the top level
          * the enclosing scope is the module: the variable is lifted exactly
          * like a `let`, because a function the top level calls after the loop
-         * must see the rebound value. */
-        if (n->as.fors.is_in) {
+         * must see the rebound value. */        if (n->as.fors.is_in) {
             Type *et = for_in_elem_type(g, n);
             if (g->scanning_top) {
                 char slot[128];
@@ -307,6 +375,12 @@ static void scan_stmt(CG *g, Node *n)
         scan_stmt(g, n->as.fors.body);
         break;
     }
+
+    /* NOTE: match arms deliberately do NOT register their payload binds here.
+     * match is an *expression*, so it appears where scan_stmt never walks
+     * (let inits, returns, call arguments); the emitter registers each arm's
+     * binds at emit time and truncates g->locals afterwards, which also keeps
+     * two arms that bind the same name from aliasing one slot. */
 
     /* An assignment to a name that is not a local *is* meaningful inside a
      * function: the interpreter's assignment does not reach through to a

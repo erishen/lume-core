@@ -252,6 +252,15 @@ static void preregister_lambdas(CG *g, Node *n, int in_handler)
         preregister_lambdas(g, n->as.ternary.then, 0);
         preregister_lambdas(g, n->as.ternary.els,  0);
         return;
+    case N_MATCH:
+        preregister_lambdas(g, n->as.matchn.scrutinee, 0);
+        for (int i = 0; i < n->as.matchn.armc; i++)
+            preregister_lambdas(g, n->as.matchn.arms[i].body, 0);
+        return;
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            preregister_lambdas(g, n->as.ctor.args[i], 0);
+        return;
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
             preregister_lambdas(g, n->as.list.items[i], 0);
@@ -289,6 +298,14 @@ static int types_eq(Type *a, Type *b)
         if (!a->name || !b->name) return 1;
         return strcmp(a->name, b->name) == 0;
     }
+    if (a->kind == TY_ENUM) {
+        /* Two enums with different names are different types even though
+         * both travel as i8*: `describe(c: Color)` must not silently accept
+         * a `Tag` value. Unnamed shells match anything named, as structs
+         * do. */
+        if (!a->name || !b->name) return 1;
+        return strcmp(a->name, b->name) == 0;
+    }
     if (a->kind == TY_LIST) return types_eq(a->elem, b->elem);
     return 1;                     /* every remaining kind is a primitive */
 }
@@ -305,6 +322,7 @@ static void type_desc(Type *t, char *buf, size_t n)
     case TY_LIST:   { char e[32]; type_desc(t->elem, e, sizeof e);
                       snprintf(buf, n, "%s[]", e); break; }
     case TY_STRUCT: snprintf(buf, n, "%s", t->name ? t->name : "struct"); break;
+    case TY_ENUM:   snprintf(buf, n, "%s", t->name ? t->name : "enum"); break;
     default:        snprintf(buf, n, "?"); break;
     }
 }
@@ -415,6 +433,14 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
                  * that is already resolved can only be checked against it. */
                 Type *at = infer_arg_type(g, n->as.call.args[i], t);
                 if (!at) continue;
+                /* An `any` argument carries no information: it can neither
+                 * contradict a resolved parameter nor fill an empty slot
+                 * (filling it would freeze the parameter at "untypable" and
+                 * reject the very call that would have resolved it — the
+                 * checker itself accepts `any` wherever the resolved type
+                 * is accepted). `describe(xs[0])` on a list the scanner
+                 * could not type is the everyday case. */
+                if (at->kind == TY_ANY) continue;
                 Type *seen = cs->params[i];
                 if (seen && !types_eq(seen, at)) {
                     /* One name, one signature: a second call contradicting the
@@ -498,6 +524,16 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
         changed += walk_sigs(g, n->as.ternary.cond, t, s);
         changed += walk_sigs(g, n->as.ternary.then, t, s);
         return changed + walk_sigs(g, n->as.ternary.els, t, s);
+    case N_MATCH: {
+        changed += walk_sigs(g, n->as.matchn.scrutinee, t, s);
+        for (int i = 0; i < n->as.matchn.armc; i++)
+            changed += walk_sigs(g, n->as.matchn.arms[i].body, t, s);
+        return changed;
+    }
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            changed += walk_sigs(g, n->as.ctor.args[i], t, s);
+        return changed;
     case N_MEMBER:      return walk_sigs(g, n->as.member.obj, t, s);
     case N_LET:         return walk_sigs(g, n->as.let.init, t, s);
     case N_LIST_LIT:

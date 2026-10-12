@@ -325,6 +325,8 @@ Node *parse_route_tail(Parser *p, Node *n) {
 
 /* ---------- program ---------- */
 
+static void resolve_ctors(Node *prog);
+
 Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
     char lexerr[256] = {0};
     int count = 0;
@@ -383,7 +385,204 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
     }
     free(toks);
     orphan_drop(); /* prog owns every node in the batch now */
+    resolve_ctors(prog);
     return prog;
+}
+
+/* ---------- post-parse constructor resolution ---------- */
+
+/* A variant name is a constructor everywhere in its file once its enum is
+ * declared (Lean's namespace rule, minus the qualification). The parser
+ * cannot know that while it parses — the enum may sit after the use site —
+ * so after the program is built this pass runs once:
+ *
+ *   pass 1 collects every N_ENUM_DECL's variant names (top-level only, so
+ *   a flat scan of the program suffices),
+ *   pass 2 rewrites
+ *     - `V(args...)` — an N_CALL whose callee is the bare name V — into a
+ *       proper N_CTOR (arguments moved over, the callee shell freed), and
+ *     - a bare `V` (N_VAR, zero-payload variant) in place, by flipping the
+ *       node's type and keeping the name.
+ *
+ * `V()?` (propagate suffix on a constructor) is left as a call on purpose:
+ * N_CTOR carries no propagate flag, and a `Result`-valued ctor is not a
+ * thing, so the checker reports it as a call of a non-function instead of
+ * inventing an error message for a shape nobody should write.
+ *
+ * Shadowing is prevented, not resolved: typecheck.c rejects a let / param /
+ * function whose name collides with a constructor, so this rewrite can
+ * never steal a live binding. */
+
+typedef struct {
+    char *name;     /* variant name */
+    char *ename;    /* owning enum's name */
+    char **fields;  /* payload field names (borrowed from the enum decl) */
+    Type **ftypes;  /* payload field types — parser-built, and for the four
+                     * allowed scalars the shell *is* the resolved def, so
+                     * binding allocas can use it without the checker */
+    int fieldc;
+} CtorEnt;
+
+typedef struct { CtorEnt *v; int count; } CtorTab;
+
+static CtorEnt *ctor_find(CtorTab *tab, const char *name) {
+    for (int i = 0; i < tab->count; i++)
+        if (strcmp(tab->v[i].name, name) == 0) return &tab->v[i];
+    return NULL;
+}
+
+static void ctor_rewrite(Node *n, CtorTab *tab);
+
+static void ctor_rewrite(Node *n, CtorTab *tab) {
+    if (!n) return;
+    switch (n->type) {
+    case N_PROGRAM:
+    case N_BLOCK:
+        for (int i = 0; i < n->as.program.count; i++)
+            ctor_rewrite(n->as.program.stmts[i], tab);
+        return; /* count/stmts are the same union member for both kinds */
+    case N_ENUM_DECL: return; /* declarations carry no expressions */
+    case N_LET:        ctor_rewrite(n->as.let.init, tab); return;
+    case N_IF:
+        ctor_rewrite(n->as.ifs.cond, tab);
+        ctor_rewrite(n->as.ifs.then, tab);
+        ctor_rewrite(n->as.ifs.els, tab);
+        return;
+    case N_WHILE:
+        ctor_rewrite(n->as.whiles.cond, tab);
+        ctor_rewrite(n->as.whiles.body, tab);
+        return;
+    case N_FOR:
+        ctor_rewrite(n->as.fors.init, tab);
+        ctor_rewrite(n->as.fors.cond, tab);
+        ctor_rewrite(n->as.fors.incr, tab);
+        ctor_rewrite(n->as.fors.iterable, tab);
+        ctor_rewrite(n->as.fors.body, tab);
+        return;
+    case N_RETURN:    ctor_rewrite(n->as.ret.expr, tab); return;
+    case N_EXPR_STMT: ctor_rewrite(n->as.expr_stmt.expr, tab); return;
+    case N_SERVER:
+        for (int i = 0; i < n->as.server.count; i++)
+            ctor_rewrite(n->as.server.assigns[i], tab);
+        return;
+    case N_ROUTE: ctor_rewrite(n->as.route.handler, tab); return;
+    case N_TOOL:
+        ctor_rewrite(n->as.tool.params, tab);
+        ctor_rewrite(n->as.tool.handler, tab);
+        return;
+    case N_VERBS:   ctor_rewrite(n->as.verbs.methods, tab); return;
+    case N_FUNC_DECL: ctor_rewrite(n->as.func.body, tab); return;
+    case N_FUNC_LIT:  ctor_rewrite(n->as.funclit.body, tab); return;
+    case N_ASSIGN:    ctor_rewrite(n->as.assign.value, tab); return;
+    case N_ASSIGN_MEMBER:
+        ctor_rewrite(n->as.assign_mem.obj, tab);
+        ctor_rewrite(n->as.assign_mem.value, tab);
+        return;
+    case N_MAP_LIT:
+        for (int i = 0; i < n->as.map.count; i++)
+            ctor_rewrite(n->as.map.vals[i], tab);
+        return;
+    case N_LIST_LIT:
+        for (int i = 0; i < n->as.list.count; i++)
+            ctor_rewrite(n->as.list.items[i], tab);
+        return;
+    case N_MEMBER: ctor_rewrite(n->as.member.obj, tab); return;
+    case N_INDEX:
+        ctor_rewrite(n->as.index.obj, tab);
+        ctor_rewrite(n->as.index.index, tab);
+        return;
+    case N_UNARY:  ctor_rewrite(n->as.unary.operand, tab); return;
+    case N_BINARY:
+        ctor_rewrite(n->as.binary.left, tab);
+        ctor_rewrite(n->as.binary.right, tab);
+        return;
+    case N_TERNARY:
+        ctor_rewrite(n->as.ternary.cond, tab);
+        ctor_rewrite(n->as.ternary.then, tab);
+        ctor_rewrite(n->as.ternary.els, tab);
+        return;
+    case N_MATCH:
+        ctor_rewrite(n->as.matchn.scrutinee, tab);
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            MatchArm *arm = &n->as.matchn.arms[i];
+            CtorEnt *ce = strcmp(arm->vname, "_") == 0
+                            ? NULL : ctor_find(tab, arm->vname);
+            arm->vfields = ce ? ce->fields : NULL;
+            arm->vfieldc = ce ? ce->fieldc : 0;
+            arm->vfield_types = ce ? ce->ftypes : NULL;
+            ctor_rewrite(arm->body, tab);
+        }
+        return;
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            ctor_rewrite(n->as.ctor.args[i], tab);
+        return;    case N_CALL:
+        /* Rewrite BEFORE walking the callee: `Circle(1.0)` must become one
+         * N_CTOR carrying its arguments, not a call whose bare-name callee
+         * already got flipped into a zero-arg N_CTOR by the N_VAR case. */
+        if (!n->as.call.propagate && n->as.call.callee &&
+            n->as.call.callee->type == N_VAR) {
+            CtorEnt *ce = ctor_find(tab, n->as.call.callee->as.var.name);
+            if (ce) {
+                Node *callee = n->as.call.callee;
+                n->type = N_CTOR;
+                n->as.ctor.name = callee->as.var.name; /* name moved over */
+                n->as.ctor.args = n->as.call.args;
+                n->as.ctor.argc = n->as.call.argc;
+                n->as.ctor.fields = ce->fields;
+                n->as.ctor.fieldc = ce->fieldc;
+                n->as.ctor.ename = ce->ename;
+                free(callee); /* shell only: name and args moved */
+                for (int i = 0; i < n->as.ctor.argc; i++)
+                    ctor_rewrite(n->as.ctor.args[i], tab);
+                return;
+            }
+        }
+        ctor_rewrite(n->as.call.callee, tab);
+        for (int i = 0; i < n->as.call.argc; i++)
+            ctor_rewrite(n->as.call.args[i], tab);
+        return;
+    case N_VAR:
+        /* A bare zero-payload variant: flip the node in place. The var
+         * union's name field is the ctor union's first field, so the name
+         * pointer carries over untouched. */
+        {
+            CtorEnt *ce = ctor_find(tab, n->as.var.name);
+            if (ce) {
+                n->type = N_CTOR;
+                n->as.ctor.args = NULL;
+                n->as.ctor.argc = 0;
+                n->as.ctor.fields = ce->fields;
+                n->as.ctor.fieldc = ce->fieldc;
+                n->as.ctor.ename = ce->ename;
+            }
+        }
+        return;
+    default:
+        return; /* literals, imports, route/verb names — no expressions */
+    }
+}
+
+static void resolve_ctors(Node *prog) {
+    if (!prog || prog->type != N_PROGRAM) return;
+    CtorTab tab = { NULL, 0 };
+    for (int i = 0; i < prog->as.program.count; i++) {
+        Node *s = prog->as.program.stmts[i];
+        if (s->type != N_ENUM_DECL) continue;
+        for (int j = 0; j < s->as.enum_decl.vcount; j++) {
+            tab.v = realloc(tab.v, sizeof(CtorEnt) * ((size_t)tab.count + 1));
+            CtorEnt *ce = &tab.v[tab.count++];
+            ce->name = s->as.enum_decl.vnames[j];
+            ce->ename = s->as.enum_decl.name;
+            ce->fields = s->as.enum_decl.vfields[j];
+            ce->ftypes = s->as.enum_decl.vfield_types[j];
+            ce->fieldc = s->as.enum_decl.vfield_counts[j];
+        }
+    }
+    if (tab.count) ctor_rewrite(prog, &tab);
+    /* The table itself is scratch — names/fields are borrowed from the enum
+     * decls, which the AST owns and frees. */
+    free(tab.v);
 }
 
 /* ---------- teardown ---------- */
@@ -503,6 +702,15 @@ static void node_free_kids(Node *n) {
         node_free(n->as.index.obj);
         node_free(n->as.index.index);
         break;
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            node_free(n->as.ctor.args[i]);
+        break;
+    case N_MATCH:
+        node_free(n->as.matchn.scrutinee);
+        for (int i = 0; i < n->as.matchn.armc; i++)
+            node_free(n->as.matchn.arms[i].body);
+        break;
     default: break; /* no children (literals, imports, declarations, ...) */
     }
 }
@@ -546,6 +754,33 @@ static void node_free_own(Node *n) {
         free(n->as.type_decl.name);
         free_name_array(n->as.type_decl.field_names, n->as.type_decl.count);
         free(n->as.type_decl.field_types);
+        break;
+    case N_ENUM_DECL: {
+        free(n->as.enum_decl.name);
+        int vc = n->as.enum_decl.vcount;
+        for (int i = 0; i < vc; i++) {
+            free(n->as.enum_decl.vnames[i]);
+            free_name_array(n->as.enum_decl.vfields[i],
+                            n->as.enum_decl.vfield_counts[i]);
+            free(n->as.enum_decl.vfield_types[i]); /* Type* elems: release_all */
+        }
+        free(n->as.enum_decl.vnames);
+        free(n->as.enum_decl.vfields);
+        free(n->as.enum_decl.vfield_types);
+        free(n->as.enum_decl.vfield_counts);
+        break;
+    }
+    case N_CTOR:
+        free(n->as.ctor.name);
+        free(n->as.ctor.args);
+        break;
+    case N_MATCH:
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            free(n->as.matchn.arms[i].vname);
+            free_name_array(n->as.matchn.arms[i].binds,
+                            n->as.matchn.arms[i].bindc);
+        }
+        free(n->as.matchn.arms);
         break;
     case N_VAR:               free(n->as.var.name); break;
     case N_ASSIGN:            free(n->as.assign.name); break;

@@ -37,10 +37,24 @@ typedef struct StructDef {
     struct StructDef *next;
 } StructDef;
 
+/* A declared `enum X { ... }`. The def Type is TY_ENUM named X; the variant
+ * payload types are the *resolved* ones (scalars only — see pass B). */
+typedef struct EnumDef {
+    char *name;
+    Type *type;
+    char **vnames;
+    char ***vfields;
+    Type ***vfield_types;
+    int *vfield_counts;
+    int vcount;
+    struct EnumDef *next;
+} EnumDef;
+
 typedef struct {
     CScope *scope;
     CScope *all_scopes;      /* every scope created during this check */
     StructDef *structs;
+    EnumDef *enums;
     Type *cur_ret;       /* enclosing function return type; NULL outside func */
     bool in_func;        /* inside a function body */
     int loop_depth;      /* nested for/while depth (for break/continue) */
@@ -77,6 +91,12 @@ void scope_put_ns(CScope *s, const char *name, Module *m);
 Module *scope_get_ns(CScope *s, const char *name);
 StructDef *find_struct(Checker *c, const char *name);
 void add_struct(Checker *c, const char *name, Type *t);
+EnumDef *find_enum(Checker *c, const char *name);
+void add_enum(Checker *c, EnumDef *d);
+/* Resolve a constructor name to its enum def + variant index. */
+EnumDef *find_ctor(Checker *c, const char *name, int *vidx);
+/* Reject a let/param/func whose name would shadow a constructor. */
+void ck_ctor_shadow(Checker *c, const char *name, size_t line);
 Type *resolve(Checker *c, Type *t, size_t line);
 void record_ok_payload(Checker *c, Type *lit_result, Type *payload, size_t line);
 bool type_compat(Checker *c, Type *src, Type *dst, size_t line);

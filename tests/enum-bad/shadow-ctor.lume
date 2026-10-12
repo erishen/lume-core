@@ -1,0 +1,3 @@
+enum Color { Red | Green }
+let Red = 5;
+print(Red);

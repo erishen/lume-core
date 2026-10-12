@@ -105,6 +105,10 @@ typedef struct {
 
     LTys   scope;           /* names the signature pass has typed so far; only
                              * set while that pass runs, then unused */
+    LTys   arm_scope;       /* match-arm binds while their arm body's type is
+                             * being inferred (both emitters' infer reads it
+                             * as a last resort); empty outside that window,
+                             * released when the outermost match is done */
     LTys   globals;         /* top-level `let` types, built once by the
                              * signature pass and copied into every body's
                              * scope — a lambda body calling another lambda

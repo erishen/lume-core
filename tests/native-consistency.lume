@@ -520,5 +520,43 @@ let tw: float = 5 > 3 ? 1 : 2.5;                // int/float -> float widen
 print(tw);                                      // 1
 print(pick3(4 > 3, 7, 9) + 1);                   // 8
 
+// ---- enum + match (Lean inductive 的日常面) -------------------------------
+// 构造值 = 带 "$" 标签的 map; match = 标签分发 + 臂内绑定。
+// 穷尽性/未知变体/重复臂由 typecheck 拒绝(编译期), 这里只钉三后端
+// 必须逐字节一致的运行时值语义。
+enum Shape { Circle(r: float) | Rect(w: float, h: float) }
+enum Color { Red | Green | Blue }
+enum Tag { None | Name(s: string) | Id(n: int) | Flag(on: bool) }
+
+func carea(s: Shape): float {
+  return match (s) {
+    Circle(r) => 3.0 * r * r,
+    Rect(w, h) => w * h
+  };
+}
+func cname(c: Color): string {
+  return match (c) { Red => "r", Green => "g", Blue => "b" };
+}
+func tval(t: Tag): string {
+  return match (t) {
+    None     => "none",
+    Name(s)  => s,
+    Id(n)    => str(n),
+    Flag(on) => on ? "on" : "off"
+  };
+}
+print(carea(Circle(2.0)));                       // 12
+print(carea(Rect(3.0, 4.0)));                    // 12
+print(cname(Blue));                              // b
+print(cname(Red));                               // r
+print(tval(Name("zed")));                        // zed
+print(tval(Id(9)));                              // 9
+print(tval(Flag(true)));                         // on
+print(tval(Flag(false)));                        // off
+print(tval(None));                               // none
+let wshape = Rect(2.0, 5.0);
+print(carea(wshape) + 1.0);                      // 11
+print(cname(Green) == "g" ? 1 : 0);              // 1
+
 warmup();
 main();

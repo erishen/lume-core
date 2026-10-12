@@ -1,0 +1,5 @@
+enum Color { Red | Green }
+func f(c: Color): string {
+  return match (c) { Red => "r", Red => "r2", Green => "g" };
+}
+f(Red);

@@ -1,0 +1,5 @@
+enum Shape { Circle(r: float) | Rect(w: float, h: float) }
+func f(s: Shape): float {
+  return match (s) { Circle(r) => r, Rect(w) => w };
+}
+f(Circle(1.0));

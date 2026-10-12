@@ -335,6 +335,135 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return any_type();
         }
 
+        case N_CTOR: {
+            /* A rewritten constructor application (parser.c). Arity and
+             * payload types come from the enum table; the result is the
+             * enum's own type. */
+            int vi = -1;
+            EnumDef *ed = find_ctor(c, n->as.ctor.name, &vi);
+            if (!ed) {
+                ck_fail(c, n->line, "unknown constructor '%s'",
+                        n->as.ctor.name);
+                for (int i = 0; i < n->as.ctor.argc; i++)
+                    ck_expr(c, n->as.ctor.args[i], NULL);
+                return any_type();
+            }
+            if (ed->vfield_counts[vi] != n->as.ctor.argc) {
+                ck_fail(c, n->line,
+                        "constructor '%s' expects %d argument(s), got %d",
+                        n->as.ctor.name, ed->vfield_counts[vi],
+                        n->as.ctor.argc);
+                for (int i = 0; i < n->as.ctor.argc; i++)
+                    ck_expr(c, n->as.ctor.args[i], NULL);
+                return any_type();
+            }
+            for (int i = 0; i < n->as.ctor.argc; i++) {
+                Type *pt = ed->vfield_types[vi]
+                             ? ed->vfield_types[vi][i] : any_type();
+                expect_compat(c, ck_expr(c, n->as.ctor.args[i], pt), pt,
+                              n->line, "constructor argument");
+            }
+            return ed->type;
+        }
+
+        case N_MATCH: {
+            /* The scrutinee must be a declared enum (or any, in which case
+             * arm names cannot be validated and exhaustiveness is skipped —
+             * the runtime tag dispatch is still exact). Arm bodies unify
+             * with the ternary rules. */
+            Type *st = ck_expr(c, n->as.matchn.scrutinee, NULL);
+            st = resolve(c, st, n->line);
+            EnumDef *ed = NULL;
+            if (st && st->kind == TY_ENUM)
+                ed = find_enum(c, st->name);
+            else if (st && st->kind != TY_ANY) {
+                ck_fail(c, n->line, "match needs an enum value (got %s)",
+                        ty_str(st));
+            }
+
+            Type *result = NULL;
+            bool any_arm = false;
+            int wildcard = -1;
+            for (int i = 0; i < n->as.matchn.armc; i++) {
+                MatchArm *arm = &n->as.matchn.arms[i];
+                int vi = -1;
+                if (strcmp(arm->vname, "_") == 0) {
+                    wildcard = i;
+                    if (arm->bindc > 0) {
+                        ck_fail(c, arm->line,
+                                "the '_' match arm binds no payload");
+                    }
+                } else if (ed) {
+                    for (int j = 0; j < ed->vcount; j++)
+                        if (strcmp(ed->vnames[j], arm->vname) == 0) { vi = j; break; }
+                    if (vi < 0) {
+                        ck_fail(c, arm->line,
+                                "enum '%s' has no variant '%s'",
+                                ed->name, arm->vname);
+                    } else if (ed->vfield_counts[vi] != arm->bindc) {
+                        ck_fail(c, arm->line,
+                                "variant '%s' carries %d payload field(s), "
+                                "arm binds %d",
+                                arm->vname, ed->vfield_counts[vi], arm->bindc);
+                    }
+                }
+                /* duplicate arm — a repeated variant silently shadows the
+                 * earlier one's body, so it is reported, not accepted */
+                for (int j = 0; j < i; j++) {
+                    if (strcmp(n->as.matchn.arms[j].vname, arm->vname) == 0) {
+                        ck_fail(c, arm->line,
+                                "duplicate match arm '%s'", arm->vname);
+                    }
+                }
+                /* Bindings live in a fresh scope, exactly like a block. The
+                 * first (collecting) walk uses scope_put for the same reason
+                 * top-level lets do: the second walk re-declares. */
+                CScope *saved = c->scope;
+                c->scope = scope_new(saved);
+                if (vi >= 0 && ed) {
+                    for (int k = 0; k < arm->bindc; k++) {
+                        Type *pt = ed->vfield_types[vi]
+                                     ? ed->vfield_types[vi][k] : any_type();
+                        if (c->collecting)
+                            scope_put(c->scope, arm->binds[k], pt);
+                        else
+                            scope_decl(c, c->scope, arm->binds[k], pt,
+                                       arm->line);
+                    }
+                }
+                Type *bt = ck_expr(c, arm->body, NULL);
+                c->scope = saved;
+                if (!bt || bt->kind == TY_ANY) { any_arm = true; continue; }
+                if (!result) { result = bt; continue; }
+                if (result->kind == bt->kind) continue;
+                bool r_num = result->kind == TY_INT || result->kind == TY_FLOAT;
+                bool b_num = bt->kind == TY_INT || bt->kind == TY_FLOAT;
+                if (r_num && b_num) { result = type_prim(TY_FLOAT); continue; }
+                ck_fail(c, n->line,
+                        "match arms have different types ('%s' vs '%s')",
+                        ty_str(result), ty_str(bt));
+            }
+            /* Exhaustiveness: every variant covered, or a `_` arm. Skipped
+             * when the scrutinee is untyped — nothing to be exhaustive
+             * about — and when the check already failed. */
+            if (ed && !c->failed) {
+                for (int j = 0; j < ed->vcount; j++) {
+                    bool covered = wildcard >= 0;
+                    for (int i = 0; i < n->as.matchn.armc && !covered; i++)
+                        if (strcmp(n->as.matchn.arms[i].vname,
+                                   ed->vnames[j]) == 0) covered = true;
+                    if (!covered) {
+                        ck_fail(c, n->line,
+                                "match on '%s' does not cover variant '%s' "
+                                "(add an arm or '_')", ed->name, ed->vnames[j]);
+                        break;
+                    }
+                }
+            }
+            (void)any_arm;
+            return (result && !any_arm) ? result : any_type();
+        }
+
         case N_CALL: {
             Type *callee_t = ck_expr(c, n->as.call.callee, NULL);
             callee_t = resolve(c, callee_t, n->line);

@@ -375,6 +375,85 @@ Node *parse_statement(Parser *p) {
         if (!expect(p, TOK_RBRACE)) return NULL;
         return n;
     }
+    if (t.type == TOK_ENUM) {
+        /* enum Name { V | V(f: type) | V(f: t, g: t) } — variant payloads are
+         * positional named fields; the `|` separators are required between
+         * variants and optional around a trailing newline. A trailing `;`
+         * is accepted like `type`'s. */
+        advance(p);
+        if (!check(p, TOK_IDENT)) {
+            perror_at(p, peek(p).line, "expected enum name after 'enum'", NULL);
+            return NULL;
+        }
+        Token name = peek(p);
+        advance(p);
+        if (!expect(p, TOK_LBRACE)) return NULL;
+        Node *n = nalloc(N_ENUM_DECL, t.line);
+        n->as.enum_decl.name = ident_name(p, name);
+        n->as.enum_decl.vnames = NULL;
+        n->as.enum_decl.vfields = NULL;
+        n->as.enum_decl.vfield_types = NULL;
+        n->as.enum_decl.vfield_counts = NULL;
+        n->as.enum_decl.vcount = 0;
+        if (check(p, TOK_RBRACE)) {
+            perror_at(p, peek(p).line, "enum needs at least one variant", NULL);
+            return NULL;
+        }
+        for (;;) {
+            if (!is_field_token(peek(p).type)) {
+                perror_at(p, peek(p).line, "expected variant name in enum", NULL);
+                return NULL;
+            }
+            Token v = peek(p);
+            advance(p);
+            int vi = n->as.enum_decl.vcount;
+            n->as.enum_decl.vnames = realloc(n->as.enum_decl.vnames,
+                    sizeof(char *) * ((size_t)vi + 1));
+            n->as.enum_decl.vfields = realloc(n->as.enum_decl.vfields,
+                    sizeof(char **) * ((size_t)vi + 1));
+            n->as.enum_decl.vfield_types = realloc(n->as.enum_decl.vfield_types,
+                    sizeof(Type **) * ((size_t)vi + 1));
+            n->as.enum_decl.vfield_counts = realloc(n->as.enum_decl.vfield_counts,
+                    sizeof(int) * ((size_t)vi + 1));
+            n->as.enum_decl.vnames[vi] = ident_name(p, v);
+            n->as.enum_decl.vfields[vi] = NULL;
+            n->as.enum_decl.vfield_types[vi] = NULL;
+            n->as.enum_decl.vfield_counts[vi] = 0;
+            if (match(p, TOK_LPAREN)) {
+                /* payload fields: `f: type, g: type` — commas between, and
+                 * each field is `name : type` exactly like a struct field */
+                do {
+                    if (!is_field_token(peek(p).type)) {
+                        perror_at(p, peek(p).line,
+                                  "expected field name in enum variant", NULL);
+                        return NULL;
+                    }
+                    Token f = peek(p);
+                    advance(p);
+                    if (!expect(p, TOK_COLON)) return NULL;
+                    Type *ft = parse_type(p);
+                    if (!ft) return NULL;
+                    int fc = n->as.enum_decl.vfield_counts[vi];
+                    n->as.enum_decl.vfields[vi] = realloc(
+                            n->as.enum_decl.vfields[vi],
+                            sizeof(char *) * ((size_t)fc + 1));
+                    n->as.enum_decl.vfield_types[vi] = realloc(
+                            n->as.enum_decl.vfield_types[vi],
+                            sizeof(Type *) * ((size_t)fc + 1));
+                    n->as.enum_decl.vfields[vi][fc] = ident_name(p, f);
+                    n->as.enum_decl.vfield_types[vi][fc] = ft;
+                    n->as.enum_decl.vfield_counts[vi] = fc + 1;
+                } while (match(p, TOK_COMMA));
+                if (!expect(p, TOK_RPAREN)) return NULL;
+            }
+            n->as.enum_decl.vcount++;
+            if (!match(p, TOK_PIPE)) break;
+            if (check(p, TOK_RBRACE)) break; /* trailing `|` before `}` */
+        }
+        if (!expect(p, TOK_RBRACE)) return NULL;
+        match(p, TOK_SEMI); /* optional trailing semicolon */
+        return n;
+    }
     if (t.type == TOK_FUNC) {
         /* top-level named function declaration */
         advance(p);

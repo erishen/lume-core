@@ -71,6 +71,14 @@ Type *type_anon_struct(void) {
     return t;
 }
 
+Type *type_enum(const char *name) {
+    Type *t = calloc(1, sizeof(Type));
+    t->kind = TY_ENUM;
+    t->name = strdup(name);
+    ty_keep(t);
+    return t;
+}
+
 Type *type_func(int arity, Type **params, Type *ret) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_FUNC;
@@ -174,6 +182,9 @@ static void tp_inner(Type *t) {
         case TY_BOOL:   printf("bool"); break;
         case TY_ANY:    printf("any"); break;
         case TY_RESULT: printf("Result"); break;
+        case TY_ENUM:
+            printf("%s", t->name ? t->name : "enum");
+            break;
         case TY_NS:
             printf("module");
             break;
@@ -222,6 +233,7 @@ const char *ty_str(Type *t) {
     if (t->kind == TY_STRING) return "string";
     if (t->kind == TY_BOOL) return "bool";
     if (t->kind == TY_RESULT) return "Result";
+    if (t->kind == TY_ENUM) return t->name ? t->name : "enum";
     snprintf(buf, sizeof(buf), "<%s>", t->name ? t->name : "?");
     return buf;
 }
@@ -308,6 +320,26 @@ static void ck_free(Checker *c) {
     }
     c->all_scopes = NULL;
     c->structs = NULL;
+    EnumDef *e = c->enums;
+    while (e) {
+        EnumDef *en = e->next;
+        for (int j = 0; j < e->vcount; j++) {
+            free(e->vnames[j]);
+            /* vfields[j]/vfield_types[j] shells: the field-name strings are
+             * owned by the AST (freed with node_free); the Type* payloads
+             * belong to type_release_all(). Only the shells die here. */
+            free(e->vfields[j]);
+            free(e->vfield_types[j]);
+        }
+        free(e->vnames);
+        free(e->vfields);
+        free(e->vfield_types);
+        free(e->vfield_counts);
+        free(e->name);
+        free(e);
+        e = en;
+    }
+    c->enums = NULL;
 }
 
 void scope_put(CScope *s, const char *name, Type *t) {
@@ -421,12 +453,48 @@ void add_struct(Checker *c, const char *name, Type *t) {
     c->structs = d;
 }
 
+EnumDef *find_enum(Checker *c, const char *name) {
+    for (EnumDef *d = c->enums; d; d = d->next)
+        if (strcmp(d->name, name) == 0) return d;
+    return NULL;
+}
+
+void add_enum(Checker *c, EnumDef *d) {
+    d->next = c->enums;
+    c->enums = d;
+}
+
+/* A constructor name resolves to its enum + variant. Linear over every
+ * variant of every enum — the tables are file-sized, that is fine. */
+EnumDef *find_ctor(Checker *c, const char *name, int *vidx) {
+    for (EnumDef *d = c->enums; d; d = d->next)
+        for (int i = 0; i < d->vcount; i++)
+            if (strcmp(d->vnames[i], name) == 0) {
+                if (vidx) *vidx = i;
+                return d;
+            }
+    return NULL;
+}
+
+/* A variant name is a constructor file-wide (parser.c rewrites every bare
+ * use), so a let/param/func with the same name would be silently unreachable
+ * — the rewrite would win. Reject the declaration instead of letting the
+ * name mean two things. */
+void ck_ctor_shadow(Checker *c, const char *name, size_t line) {
+    if (find_ctor(c, name, NULL))
+        ck_fail(c, line,
+                "'%s' shadows an enum constructor (variant names are "
+                "reserved across the file)", name);
+}
+
 /* Resolve a named struct reference to its definition (or TY_ANY). */
 Type *resolve(Checker *c, Type *t, size_t line) {
     if (!t) return any_type();
     if (t->kind == TY_STRUCT && t->name) {
         StructDef *d = find_struct(c, t->name);
         if (!d) {
+            EnumDef *e = find_enum(c, t->name);
+            if (e) return e->type;
             /* Types exported by an imported module are already fully formed
              * (the dependency is type-checked before the importer), so they
              * are usable directly even though they are not registered in
@@ -446,11 +514,24 @@ bool type_compat(Checker *c, Type *src, Type *dst, size_t line) {
     if (!dst || dst->kind == TY_ANY) return true;
     if (src->kind == TY_NULL) return true;          /* all types nullable */
     if (src->kind == TY_INT && dst->kind == TY_FLOAT) return true; /* widen */
-    if (src->kind != dst->kind) return false;
+    if (src->kind != dst->kind) {
+        /* A TY_STRUCT shell is what the parser produces for every ident
+         * type; after resolve() the enum side is TY_ENUM. If the kinds
+         * disagree but the names agree, one of the two is an unresolved
+         * shell spelling the same declared type — accept it by name. */
+        bool s_named = (src->kind == TY_ENUM || src->kind == TY_STRUCT) && src->name;
+        bool d_named = (dst->kind == TY_ENUM || dst->kind == TY_STRUCT) && dst->name;
+        if (s_named && d_named && strcmp(src->name, dst->name) == 0)
+            return true;
+        return false;
+    }
 
     switch (src->kind) {
         case TY_LIST:
             return type_compat(c, src->elem, dst->elem, line);
+        case TY_ENUM:
+            return src->name && dst->name &&
+                   strcmp(src->name, dst->name) == 0;
         case TY_STRUCT: {
             if (src->name && dst->name)
                 return strcmp(src->name, dst->name) == 0;
@@ -555,6 +636,32 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
         }
     }
 
+    /* Pass A2: register every enum name the same way (same namespace as
+     * structs — a file cannot declare `type X` and `enum X`). */
+    for (int i = 0; i < prog->as.program.count && !c.failed; i++) {
+        Node *s = prog->as.program.stmts[i];
+        if (s->type != N_ENUM_DECL) continue;
+        if (find_enum(&c, s->as.enum_decl.name) ||
+            find_struct(&c, s->as.enum_decl.name)) {
+            ck_fail(&c, s->line, "type '%s' already defined",
+                    s->as.enum_decl.name);
+            break;
+        }
+        EnumDef *d = calloc(1, sizeof(EnumDef));
+        d->name = strdup(s->as.enum_decl.name);
+        d->vcount = s->as.enum_decl.vcount;
+        d->vnames = calloc((size_t)d->vcount + 1, sizeof(char *));
+        d->vfields = calloc((size_t)d->vcount + 1, sizeof(char **));
+        d->vfield_types = calloc((size_t)d->vcount + 1, sizeof(Type **));
+        d->vfield_counts = calloc((size_t)d->vcount + 1, sizeof(int));
+        for (int j = 0; j < d->vcount; j++) {
+            d->vnames[j] = strdup(s->as.enum_decl.vnames[j]);
+            d->vfield_counts[j] = s->as.enum_decl.vfield_counts[j];
+        }
+        d->type = type_enum(d->name);
+        add_enum(&c, d);
+    }
+
     /* Pass B: fill struct fields. */
     if (!c.failed) {
         for (int i = 0; i < prog->as.program.count && !c.failed; i++) {
@@ -570,18 +677,62 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
         }
     }
 
+    /* Pass B2: resolve enum payload types. Only the four scalars are
+     * allowed: the value is a runtime map, and a named-struct payload would
+     * have to travel as an aggregate through a map slot the emitters spell
+     * as i8* — that needs an explicit boxing decision before it can be
+     * more than a silent mismatch waiting to happen. */
+    if (!c.failed) {
+        for (int i = 0; i < prog->as.program.count && !c.failed; i++) {
+            Node *s = prog->as.program.stmts[i];
+            if (s->type != N_ENUM_DECL) continue;
+            EnumDef *d = find_enum(&c, s->as.enum_decl.name);
+            for (int j = 0; j < s->as.enum_decl.vcount && !c.failed; j++) {
+                int fc = s->as.enum_decl.vfield_counts[j];
+                if (fc == 0) continue;
+                d->vfields[j] = calloc((size_t)fc + 1, sizeof(char *));
+                d->vfield_types[j] = calloc((size_t)fc + 1, sizeof(Type *));
+                for (int k = 0; k < fc && !c.failed; k++) {
+                    d->vfields[j][k] = s->as.enum_decl.vfields[j][k];
+                    Type *ft = resolve(&c, s->as.enum_decl.vfield_types[j][k],
+                                       s->line);
+                    TypeKind k2 = ft ? ft->kind : TY_ANY;
+                    if (k2 != TY_INT && k2 != TY_FLOAT && k2 != TY_STRING &&
+                        k2 != TY_BOOL && k2 != TY_ANY)
+                        ck_fail(&c, s->line,
+                                "enum payload field '%s' must be int, float, "
+                                "string or bool (got %s)",
+                                d->vfields[j][k], ty_str(ft));
+                    d->vfield_types[j][k] = ft;
+                }
+            }
+        }
+    }
+
     /* Pass C: register function signatures (two passes so mutual recursion
      * between functions resolves). */
     for (int i = 0; i < prog->as.program.count && !c.failed; i++) {
         Node *s = prog->as.program.stmts[i];
         if (s->type != N_FUNC_DECL) continue;
+        ck_ctor_shadow(&c, s->as.func.name, s->line);
         Type **params = calloc((size_t)s->as.func.arity + 1, sizeof(Type *));
-        for (int j = 0; j < s->as.func.arity; j++)
+        for (int j = 0; j < s->as.func.arity; j++) {
             params[j] = s->as.func.param_types[j]
                             ? resolve(&c, s->as.func.param_types[j], s->line)
                             : any_type();
+            /* Write the resolved type back: the native emitters read the
+             * AST's param_types directly, and a TY_STRUCT shell spelled
+             * `Shape` must not be mistaken for a struct aggregate when the
+             * name is an enum (the emitters have no checker tables). Only
+             * annotated slots are written — NULL means "left to inference"
+             * and the signature pass keys off that. */
+            if (s->as.func.param_types[j])
+                s->as.func.param_types[j] = params[j];
+        }
         Type *ret = s->as.func.ret ? resolve(&c, s->as.func.ret, s->line)
                                    : any_type();
+        if (s->as.func.ret)
+            s->as.func.ret = ret;   /* same write-back, for the emitters */
         scope_decl(&c, c.scope, s->as.func.name,
                    type_func(s->as.func.arity, params, ret), s->line);
         if (s->is_export)

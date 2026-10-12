@@ -99,6 +99,11 @@ print(str(1 == 1.0));                // true
 print(str(1 < 1.5));                 // true
 ```
 
+**字符串的 `==` / `!=` 是内容比较**（逐字节，同 `strcmp` 语义，解释器与两个原生后端
+一致——原生侧走 `lume_str_eq`，不是指针比较；2026-10-12 修复，此前两个原生后端发
+的是 i8* 指针 icmp）。`<` / `<=` / `>` / `>=` 对字符串**未定义**（不保证三后端一致），
+不要用。
+
 ### 1.6 `/` 是浮点除法，`%` 是整数取模
 
 - **`/` 永远是浮点除法**，即使两边都是 `int`：`7 / 2 == 3.5`。想要整数除法需自行约定。
@@ -232,6 +237,41 @@ print(str(keys(p)));                 // ["x","y"]
 - **没有方法语法**。`type P = { get(): int }` 是语法错误（`expected :, got (`）。想在
   struct 上「挂函数」就把函数字段放进 map，用 `get(o, "f")()` 调（见 §6.1）。
 - 字段名可以和内建名同名（`{ len: int }` 合法），此时 `.len` 读字段而不是键数（见 §3.5）。
+
+### 3.7 enum 声明与 match 表达式（借鉴 Lean inductive 的日常面）
+
+```lume
+enum Color { Red | Green | Blue }
+enum Shape { Circle(r: float) | Rect(w: float, h: float) }
+```
+
+- **值的表示**：一个 enum 值就是一个 map，键 `"$"` 存变体名（`"$"` 不是合法标识符，
+  与任何用户字段零碰撞），载荷字段按声明名各存一份。`print(Red)` 与
+  `print({ "$": "Red" })` 同形——枚举值可进列表、可进 map、可当参数传。
+- **构造名是全文件的构造器**：`Red`、`Circle(1.0)` 在任何表达式位置可用；解析器在
+  解析后把 `V(args)` / 裸 `V` 改写成构造节点。构造名**不可被遮蔽**：let / 参数 /
+  函数与变体同名一律拒绝（`'Red' shadows an enum constructor (variant names are
+  reserved across the file)`）。
+- **载荷只限四种标量**：`int` / `float` / `string` / `bool`。列表、map、struct 载荷
+  在类型检查期拒绝。
+- **`match` 是表达式**，不是语句：`let w = match (c) { Red => "stop", ... };` 可以
+  出现在 return / let 初值 / 参数位 / 三元任意一侧。
+- **穷尽性是编译期检查**：臂必须覆盖全部变体，或以 `_` 收尾（通配臂**吸收**其余变体，
+  其绑定数为 0）。缺臂报 `match on 'Color' does not cover variant 'Blue' (add an
+  arm or '_')`。同一变体出现两个臂报 `duplicate match arm`。
+- **臂内绑定**：`Circle(r) => ...` 的 `r` 只在自己的臂里可见（解释器用臂级环境，
+  原生后端发射期注册并在臂尾截断）。绑定数与变体载荷数不符报
+  `variant 'Rect' carries 2 payload field(s), arm binds 1`。
+- **臂体统一**：所有臂按三元同一规则收拢——同型即该型，int/float 混合加宽为 float，
+  含 `any` 则整个 match 为 `any`（原生后端拒绝发射 `any` 结果槽，要求至少一个可
+  静态定型的臂）。
+- **原生后端的读侧**：`xs[0]`（enum 元素列表）、for-in、作为 `?` 展开结果——枚举值
+  一律按不透明 `i8*`（即 map 指针）读写，与解释器的 map 表示逐字节一致
+  （tests/native-consistency.lume 的 enum 探针段钉死）。
+- **跨模块**：enum 声明只在**本文件**可见（`export enum` 不存在）；导入方拿不到
+  变体构造器，也拿不到类型名。这是 MVP 限制（§8.1）。
+- **枚举值不参与 `==`**：两个枚举值的相等性未定义（map 指针比较，三后端不保证
+  一致）。要比较请 match 出载荷或比较 `get(v, "$")`。
 
 ---
 

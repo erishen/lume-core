@@ -130,6 +130,7 @@ static const struct {
     {"put", TOK_PUT}, {"patch", TOK_PATCH}, {"delete", TOK_DELETE},
     {"options", TOK_OPTIONS},
     {"verbs", TOK_VERBS},
+    {"enum", TOK_ENUM}, {"match", TOK_MATCH},
 };
 
 static TokenType keyword_type(const char *start, int len) {
@@ -277,7 +278,10 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
                 t = source[o.lx.pos + 1] == '=' ? (width = 2, TOK_NEQ) : TOK_NOT;
                 break;
             case '|':
-                t = source[o.lx.pos + 1] == '|' ? (width = 2, TOK_OR) : TOK_ERROR;
+                /* `||` stays the logical or; a lone `|` separates enum
+                 * variants — it used to be a lex error, so no existing
+                 * program can read the new meaning. */
+                t = source[o.lx.pos + 1] == '|' ? (width = 2, TOK_OR) : TOK_PIPE;
                 break;
             case '&':
                 t = source[o.lx.pos + 1] == '&' ? (width = 2, TOK_AND) : TOK_ERROR;

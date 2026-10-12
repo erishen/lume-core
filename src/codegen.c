@@ -300,6 +300,15 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
         collect_lambdas(n->as.ternary.then, out, cnt, cap);
         collect_lambdas(n->as.ternary.els,  out, cnt, cap);
         return;
+    case N_MATCH:
+        collect_lambdas(n->as.matchn.scrutinee, out, cnt, cap);
+        for (int i = 0; i < n->as.matchn.armc; i++)
+            collect_lambdas(n->as.matchn.arms[i].body, out, cnt, cap);
+        return;
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            collect_lambdas(n->as.ctor.args[i], out, cnt, cap);
+        return;
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
             collect_lambdas(n->as.list.items[i], out, cnt, cap);
@@ -355,6 +364,12 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
         else if (n->type == N_TYPE_DECL)
             sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
                       n->as.type_decl.field_types, n->as.type_decl.count);
+        /* An enum has no runtime presence of its own: every variant value is
+         * built at its construction site (a tagged map), the constructor
+         * rewrite happened in the parser, and the type rules live in the
+         * checker. Nothing to emit, nothing to skip silently. */
+        else if (n->type == N_ENUM_DECL)
+            continue;
     }
 
     /* ---- pass 1.5: infer the parameters and return types the source left out ----
@@ -402,6 +417,7 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
         Node *n = top[i];
         if (n->type == N_FUNC_DECL)      fns[nfns++] = n;
         else if (n->type == N_TYPE_DECL) continue;   /* already emitted */
+        else if (n->type == N_ENUM_DECL) continue;   /* no runtime presence */
         else if (n->type == N_IMPORT)    continue;   /* resolved by the loader */
         else {
             tops[ntops++] = n;

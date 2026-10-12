@@ -1,0 +1,6 @@
+enum Color { Red | Green | Blue }
+// 缺 Blue → 穷尽性拒绝
+func f(c: Color): string {
+  return match (c) { Red => "r", Green => "g" };
+}
+f(Red);

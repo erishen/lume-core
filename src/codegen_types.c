@@ -108,6 +108,9 @@ const char *llvm_type_of(Type *t)
     /* A list or a map lives on the heap (src/rt.c), so a value of this type
      * travels as the pointer itself — exactly like a string. */
     case TY_LIST:   return "i8*";
+    /* An enum value is the interpreter's `{ "$": variant, ...payload }` map —
+     * the same heap map, the same opaque pointer (docs/SPEC.md §enum). */
+    case TY_ENUM:   return "i8*";
     /* Result is `{ ok: ... }` / `{ err: ... }` -- the interpreter treats it as
      * an ordinary map and looks the two keys up at runtime (interp.c's
      * `propagate` branch), so natively it is the same heap map and travels as

@@ -398,7 +398,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -682,6 +682,41 @@ ternary-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ternary-test.out; then \
 		echo "==> ternary 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> ternary 单测全部通过"
+
+# enum + match (2026-10-12): 解释器 19 断言全 PASS; 8 个编译期拒绝各断言
+# 自己的诊断句(穷尽性/未知变体/重复臂/arity/载荷类型/非 enum match/构造名
+# 遮蔽/bind 数); 双原生后端同文件跑出同一份输出。值语义的横向一致由
+# native-consistency.lume 的 enum 探针段覆盖。
+enum-test: all
+	@./$(TARGET) tests/enum.lume > /tmp/lume-enum-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-enum-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-enum-test.out; then \
+		echo "==> enum 单测失败 (rc=$$rc)"; exit 1; fi; \
+	set -e; \
+	check_bad() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/enum-bad/$$f.lume > /tmp/lume-enum-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-enum-bad.out; then \
+	    echo "==> enum 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-enum-bad.out; exit 1; fi; \
+	  echo "ok   enum-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad bad-arity "expects 1 argument(s), got 2"; \
+	check_bad bad-payload-type "cannot use a value of type string where float is expected"; \
+	check_bad dup-arm "duplicate match arm"; \
+	check_bad match-non-enum "expected variant name in match arm"; \
+	check_bad missing-variant "does not cover variant"; \
+	check_bad shadow-ctor "shadows an enum constructor"; \
+	check_bad unknown-variant "has no variant"; \
+	check_bad wrong-binds "payload field(s), arm binds"; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/enum.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   enum: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/enum.lume -o /tmp/enum_$$be > /dev/null 2>&1 || { echo "==> enum $$be 编译失败"; exit 1; }; \
+	  /tmp/enum_$$be > /tmp/enum_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/enum_$$be.out || [ $$(grep -c PASS /tmp/enum_$$be.out) -ne 19 ]; then \
+	    echo "==> enum $$be 输出不符 (rc=$$rc):"; cat /tmp/enum_$$be.out; exit 1; fi; \
+	  echo "ok   enum: $$be 后端 19/19"; \
+	done; \
+	echo "==> enum 单测通过"
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
 # 把 HTTP_PROXY 指到死端口 127.0.0.1:9 作对照:绕过失效会撞死代理 => FAIL。

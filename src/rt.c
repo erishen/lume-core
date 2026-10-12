@@ -734,6 +734,17 @@ long lume_map_has(const LumeMap *m, const char *k)
     return map_find(m, k) >= 0;
 }
 
+/* Content string equality for the emitters. The interpreter's `==` walks
+ * values_equal (strcmp on the bytes), but the emitters spell `==` as an
+ * icmp on the two i8* pointers, which only ever agrees by pointer-luck.
+ * match's tag dispatch needs the real thing, so it calls this. */
+long lume_str_eq(const char *a, const char *b)
+{
+    if (a == b) return 1;
+    if (!a || !b) return 0;
+    return strcmp(a, b) == 0;
+}
+
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)
 {
     long i = map_find(m, k);

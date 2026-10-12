@@ -23,6 +23,7 @@ void ck_fn(Checker *c, char **names, Type *ft, Node *body) {
     int loop_saved = c->loop_depth;
     c->scope = scope_new(saved);
     for (int i = 0; i < ft->count; i++) {
+        ck_ctor_shadow(c, names[i], body ? body->line : 0);
         /* Same reason as the top-level `let` in ck_stmt: the body is walked
          * twice, and re-running scope_decl on the parameters would report a
          * duplicate binding the second time around. */
@@ -148,8 +149,14 @@ void ck_stmt(Checker *c, Node *n) {
             ck_blk(c, n);
             return;
         case N_LET: {
+            ck_ctor_shadow(c, n->as.let.name, n->line);
             Type *annot = n->as.let.annot ? resolve(c, n->as.let.annot, n->line)
                                           : NULL;
+            /* Write the resolved annotation back for the native emitters —
+             * they read let.annot directly and have no checker tables, so a
+             * `Shape` shell must arrive as the TY_ENUM def (see pass C in
+             * typecheck.c for the param/ret side of the same story). */
+            if (n->as.let.annot) n->as.let.annot = annot;
             Type *it = ck_expr(c, n->as.let.init, annot);
             if (annot && !type_compat(c, it, annot, n->line)) {
                 ck_fail(c, n->line, "'%s' is not assignable to the declared type '%s' of '%s'",
@@ -238,6 +245,8 @@ void ck_stmt(Checker *c, Node *n) {
             return;
         }
         case N_TYPE_DECL: /* registered in pass A, filled in pass B */
+            return;
+        case N_ENUM_DECL: /* registered in pass A2, filled in pass B2 */
             return;
         case N_SERVER:
             for (int i = 0; i < n->as.server.count; i++)

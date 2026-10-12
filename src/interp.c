@@ -287,6 +287,73 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
                                               : n->as.ternary.els, env);
             }
             return;
+        case N_CTOR: {
+            /* 构造值 = 带 "$" 标签的 map：`{ "$": V, f1: a1, ... }`。字段名
+             * 由 parser.c 的 resolve_ctors 盖戳（借用 enum decl），这里无需
+             * 查任何表。 */
+            Obj *m = AS_OBJ(make_map(vm));
+            vm_push(vm, val_obj(m)); /* root during construction */
+            Value tag = make_string_cstr(vm, n->as.ctor.name);
+            map_set(vm, m, "$", tag);
+            for (int i = 0; i < n->as.ctor.argc; i++) {
+                eval_expr(vm, n->as.ctor.args[i], env);
+                if (vm->error) return;
+                Value v = vm_pop(vm);
+                map_set(vm, m, n->as.ctor.fields[i], v);
+            }
+            return; /* map stays on stack */
+        }
+        case N_MATCH: {
+            /* 标签分发：读 "$"，逐臂比对（或通配），臂内绑定进子作用域。
+             * typecheck 已保证穷尽；未命中的运行时形状（伪造 map）报错。 */
+            eval_expr(vm, n->as.matchn.scrutinee, env);
+            if (vm->error) return;
+            Value sv = vm_pop(vm);
+            if (!IS_OBJ(sv) || AS_OBJ(sv)->type != OBJ_MAP) {
+                vm_set_error(vm, "line %zu: match needs an enum value",
+                             n->line);
+                return;
+            }
+            int found = 0;
+            Value tagv = map_get(vm, AS_OBJ(sv), "$", &found);
+            if (!found || !IS_OBJ(tagv) ||
+                AS_OBJ(tagv)->type != OBJ_STRING) {
+                vm_set_error(vm,
+                        "line %zu: match needs an enum value (a map with a "
+                        "'$' variant tag)", n->line);
+                return;
+            }
+            const char *tag = obj_string(AS_OBJ(tagv));
+            for (int i = 0; i < n->as.matchn.armc; i++) {
+                MatchArm *arm = &n->as.matchn.arms[i];
+                bool hit = strcmp(arm->vname, "_") == 0 ||
+                           strcmp(arm->vname, tag) == 0;
+                if (!hit) continue;
+                Value envv = make_env(vm, env);
+                vm_push(vm, envv); /* root the fresh frame until activated */
+                Env *arm_env = (Env *)AS_OBJ(envv);
+                for (int k = 0; k < arm->bindc; k++) {
+                    int f2 = 0;
+                    Value pv = map_get(vm, AS_OBJ(sv), arm->vfields[k], &f2);
+                    env_set(vm, arm_env, arm->binds[k],
+                            f2 ? pv : val_null());
+                }
+                /* Same dynamic-root dance as a call frame: hand the arm env
+                 * to vm->active_envs (the GC marks that chain), drop the
+                 * explicit stack root, and only then evaluate the body — the
+                 * value the body pushes must be the thing this eval leaves
+                 * on top of the stack. */
+                arm_env->next_active = vm->active_envs;
+                vm->active_envs = arm_env;
+                vm_pop(vm); /* drop the explicit root; active_envs holds it */
+                eval_expr(vm, arm->body, arm_env);
+                vm->active_envs = arm_env->next_active;
+                return;
+            }
+            vm_set_error(vm, "line %zu: no match arm for variant '%s'",
+                         n->line, tag);
+            return;
+        }
         case N_CALL:
             eval_expr_call(vm, n, env);
             return;
@@ -721,7 +788,8 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
             return;
         }
         case N_TYPE_DECL:
-            /* type declarations are checked statically, then vanish */
+        case N_ENUM_DECL:
+            /* type/enum declarations are checked statically, then vanish */
             return;
         case N_SERVER: {
             if (!vm->server_config)

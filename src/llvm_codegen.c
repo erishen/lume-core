@@ -72,6 +72,14 @@ static char *xstrdup(const char *s)
 typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line; } Asg;
 typedef struct { Asg *v; int n, cap; } Asgs;
 
+/* A name whose type is already known but which has no slot yet — the
+ * match-arm binds live here only while their arm body's type is inferred. */
+typedef struct { char *name; Type *ty; } LTyp;
+typedef struct { LTyp *v; int n, cap; } LTys;
+
+/* Shared with the signature pass (codegen_sig.c): linear lookup by name. */
+Type *lt_find(LTys *t, const char *name);
+
 typedef struct { char *name; Type *ret; Type **params; int arity; } Sig;
 typedef struct { Sig *v; int n, cap; } Sigs;
 
@@ -106,6 +114,12 @@ typedef struct {
      * pre-scanned table instead of scanning the body a second time. */
     int    scanning_top;
     Asgs  *preset_locals;
+
+    /* Match-arm binds, for the window their arm body's type is inferred in
+     * (the infer below reads it as a last resort); empty outside that
+     * window, released when the outermost match is done. Mirrors the field
+     * of the same name in codegen_internal.h's CG. */
+    LTys   arm_scope;
 
     char   err[1024];
     int    tid;
@@ -304,6 +318,11 @@ static LLVMTypeRef ty_of(CG *g, Type *t)
     case TY_STRING: return g->i8ptr;
     case TY_NULL:   return g->i8ptr;   /* opaque null pointer; rt.c prints it */
     case TY_LIST:   return g->i8ptr;
+    case TY_ENUM:
+        /* An enum value is the interpreter's `{ "$": variant, ...payload }`
+         * map — the same heap map, the same opaque pointer. Kept in step
+         * with llvm_type_of() in codegen_types.c (docs/SPEC.md §enum). */
+        return g->i8ptr;
     case TY_RESULT:
         /* Result is `{ ok: ... }` / `{ err: ... }`, and the interpreter treats
          * it as an ordinary map (interp.c's `propagate` branch looks the two
@@ -370,6 +389,8 @@ typedef struct { LLVMValueRef v; Type *ty; } Val;
 
 static Val coerce(CG *g, Type *to, Val v, size_t line);
 static const char *list_at_fn(Type *ty);   /* element accessor, defined with for-in */
+static LLVMValueRef rt_decl(CG *g, const char *name, LLVMTypeRef ret,
+                            LLVMTypeRef *params, int n);   /* declared-once helper */
 static int struct_is_addr(LLVMValueRef v); /* defined with cg_builtin's tail */
 static Val cg_assign_mem(CG *g, Node *n);   /* defined with cg_stmt, used by cg_expr */
 static Val cg_index(CG *g, Node *n);        /* m["k"] / l[0] -- defined after cg_expr */
@@ -406,6 +427,8 @@ static const char *node_type_name(NodeType t)
     case N_BINARY:  return "binary";            case N_TERNARY: return "ternary";
     case N_IMPORT: return "import";
     case N_INDEX:   return "index";
+    case N_ENUM_DECL: return "enum";
+    case N_MATCH:   return "match";             case N_CTOR: return "constructor";
     }
     return "node";
 }
@@ -565,6 +588,22 @@ static Val cg_binary(CG *g, Node *n)
                                            LLVMRealOLE, LLVMRealOGT, LLVMRealOGE };
             return val_make(type_prim(TY_BOOL),
                             LLVMBuildFCmp(g->ab, (LLVMRealPredicate)op[k], a.v, b.v, "c"));
+        }
+        if (a.ty && a.ty->kind == TY_STRING &&
+            (n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE)) {
+            /* String equality is a byte comparison — same branch, same
+             * reasoning, as codegen_expr.c's copy: an ICmp on the two i8*
+             * pointers would agree by pointer-luck at best. */
+            LLVMTypeRef at2[2] = { g->i8ptr, g->i8ptr };
+            LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->i64, at2, 2, 0),
+                    rt_decl(g, "lume_str_eq", g->i64, at2, 2),
+                    (LLVMValueRef[]){ a.v, b.v }, 2, "eq");
+            LLVMValueRef b1 = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
+                                            LLVMConstInt(g->i64, 0, 0), "isb");
+            if (n->as.binary.op == OP_NE)
+                b1 = LLVMBuildXor(g->ab, b1, LLVMConstInt(g->i1, 1, 0), "not");
+            return val_make(type_prim(TY_BOOL), b1);
         }
         static const unsigned op[] = { LLVMIntEQ, LLVMIntNE, LLVMIntSLT,
                                        LLVMIntSLE, LLVMIntSGT, LLVMIntSGE };
@@ -756,7 +795,8 @@ static const char *map_get_fn(Type *ty)
     case TY_BOOL:   return "lume_map_get_i";
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "lume_map_get_obj";
+    case TY_RESULT:
+    case TY_ENUM:   return "lume_map_get_obj";
     default:        return NULL;
     }
 }
@@ -777,7 +817,8 @@ static const char *list_push_fn(Type *ty)
      * but not the other compiles on one backend and not the other. */
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "lume_list_push_obj";
+    case TY_RESULT:
+    case TY_ENUM:   return "lume_list_push_obj";
     default:        return NULL;
     }
 }
@@ -793,7 +834,8 @@ static const char *map_put_fn(Type *ty)
     case TY_BOOL:   return "lume_map_put_i";
     case TY_LIST:
     case TY_STRUCT:
-    case TY_RESULT: return "lume_map_put_obj";
+    case TY_RESULT:
+    case TY_ENUM:   return "lume_map_put_obj";
     default:        return NULL;
     }
 }
@@ -835,6 +877,13 @@ static Type *infer_list_elem(Node *lit)
             case LIT_FALSE: t = type_prim(TY_BOOL);   break;
             default: break;
             }
+        }
+        else if (e->type == N_CTOR) {
+            /* A bare constructor value (`[Red, Green]`): resolve_ctors
+             * stamped the enum's name onto the node, so the element type is
+             * statically spelled. Same branch as codegen_expr.c's shared
+             * copy of this function. */
+            t = e->as.ctor.ename ? type_enum(e->as.ctor.ename) : NULL;
         }
         if (!t) return NULL;          /* a call, another list, ... is not static */
         if (et && et->kind != t->kind) return NULL;
@@ -1080,6 +1129,16 @@ static Val cg_print(CG *g, Node *n, Val a)
         /* A Result *is* a map ({ ok: ... } / { err: ... }), so it prints
          * through the same runtime helper. Kept in step with cg_print() in
          * codegen_expr.c, which the text emitter uses. */
+        {
+            LLVMTypeRef p[1] = { g->i8ptr };
+            LLVMValueRef v[1] = { a.v };
+            return val_make(type_prim(TY_INT),
+                            LLVMBuildCall2(g->ab, LLVMFunctionType(ret, p, 1, 0),
+                                           rt_decl(g, "lume_map_print", ret, p, 1),
+                                           v, 1, "p"));
+        }
+    case TY_ENUM:
+        /* An enum value is the same heap map with a "$" tag. */
         {
             LLVMTypeRef p[1] = { g->i8ptr };
             LLVMValueRef v[1] = { a.v };
@@ -1985,6 +2044,8 @@ static Val cg_call(CG *g, Node *n)
 }
 
 static Val cg_ternary(CG *g, Node *n);
+static Val cg_ctor(CG *g, Node *n);
+static Val cg_match(CG *g, Node *n);
 
 static Val cg_expr(CG *g, Node *n)
 {
@@ -2002,6 +2063,8 @@ static Val cg_expr(CG *g, Node *n)
     case N_UNARY:    return cg_unary(g, n);
     case N_BINARY:   return cg_binary(g, n);
     case N_TERNARY:  return cg_ternary(g, n);
+    case N_MATCH:    return cg_match(g, n);
+    case N_CTOR:     return cg_ctor(g, n);
     case N_MEMBER:   return cg_member(g, n);
     case N_INDEX:    return cg_index(g, n);
     case N_CALL:     return cg_call(g, n);
@@ -2050,6 +2113,7 @@ static Val cg_index(CG *g, Node *n)
     case TY_FLOAT:
         ret_ty = g->dbl;  fn = "lume_index_float";  break;
     case TY_STRING: case TY_STRUCT: case TY_LIST: case TY_NULL: case TY_ANY:
+    case TY_ENUM:   /* an enum value is the same opaque i8* a container is */
         ret_ty = g->i8ptr; fn = "lume_index_ptr";  break;
     default:
         ret_ty = g->i64;  fn = "lume_index_int";   break;  /* int / bool */
@@ -2160,6 +2224,157 @@ static Val cg_ternary(CG *g, Node *n)
     return val_make(rty, LLVMBuildLoad2(g->ab, slot, res, "t"));
 }
 
+/* An enum constructor: the interpreter's `{ "$": V, ...payload }` map, built
+ * with the same runtime helpers a map literal uses. Kept in step with
+ * cg_ctor() in codegen_expr.c (docs/SPEC.md §enum). */
+static Val cg_ctor(CG *g, Node *n)
+{
+    AT(g);
+    LLVMTypeRef newp[1] = { g->i8ptr };
+    LLVMValueRef nv[1] = { NULL };
+    LLVMValueRef m = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, NULL, 0, 0),
+                                    rt_decl(g, "lume_map_new", g->i8ptr, newp, 0),
+                                    nv, 0, "m");
+    if (!m) ERRV(g, "line %zu: cannot allocate an enum value", n->line);
+
+    Val k = val_make(type_prim(TY_STRING), cg_string_val(g, "$", 1));
+    Val tv = val_make(type_prim(TY_STRING),
+                      cg_string_val(g, n->as.ctor.name, strlen(n->as.ctor.name)));
+    LLVMTypeRef ats[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+    LLVMValueRef vs[3] = { m, k.v, tv.v };
+    Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_s", 3, ats, vs);
+    if (!r.v) ERRV(g, "line %zu: cannot store the variant tag", n->line);
+
+    for (int i = 0; i < n->as.ctor.argc; i++) {
+        Val v = cg_expr(g, n->as.ctor.args[i]);
+        Val fk = val_make(type_prim(TY_STRING),
+                          cg_string_val(g, n->as.ctor.fields[i],
+                                        strlen(n->as.ctor.fields[i])));
+        const char *fn = map_put_fn(v.ty);
+        if (!fn)
+            ERRV(g, "line %zu: enum payload must be int, float, string or bool",
+                 n->line);
+        if (v.ty && v.ty->kind == TY_BOOL) v = coerce(g, type_prim(TY_INT), v, n->line);
+        LLVMTypeRef pats[3] = { g->i8ptr, g->i8ptr, ty_of(g, v.ty) };
+        LLVMValueRef pvs[3] = { m, fk.v, v.v };
+        Val rr = rt_call(g, type_prim(TY_INT), fn, 3, pats, pvs);
+        if (!rr.v) ERRV(g, "line %zu: cannot store the payload", n->line);
+    }
+    return val_make(n->as.ctor.ename ? type_enum(n->as.ctor.ename)
+                                     : type_anon_struct(), m);
+}
+
+/* `match (s) { V(b, ...) => body, _ => body, ... }` — the libLLVM mirror of
+ * cg_match() in codegen_expr.c. Same lowering: read "$" once, lume_str_eq
+ * per arm (a plain `==` would icmp two pointers), the last arm unconditional
+ * (the checker only accepts exhaustive matches), binds allocad inside the
+ * arm block and g->locals truncated afterwards. */
+static Val cg_match(CG *g, Node *n)
+{
+    Type *rty = infer_node_type(g, n);
+    if (!rty || rty->kind == TY_ANY)
+        ERRV(g, "line %zu: cannot infer the match result type", n->line);
+    LLVMTypeRef slot;
+    switch (rty->kind) {
+    case TY_FLOAT:             slot = g->dbl;   break;
+    case TY_BOOL:              slot = g->i1;    break;
+    case TY_INT:               slot = g->i64;   break;
+    default:                   slot = g->i8ptr; break;
+    }
+
+    AT(g);
+    Val s = cg_expr(g, n->as.matchn.scrutinee);
+    if (!s.v) ERRV(g, "line %zu: bad match scrutinee", n->line);
+
+    LLVMValueRef dollark = cg_string_val(g, "$", 1);
+    LLVMTypeRef gats[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+    LLVMValueRef tag = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, gats, 3, 0),
+            rt_decl(g, "lume_map_get_s", g->i8ptr, gats, 3),
+            (LLVMValueRef[]){ s.v, dollark, LLVMConstNull(g->i8ptr) }, 3, "tag");
+
+    LLVMValueRef res = LLVMBuildAlloca(g->ab, slot, "mv");
+    LLVMBasicBlockRef lj = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mjoin");
+
+    for (int i = 0; i < n->as.matchn.armc; i++) {
+        MatchArm *arm = &n->as.matchn.arms[i];
+        bool last = i == n->as.matchn.armc - 1;
+        LLVMBasicBlockRef larm = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "marm");
+        LLVMBasicBlockRef lnext = last ? NULL
+            : LLVMAppendBasicBlockInContext(g->ctx, g->fn, "mnext");
+
+        if (strcmp(arm->vname, "_") == 0 || last) {
+            if (!DONE(g->cur)) LLVMBuildBr(g->ab, larm);
+        } else {
+            LLVMValueRef armk = cg_string_val(g, arm->vname, strlen(arm->vname));
+            LLVMValueRef eq64 = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->i64, gats, 2, 0),
+                    rt_decl(g, "lume_str_eq", g->i64,
+                            (LLVMTypeRef[]){ g->i8ptr, g->i8ptr }, 2),
+                    (LLVMValueRef[]){ tag, armk }, 2, "eq");
+            LLVMValueRef eq = LLVMBuildICmp(g->ab, LLVMIntNE, eq64,
+                                            LLVMConstInt(g->i64, 0, 0), "isv");
+            if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, eq, larm, lnext);
+        }
+
+        g->cur = larm; AT(g);
+        int saved_n = g->locals.n;
+        for (int kb = 0; kb < arm->bindc; kb++) {
+            Type *bt = arm->vfield_types ? arm->vfield_types[kb] : NULL;
+            LLVMTypeRef blt = bt ? ty_of(g, bt) : NULL;
+            if (!blt)
+                ERRV(g, "line %zu: match binding '%s' has no codegen type",
+                     arm->line, arm->binds[kb]);
+            const char *gfn = map_get_fn(bt);
+            if (!gfn)
+                ERRV(g, "line %zu: match binding '%s' payload must be int, "
+                        "float, string or bool", arm->line, arm->binds[kb]);
+            /* The rt helper's own spelling rules the call: lume_map_get_i
+             * (the bool reader) returns and takes i64, while the slot — and
+             * every later use of the bind — spells i1. Read as i64, narrow
+             * after; every other kind's helper spells exactly ty_of(bt).
+             * Same reasoning as cg_map_lit's bool coerce above. */
+            LLVMTypeRef call_ty = ty_of(g, bt);
+            if (bt->kind == TY_BOOL) call_ty = g->i64;
+            /* The alloca lives in the arm block (it dominates its own loads),
+             * so it is registered here with the value itself as its slot —
+             * this backend's asg_push carries the LLVMValueRef directly. */
+            LLVMValueRef bslot = LLVMBuildAlloca(g->ab, ty_of(g, bt),
+                                                 arm->binds[kb]);
+            LLVMValueRef fk = cg_string_val(g, arm->vfields[kb],
+                                            strlen(arm->vfields[kb]));
+            LLVMTypeRef pf[3] = { g->i8ptr, g->i8ptr, call_ty };
+            LLVMValueRef dflt = bt->kind == TY_FLOAT
+                                  ? LLVMConstReal(ty_of(g, bt), 0.0)
+                                : call_ty == g->i8ptr
+                                  ? LLVMConstNull(g->i8ptr)
+                                  : LLVMConstInt(call_ty, 0, 0);
+            LLVMValueRef pv = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(call_ty, pf, 3, 0),
+                    rt_decl(g, gfn, call_ty, pf, 3),
+                    (LLVMValueRef[]){ s.v, fk, dflt }, 3, "pv");
+            /* lume_map_get_i reads bools back as i64; the slot (and every
+             * later use of the bind) spells i1, so narrow here. */
+            if (bt->kind == TY_BOOL)
+                pv = LLVMBuildICmp(g->ab, LLVMIntNE, pv,
+                                   LLVMConstInt(g->i64, 0, 0), "pb");
+            LLVMBuildStore(g->ab, pv, bslot);
+            asg_push(&g->locals, arm->binds[kb], bt, bslot, arm->line);
+        }
+
+        Val bv = cg_expr(g, arm->body);
+        if (!bv.v) ERRV(g, "line %zu: bad match arm body", arm->line);
+        bv = coerce(g, rty, bv, arm->line);
+        LLVMBuildStore(g->ab, bv.v, res);
+        g->locals.n = saved_n; /* truncate this arm's binds */
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, lj);
+        if (lnext) { g->cur = lnext; AT(g); }
+    }
+
+    g->cur = lj; AT(g);
+    return val_make(rty, LLVMBuildLoad2(g->ab, slot, res, "mv"));
+}
+
 /* -------------------------------------------------------------- scanning ---- */
 
 /* The static type of `expr.field` without emitting anything. The entry-block
@@ -2175,6 +2390,35 @@ static Type *member_field_type(CG *g, Node *n)
         if (idx >= 0) return struct_field_type(g, t->name, idx);
     }
     return NULL;
+}
+
+/* Match-arm binds, for the window their arm body's type is inferred in.
+ * Mirrors codegen_scan.c's copy: a repeated name overwrites (no new
+ * strdup), distinct names are strdup'd once and freed by arm_scope_clear
+ * when the outermost match is done. */
+static void arm_scope_push(CG *g, const char *name, Type *ty)
+{
+    if (!name || !ty) return;
+    for (int i = 0; i < g->arm_scope.n; i++)
+        if (strcmp(g->arm_scope.v[i].name, name) == 0) {
+            g->arm_scope.v[i].ty = ty;
+            return;
+        }
+    if (g->arm_scope.n == g->arm_scope.cap) {
+        g->arm_scope.cap = g->arm_scope.cap ? g->arm_scope.cap * 2 : 8;
+        g->arm_scope.v = (LTyp *)xrealloc(g->arm_scope.v,
+                                          (size_t)g->arm_scope.cap * sizeof *g->arm_scope.v);
+    }
+    g->arm_scope.v[g->arm_scope.n].name = xstrdup(name);
+    g->arm_scope.v[g->arm_scope.n].ty   = ty;
+    g->arm_scope.n++;
+}
+
+static void arm_scope_clear(CG *g)
+{
+    for (int i = 0; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
+    free(g->arm_scope.v);
+    g->arm_scope = (LTys){0};
 }
 
 static Type *infer_node_type(CG *g, Node *n)
@@ -2196,7 +2440,8 @@ static Type *infer_node_type(CG *g, Node *n)
         /* A top-level binding lifts to a module global (SPEC 8.1 #10). */
         a = gvar_find(&g->gvars, n->as.var.name);
         if (a) return a->ty;
-        return NULL;
+        /* A match arm whose body is being type-inferred: its binds. */
+        return lt_find(&g->arm_scope, n->as.var.name);
     }
     case N_FUNC_LIT: {
         /* A closure value; thread the node through Type.func (mirrors
@@ -2307,6 +2552,39 @@ static Type *infer_node_type(CG *g, Node *n)
         if (tf && ef)
             return type_prim(TY_FLOAT);
         return NULL;
+    }
+    case N_CTOR:
+        /* 构造值的类型 = 它的 enum（resolve_ctors 盖了 ename）。 */
+        return n->as.ctor.ename ? type_enum(n->as.ctor.ename) : NULL;
+    case N_MATCH: {
+        /* 臂体按三元的统一规则收拢——与 codegen_scan.c 同一套。臂内绑定
+         * 只在它自己的臂里可见（arm_scope 推断窗口，嵌套 match 恢复外层
+         * 视图，最外层收尾释放）。 */
+        int saved = g->arm_scope.n;
+        Type *result = NULL;
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            MatchArm *arm = &n->as.matchn.arms[i];
+            g->arm_scope.n = saved;
+            for (int b = 0; b < arm->bindc; b++)
+                arm_scope_push(g, arm->binds[b],
+                               arm->vfield_types ? arm->vfield_types[b] : NULL);
+            Type *bt = infer_node_type(g, arm->body);
+            /* Same rule as codegen_scan.c: an arm with no statically
+             * readable type is skipped (its real type exists at emit time);
+             * only an explicit `any` arm widens the match. */
+            if (!bt) continue;
+            if (bt->kind == TY_ANY) { result = any_type(); break; }
+            if (!result) { result = bt; continue; }
+            if (result->kind == bt->kind) continue;
+            bool r_num = result->kind == TY_INT || result->kind == TY_FLOAT;
+            bool b_num = bt->kind == TY_INT || bt->kind == TY_FLOAT;
+            if (r_num && b_num) { result = type_prim(TY_FLOAT); continue; }
+            result = NULL;
+            break;
+        }
+        g->arm_scope.n = saved;
+        if (saved == 0) arm_scope_clear(g);
+        return result ? result : any_type();
     }
     default:
         return NULL;
@@ -2477,7 +2755,7 @@ static Val coerce(CG *g, Type *to, Val v, size_t line)
      * (string/list/struct) stay legal; lume_print_str and friends absorb the
      * null. */
     if (v.ty->kind == TY_NULL && to->kind != TY_STRING && to->kind != TY_LIST &&
-        to->kind != TY_STRUCT && to->kind != TY_ANY)
+        to->kind != TY_STRUCT && to->kind != TY_ANY && to->kind != TY_ENUM)
         ERRV(g, "line %zu: cannot use 'null' as a %s value in the native backend",
              line, src_type_name(to));
 
@@ -2571,6 +2849,10 @@ static const char *list_at_fn(Type *ty)
     case TY_STRING: return "lume_list_at_s";
     case TY_INT:
     case TY_BOOL:   return "lume_list_at_i";
+    /* Same branch as codegen_stmt.c's shared copy: an enum value is the
+     * opaque i8* at_obj hands back, and the loop variable keeps its enum
+     * type so print/match dispatch stay correct. */
+    case TY_ENUM:   return "lume_list_at_obj";
     default:        return NULL;
     }
 }
@@ -3059,6 +3341,15 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
         collect_lambdas(n->as.binary.left,  out, cnt, cap);
         collect_lambdas(n->as.binary.right, out, cnt, cap);
         return;
+    case N_MATCH:
+        collect_lambdas(n->as.matchn.scrutinee, out, cnt, cap);
+        for (int i = 0; i < n->as.matchn.armc; i++)
+            collect_lambdas(n->as.matchn.arms[i].body, out, cnt, cap);
+        return;
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            collect_lambdas(n->as.ctor.args[i], out, cnt, cap);
+        return;
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
             collect_lambdas(n->as.list.items[i], out, cnt, cap);
@@ -3123,6 +3414,13 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
         else if (n->type == N_TYPE_DECL)
             sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
                       n->as.type_decl.field_types, n->as.type_decl.count);
+        /* An enum has no runtime presence of its own: every variant value is
+         * built at its construction site (a tagged map), the constructor
+         * rewrite happened in the parser, and the type rules live in the
+         * checker. Nothing to emit, nothing to skip silently. Same branch as
+         * codegen.c's copy of this walk. */
+        else if (n->type == N_ENUM_DECL)
+            continue;
     }
 
     /* Struct bodies must exist before anything can name a field. */
@@ -3147,7 +3445,8 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
     int nfns = 0, ntops = 0;
     for (int i = 0; i < ntop; i++) {
         if (top[i]->type == N_FUNC_DECL) nfns++;
-        else if (top[i]->type == N_TYPE_DECL || top[i]->type == N_IMPORT) continue;
+        else if (top[i]->type == N_TYPE_DECL || top[i]->type == N_IMPORT ||
+                 top[i]->type == N_ENUM_DECL) continue;
         else ntops++;
     }
     Node **fns  = nfns  > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfns)  : NULL;
@@ -3162,6 +3461,7 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
         for (int i = 0; i < ntop; i++) {
             if (top[i]->type == N_FUNC_DECL)      fns[k++] = top[i];
             else if (top[i]->type == N_TYPE_DECL) continue;   /* emitted above */
+            else if (top[i]->type == N_ENUM_DECL) continue;   /* no runtime presence */
             else if (top[i]->type == N_IMPORT)    continue;   /* the loader resolved it */
             else {
                 tops[m++] = top[i];
