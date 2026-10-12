@@ -1,0 +1,20 @@
+// tests/docroot-srv.lume — docroot 静态服务的被测服务端 (2026-10-12)
+// 由 make docroot-test 后台拉起, curl 打点后杀掉。端口 18892。
+// 路由优先于静态: /api 命中路由 handler; 其余 GET 未命中路由时回落
+// docroot 静态文件(缺失/穿越 -> 404)。
+
+server {
+  port = 18892;
+  docroot = "./tests/fixtures/docroot";
+}
+
+get "/api", func(req) {
+  return {ok: true, src: "route"};
+};
+
+// 动态段: :id 捕获进 req.params (agent-httpd 同款, 2026-10-12)
+get "/api/item/:id", func(req) {
+  return {ok: true, id: get(req.params, "id")};
+};
+
+run();

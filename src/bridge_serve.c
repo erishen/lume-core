@@ -179,7 +179,10 @@ static void value_to_json(VM *vm, sbuf *b, Value v)
     }
     case VAL_FLOAT: {
         char tmp[48];
-        snprintf(tmp, sizeof tmp, "%.17g", v.as.n);
+        /* %g, matching value.c's json_append_value (and the host bridge):
+         * %.17g round-trips exactly but prints 1234.56 as
+         * 1234.5599999999999, which broke response parity with the host. */
+        snprintf(tmp, sizeof tmp, "%g", v.as.n);
         sb_str(b, tmp);
         break;
     }
@@ -222,7 +225,55 @@ static void value_to_json(VM *vm, sbuf *b, Value v)
 
 /* ---- request object ---- */
 
-static Value make_req_map(VM *vm, const HttpReq *r)
+/* Match a route pattern against a request path, agent-httpd style: literal
+ * segments compare exactly, a ":name" segment captures the corresponding
+ * request segment (URL-decoded). Returns a params map ({id: "1"} for
+ * "/api/user/:id" vs "/api/user/1") or VAL_NULL when the pattern does not
+ * match. The map is rooted while being filled. */
+static Value match_dynamic_route(VM *vm, const char *pattern, const char *path)
+{
+    char pc[1024], qc[1024];
+    snprintf(pc, sizeof pc, "%s", pattern);
+    snprintf(qc, sizeof qc, "%s", path);
+
+    Value pm = make_map(vm);
+    vm_push(vm, pm);
+    Obj *po = AS_OBJ(pm);
+    int ok = 1;
+
+    char *psave = NULL, *qsave = NULL;
+#if defined(_WIN32)
+    char *pt = strtok_s(pc, "/", &psave);
+    char *qt = strtok_s(qc, "/", &qsave);
+#else
+    char *pt = strtok_r(pc, "/", &psave);
+    char *qt = strtok_r(qc, "/", &qsave);
+#endif
+    while (ok) {
+        if (!pt && !qt) break;              /* both exhausted: match */
+        if (!pt || !qt) { ok = 0; break; }  /* segment count differs */
+        if (pt[0] == ':') {
+            char decoded[512];
+            url_decode(qt, decoded, sizeof decoded);
+            map_set(vm, po, pt + 1, make_string_cstr(vm, decoded));
+        } else if (strcmp(pt, qt) != 0) {
+            ok = 0;
+            break;
+        }
+#if defined(_WIN32)
+        pt = strtok_s(NULL, "/", &psave);
+        qt = strtok_s(NULL, "/", &qsave);
+#else
+        pt = strtok_r(NULL, "/", &psave);
+        qt = strtok_r(NULL, "/", &qsave);
+#endif
+    }
+    vm_pop(vm);
+    if (!ok) return val_null();
+    return pm;
+}
+
+static Value make_req_map(VM *vm, const HttpReq *r, Value route_params)
 {
     Value m = make_map(vm);
     Obj *o = AS_OBJ(m);
@@ -257,6 +308,15 @@ static Value make_req_map(VM *vm, const HttpReq *r)
         free(copy);
     }
     map_set(vm, o, "query_params", qp);
+
+    /* Dynamic route captures (:id etc.); an empty map on literal routes so
+     * req.params always exists, mirroring the host bridge's shape. */
+    if (IS_OBJ(route_params) && AS_OBJ(route_params)->type == OBJ_MAP)
+        map_set(vm, o, "params", route_params);
+    else {
+        Value empty = make_map(vm);
+        map_set(vm, o, "params", empty);
+    }
 
     if (r->body_len)
         map_set(vm, o, "body", make_string(vm, r->body, r->body_len));
@@ -449,12 +509,116 @@ static int parse_request(const char *head, size_t hlen, HttpReq *req)
     return 0;
 }
 
+/* ---- static files (docroot) ---- */
+
+/* extension compare, case-insensitive, no strcasecmp (mingw availability) */
+static int ext_eq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static const char *mime_of(const char *path)
+{
+    static const struct { const char *ext, *mime; } tab[] = {
+        {".html", "text/html; charset=utf-8"},
+        {".htm",  "text/html; charset=utf-8"},
+        {".css",  "text/css; charset=utf-8"},
+        {".js",   "text/javascript; charset=utf-8"},
+        {".mjs",  "text/javascript; charset=utf-8"},
+        {".json", "application/json; charset=utf-8"},
+        {".svg",  "image/svg+xml"},
+        {".png",  "image/png"},
+        {".jpg",  "image/jpeg"},
+        {".jpeg", "image/jpeg"},
+        {".gif",  "image/gif"},
+        {".ico",  "image/x-icon"},
+        {".txt",  "text/plain; charset=utf-8"},
+        {".xml",  "application/xml"},
+        {".pdf",  "application/pdf"},
+        {".woff", "font/woff"},
+        {".woff2","font/woff2"},
+        {".wasm", "application/wasm"},
+        {NULL, NULL},
+    };
+    const char *dot = strrchr(path, '.');
+    if (!dot) return "application/octet-stream";
+    for (int i = 0; tab[i].ext; i++)
+        if (ext_eq(dot, tab[i].ext)) return tab[i].mime;
+    return "application/octet-stream";
+}
+
+#define STATIC_MAX (64 * 1024 * 1024)
+
+/* Answer a route-miss GET from docroot. Returns 1 when the request has been
+ * answered (200 with the file, or a 404: traversal attempt / missing file),
+ * 0 when docroot is unset so the caller can emit its plain route 404.
+ * The request path is URL-decoded BEFORE the ".." check, so %2e%2e cannot
+ * slip past the traversal guard. Directory-shaped paths (trailing '/') map
+ * to index.html inside that directory. */
+static int serve_static(SockFd fd, const char *docroot, const char *path)
+{
+    if (!docroot || !docroot[0]) return 0;
+
+    char rel[1024];
+    url_decode(path, rel, sizeof rel);
+    if (strstr(rel, "..")) { /* traversal: hard 404, never resolved */
+        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        return 1;
+    }
+    size_t rlen = strlen(rel);
+    if (rlen > 0 && rel[rlen - 1] == '/' && rlen + 11 < sizeof rel)
+        strcpy(rel + rlen, "index.html");
+    if (strcmp(rel, "/") == 0)
+        snprintf(rel, sizeof rel, "/index.html");
+
+    char full[2048];
+    snprintf(full, sizeof full, "%s%s", docroot, rel);
+
+    FILE *fp = fopen(full, "rb");
+    if (!fp) {
+        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        return 1;
+    }
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return 1; }
+    long sz = ftell(fp);
+    if (sz < 0 || sz > STATIC_MAX || fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        return 1;
+    }
+    char *buf = malloc(sz > 0 ? (size_t)sz : 1);
+    if (!buf) {
+        fclose(fp);
+        send_resp(fd, 500, "text/plain; charset=utf-8", "out of memory", 13,
+                  NULL);
+        return 1;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    if (got != (size_t)sz) {
+        free(buf);
+        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        return 1;
+    }
+    send_resp(fd, 200, mime_of(full), buf, got, NULL);
+    free(buf);
+    return 1;
+}
+
 /* ---- entry point ---- */
 
 void bridge_run(VM *vm)
 {
     const char *host = "127.0.0.1";
     long port = 8082;
+    const char *docroot = NULL;
 
     if (vm->server_config) {
         Obj *cfg = vm->server_config;
@@ -466,6 +630,9 @@ void bridge_run(VM *vm)
                 host = obj_string(AS_OBJ(v));
             else if (strcmp(k, "port") == 0 && IS_INT(v))
                 port = (long)v.as.i;
+            else if (strcmp(k, "docroot") == 0 && IS_OBJ(v) &&
+                     AS_OBJ(v)->type == OBJ_STRING)
+                docroot = obj_string(AS_OBJ(v));
         }
     }
 
@@ -593,7 +760,31 @@ void bridge_run(VM *vm)
                 match = r;
         }
 
+        /* Literal miss: retry with dynamic patterns ("/api/u/:id"). Exact
+         * matches above always win; patterns are tried in registration
+         * order, agent-httpd style. */
+        Value route_params = val_null();
         if (!match) {
+            for (int i = 0; i < vm->route_count && !match; i++) {
+                RouteRec *r = &vm->routes[i];
+                if (strcmp(r->method, req.method) != 0) continue;
+                if (strchr(r->path, ':') == NULL) continue;
+                Value pm = match_dynamic_route(vm, r->path, req.path);
+                if (!IS_NULL(pm)) {
+                    match = r;
+                    route_params = pm;
+                }
+            }
+        }
+
+        if (!match) {
+            /* Route miss: fall back to docroot static files for GET (the
+             * host's agent-httpd docroot behaviour, now in-tree). */
+            if (strcmp(req.method, "GET") == 0 &&
+                serve_static(cfd, docroot, req.path)) {
+                sock_close(cfd);
+                continue;
+            }
             send_resp(cfd, 404, "text/plain; charset=utf-8",
                       "not found", 9, NULL);
             sock_close(cfd);
@@ -601,7 +792,7 @@ void bridge_run(VM *vm)
         }
 
         req.label = match->label;
-        Value reqv = make_req_map(vm, &req);
+        Value reqv = make_req_map(vm, &req, route_params);
 
         vm->error = false;
         vm->error_msg[0] = '\0';
