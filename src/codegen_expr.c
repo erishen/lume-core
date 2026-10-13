@@ -1270,11 +1270,11 @@ static Val cg_member(CG *g, Node *n)
 
     struct_addr(g, &obj);
 
-    /* The type checker does not always stamp the struct type onto the member
-     * node, so fall back to the type of the object expression — that is what
-     * makes `r.w` work on a parameter of a struct type. */
-    Type *st = n->as.member.type;
-    if (!st || st->kind != TY_STRUCT || !st->name) st = obj.ty;
+    /* Look the field up through the *object's* type, not the member node's
+     * own type: the member node carries the field's *result* type (so
+     * `o1.inner` stamps `Inner`), which would send the lookup to the wrong
+     * struct. The object is always the owner of the field. */
+    Type *st = obj.ty;
     if (!st || st->kind != TY_STRUCT || !st->name) {
         free(obj.v);
         ERRV(g, "line %zu: field access on a non-struct value", n->line);
@@ -1303,6 +1303,15 @@ static Val cg_member(CG *g, Node *n)
         ERRV(g, "line %zu: field '%s' has no codegen type", n->line, n->as.member.name);
     }
 
+    /* A struct field is returned by address, so a chain like `o1.inner.x`
+     * keeps working: the next member access GEPs this address, and print()/
+     * stringify() read it through the same path as a struct variable (which
+     * is also an address). Scalar fields are loaded into a value as before. */
+    if (fty->kind == TY_STRUCT && fty->name) {
+        Val rv = val_make(fty, p);
+        free(obj.v); free(p);
+        return rv;
+    }
     char *r = emit_instrf(g, fty, "load %s, %s* %s", llvm_type_of(fty), llvm_type_of(fty), p);
     free(obj.v); free(p);
     if (!r) ERRV(g, "line %zu: cannot read '%s'", n->line, n->as.member.name);
@@ -1397,15 +1406,41 @@ static Val cg_struct_lit(CG *g, Node *n)
 
     char *cur = xstrdup("undef");
     for (int j = 0; j < sd->count; j++) {
-        Val fv = cg_expr(g, n->as.map.vals[order[j]]);
         Type *fty = sd->types[j];
+        /* Pin the expected type to the field's declared type while lowering
+         * the field expression, so a *nested* struct literal resolves to the
+         * field's type instead of inheriting a leaked outer expectation
+         * (e.g. `{ inner: { x: 1 } }` used to resolve the inner literal as an
+         * `Outer` and complain that `Outer` is missing `inner`). The libLLVM
+         * emitter does the same; the text one did not. */
+        Type *prev = g->expect;
+        g->expect = fty;
+        Val fv = cg_expr(g, n->as.map.vals[order[j]]);
+        g->expect = prev;
         if (!llvm_type_of(fty)) { free(cur); free(fv.v); free(order);
             ERRV(g, "line %zu: field '%s' has no codegen type", n->line, sd->names[j]); }
         fv = coerce(g, fty, fv, n->line);
         if (g->err[0]) { free(cur); free(fv.v); free(order); return (Val){ NULL, NULL, 0 }; }
 
-        char *ins = emit_instrf_agg(g, "insertvalue %s %s, %s %s, %d",
-                                    st, cur, llvm_type_of(fty), fv.v, j);
+        /* A named-struct field may arrive as an address (a variable or member
+         * read — fv.agg == 0) rather than an aggregate value (a nested literal
+         * — fv.agg == 1). insertvalue needs the aggregate, so load it first.
+         * The serializer recursion already knows how to read a nested named
+         * struct, so this is all the constructor needs. */
+        char *ins;
+        if (fty->kind == TY_STRUCT && fty->name && !fv.agg) {
+            const char *stf = llvm_type_of(fty);
+            char *ld = emit_instrf(g, fty, "load %s, %s* %s", stf, stf, fv.v);
+            if (!ld) { free(cur); free(fv.v); free(order);
+                ERRV(g, "line %zu: cannot load nested struct field '%s'",
+                     n->line, sd->names[j]); }
+            ins = emit_instrf_agg(g, "insertvalue %s %s, %s %s, %d",
+                                  st, cur, stf, ld, j);
+            free(ld);
+        } else {
+            ins = emit_instrf_agg(g, "insertvalue %s %s, %s %s, %d",
+                                  st, cur, llvm_type_of(fty), fv.v, j);
+        }
         free(cur); free(fv.v);
         if (!ins) {
             free(order);
@@ -2192,9 +2227,17 @@ static Val emit_struct_to_map(CG *g, const char *sv, Type *st)
     const char *stn = llvm_type_of(st);
     if (!stn) { free(m.v); ERRV(g, "cannot serialize struct '%s'", st->name); }
 
-    for (int i = 0; i < st->count; i++) {
-        Type *fty   = st->types[i];
-        const char *fname = st->names[i];
+    /* A struct type handed in may be a bare name reference (count == 0) —
+     * that is what a member access returns, because struct_field_type() gives
+     * the codegen struct table's stored field type, which is kept as a
+     * reference. The declared field list therefore has to be resolved through
+     * the SDef by name; the variable's own type is the resolved one, which is
+     * why the nested case already worked. */
+    SDef *sd = st->name ? sdef_find(&g->structs, st->name) : NULL;
+
+    for (int i = 0; i < (sd ? sd->count : st->count); i++) {
+        Type *fty   = sd ? sd->types[i] : st->types[i];
+        const char *fname = sd ? sd->names[i] : st->names[i];
 
         char *key = cg_string_val(g, fname, strlen(fname));
         if (!key) { free(m.v); return (Val){ NULL, NULL, 0 }; }

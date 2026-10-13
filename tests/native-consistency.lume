@@ -25,11 +25,12 @@
 // Still three-way divergent, so kept out: `let x: list = null` (a bare null
 // bound to a container type; the native emitters cannot infer the variable)
 // and for-in over a list holding nulls (the element decays to list<any>,
-// the same refusal class as a heterogeneous list), constructing a literal
-// whose *field* is itself a named struct (the native emitters cannot yet
-// build a struct value holding a nested struct; once they do, the serializer
-// above already handles it) and typed binding m["k"] on a scalar map value
-// (native refuses it; use get()).
+// the same refusal class as a heterogeneous list) and typed binding
+// m["k"] on a scalar map value (native refuses it; use get()). A literal
+// whose *field* is itself a named struct now builds natively (the emitter
+// loads the nested aggregate before insertvalue), and `o.inner` member
+// access on a named-struct field prints/str()s through the same serializer
+// that handles `print(o)` recursion — both covered below.
 //
 // Adding coverage is fine once a backend actually implements a construct —
 // never before, otherwise the consistency suite goes red and hides its signal.
@@ -824,6 +825,33 @@ print(str(ns_r));
 print(stringify(ns_r));
 let ns_u = { ns_r with a: 9 };
 print(ns_u);
+
+// Nested named structs. A literal whose field is itself a named struct (both
+// from a variable and from an inline nested literal) must build natively, and
+// `o.sub` member access must serialize through the field's *declared* shape
+// — the codegen table keeps a bare struct reference, so the emitter looks the
+// struct up by name rather than trusting `st->count`. The `: Type` annotations
+// are required: a bare `let v = {...}` is inferred as an anonymous map by the
+// native backends (infer_node_type returns type_anon_struct for any map
+// literal), so only an annotated binding yields a named-struct value here.
+// Field names avoid the containers block's `x`/`y` keys on purpose — the type
+// checker unifies anonymous `{ x: ... }` literals against a named struct that
+// shares the field name, which would break unrelated code. All three backends.
+type NstIn = { u: int };
+type NstOut = { sub: NstIn };
+
+let nst_i: NstIn = { u: 1 };
+let nst_o1: NstOut = { sub: nst_i };
+let nst_o2: NstOut = { sub: { u: 2 } };
+print(nst_o1);
+print(nst_o2);
+print(nst_o1.sub);
+print(nst_o1.sub.u);
+print(nst_o2.sub.u);
+print(str(nst_o1));
+print(stringify(nst_o1));
+print(str(nst_o1.sub));
+print(str(nst_o2.sub));
 
 warmup();
 main();

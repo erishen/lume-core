@@ -406,6 +406,7 @@ static void cg_block(CG *g, Node *blk);
 static void struct_addr(CG *g, Val *o);
 static int struct_field_idx(CG *g, const char *sname, const char *fname);
 static Type *struct_field_type(CG *g, const char *sname, int idx);
+static int struct_is_addr(LLVMValueRef v);
 static LLVMValueRef gep_field(CG *g, Type *sty, LLVMValueRef ptrv, int idx);
 static LLVMValueRef cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line);
 static LLVMValueRef cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line);
@@ -927,11 +928,11 @@ static Val cg_member(CG *g, Node *n)
 
     struct_addr(g, &obj);
 
-    /* The checker does not always stamp the struct type onto a member node, so
-     * fall back to the object's type — that is what makes `r.w` work on a
-     * struct parameter. */
-    Type *st = n->as.member.type;
-    if (!st || st->kind != TY_STRUCT || !st->name) st = obj.ty;
+    /* Look the field up through the *object's* type, not the member node's
+     * own type: the member node carries the field's *result* type (so
+     * `o1.inner` stamps `Inner`), which would send the lookup to the wrong
+     * struct. The object is always the owner of the field. */
+    Type *st = obj.ty;
     if (!st || st->kind != TY_STRUCT || !st->name)
         ERRV(g, "line %zu: field access on a non-struct value", n->line);
 
@@ -950,6 +951,13 @@ static Val cg_member(CG *g, Node *n)
      * was never loaded, so obj.v is its address already. */
     LLVMValueRef p = gep_field(g, st, obj.v, idx);
     if (!p) ERRV(g, "line %zu: cannot take the address of '%s'", n->line, n->as.member.name);
+
+    /* A struct field is returned by address, so a chain like `o1.inner.x`
+     * keeps working; scalar fields are loaded into a value as before. The
+     * struct travels as a pointer through the rest of the pipeline, matching
+     * how a struct variable is already represented. */
+    if (fty->kind == TY_STRUCT && fty->name)
+        return val_make(fty, p);
     return val_make(fty, LLVMBuildLoad2(g->ab, ty_of(g, fty), p, "f"));
 }
 
@@ -1326,7 +1334,18 @@ static Val cg_struct_lit(CG *g, Node *n)
         if (f.ty && sd->types[j] && f.ty != sd->types[j])
             f = coerce(g, sd->types[j], f, n->line);
         if (g->err[0]) return (Val){ NULL, NULL };
-        cur = LLVMBuildInsertValue(g->ab, cur, f.v, (unsigned)j, "s");
+
+        /* A named-struct field may arrive as an address (a variable or member
+         * read) rather than an aggregate value (a nested literal). InsertValue
+         * needs the aggregate, so load it first. The text emitter keys this
+         * off Val.agg; here an aggregate and an address share agg == 0, so the
+         * only reliable signal is the value's LLVM type (a struct vs a ptr).
+         * The serializer recursion already knows how to read a nested named
+         * struct, so this is all the constructor needs. */
+        LLVMValueRef fval = f.v;
+        if (f.ty && f.ty->kind == TY_STRUCT && f.ty->name && struct_is_addr(f.v))
+            fval = LLVMBuildLoad2(g->ab, ty_of(g, f.ty), f.v, "ld");
+        cur = LLVMBuildInsertValue(g->ab, cur, fval, (unsigned)j, "s");
     }
     return val_make(ty, cur);
 }
@@ -1463,9 +1482,15 @@ static Val emit_struct_to_map(CG *g, LLVMValueRef sv, Type *st)
                                     nv, 0, "m");
     if (!m) ERRV(g, "cannot serialize struct '%s'", st->name);
 
-    for (int i = 0; i < st->count; i++) {
-        Type *fty   = st->types[i];
-        const char *fname = st->names[i];
+    /* A struct type handed in may be a bare name reference (count == 0) — that
+     * is what a member access returns, because struct_field_type() gives the
+     * codegen struct table's stored field type, kept as a reference. Resolve
+     * the declared field list through the SDef by name. */
+    SDef *sd = st->name ? sdef_find(&g->structs, st->name) : NULL;
+
+    for (int i = 0; i < (sd ? sd->count : st->count); i++) {
+        Type *fty   = sd ? sd->types[i] : st->types[i];
+        const char *fname = sd ? sd->names[i] : st->names[i];
 
         LLVMValueRef key = cg_string_val(g, fname, strlen(fname));
         if (!key) return (Val){ NULL, NULL };
