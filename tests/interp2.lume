@@ -122,6 +122,15 @@ func main(): int {
   check("null list eq", [null] == [null]);
   check("null vs int", ([null] == [1]) == false);
 
+  // named-struct print()/str()/stringify() (native backends now build a map
+  // from the declared fields and serialize it, matching the interpreter).
+  type NsT = { x: int, y: float, ok: bool, name: string }
+  let ns_p: NsT = { x: 2, y: 3.5, ok: true, name: "w" };
+  check("named struct str", str(ns_p) == "{\"x\":2,\"y\":3.5,\"ok\":true,\"name\":\"w\"}");
+  check("named struct stringify", stringify(ns_p) == "{\"x\":2,\"y\":3.5,\"ok\":true,\"name\":\"w\"}");
+  check("named struct str eq", str(ns_p) == str({ x: 2, y: 3.5, ok: true, name: "w" }));
+  check("named struct update", str({ ns_p with x: 8 }) == "{\"x\":8,\"y\":3.5,\"ok\":true,\"name\":\"w\"}");
+
   return 0;
 }
 

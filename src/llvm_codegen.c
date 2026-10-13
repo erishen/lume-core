@@ -409,6 +409,7 @@ static Type *struct_field_type(CG *g, const char *sname, int idx);
 static LLVMValueRef gep_field(CG *g, Type *sty, LLVMValueRef ptrv, int idx);
 static LLVMValueRef cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line);
 static LLVMValueRef cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line);
+static Val emit_struct_to_map(CG *g, LLVMValueRef sv, Type *st);
 
 static Val val_make(Type *ty, LLVMValueRef v)
 {
@@ -1387,8 +1388,20 @@ static Val cg_print(CG *g, Node *n, Val a)
                                        rt_decl(g, "lume_list_print", ret, p, 1), v, 1, "p"));
     }
     case TY_STRUCT:
-        if (a.ty->name)
-            ERRV(g, "line %zu: print() cannot print a struct value", n->line);
+        if (a.ty->name) {
+            /* A named struct is a bare GEP value; build a map from its fields
+             * (emit_struct_to_map) and print it the same way an anonymous map
+             * prints — matching the interpreter's JSON output. */
+            struct_addr(g, &a);
+            Val m = emit_struct_to_map(g, a.v, a.ty);
+            if (!m.v) return m;
+            LLVMTypeRef p[1] = { g->i8ptr };
+            LLVMValueRef v[1] = { m.v };
+            return val_make(type_prim(TY_INT),
+                            LLVMBuildCall2(g->ab, LLVMFunctionType(ret, p, 1, 0),
+                                           rt_decl(g, "lume_map_print", ret, p, 1),
+                                           v, 1, "p"));
+        }
         {   /* an anonymous struct is a runtime map */
             LLVMTypeRef p[1] = { g->i8ptr };
             LLVMValueRef v[1] = { a.v };
@@ -1430,6 +1443,59 @@ static Val cg_print(CG *g, Node *n, Val a)
     default:
         ERRV(g, "line %zu: print() cannot print this value", n->line);
     }
+}
+
+/* Build a LumeMap from the fields of a named-struct value `sv` (an address
+ * of the struct). See the long note on emit_struct_to_map() in
+ * codegen_expr.c — same approach, LLVM C API spelling. The type `st` already
+ * carries the field names and types, so no runtime reflection is needed:
+ * each field is read by gep_field+load and stored under its name with the
+ * same put helpers a map literal uses. A nested named struct is converted
+ * recursively and stored as an obj. This is what lets print()/str()/
+ * stringify() accept a named struct natively. */
+static Val emit_struct_to_map(CG *g, LLVMValueRef sv, Type *st)
+{
+    AT(g);
+    LLVMTypeRef newp[1] = { g->i8ptr };
+    LLVMValueRef nv[1] = { NULL };
+    LLVMValueRef m = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, NULL, 0, 0),
+                                    rt_decl(g, "lume_map_new", g->i8ptr, newp, 0),
+                                    nv, 0, "m");
+    if (!m) ERRV(g, "cannot serialize struct '%s'", st->name);
+
+    for (int i = 0; i < st->count; i++) {
+        Type *fty   = st->types[i];
+        const char *fname = st->names[i];
+
+        LLVMValueRef key = cg_string_val(g, fname, strlen(fname));
+        if (!key) return (Val){ NULL, NULL };
+
+        LLVMValueRef p = gep_field(g, st, sv, i);
+        if (!p) return (Val){ NULL, NULL };
+
+        if (fty->kind == TY_STRUCT && fty->name) {
+            Val inner = emit_struct_to_map(g, p, fty);
+            if (!inner.v) return inner;
+            LLVMTypeRef ats[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+            LLVMValueRef vs[3] = { m, key, inner.v };
+            Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj", 3, ats, vs);
+            if (!r.v) return r;
+            continue;
+        }
+
+        LLVMValueRef fv = LLVMBuildLoad2(g->ab, ty_of(g, fty), p, "f");
+        Val vv = val_make(fty, fv);
+        if (fty->kind == TY_BOOL) vv = coerce(g, type_prim(TY_INT), vv, 0);
+
+        const char *fn = map_put_fn(fty);
+        if (!fn) ERRV(g, "struct field '%s' has no serializable type", fname);
+
+        LLVMTypeRef ats[3] = { g->i8ptr, g->i8ptr, ty_of(g, vv.ty) };
+        LLVMValueRef vs[3] = { m, key, vv.v };
+        Val r = rt_call(g, type_prim(TY_INT), fn, 3, ats, vs);
+        if (!r.v) return r;
+    }
+    return val_make(type_anon_struct(), m);
 }
 
 /* Lume builtins that lower onto a runtime helper (src/rt.c).
@@ -1692,13 +1758,22 @@ static Val cg_builtin(CG *g, Node *n)
                 pty = g->i8ptr;
                 break;
             case TY_STRUCT:
-                /* An anonymous struct is a map (a LumeMap* i8*); a named one
-                 * is a raw GEP struct with no runtime header, which the
-                 * serializer cannot walk — the same representation gap that
-                 * keeps print() off named structs. */
-                if (a.ty->name)
-                    ERRV(g, "line %zu: %s() cannot convert a named struct value",
-                         n->line, bname);
+                /* An anonymous struct is a map (a LumeMap* i8*) and serializes
+                 * directly. A named one is a raw GEP struct with no runtime
+                 * header, so build a map from its fields first (the same path
+                 * print() takes) and then serialize that map — by retagging
+                 * `a` as an anonymous struct the existing lume_rt_to_json_obj
+                 * route below picks it up. */
+                if (a.ty->name) {
+                    struct_addr(g, &a);
+                    Val m = emit_struct_to_map(g, a.v, a.ty);
+                    if (!m.v) return m;
+                    a.v = m.v;
+                    a.ty = type_anon_struct();
+                    ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
+                    pty = g->i8ptr;
+                    break;
+                }
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
                 pty = g->i8ptr;
                 break;

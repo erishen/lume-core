@@ -26,6 +26,26 @@ All notable changes to Lume are documented here. The format follows
   `tests/native-consistency.lume` (`.expected` 267 → 282) and ten interpreter
   assertions in `tests/interp2.lume` (54 → 64).
 
+### Fixed — named-struct print() / str() / stringify() in the native backends
+
+- A named struct (`type P = { ... }`; a bare GEP aggregate with no runtime
+  header) used to be refused at compile time by both native emitters for
+  `print()` / `str()` / `stringify()`, while the interpreter serialized it as
+  JSON. The emitter now builds a `LumeMap` from the struct's declared fields
+  — the `Type` already carries their names and types, so no runtime
+  reflection is needed — and serializes that map through the existing writer.
+  `print()` routes to `lume_map_print`; `str()` / `stringify()` route to
+  `lume_rt_to_json_obj`. Each field is read by GEP+load and stored with the
+  same `lume_map_put_*` helpers a map literal uses; a nested named struct is
+  converted recursively. Output matches the interpreter byte-for-byte
+  (`native-consistency.lume` and `interp2.lume` pin it).
+- Known sibling gap, **out of scope here**: constructing a struct literal
+  whose *field* is itself a named struct is still refused by the native
+  emitters (`cg_struct_lit` cannot yet build a struct value holding a nested
+  struct). Once that lands, the serializer above already handles it. The same
+  applies to `o.inner` style two-level member access on a struct value, which
+  the native backends do not type yet.
+
 ### Fixed — bools inside containers in the native backends
 
 - A container bool used to be stored with the int slot tag, so print()/str()

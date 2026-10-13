@@ -94,6 +94,9 @@ static Val cg_index(CG *g, Node *n);
 static Val cg_print(CG *g, Node *n, Val a);
 
 /* forward: same tu, defined below this point. */
+static Val emit_struct_to_map(CG *g, const char *sv, Type *st);
+
+/* forward: same tu, defined below this point. */
 char *cg_string_val(CG *g, const char *text, size_t len);
 
 /* forward: same tu, defined below this point. */
@@ -2135,8 +2138,15 @@ static Val cg_print(CG *g, Node *n, Val a)
      * goes to the map helper; a *named* struct is still a struct value. */
     case TY_STRUCT:
         if (!a.ty->name) { fn = "lume_map_print"; pty = "i8*"; break; }
-        free(arg);
-        ERRV(g, "line %zu: print() cannot print a struct value", n->line);
+        /* A named struct is a bare GEP value; build a map from its fields
+         * (emit_struct_to_map) and print it the same way an anonymous map
+         * prints — matching the interpreter's JSON output. */
+        struct_addr(g, &a);
+        Val m = emit_struct_to_map(g, a.v, a.ty);
+        if (!m.v) { free(a.v); return m; }
+        free(a.v);
+        fn = "lume_map_print"; pty = "i8*"; arg = m.v;
+        break;
     /* A Result *is* a map ({ ok: ... } / { err: ... }), so it prints through
      * the same runtime helper. Without this it fell to the default arm and the
      * interpreter could print a Result that the emitters refused to build. */
@@ -2162,6 +2172,83 @@ static Val cg_print(CG *g, Node *n, Val a)
      * xstrdup of its own stranded one block per print() call, since nothing
      * ever held the outer copy. */
     return val_make(type_prim(TY_INT), name);
+}
+
+/* Build a LumeMap from the fields of a named-struct value `sv` (an address
+ * of the struct). The type `st` already carries the field names and types,
+ * so no runtime reflection is needed: each field is read by GEP+load and
+ * stored under its name with the same put helpers a map literal uses. A
+ * nested named struct is converted recursively and stored as an obj. The
+ * result serializes through the existing map printer/JSON writer, which
+ * already handles every value type (incl. null and bool). This is what lets
+ * print()/str()/stringify() accept a named struct natively — previously
+ * they refused because a named struct is a bare GEP value with no runtime
+ * header the serializer could walk. */
+static Val emit_struct_to_map(CG *g, const char *sv, Type *st)
+{
+    Val m = rt_call(g, type_anon_struct(), "lume_map_new", "");
+    if (!m.v) return m;
+
+    const char *stn = llvm_type_of(st);
+    if (!stn) { free(m.v); ERRV(g, "cannot serialize struct '%s'", st->name); }
+
+    for (int i = 0; i < st->count; i++) {
+        Type *fty   = st->types[i];
+        const char *fname = st->names[i];
+
+        char *key = cg_string_val(g, fname, strlen(fname));
+        if (!key) { free(m.v); return (Val){ NULL, NULL, 0 }; }
+
+        char *pa = emit_instrf(g, st,
+                               "getelementptr inbounds %s, %s* %s, i32 0, i32 %d",
+                               stn, stn, sv, i);
+        if (!pa) { free(key); free(m.v); return (Val){ NULL, NULL, 0 }; }
+
+        if (fty->kind == TY_STRUCT && fty->name) {
+            /* Nested named struct: convert it the same way, then store the
+             * resulting map as an obj value. */
+            Val inner = emit_struct_to_map(g, pa, fty);
+            free(pa);
+            if (!inner.v) { free(key); free(m.v); return inner; }
+            Val r = rt_call(g, type_anon_struct(), "lume_map_put_obj",
+                            "i8* %s, i8* %s, i8* %s", m.v, key, inner.v);
+            free(inner.v); free(key);
+            if (!r.v) { free(m.v); return r; }
+            continue;
+        }
+
+        const char *flt = llvm_type_of(fty);
+        char *fv = emit_instrf(g, fty, "load %s, %s* %s", flt, flt, pa);
+        free(pa);
+        if (!fv) { free(key); free(m.v); return (Val){ NULL, NULL, 0 }; }
+
+        const char *fn = map_put_fn(fty);
+        if (!fn) { free(fv); free(key); free(m.v);
+                   ERRV(g, "struct field '%s' has no serializable type", fname); }
+
+        /* The put helper's value parameter type: float is double, int/bool
+         * are i64 (bool widened from i1), everything else is i8*. */
+        const char *t;
+        char *wv = fv;
+        if (fty->kind == TY_FLOAT) {
+            t = "double";
+        } else if (fty->kind == TY_BOOL) {
+            wv = emit_instrf(g, type_prim(TY_INT), "zext i1 %s to i64", fv);
+            free(fv); fv = wv; t = "i64";
+        } else if (fty->kind == TY_INT) {
+            t = "i64";
+        } else {
+            t = "i8*";
+        }
+
+        char farg[128];
+        snprintf(farg, sizeof farg, "%s %s", t, fv);
+        Val r = rt_call(g, type_anon_struct(), fn,
+                        "i8* %s, i8* %s, %s", m.v, key, farg);
+        free(fv); free(key);
+        if (!r.v) { free(m.v); return r; }
+    }
+    return m;
 }
 
 static const Bi *builtin_find(const char *name)
@@ -2838,13 +2925,20 @@ static Val cg_builtin(CG *g, Node *n)
                  * print() produces; a.v holds the i8* container pointer. */
                 fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
             case TY_STRUCT:
-                /* An anonymous struct is a map (a LumeMap* i8*); a named one
-                 * is a raw GEP struct with no runtime header, which the
-                 * serializer cannot walk — the same representation gap that
-                 * keeps print() off named structs. */
-                if (a.ty->name)
-                    ERRV(g, "line %zu: %s() cannot convert a named struct value",
-                         n->line, bname);
+                /* An anonymous struct is a map (a LumeMap* i8*) and serializes
+                 * directly. A named one is a raw GEP struct with no runtime
+                 * header, so build a map from its fields first (the same path
+                 * print() takes) and then serialize that map. */
+                if (a.ty->name) {
+                    struct_addr(g, &a);
+                    Val m = emit_struct_to_map(g, a.v, a.ty);
+                    if (!m.v) { free(a.v);
+                                ERRV(g, "line %zu: cannot convert struct '%s'",
+                                     n->line, a.ty->name); }
+                    free(a.v);
+                    a.v = m.v;
+                    fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
+                }
                 fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
             case TY_NULL:
                 /* The serializer's null entry point prints the bare word the

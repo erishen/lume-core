@@ -263,6 +263,10 @@ null
 {"a":1,"b":null,"c":null}
 [1,null]
 {"a":1,"b":null,"c":null,"d":null}
+{"a":1,"b":2.5,"ok":true,"name":"z","tags":["u","v"]}
+{"a":1,"b":2.5,"ok":true,"name":"z","tags":["u","v"]}
+{"a":1,"b":2.5,"ok":true,"name":"z","tags":["u","v"]}
+{"a":9,"b":2.5,"ok":true,"name":"z","tags":["u","v"]}
 1
 1
 2

@@ -18,13 +18,18 @@
 // spelling yet). Bools inside containers are covered (LUME_SLOT_BOOL), and
 // null values are covered too: a null stored into a map or list rides the
 // obj slot with a null payload, so print/str/eq/get all render "null" the
-// way the interpreter does.
+// way the interpreter does. A named struct now prints/str()/stringify()s
+// natively as well: the emitter builds a map from its declared fields (the
+// type already carries their names and types) and serializes that, so
+// `print(p)` / `str(p)` / `stringify(p)` match the interpreter's JSON.
 // Still three-way divergent, so kept out: `let x: list = null` (a bare null
 // bound to a container type; the native emitters cannot infer the variable)
 // and for-in over a list holding nulls (the element decays to list<any>,
-// the same refusal class as a heterogeneous list), named-struct str()/print()
-// (a named struct is a raw GEP struct with no runtime header natively) and
-// typed binding m["k"] on a scalar map value (native refuses it; use get()).
+// the same refusal class as a heterogeneous list), constructing a literal
+// whose *field* is itself a named struct (the native emitters cannot yet
+// build a struct value holding a nested struct; once they do, the serializer
+// above already handles it) and typed binding m["k"] on a scalar map value
+// (native refuses it; use get()).
 //
 // Adding coverage is fine once a backend actually implements a construct —
 // never before, otherwise the consistency suite goes red and hides its signal.
@@ -806,6 +811,19 @@ push(nl_l2, null);
 print(nl_l2);
 put(nl_m3, "d", null);
 print(nl_m3);
+
+// ---- named-struct print() / str() / stringify() (round: native struct ser) --
+// A named struct is now printed/str()'d natively by building a map from its
+// declared fields (the type carries the names and types) and serializing
+// that — so it matches the interpreter's JSON. The list field rides the obj
+// put helper, matching the interpreter's container handling.
+type NsRec = { a: int, b: float, ok: bool, name: string, tags: string[] }
+let ns_r: NsRec = { a: 1, b: 2.5, ok: true, name: "z", tags: ["u", "v"] };
+print(ns_r);
+print(str(ns_r));
+print(stringify(ns_r));
+let ns_u = { ns_r with a: 9 };
+print(ns_u);
 
 warmup();
 main();

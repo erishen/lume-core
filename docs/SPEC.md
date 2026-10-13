@@ -606,7 +606,7 @@ func report(): Result {
 | `float(x)` | 1 参 | `float` | `int`→float；⚠️ **非数字字符串静默返回 `0.0`** |
 | `bool(x)` | 1 参 | `bool` | 真值性：空串/`0`/`null`/空集合为 `false` |
 | `json(x)` | 1 参 | `value` | **反序列化**：JSON 文本 → map/list/string/number/bool/null；**整数数字（无 `.`/`e`/`E`）解码为 `int`，含小数或指数的解码为 `float`**；解析失败置 VM error（可用 `try()` 接住）。⚠️ **字符串参数的解析是解释器专属**：原生后端编译期拒绝（解析结果类型动态，静态发射器无法定型）；`json()` 用于**序列化**（参数非字符串）时三后端一致 |
-| `stringify(x)` | 1 参 | `string` | 序列化：任意值 → JSON 文本（与 `str()` 的 map/list 路径一致；字符串加引号转义）。三后端一致；命名 struct 同 `str()` 的表示缺口 |
+| `stringify(x)` | 1 参 | `string` | 序列化：任意值 → JSON 文本（与 `str()` 的 map/list 路径一致；字符串加引号转义）。三后端一致，命名 struct 同样支持：原生后端按声明字段构造 map 再序列化，与解释器 JSON 一致 |
 | `now()` | 0 参 | `int` | Unix 秒 |
 | `strftime(fmt, ts)` | 2 参 | `string` | ⚠️ **参数序是 `(格式, 时间戳)`**，不是反过来 |
 | `str_match(pattern, text)` | 2 参 | `{text,index,groups}[]` | **正则抽取**：POSIX ERE 全扫描，每条 `{ text: 匹配子串, index: 0-based 偏移, groups: 捕获组[] }`；无匹配返回 `[]`；非法正则置 VM error（可 `try()` 接住） |
