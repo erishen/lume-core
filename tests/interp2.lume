@@ -109,6 +109,19 @@ func main(): int {
   check("json map parse", json("{\"k\": 42}")["k"] == 42);
   check("json roundtrip", stringify(json("{\"n\": [1, 2]}")) == "{\"n\":[1,2]}");
 
+  // ---- null 值（容器内 null 与独立 null 的解释器语义钉子；
+  // 原生 parity 由 native-consistency.lume 的 null 段钉住）----
+  check("null eq null", null == null);
+  check("null in map", { "a": null }["a"] == null);
+  check("null in map str", str({ "a": null }) == "{\"a\":null}");
+  check("null in list str", str([1, null]) == "[1,null]");
+  check("null get present", get({ "b": null }, "b") == null);
+  check("null stringify", stringify(null) == "null");
+  check("null str", str(null) == "null");
+  check("null map eq", { "k": null } == { "k": null });
+  check("null list eq", [null] == [null]);
+  check("null vs int", ([null] == [1]) == false);
+
   return 0;
 }
 

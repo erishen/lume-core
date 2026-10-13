@@ -15,11 +15,16 @@
 // heterogeneous ones) ARE now implemented in all three backends and are
 // covered below. json()/stringify() serialization is covered too; json(str)
 // *parse* stays interpreter-only (the dynamic result type has no native
-// spelling yet). Bools inside containers are covered (LUME_SLOT_BOOL).
-// Still three-way divergent, so kept out: null map values (the native
-// emitters reject them at compile time), named-struct str()/print() (a named
-// struct is a raw GEP struct with no runtime header natively) and typed
-// binding m["k"] on a scalar map value (native refuses it; use get()).
+// spelling yet). Bools inside containers are covered (LUME_SLOT_BOOL), and
+// null values are covered too: a null stored into a map or list rides the
+// obj slot with a null payload, so print/str/eq/get all render "null" the
+// way the interpreter does.
+// Still three-way divergent, so kept out: `let x: list = null` (a bare null
+// bound to a container type; the native emitters cannot infer the variable)
+// and for-in over a list holding nulls (the element decays to list<any>,
+// the same refusal class as a heterogeneous list), named-struct str()/print()
+// (a named struct is a raw GEP struct with no runtime header natively) and
+// typed binding m["k"] on a scalar map value (native refuses it; use get()).
 //
 // Adding coverage is fine once a backend actually implements a construct —
 // never before, otherwise the consistency suite goes red and hides its signal.
@@ -769,6 +774,38 @@ print(bc_b[0]);
 let bc_f = filter((x: bool) => x, [true, false, true]);
 print(bc_f);
 print(map((x) => x > 1, [1, 2, 3]));
+
+// Null values inside containers: a null rides the obj slot with a null
+// payload (the value helpers route TY_NULL to lume_*_push_obj/put_obj), and
+// every reader, printer and eq already renders a null obj payload as the
+// bare word "null". A null default (`get(m, k, null)`) reads through the obj
+// getter, so a null slot and an absent key both come back as a null i8* —
+// the same value the interpreter hands back. Standalone null goes through
+// print's dedicated lume_print_null and the serializer's null entry point.
+let nl_m = { "a": 1, "b": null };
+print(nl_m);
+let nl_l = [1, null, "y"];
+print(nl_l);
+print(str(nl_m));
+print(stringify(nl_l));
+print(get(nl_m, "b", null));
+print(get(nl_m, "zz", null));
+let nl_e1 = [null] == [null];
+print(nl_e1);
+let nl_e2 = { "k": null } == { "k": null };
+print(nl_e2);
+let nl_e3 = [null] == [1];
+print(nl_e3);
+print(null);
+print(str(null));
+print(stringify(null));
+let nl_m3 = { nl_m with "c": null };
+print(nl_m3);
+let nl_l2 = [1];
+push(nl_l2, null);
+print(nl_l2);
+put(nl_m3, "d", null);
+print(nl_m3);
 
 warmup();
 main();

@@ -6,6 +6,26 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — null values inside containers in the native backends
+
+- A map or list literal with a `null` value (`{ "b": null }`, `[1, null]`),
+  plus `put`/`push` with a null, `{ base with k: null }` and a null default
+  in `get(m, k, null)`, used to be refused at compile time by both native
+  emitters while the interpreter accepted them. A null now rides the existing
+  obj slot with a null payload: the value-dispatch tables route `TY_NULL` to
+  `lume_*_push_obj` / `lume_map_put_obj` / `lume_map_get_obj`, and the
+  runtime's obj paths already rendered a null payload as the bare word
+  `null` — so print/str/stringify/eq/get are three-backend consistent.
+  `lume_map_print` / `lume_list_print` on a null pointer now print `null`
+  (not `{}` / `[]`, which remain what a live empty container prints).
+- `str(null)` / `stringify(null)` work natively too (the serializer's null
+  entry point). Still native-only refusals, documented in SPEC: `let x: list
+  = null` (the variable's type cannot be inferred) and for-in over a list
+  holding nulls (the element decays to `list<any>`, same refusal class as a
+  heterogeneous list). Pinned by the null probe block in
+  `tests/native-consistency.lume` (`.expected` 267 → 282) and ten interpreter
+  assertions in `tests/interp2.lume` (54 → 64).
+
 ### Fixed — bools inside containers in the native backends
 
 - A container bool used to be stored with the int slot tag, so print()/str()

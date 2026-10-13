@@ -969,6 +969,9 @@ static const char *map_get_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_map_get_obj";
+    /* A null default (`get(m, k, null)`) reads through the obj getter, the
+     * same choice codegen_expr.c's copy makes. */
+    case TY_NULL:   return "lume_map_get_obj";
     default:        return NULL;
     }
 }
@@ -991,6 +994,10 @@ static const char *list_push_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_list_push_obj";
+    /* A null element rides the obj helper with a null pointer -- the slot
+     * keeps its obj tag with a null payload, which every reader and printer
+     * already treats as null. */
+    case TY_NULL:   return "lume_list_push_obj";
     default:        return NULL;
     }
 }
@@ -1008,6 +1015,9 @@ static const char *map_put_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_map_put_obj";
+    /* Same null rule as list_push_fn: the obj helper stores a null payload,
+     * which print/str/eq all render as null. */
+    case TY_NULL:   return "lume_map_put_obj";
     default:        return NULL;
     }
 }
@@ -1692,6 +1702,12 @@ static Val cg_builtin(CG *g, Node *n)
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
                 pty = g->i8ptr;
                 break;
+            case TY_NULL:
+                /* The serializer's null entry point prints the bare word the
+                 * interpreter's str(null)/stringify(null) produce. */
+                ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
+                pty = g->i8ptr;
+                break;
             default:
                 ERRV(g, "line %zu: %s() cannot convert this value",
                      n->line, bname);
@@ -1710,7 +1726,7 @@ static Val cg_builtin(CG *g, Node *n)
         }
 
         const char *name;
-        if (a.ty && (a.ty->kind == TY_LIST ||
+        if (a.ty && (a.ty->kind == TY_LIST || a.ty->kind == TY_NULL ||
                      (a.ty->kind == TY_STRUCT && !a.ty->name)))
             name = "lume_rt_to_json_obj";
         else if (a.ty && a.ty->kind == TY_STRING)
@@ -1828,6 +1844,11 @@ static Val cg_builtin(CG *g, Node *n)
         else if (d.v && d.ty && (d.ty->kind == TY_LIST ||
                                   d.ty->kind == TY_STRUCT ||
                                   d.ty->kind == TY_RESULT))
+                                      { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
+        /* A null default reads through the obj getter too: the result is an
+         * i8* that is null for both a null slot and (as with every obj read)
+         * an absent key. The default operand is already LLVMConstNull. */
+        else if (d.v && d.ty && d.ty->kind == TY_NULL)
                                       { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
         if (d.v && d.ty && d.ty->kind == TY_BOOL)
             d = coerce(g, type_prim(TY_INT), d, n->line);

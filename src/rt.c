@@ -560,7 +560,10 @@ void *lume_list_at_obj(const LumeList *l, long i)
 
 long lume_list_print(const LumeList *l)
 {
-    if (!l) return emit("[]\n");
+    /* A null list value (a null element read back, or `let l: list = null`)
+     * prints the bare word the interpreter prints for null -- not "[]", which
+     * is what a real, allocated empty list prints. */
+    if (!l) return emit("null\n");
     /* An opaque i8* that is really a string (e.g. the result of a map read)
      * reaches here with a bogus kind; dereferencing its slots would crash.
      * The interpreter tags values, the native path does not, so it can only
@@ -1043,7 +1046,10 @@ LumeList *lume_map_keys(const LumeMap *m)
 
 long lume_map_print(const LumeMap *m)
 {
-    if (!m) return emit("{}\n");
+    /* Same null-value rule as lume_list_print: a null map value prints
+     * "null", while a real empty map (a live lume_map_new pointer) still
+     * prints "{}" below. */
+    if (!m) return emit("null\n");
     /* Same opaque-i8* guard as lume_list_print: a string the emitter could
      * not type (map value types are not tracked) looks like a map here but is
      * not one. Printing it as a map would dereference string bytes as slots. */

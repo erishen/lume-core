@@ -1442,6 +1442,9 @@ static const char *rt_arg_type(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "i8*";
+    /* A null value travels into the runtime as a null i8* -- the container
+     * helpers store it under the obj slot, and slot_emit prints "null". */
+    case TY_NULL:   return "i8*";
     default:        return "i64";
     }
 }
@@ -1460,6 +1463,10 @@ static const char *map_get_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_map_get_obj";
+    /* A null default (`get(m, k, null)`) reads through the obj getter: the
+     * value comes back as a plain i8*, null for both a null slot and — as
+     * with every obj read — an absent key. */
+    case TY_NULL:   return "lume_map_get_obj";
     default:        return NULL;
     }
 }
@@ -1483,6 +1490,10 @@ static const char *list_push_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_list_push_obj";
+    /* A null element rides the obj helper with a null pointer: the slot keeps
+     * its obj tag with a null payload, which every reader and printer already
+     * treats as null. */
+    case TY_NULL:   return "lume_list_push_obj";
     default:        return NULL;
     }
 }
@@ -1503,6 +1514,9 @@ static const char *map_put_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_map_put_obj";
+    /* Same null rule as list_push_fn: the obj helper stores a null payload,
+     * which print/str/eq all render as null. */
+    case TY_NULL:   return "lume_map_put_obj";
     default:        return NULL;
     }
 }
@@ -2771,6 +2785,11 @@ static Val cg_builtin(CG *g, Node *n)
                                   d.ty->kind == TY_STRUCT ||
                                   d.ty->kind == TY_RESULT))
                                       { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
+        /* A null default reads through the obj getter too: the result is an
+         * i8* that is null both for a null slot and (as with every obj read)
+         * for an absent key, and `i8* null` is the argument spelling. */
+        else if (d.v && d.ty && d.ty->kind == TY_NULL)
+                                      { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
 
         char dflt[96];
         const char *darg = "i64 0";
@@ -2826,6 +2845,10 @@ static Val cg_builtin(CG *g, Node *n)
                 if (a.ty->name)
                     ERRV(g, "line %zu: %s() cannot convert a named struct value",
                          n->line, bname);
+                fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
+            case TY_NULL:
+                /* The serializer's null entry point prints the bare word the
+                 * interpreter's str(null)/stringify(null) produce. */
                 fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
             default:
                 ERRV(g, "line %zu: %s() cannot convert this value",

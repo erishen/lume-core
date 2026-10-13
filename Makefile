@@ -808,8 +808,8 @@ interp2-test: all
 	rc=$$?; cat /tmp/lume-interp2-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-interp2-test.out; then \
 		echo "==> interp2 单测失败 (rc=$$rc)"; exit 1; fi; \
-	if [ $$(grep -c PASS /tmp/lume-interp2-test.out) -ne 54 ]; then \
-		echo "==> interp2 断言数不符 (期望 54)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-interp2-test.out) -ne 64 ]; then \
+		echo "==> interp2 断言数不符 (期望 64)"; exit 1; fi; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/interp2-bad/$$f.lume > /tmp/lume-interp2-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-interp2-bad.out; then \
