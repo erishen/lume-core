@@ -1,0 +1,5 @@
+// with 子句为空：没有要更新的字段
+// 预期: parser 报 expected field name after 'with'
+type P = { x: int, y: int }
+let p: P = { x: 1, y: 2 };
+print(str({ p with }));

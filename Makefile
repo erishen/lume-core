@@ -398,7 +398,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test eq2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test eq2-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
       native native-text treecheck
 
 # --- 发布面 (make pack) ---------------------------------------------------
@@ -791,6 +791,32 @@ eq2-test: all
 	  echo "ok   eq2: $$be 后端 43/43"; \
 	done; \
 	echo "==> eq2 单测通过"
+
+# --- interp2: 字符串插值 s!"..." + 结构体更新 { base with ... } (仅解释器) ---
+# 三后端一致由 native-consistency 的插值/更新探针段覆盖, 这里只验解释器腿的
+# 39 条断言 + 8 个负例诊断键。
+interp2-test: all
+	@./$(TARGET) tests/interp2.lume > /tmp/lume-interp2-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-interp2-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-interp2-test.out; then \
+		echo "==> interp2 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-interp2-test.out) -ne 39 ]; then \
+		echo "==> interp2 断言数不符 (期望 39)"; exit 1; fi; \
+	check_bad() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/interp2-bad/$$f.lume > /tmp/lume-interp2-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-interp2-bad.out; then \
+	    echo "==> interp2 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-interp2-bad.out; exit 1; fi; \
+	  echo "ok   interp2-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad istr-bad-expr "unexpected token 'end-of-file' in expression"; \
+	check_bad istr-noquote "unterminated interpolated string literal"; \
+	check_bad istr-unclosed "unterminated interpolation segment (missing '}')"; \
+	check_bad with-dup-field "duplicate field 'x' in with update"; \
+	check_bad with-empty "with update needs at least one field"; \
+	check_bad with-scalar "'with' update requires a map or struct base"; \
+	check_bad with-type-mismatch "struct field: cannot use a value of type string where int is expected"; \
+	check_bad with-unknown-field "unknown field 'z' in struct update"; \
+	echo "==> interp2 单测通过"
+
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
 # 把 HTTP_PROXY 指到死端口 127.0.0.1:9 作对照:绕过失效会撞死代理 => FAIL。

@@ -1,0 +1,94 @@
+// tests/interp2.lume — Lean 4 借鉴：字符串插值 s!"..." 与结构体更新 { p with }
+// 运行: make interp2-test (并入 make test)
+//
+// 语义钉子（本轮落地）：
+//   插值 s!"..."  段扫描：文本态遇 {{ / }} 是字面花括号；单 { 进入
+//                 表达式态（括号深度追踪，字符串字面量内的 } 不算），
+//                 表达式段交给完整 parser 递归解析——故嵌套插值、
+//                 索引、调用、乃至 with 更新都能出现在段里。表达式
+//                 经 str() 转字符串后与字面量段拼接；无插值时退化为
+//                 普通字符串字面量。转义序列（\n 等）沿用既有规则。
+//   with 更新    { base with f: e, ... } 产出**新** map/struct：先浅拷
+//                 base 的全部槽，再按序覆盖指定字段——原值不变
+//                 （函数式语义）。base 可以是变量、字面量、调用返回。
+//                 map 可增键；命名 struct 字段集固定，未知字段/类型
+//                 不匹配静态拒；同一 with 重复字段静态拒。
+// 只走解释器；三后端一致由 native-consistency.lume 的插值/更新探针段
+// 覆盖，编译期拒绝由 tests/interp2-bad/*.lume 断言。
+// 不覆盖：多行插值字符串（ lexer 单行扫描，换行即未闭合 ）。
+
+enum Color { Red | Green }
+
+type P = { x: int, y: int }
+type Q = { a: int, b: string }
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func mkp(x: int, y: int): P { return { x: x, y: y }; }
+
+func main(): int {
+  // ---- 插值：字面量与段拼接 ----
+  check("istr plain", s!"hello" == "hello");
+  check("istr empty", s!"" == "");
+  check("istr one", s!"hi {1}" == "hi 1");
+  check("istr two", s!"{1} and {2}" == "1 and 2");
+  check("istr adj", s!"{1}{2}" == "12");
+  check("istr expr", s!"sum={1 + 2}" == "sum=3");
+  check("istr var", s!"v={1 == 1}" == "v=true");
+  check("istr str seg", s!"{"x"}" == "x");
+  check("istr call", s!"f={str(3.5)}" == "f=3.5");
+  check("istr map", s!"m={str({"a": 1})}" == "m={\"a\":1}");
+  check("istr index", s!"k={[10, 20][1]}" == "k=20");
+
+  // ---- 插值：转义与嵌套 ----
+  check("istr braces", s!"{{}}" == "{}");
+  check("istr brace x", s!"{{x}}" == "{x}");
+  check("istr close after expr", s!"{1}}" == "1}");
+  check("istr escape newline", s!"a\nb" == "a\nb");
+  check("istr nested", s!"n={s!"{7}"}" == "n=7");
+  check("istr text nl", s!"{1}\n{2}" == "1\n2");
+  check("istr deep", s!"{s!"[{s!"{2}"}]"}" == "[2]");
+
+  // ---- with：map 更新 ----
+  let m = {"a": 1, "b": 2};
+  let m2 = { m with "a": 9 };
+  check("with map field", m2 == {"a": 9, "b": 2});
+  check("with map orig", m == {"a": 1, "b": 2});
+  let m3 = { m with "c": 3 };
+  check("with map add", m3 == {"a": 1, "b": 2, "c": 3});
+  let m4 = { m with "a": 9, "b": 8 };
+  check("with map multi", m4 == {"a": 9, "b": 8});
+  let m5 = { {"a": 1} with "a": 2 };
+  check("with map lit base", m5 == {"a": 2});
+  check("with map ident key", { m with b: 5 } == {"a": 1, "b": 5});
+  check("with map nested", { { m with "a": 9 } with "b": 8 } == {"a": 9, "b": 8});
+  check("with map ref orig", { m with "a": m["a"] + 10 } == {"a": 11, "b": 2});
+
+  // ---- with：命名 struct 更新 ----
+  let p: P = { x: 1, y: 2 };
+  let p2 = { p with y: 5 };
+  check("with struct field", p2 == { x: 1, y: 5 });
+  check("with struct orig", p == { x: 1, y: 2 });
+  check("with struct multi", { p with x: 7, y: 8 } == { x: 7, y: 8 });
+  check("with struct ref field", { p with x: p.x + 10 } == { x: 11, y: 2 });
+  check("with struct lit base", { { x: 1, y: 2 } with y: 5 } == { x: 1, y: 5 });
+  check("with struct call base", { mkp(3, 4) with y: 9 } == { x: 3, y: 9 });
+  check("with struct eq var", { p with y: 5 } == mkp(1, 5));
+  check("with struct str field", { { a: 1, b: "x" } with b: "y" } == { a: 1, b: "y" });
+  check("with struct member base", { { x: 1, y: 2 } with x: 3 } == { x: 3, y: 2 });
+
+  // ---- with 与插值互嵌 ----
+  check("istr with expr", s!"p={str({ p with y: 5 })}" == "p={\"x\":1,\"y\":5}");
+  check("with istr value", { m with "a": s!"v{1}" } == {"a": "v1", "b": 2});
+
+  // ---- enum 值也参与插值 ----
+  check("istr enum", s!"c={str(Red)}" == "c={\"$\":\"Red\"}");
+  check("istr list", s!"l={str([1, 2])}" == "l=[1,2]");
+
+  return 0;
+}
+
+main();

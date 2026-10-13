@@ -458,6 +458,28 @@ LumeMap *lume_map_new(void)
     return m;
 }
 
+/* `{ m with k: v, ... }` — the native half of the structure update: a fresh
+ * map holding the same keys and slots. Slots are shared verbatim, so a nested
+ * container stays aliased between the original and the update, exactly like
+ * the interpreter's shallow copy (value.c) and Lean's functional update. The
+ * caller then overwrites the updated keys with the usual lume_map_put_*. */
+LumeMap *lume_map_clone(const LumeMap *src)
+{
+    if (!src) return lume_map_new();
+    LumeMap *m = rt_alloc(sizeof(LumeMap));
+    m->kind = LUME_CTR_MAP;
+    m->len = m->cap = src->len;
+    if (m->cap) {
+        m->keys = malloc((size_t)m->cap * sizeof *m->keys);
+        m->vals = malloc((size_t)m->cap * sizeof *m->vals);
+        for (long i = 0; i < src->len; i++) {
+            m->keys[i] = dup_str(src->keys[i]);
+            m->vals[i] = src->vals[i];
+        }
+    }
+    return m;
+}
+
 /* ---------- strict accessors for the index syntax (SPEC 6.2) ----------
  *
  * `l[0]` / `m["k"]` are strict: an out-of-range index or a missing key is a

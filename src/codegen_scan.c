@@ -162,6 +162,17 @@ Type *infer_node_type(CG *g, Node *n)
         return type_anon_struct();
     }
     case N_MAP_LIT: return type_anon_struct();
+    case N_STRUCT_UPDATE: {
+        /* `{ base with k: v, ... }` — the result type mirrors the base's
+         * shape for slot typing: a named struct keeps its declared schema, a
+         * map becomes a fresh anonymous struct (like N_MAP_LIT). The typecheck
+         * pass already validated the overrides, so only the slot type matters
+         * here. */
+        Type *bt = infer_node_type(g, n->as.supd.base);
+        if (bt && bt->kind == TY_STRUCT && bt->name)
+            return bt;
+        return type_anon_struct();
+    }
     case N_MEMBER:  return member_field_type(g, n);
     case N_LIST_LIT: {
         /* The element type of a list literal is read off the literal itself:

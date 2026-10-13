@@ -10,7 +10,9 @@
 // Deliberately narrow, because the native emitters' covered surface is narrow:
 // only integers, floats, an explicit `let` type, struct fields and a function
 // signature the source fully annotates *or* fully leaves to inference.
-// string concatenation, mixed string/number arithmetic, nested and heterogeneous
+// string concatenation, string interpolation (`s!"..."`) and structure update
+// (`{ base with ... }`) ARE now implemented in all three backends and are
+// covered below; mixed string/number arithmetic, nested and heterogeneous
 // lists and map fields holding lists are still rejected by one backend or the
 // other, so adding them here would make the suite red for reasons that have
 // nothing to do with the two emitters agreeing.
@@ -683,6 +685,35 @@ print([1] != null);                              // true
 let ns: string = null;
 print(ns == null);                               // true
 print("a" != null);                              // true
+
+// --- string interpolation + structure update (Lean borrowings B/C) --------
+// Interpolation desugars to str()+concat; all three backends must agree.
+print(s!"a={1}, b={2}");
+print(s!"sum={1+2}");
+print(s!"t={1==1}");
+print(s!"s={str(3.5)}");
+print(s!"{1}{2}");
+print(s!"hi {1}");
+print(s!"{"x"}");
+print(s!"n={s!"{7}"}");
+print(s!"");
+print(s!"plain");
+
+// Structure update: map base (read back with get) and a named-struct base
+// (read back with field access — the base must be annotated so the update
+// stays a typed aggregate rather than an anonymous map).
+let ic_m = {"a": 1, "b": 2};
+let ic_m2 = { ic_m with "a": 9 };
+print(get(ic_m2, "a"));
+print(get(ic_m2, "b"));
+
+let ic_p: Point = { x: 1, y: 2 };
+let ic_p2 = { ic_p with x: 9 };
+print(ic_p2.x);
+print(ic_p2.y);
+let ic_p3 = { ic_p2 with y: 5, x: 0 };
+print(ic_p3.x);
+print(ic_p3.y);
 
 warmup();
 main();

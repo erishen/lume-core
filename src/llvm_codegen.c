@@ -442,6 +442,7 @@ static const char *node_type_name(NodeType t)
     case N_INDEX:   return "index";
     case N_ENUM_DECL: return "enum";
     case N_MATCH:   return "match";             case N_CTOR: return "constructor";
+    case N_STRUCT_UPDATE: return "struct update";
     }
     return "node";
 }
@@ -470,7 +471,15 @@ static Val cg_literal(CG *g, Node *n)
         const char *t = n->as.lit.text;
         size_t      len = (size_t)n->as.lit.len;
         if (len >= 2 && t[0] == '"' && t[len - 1] == '"') { t++; len -= 2; }
-        return val_make(type_prim(TY_STRING), cg_string_val(g, t, len));
+        /* Language-level escapes resolved through the shared table:
+         * LLVMConstStringInContext takes the bytes verbatim, so without this
+         * pass `"a\nb"` emitted four characters while the interpreter printed
+         * a newline (mirrors codegen_expr.c's cg_literal). */
+        size_t ulen = 0;
+        char *u = lume_unescape(t, len, &ulen);
+        LLVMValueRef s = cg_string_val(g, u, ulen);
+        free(u);
+        return val_make(type_prim(TY_STRING), s);
     }
 
     if (k == LIT_NUM) {
@@ -1126,6 +1135,96 @@ static Val cg_map_or_struct_lit(CG *g, Node *n)
     return cg_map_lit(g, n);
 }
 
+/* `{ base with k: v, ... }` — the functional update (SPEC 1.8's sibling).
+ * Two shapes by the base's static type, mirroring codegen_expr.c: a named
+ * struct is a typed aggregate rebuilt field by field (untouched fields load
+ * from the base through gep_field, overridden ones are evaluated and
+ * inserted); an anonymous map is cloned by lume_map_clone and then
+ * overwritten key by key. */
+static Val cg_struct_update(CG *g, Node *n)
+{
+    AT(g);
+    Val base = cg_expr(g, n->as.supd.base);
+    if (!base.v) return base;
+
+    if (base.ty && base.ty->kind == TY_STRUCT && base.ty->name) {
+        Type *ty = base.ty;
+        SDef *sd = sdef_find(&g->structs, ty->name);
+        if (!sd) ERRV(g, "line %zu: unknown type '%s'", n->line, ty->name);
+        LLVMTypeRef sty = ty_of(g, ty);
+        if (!sty) ERRV(g, "line %zu: type '%s' has no codegen type", n->line,
+                       ty->name);
+
+        /* Normalize to an address (a slot for an aggregate value, a no-op
+         * for a reference). */
+        struct_addr(g, &base);
+        if (!base.v)
+            ERRV(g, "line %zu: cannot update a value of type '%s'", n->line,
+                 ty->name);
+
+        LLVMValueRef cur = LLVMGetUndef(sty);
+        for (int j = 0; j < sd->count; j++) {
+            int w = -1;
+            for (int k = 0; k < n->as.supd.count; k++)
+                if (strcmp(n->as.supd.keys[k], sd->names[j]) == 0) { w = k; break; }
+
+            Val fv;
+            if (w >= 0) {
+                Type *prev = g->expect;
+                g->expect = sd->types[j];
+                fv = cg_expr(g, n->as.supd.vals[w]);
+                g->expect = prev;
+                if (!fv.v) return fv;
+            } else {
+                LLVMTypeRef fty = ty_of(g, sd->types[j]);
+                if (!fty)
+                    ERRV(g, "line %zu: field '%s' has no codegen type",
+                         n->line, sd->names[j]);
+                LLVMValueRef fp = gep_field(g, ty, base.v, j);
+                if (!fp)
+                    ERRV(g, "line %zu: cannot read field '%s'", n->line,
+                         sd->names[j]);
+                fv = val_make(sd->types[j],
+                              LLVMBuildLoad2(g->ab, fty, fp, "f"));
+            }
+
+            if (fv.ty && sd->types[j] && fv.ty != sd->types[j])
+                fv = coerce(g, sd->types[j], fv, n->line);
+            if (g->err[0]) return (Val){ NULL, NULL };
+            cur = LLVMBuildInsertValue(g->ab, cur, fv.v, (unsigned)j, "s");
+        }
+        return val_make(ty, cur);
+    }
+
+    /* Anonymous map: clone the base at runtime, then overwrite the listed
+     * keys (nested containers stay shared, like the interpreter). */
+    LLVMTypeRef newp[1] = { g->i8ptr };
+    LLVMValueRef nv[1] = { base.v };
+    LLVMValueRef m = LLVMBuildCall2(g->ab,
+                                    LLVMFunctionType(g->i8ptr, newp, 1, 0),
+                                    rt_decl(g, "lume_map_clone", g->i8ptr,
+                                            newp, 1),
+                                    nv, 1, "mc");
+    if (!m) ERRV(g, "line %zu: cannot copy a map for 'with' update", n->line);
+
+    for (int i = 0; i < n->as.supd.count; i++) {
+        Val v = cg_expr(g, n->as.supd.vals[i]);
+        if (!v.v) return v;
+        Val k = val_make(type_prim(TY_STRING),
+                         cg_string_val(g, n->as.supd.keys[i],
+                                       strlen(n->as.supd.keys[i])));
+        const char *fn = map_put_fn(v.ty);
+        if (!fn) ERRV(g, "line %zu: map values must be int, float, string or a container",
+                      n->line);
+        if (v.ty && v.ty->kind == TY_BOOL) v = coerce(g, type_prim(TY_INT), v, n->line);
+        LLVMTypeRef ats[3] = { g->i8ptr, g->i8ptr, ty_of(g, v.ty) };
+        LLVMValueRef vs[3] = { m, k.v, v.v };
+        Val r = rt_call(g, type_prim(TY_INT), fn, 3, ats, vs);
+        if (!r.v) ERRV(g, "line %zu: cannot store into a map", n->line);
+    }
+    return val_make(type_anon_struct(), m);
+}
+
 /* --------------------------------------------------------------- assign ----- */
 
 static Val cg_assign_expr(CG *g, Node *n)
@@ -1561,6 +1660,7 @@ static Val cg_builtin(CG *g, Node *n)
             case TY_INT:    ft = LLVMFunctionType(g->i8ptr, &g->i64, 1, 0);  pty = g->i64;    break;
             case TY_FLOAT:  ft = LLVMFunctionType(g->i8ptr, &g->dbl, 1, 0);  pty = g->dbl;    break;
             case TY_BOOL:   ft = LLVMFunctionType(g->i8ptr, &g->i64, 1, 0);  pty = g->i64;    break;
+            case TY_STRING: return a;   /* str of a string is itself */
             default:
                 ERRV(g, "line %zu: str() cannot convert this value", n->line);
             }
@@ -2218,6 +2318,7 @@ static Val cg_expr(CG *g, Node *n)
     case N_LITERAL:  return cg_literal(g, n);
     case N_LIST_LIT: return cg_list_lit(g, n);
     case N_MAP_LIT:  return cg_map_or_struct_lit(g, n);
+    case N_STRUCT_UPDATE: return cg_struct_update(g, n);
     case N_ASSIGN:   return cg_assign_expr(g, n);
     case N_ASSIGN_MEMBER: return cg_assign_mem(g, n);
     case N_EXPR_STMT: return cg_expr(g, n->as.expr_stmt.expr);
@@ -2816,6 +2917,15 @@ static Type *infer_node_type(CG *g, Node *n)
         return type_anon_struct();
     }
     case N_MAP_LIT:  return type_anon_struct();
+    case N_STRUCT_UPDATE: {
+        /* Kept in step with codegen_scan.c's copy: a `let` whose init is a
+         * `with` update must infer a slot type. Named struct keeps its schema,
+         * map becomes a fresh anonymous struct. */
+        Type *bt = infer_node_type(g, n->as.supd.base);
+        if (bt && bt->kind == TY_STRUCT && bt->name)
+            return bt;
+        return type_anon_struct();
+    }
     case N_MEMBER:   return member_field_type(g, n);
     case N_UNARY: {
         /* `let neg = -7` / `let b = not flag` must infer a type so the

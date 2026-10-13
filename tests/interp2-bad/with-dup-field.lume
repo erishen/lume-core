@@ -1,0 +1,5 @@
+// 同一 with 子句重复更新同一字段
+// 预期: parser/typecheck 拒 duplicate field 'x' in with update
+type P = { x: int, y: int }
+let p: P = { x: 1, y: 2 };
+print(str({ p with x: 1, x: 2 }));

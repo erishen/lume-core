@@ -435,11 +435,13 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
          * so only its own shell goes here. */
         free(prog->as.program.stmts);
         free(prog);
+        for (int i = 0; i < count; i++) free(toks[i].istr);
         free(toks);
         orphan_release_all();
         orphan_drop();
         return NULL;
     }
+    for (int i = 0; i < count; i++) free(toks[i].istr);
     free(toks);
     orphan_drop(); /* prog owns every node in the batch now */
     resolve_ctors(prog);
@@ -792,6 +794,11 @@ static void node_free_kids(Node *n) {
         node_free(n->as.iflet.then);
         node_free(n->as.iflet.els);
         break;
+    case N_STRUCT_UPDATE:
+        node_free(n->as.supd.base);
+        for (int i = 0; i < n->as.supd.count; i++)
+            node_free(n->as.supd.vals[i]);
+        break;
     default: break; /* no children (literals, imports, declarations, ...) */
     }
 }
@@ -881,6 +888,10 @@ static void node_free_own(Node *n) {
     case N_MAP_LIT:
         free_name_array(n->as.map.keys, n->as.map.count);
         free(n->as.map.vals);
+        break;
+    case N_STRUCT_UPDATE:
+        free_name_array(n->as.supd.keys, n->as.supd.count);
+        free(n->as.supd.vals);
         break;
     case N_LIST_LIT:          free(n->as.list.items); break;
     case N_CALL:              free(n->as.call.args); break;

@@ -6,6 +6,192 @@
 #include "parser_internal.h"
 #include <limits.h>
 
+/* ---------- interpolated string segments ---------- */
+
+/* Parse one expression segment of an s!"..." with a fresh lexer+parser. The
+ * segment text is a slice of the source buffer, so it is copied to a
+ * NUL-terminated scratch first. The sub-parser's own line numbers restart at
+ * 1, so its message is re-stamped with the interpolation's line: "line 5:
+ * expected ..." instead of a nested "line 5: line 1: ...". */
+static Node *parse_istr_segment(Parser *p, const char *text, int n,
+                                size_t line) {
+    char *scratch = malloc((size_t)n + 1);
+    if (n) memcpy(scratch, text, (size_t)n);
+    scratch[n] = '\0';
+
+    char lexerr[256] = {0};
+    int count = 0;
+    Token *toks = al_lex(scratch, lexerr, sizeof(lexerr), &count);
+    Node *result = NULL;
+
+    if (!toks) {
+        perror_at(p, line, "%s", lexerr);
+    } else {
+        Parser sp;
+        memset(&sp, 0, sizeof(sp));
+        sp.toks = toks;
+        sp.count = count;
+        Node *e = parse_expression(&sp);
+        if (!e) {
+            /* Strip the sub-parser's "line N: " prefix (it counted lines in
+             * the scratch copy, where the segment is line 1). */
+            const char *msg = sp.errbuf;
+            const char *colon = strchr(msg, ':');
+            if (colon && colon > msg && strncmp(msg, "line ", 5) == 0)
+                msg = colon + 1;
+            while (*msg == ' ') msg++;
+            perror_at(p, line, "%s", msg);
+        } else if (!at_end(&sp)) {
+            perror_at(p, line,
+                      "unexpected trailing tokens in interpolation segment");
+        } else {
+            result = e;
+        }
+        for (int i = 0; i < count; i++) free(toks[i].istr);
+        free(toks);
+    }
+    free(scratch);
+    return result;
+}
+
+/* Desugar a scanned s!"..." into `str(seg) + str(seg) + ...`: literal segments
+ * become string literals, expression segments become str() calls. The tree is
+ * made of ordinary nodes, so the checker and both emitters never learn that
+ * interpolation exists — one grammar, three consumers. Adjacent literals were
+ * already merged by the scanner (a literal run is a single 'L' segment). */
+static Node *istr_build(Parser *p, Token t) {
+    const char *s = t.istr;
+    int len = t.istr_len;
+    int off = 0;
+    Node *acc = NULL;
+
+    while (off < len) {
+        char tag = s[off];
+        off += 1;
+        int32_t n = 0;
+        memcpy(&n, s + off, sizeof(n));
+        off += (int)sizeof(n);
+        const char *data = s + off;
+        off += n;
+
+        Node *part;
+        if (tag == 'L') {
+            /* Quote-wrapped, exactly like parse_primary's merged literal: the
+             * LIT_STR contract is "text includes the quotes, consumers
+             * unescape" — interp.c and both emitters rely on it. The lexer
+             * already collapsed `{{`/`}}` here, so the braces survive as
+             * literal characters with no escape meaning. */
+            part = nalloc(N_LITERAL, t.line);
+            part->as.lit.kind = LIT_STR;
+            part->as.lit.text = malloc((size_t)n + 3);
+            part->as.lit.text[0] = '"';
+            if (n) memcpy(part->as.lit.text + 1, data, (size_t)n);
+            part->as.lit.text[n + 1] = '"';
+            part->as.lit.text[n + 2] = '\0';
+            part->as.lit.len = n + 2;
+        } else if (tag == 'E') {
+            Node *e = parse_istr_segment(p, data, n, t.line);
+            if (!e) return NULL;
+            part = nalloc(N_CALL, t.line);
+            part->as.call.callee = nalloc(N_VAR, t.line);
+            part->as.call.callee->as.var.name = strdup("str");
+            part->as.call.args = malloc(sizeof(Node *));
+            part->as.call.args[0] = e;
+            part->as.call.argc = 1;
+        } else {
+            perror_at(p, t.line, "corrupt interpolation segment (tag '%c')",
+                      tag);
+            return NULL;
+        }
+
+        if (!acc) {
+            acc = part;
+        } else {
+            Node *b = nalloc(N_BINARY, t.line);
+            b->as.binary.op = OP_ADD;
+            b->as.binary.left = acc;
+            b->as.binary.right = part;
+            acc = b;
+        }
+    }
+
+    if (!acc) {
+        /* s!"" — no segments at all: an empty string literal, still spelled
+         * quote-inclusive like every other LIT_STR (len 0 here would underflow
+         * the n-2 body span every consumer computes). */
+        acc = nalloc(N_LITERAL, t.line);
+        acc->as.lit.kind = LIT_STR;
+        acc->as.lit.text = strdup("\"\"");
+        acc->as.lit.len = 2;
+    }
+    return acc;
+}
+
+/* `{ base with k: v, ... }` — Lean's structure update. The base was already
+ * parsed by the caller (this is only reached when the lookahead proved the
+ * brace is not a map literal: a map's first token is a key, and a key is never
+ * followed by `with`, `(`, `.` or `[`). */
+static Node *parse_struct_update(Parser *p, Node *base, size_t line) {
+    if (!(check(p, TOK_IDENT) && peek(p).length == 4 &&
+          strncmp(peek(p).start, "with", 4) == 0)) {
+        perror_at(p, peek(p).line,
+                  "expected 'with' after the base of a structure update "
+                  "('{ base with field: value, ... }')", NULL);
+        return NULL;
+    }
+    advance(p); /* with */
+
+    Node *n = nalloc(N_STRUCT_UPDATE, line);
+    n->as.supd.base = base;
+    n->as.supd.keys = NULL;
+    n->as.supd.vals = NULL;
+    n->as.supd.count = 0;
+
+    while (!check(p, TOK_RBRACE) && !at_end(p)) {
+        if (!is_field_token(peek(p).type)) {
+            perror_at(p, peek(p).line,
+                      "expected field name after 'with' (name or string)",
+                      NULL);
+            return NULL;
+        }
+        Token k = peek(p);
+        advance(p);
+        if (!expect(p, TOK_COLON)) return NULL;
+        Node *v = parse_expression(p);
+        if (!v) return NULL;
+        /* Duplicate keys are a source bug, not an override: Lean rejects them
+         * too. A linear scan is fine — with-clauses are a handful of fields. */
+        char *key = ident_name(p, k);
+        for (int i = 0; i < n->as.supd.count; i++) {
+            if (strcmp(n->as.supd.keys[i], key) == 0) {
+                free(key);
+                perror_at(p, k.line,
+                          "duplicate field '%.*s' in with update",
+                          k.length, k.start);
+                return NULL;
+            }
+        }
+        free(key);
+        n->as.supd.keys = realloc(n->as.supd.keys,
+                                  sizeof(char *) * ((size_t)n->as.supd.count + 1));
+        n->as.supd.vals = realloc(n->as.supd.vals,
+                                  sizeof(Node *) * ((size_t)n->as.supd.count + 1));
+        n->as.supd.keys[n->as.supd.count] = ident_name(p, k);
+        n->as.supd.vals[n->as.supd.count] = v;
+        n->as.supd.count++;
+        if (!match(p, TOK_COMMA)) break;
+        if (check(p, TOK_RBRACE)) break; /* trailing comma */
+    }
+    if (!expect(p, TOK_RBRACE)) return NULL;
+    if (n->as.supd.count == 0) {
+        perror_at(p, line,
+                  "with update needs at least one field "
+                  "('{ base with field: value }')", NULL);
+        return NULL;
+    }
+    return n;
+}
+
 static Node *parse_primary(Parser *p) {
     Token t = peek(p);
 
@@ -48,6 +234,13 @@ static Node *parse_primary(Parser *p) {
         n->as.lit.text = merged; /* includes quotes; unescaped at eval */
         n->as.lit.len = mlen;
         return n;
+    }
+    if (t.type == TOK_ISTR) {
+        /* s!"..." — the lexer scanned the segments; desugar to str()+concat.
+         * The token's payload stays owned by the token sweep (parse_program
+         * frees every token's istr), so nothing is released here. */
+        advance(p);
+        return istr_build(p, t);
     }
     if (t.type == TOK_TRUE || t.type == TOK_FALSE || t.type == TOK_NULL) {
         advance(p);
@@ -105,6 +298,42 @@ static Node *parse_primary(Parser *p) {
         return e;
     }
     if (t.type == TOK_LBRACE) {
+        /* `{ ... }` is a map literal or a structure update, decided by pure
+         * lookahead (no rollback, so no abandoned nodes): a map's first token
+         * is a key (ident or string), and a key is never followed by `with`,
+         * `(`, `.` or `[`. `{ p with ... }` / `{ f(x) with ... }` /
+         * `{ {..} with ... }` therefore take the update path, while every map
+         * spelling — including bare-ident keys — keeps the literal path and
+         * its existing diagnostics. */
+        Token t1 = p->toks[p->pos + 1]; /* first token after `{`; the array is
+                                         * EOF-terminated, so this is in range */
+        Token t2 = t1.type != TOK_EOF ? p->toks[p->pos + 2] : t1;
+        bool is_update;
+        if (t1.type == TOK_RBRACE)
+            is_update = false;                       /* {} empty map literal */
+        else if (t1.type == TOK_STRING)
+            is_update = false;                       /* {"k": v} */
+        else if (t1.type == TOK_IDENT && t2.type == TOK_IDENT &&
+                 t2.length == 4 && strncmp(t2.start, "with", 4) == 0)
+            is_update = true;                        /* { p with ... } */
+        else if (t1.type == TOK_IDENT && t2.type == TOK_COLON)
+            is_update = false;                       /* { k: v } bare key */
+        else if (t1.type == TOK_IDENT &&
+                 (t2.type == TOK_LPAREN || t2.type == TOK_DOT ||
+                  t2.type == TOK_LBRACKET))
+            is_update = true;                        /* { f(x) with ... } */
+        else if (is_field_token(t1.type))
+            is_update = false;                       /* map: { k, ... } error */
+        else
+            is_update = true;                        /* { (e) with ... } etc */
+
+        if (is_update) {
+            advance(p); /* consume `{` */
+            Node *base = parse_expression(p);
+            if (!base) return NULL;
+            return parse_struct_update(p, base, t.line);
+        }
+
         /* map literal */
         advance(p);
         Node *n = nalloc(N_MAP_LIT, t.line);

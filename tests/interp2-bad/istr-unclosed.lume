@@ -1,0 +1,3 @@
+// 插值表达式段未闭合：'{' 后括号/引号失配，扫不到收尾 '}'
+// 预期: lexer 报 unterminated interpolation（s!" 上下文）
+print(s!"{1 + ");

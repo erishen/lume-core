@@ -1,0 +1,5 @@
+// 命名 struct 字段集固定：with 不能引入未声明字段
+// 预期: typecheck 拒 unknown field 'z' in struct update (P)
+type P = { x: int, y: int }
+let p: P = { x: 1, y: 2 };
+print(str({ p with z: 1 }));

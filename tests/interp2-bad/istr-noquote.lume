@@ -1,0 +1,3 @@
+// 插值字符串本身未闭合（缺收尾引号）
+// 预期: lexer 报 unterminated string / s!" 未闭合
+print(s!"abc);

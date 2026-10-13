@@ -49,7 +49,7 @@
 typedef enum {
     TOK_EOF, TOK_ERROR,
 
-    TOK_IDENT, TOK_NUMBER, TOK_STRING,
+    TOK_IDENT, TOK_NUMBER, TOK_STRING, TOK_ISTR,
 
     /* keywords */
     TOK_SERVER, TOK_ROUTE, TOK_TOOL, TOK_FUNC, TOK_RETURN,
@@ -82,6 +82,14 @@ typedef struct {
                           * value as the operand of a unary minus
                           * (`-9223372036854775808` == LLONG_MIN). inum holds
                           * the clamped LLONG_MAX until the parser negates it. */
+    /* TOK_ISTR only: the scanned segments of an `s!"..."` interpolated string,
+     * serialized as (tag byte 'L' = literal, already unescaped; 'E' = expression
+     * source text) + int32 length + payload, repeated. The parser deserializes
+     * this into a `str(...) + ...` tree and frees it; every token-free site
+     * must free a non-NULL istr. Heap-allocated (malloc'd), NULL for all other
+     * token types. */
+    char *istr;
+    int istr_len;
 } Token;
 
 const char *token_type_name(TokenType t);
@@ -298,6 +306,14 @@ void gc_collect(VM *vm);
 char *gc_strdup(VM *vm, const char *s, size_t n);
 char *gc_cstr(VM *vm, const char *s);
 
+/* The one escape table for string literals: \n \t \r \0 \\ \" (an unknown
+ * escape keeps the character verbatim). Interpreter and lexer share it so the
+ * two can never drift — the native backends unescape through it too, which is
+ * what keeps `"a\nb"` from printing four characters there. Input is the raw
+ * body WITHOUT quotes; the result is malloc'd (caller frees) and NUL-safe
+ * only as a convenience (a literal \0 keeps its length). */
+char *lume_unescape(const char *s, size_t n, size_t *out_len);
+
 /* ---- value constructors (allocate on the VM heap) ---- */
 Value make_string(VM *vm, const char *s, size_t n);
 Value make_string_cstr(VM *vm, const char *s);
@@ -311,6 +327,7 @@ Value make_env(VM *vm, Env *parent);
 /* ---- map / env access ---- */
 Value map_get(VM *vm, Obj *map, const char *key, int *found);
 void map_set(VM *vm, Obj *map, const char *key, Value v);
+Obj *map_shallow_copy(VM *vm, Obj *src); /* `{ p with ... }` — see value.c */
 Value env_get(Env *env, const char *name, int *found);
 void env_set(VM *vm, Env *env, const char *name, Value v);
 
@@ -490,6 +507,7 @@ typedef enum {
     N_CALL, N_MEMBER, N_INDEX,
     N_UNARY, N_BINARY, N_TERNARY,
     N_MATCH, N_CTOR, N_IF_LET,
+    N_STRUCT_UPDATE, /* `{ base with f: e, ... }` — Lean's structure update */
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
 
@@ -589,6 +607,12 @@ typedef struct Node {
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
         struct { struct Node *obj; char *name; struct Node *value; } assign_mem;
+        /* `{ base with k: v, ... }`: a fresh map/struct with base's slots
+         * shallow-copied and the listed keys overwritten in order. The base is
+         * never mutated (functional semantics, like Lean's `{ p with y := 3 }`).
+         * keys are owned (ident_name copies); vals are children. */
+        struct { struct Node *base; char **keys; struct Node **vals;
+                 int count; } supd;
         /* lit.text: `char *`, NOT `const char *`. Only LIT_STR sets it
          * (parser_expr.c:parse_primary mallocs a quote-including copy and
          * reallocs it while merging adjacent literals), so the field owns

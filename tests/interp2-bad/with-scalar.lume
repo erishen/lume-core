@@ -1,0 +1,3 @@
+// with 的 base 是标量，不是 map/struct
+// 预期: typecheck 拒 'with' update requires a map or struct base
+print(str({ 5 with x: 1 }));

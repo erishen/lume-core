@@ -45,6 +45,10 @@ static void emit(LexOut *o, TokenType t, const char *start, int len) {
     tok.inum = 0;
     tok.is_int = 0;
     tok.neg_min = 0;
+    /* Same story for the interpolation payload: a stale non-NULL istr would be
+     * freed twice (or a garbage pointer freed once) by the token sweep. */
+    tok.istr = NULL;
+    tok.istr_len = 0;
     o->toks[o->count++] = tok;
 }
 
@@ -172,6 +176,168 @@ static void lex_string(LexOut *o, const char *str_start) {
     emit(o, TOK_STRING, str_start, (int)(p - str_start));
 }
 
+/* ---------- interpolated strings: s!"..." ----------
+ *
+ * Segment scan (Lean 4's s! rules): in TEXT state `{{` and `}}` are literal
+ * braces and a lone `{` opens an expression segment; in EXPR state braces
+ * nest by depth and a `"` skips a whole string literal (so `{"x"}` works),
+ * with the matching `}` closing the segment. A lone `}` in TEXT state is a
+ * literal (it can only be the tail of a `}}` pair, which the two-char peek
+ * already consumed, or an unpaired brace — Lean keeps it verbatim too).
+ *
+ * The segments are serialized into the token's istr payload:
+ *   'L' + int32 len + bytes   literal segment, already unescaped
+ *   'E' + int32 len + bytes   expression segment, raw source text
+ * The parser turns that into str(...) + ... — the checker and the emitters
+ * never learn interpolation exists. */
+
+/* Append one segment (tag + length + payload) to a growable buffer. The
+ * length is written as int32_t — the parser reads exactly that width, and a
+ * wider write here silently shifts every following segment (the first version
+ * of this stored a size_t, which truncated `"hi "` to `"i"` on little-endian
+ * because only the low 4 bytes were consumed as the length and the high 4
+ * zero bytes then parsed as an empty tag-0 segment). */
+static void istr_push(char **buf, size_t *len, size_t *cap,
+                      char tag, const char *data, size_t n) {
+    int32_t n32 = (int32_t)n;
+    size_t need = *len + 1 + sizeof(int32_t) + n;
+    if (need > *cap) {
+        *cap = need * 2;
+        *buf = realloc(*buf, *cap);
+    }
+    (*buf)[(*len)++] = tag;
+    memcpy(*buf + *len, &n32, sizeof(int32_t));
+    *len += sizeof(int32_t);
+    if (n) memcpy(*buf + *len, data, n);
+    *len += n;
+}
+
+static void lex_istr(LexOut *o, const char *str_start) {
+    Lexer *lx = &o->lx;
+    /* str_start points at the `s`; the body opens at str_start + 3. */
+    const char *p = str_start + 3;
+    char *segs = NULL;
+    size_t slen = 0, scap = 0;
+
+    /* Literal-segment accumulator: source bytes with the `{{` / `}}` folds
+     * already collapsed. The escape table is NOT applied here — the segment
+     * becomes an ordinary quote-wrapped LIT_STR (istr_build adds the quotes),
+     * and every consumer of a LIT_STR unescapes exactly once. Unescaping in
+     * the lexer instead would double-unescape (`\\n` -> newline in the
+     * segment, then again at eval). The folds cannot ride on a pointer+length
+     * into the source, because the source spells them with two characters. */
+    char *lit = NULL;
+    size_t llen = 0, lcap = 0;
+
+    enum { TEXT, EXPR, EXPR_STR } state = TEXT;
+    int depth = 0;
+    const char *expr_start = NULL;
+
+    while (true) {
+        char c = *p;
+        if (c == '\0') {
+            lx_error(lx, state == TEXT
+                    ? "unterminated interpolated string literal"
+                    : "unterminated interpolation segment (missing '}')");
+            goto fail;
+        }
+        if (c == '\n' && state == TEXT) {
+            /* Same rule as plain strings: no raw newline in the literal part. */
+            lx_error(lx, "unterminated interpolated string literal");
+            goto fail;
+        }
+        if (state == TEXT) {
+            if (c == '{' && p[1] == '{') {
+                if (llen + 1 > lcap) { lcap = lcap ? lcap * 2 : 32; lit = realloc(lit, lcap); }
+                lit[llen++] = '{';
+                p += 2;
+                continue;
+            }
+            if (c == '}' && p[1] == '}') {
+                if (llen + 1 > lcap) { lcap = lcap ? lcap * 2 : 32; lit = realloc(lit, lcap); }
+                lit[llen++] = '}';
+                p += 2;
+                continue;
+            }
+            if (c == '{') {
+                if (llen)
+                    istr_push(&segs, &slen, &scap, 'L', lit, llen);
+                llen = 0;
+                p++;
+                state = EXPR;
+                depth = 1;
+                expr_start = p;
+                continue;
+            }
+            if (c == '"') {
+                p++; /* closing quote of the s!"..." spelling */
+                goto done;
+            }
+            if (llen + 1 > lcap) { lcap = lcap ? lcap * 2 : 32; lit = realloc(lit, lcap); }
+            lit[llen++] = c;
+            p++;
+            continue;
+        }
+        if (state == EXPR) {
+            if (c == '"') { state = EXPR_STR; p++; continue; }
+            if (c == '{') { depth++; p++; continue; }
+            if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    istr_push(&segs, &slen, &scap, 'E', expr_start,
+                              (size_t)(p - expr_start));
+                    p++;
+                    state = TEXT;
+                    continue;
+                }
+                p++;
+                continue;
+            }
+            p++;
+            continue;
+        }
+        /* EXPR_STR: inside a string literal within the expression — the only
+         * character that matters is an unescaped closing quote. */
+        if (c == '\\') {
+            p += 2;
+            continue;
+        }
+        if (c == '"') { state = EXPR; p++; continue; }
+        p++;
+    }
+
+done:
+    if (llen)
+        istr_push(&segs, &slen, &scap, 'L', lit, llen);
+    free(lit);
+    lx->pos = (size_t)(p - lx->src);
+    {
+        Token t;
+        memset(&t, 0, sizeof(t));
+        t.type = TOK_ISTR;
+        t.start = str_start;
+        t.length = (int)(p - str_start);
+        t.line = lx->line;
+        t.istr = segs;
+        t.istr_len = (int)slen;
+        /* emit() zeroes the numeric fields but not istr, so append directly. */
+        if (o->count >= o->cap) {
+            o->cap = o->cap ? o->cap * 2 : 64;
+            o->toks = realloc(o->toks, sizeof(Token) * (size_t)o->cap);
+        }
+        o->toks[o->count++] = t;
+    }
+    return;
+
+fail:
+    free(segs);
+    free(lit);
+    emit(o, TOK_ERROR, str_start, 0);
+    /* Skip to end of line so one bad interpolation doesn't re-lex forever. */
+    while (*p && *p != '\n') p++;
+    lx->pos = (size_t)(p - lx->src);
+}
+
 static void lex_comment(LexOut *o, const char *start) {
     Lexer *lx = &o->lx;
     const char *p = lx->src + lx->pos;
@@ -234,6 +400,16 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
         if (is_ident_start(c)) {
             const char *p = tok_start;
             while (is_ident_char(*p)) p++;
+            /* `s!"..."` is an interpolated string, not an identifier `s`
+             * followed by junk. The ident scan stops right after the `s`
+             * because `!` and `"` are not ident chars, so this is the one
+             * place the spelling can be recognized. */
+            if ((size_t)(p - tok_start) == 1 && tok_start[0] == 's' &&
+                p[0] == '!' && p[1] == '"') {
+                o.lx.pos = (size_t)(p - source);
+                lex_istr(&o, tok_start);
+                continue;
+            }
             o.lx.pos = (size_t)(p - source);
             TokenType t = keyword_type(tok_start, (int)(p - tok_start));
             emit(&o, t, tok_start, (int)(p - tok_start));
@@ -304,6 +480,7 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
         if (errbuf && errbuf_size)
             snprintf(errbuf, errbuf_size, "%s", o.lx.err);
         if (out_count) *out_count = 0;
+        for (int i = 0; i < o.count; i++) free(o.toks[i].istr);
         free(o.toks);
         return NULL;
     }

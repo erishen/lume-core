@@ -55,29 +55,14 @@ Value vm_peek(VM *vm, int depth) {
 
 /* ---------- string literal unescaping ---------- */
 
+/* Thin wrapper over the shared table (value.c): s spans the raw lexeme
+ * INCLUDING the surrounding quotes, so the body is s[1..n-1). Kept as a
+ * function because every call site reads the quote-inclusive span straight off
+ * the token. */
 static char *unescape_literal(const char *s, int n, int *out_len) {
-    /* s spans the raw lexeme INCLUDING the surrounding quotes. */
-    char *buf = malloc((size_t)n + 1);
-    int w = 0;
-    for (int i = 1; i < n - 1; i++) {
-        char c = s[i];
-        if (c == '\\' && i + 1 < n - 1) {
-            i++;
-            switch (s[i]) {
-                case 'n': buf[w++] = '\n'; break;
-                case 't': buf[w++] = '\t'; break;
-                case 'r': buf[w++] = '\r'; break;
-                case '0': buf[w++] = '\0'; break;
-                case '\\': buf[w++] = '\\'; break;
-                case '"': buf[w++] = '"'; break;
-                default: buf[w++] = s[i]; break;
-            }
-        } else {
-            buf[w++] = c;
-        }
-    }
-    buf[w] = '\0';
-    *out_len = w;
+    size_t w = 0;
+    char *buf = lume_unescape(s + 1, (size_t)(n - 2), &w);
+    *out_len = (int)w;
     return buf;
 }
 
@@ -263,6 +248,30 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
                 map_set(vm, m, n->as.map.keys[i], v);
             }
             return; /* map stays on stack */
+        }
+        case N_STRUCT_UPDATE: {
+            /* `{ base with k: v, ... }`: copy the base, then overwrite. The
+             * base stays on the stack across the copy — map_shallow_copy's
+             * single gc_alloc can trigger a collection, and an unrooted base
+             * would be swept out from under the copy loop. */
+            eval_expr(vm, n->as.supd.base, env);
+            if (vm->error) return;
+            Value base = vm_peek(vm, 0);
+            if (!IS_OBJ(base) || AS_OBJ(base)->type != OBJ_MAP) {
+                vm_set_error(vm, "line %zu: 'with' update requires a map or "
+                                 "struct base", n->line);
+                return;
+            }
+            Obj *m = map_shallow_copy(vm, AS_OBJ(base));
+            vm_pop(vm);              /* drop the base */
+            vm_push(vm, val_obj(m)); /* root the copy during the overrides */
+            for (int i = 0; i < n->as.supd.count; i++) {
+                eval_expr(vm, n->as.supd.vals[i], env);
+                if (vm->error) return;
+                Value v = vm_pop(vm);
+                map_set(vm, m, n->as.supd.keys[i], v);
+            }
+            return; /* the updated map stays on stack */
         }
         case N_LIST_LIT: {
             Obj *list = AS_OBJ(make_list(vm));

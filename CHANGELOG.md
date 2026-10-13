@@ -6,6 +6,29 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — string interpolation `s!"..."` and structure update `{ base with ... }` (SPEC §3.8 / §3.9)
+
+- **String interpolation `s!"..."`** — `s!"text {expr} text"` splices an
+  expression into a string; `{` enters expression mode (bracket-depth tracked,
+  `}` inside a string literal does not count), so nested interpolation, indexing,
+  calls and even `with` updates may appear in a segment. The segment is converted
+  with `str()` and concatenated with the literal parts; `{{`/`}}` escape to a
+  literal brace. Three-backend consistent (interpreter / `--compile-text` /
+  `--compile-llvm`), pinned by the interpolation probe in
+  `tests/native-consistency.lume`.
+- **Structure update `{ base with f: e, ... }`** — shallow-copies `base` (a map
+  or an annotated named struct) and overrides the listed fields, producing a new
+  value (the base is untouched). Map bases yield an anonymous map read back with
+  `get()`; annotated named-struct bases yield the same struct read back with
+  `.f`. Rejected shapes: non-map/struct base (`'with' update requires a map or
+  struct base`), unknown field (`unknown field 'f' in struct update (T)`),
+  duplicate field (`duplicate field 'f' in with update`), empty update
+  (`with update needs at least one field`) and field type mismatch
+  (`struct field: cannot use a value of type ...`). Three-backend consistent,
+  pinned by the update probe in `tests/native-consistency.lume`; interpreter-only
+  assertions (incl. `.f` dynamic read on an unannotated map base) live in
+  `tests/interp2.lume` (+ 8 negative cases in `tests/interp2-bad/`).
+
 ### Changed — structural `==` / `!=` (SPEC §1.8)
 
 - **`==` / `!=` on containers are structural comparisons** — never pointer

@@ -1,0 +1,5 @@
+// 命名 struct 字段类型不匹配
+// 预期: typecheck 拒 field 'x' of P is int, not string
+type P = { x: int, y: int }
+let p: P = { x: 1, y: 2 };
+print(str({ p with x: "s" }));

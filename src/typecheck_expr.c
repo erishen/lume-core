@@ -157,6 +157,68 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return at;
         }
 
+        case N_STRUCT_UPDATE: {
+            /* `{ base with k: v, ... }` — a fresh map/struct. The base keeps
+             * its declared shape: a named struct has a fixed field set (Lean's
+             * rule too — `with` overrides values, never the schema), an
+             * anonymous map may gain keys. Anything that is not a map/struct
+             * (scalar, list, func, enum, Result) is refused here rather than
+             * at runtime. */
+            Type *bt = ck_expr(c, n->as.supd.base, expected);
+            if (bt->kind != TY_STRUCT && bt->kind != TY_ANY) {
+                ck_fail(c, n->line,
+                        "'with' update requires a map or struct base, got %s",
+                        ty_str(bt));
+                for (int i = 0; i < n->as.supd.count; i++)
+                    ck_expr(c, n->as.supd.vals[i], NULL);
+                return any_type();
+            }
+            if (bt->kind == TY_ANY) {
+                for (int i = 0; i < n->as.supd.count; i++)
+                    ck_expr(c, n->as.supd.vals[i], NULL);
+                return any_type();
+            }
+            if (bt->name) {
+                /* named struct: every key must be a declared field */
+                for (int i = 0; i < n->as.supd.count; i++) {
+                    int idx = -1;
+                    for (int j = 0; j < bt->count; j++)
+                        if (strcmp(n->as.supd.keys[i], bt->names[j]) == 0) {
+                            idx = j;
+                            break;
+                        }
+                    if (idx < 0) {
+                        ck_fail(c, n->line,
+                                "unknown field '%s' in struct update (%s)",
+                                n->as.supd.keys[i], bt->name);
+                        ck_expr(c, n->as.supd.vals[i], NULL);
+                        continue;
+                    }
+                    expect_compat(c,
+                                  ck_expr(c, n->as.supd.vals[i],
+                                           bt->types[idx]),
+                                  bt->types[idx], n->line, "struct field");
+                }
+                return bt;
+            }
+            /* anonymous map: the base's members plus the with-overrides */
+            Type *at = type_anon_struct();
+            for (int j = 0; j < bt->count; j++)
+                type_add_member(at, bt->names[j], bt->types[j]);
+            for (int i = 0; i < n->as.supd.count; i++) {
+                Type *vt = ck_expr(c, n->as.supd.vals[i], NULL);
+                bool found = false;
+                for (int j = 0; j < at->count; j++)
+                    if (strcmp(n->as.supd.keys[i], at->names[j]) == 0) {
+                        at->types[j] = vt;
+                        found = true;
+                        break;
+                    }
+                if (!found) type_add_member(at, n->as.supd.keys[i], vt);
+            }
+            return at;
+        }
+
         case N_LIST_LIT:
             return ck_list(c, n, expected);
 

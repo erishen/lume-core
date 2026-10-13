@@ -40,6 +40,39 @@ char *gc_strdup(VM *vm, const char *s, size_t n) {
 
 char *gc_cstr(VM *vm, const char *s) { return gc_strdup(vm, s, strlen(s)); }
 
+/* ---------- the one escape table ---------- */
+
+/* Shared by the interpreter (string literals) and the lexer (interpolated
+ * segments). The native backends call it too, before handing a literal to the
+ * IR emitters: irbuf_emit_ir_string only escapes for the IR's own syntax, so
+ * without this pass `"a\nb"` printed four characters natively while the
+ * interpreter printed a newline — a three-way split nobody had noticed because
+ * only builtins-test (interpreter-only) exercised escapes at all. */
+char *lume_unescape(const char *s, size_t n, size_t *out_len) {
+    char *buf = malloc(n + 1);
+    size_t w = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '\\' && i + 1 < n) {
+            i++;
+            switch (s[i]) {
+                case 'n': buf[w++] = '\n'; break;
+                case 't': buf[w++] = '\t'; break;
+                case 'r': buf[w++] = '\r'; break;
+                case '0': buf[w++] = '\0'; break;
+                case '\\': buf[w++] = '\\'; break;
+                case '"': buf[w++] = '"'; break;
+                default: buf[w++] = s[i]; break;
+            }
+        } else {
+            buf[w++] = c;
+        }
+    }
+    buf[w] = '\0';
+    if (out_len) *out_len = w;
+    return buf;
+}
+
 /* ---------- marking ---------- */
 
 static void mark_value(Value v);
@@ -232,6 +265,30 @@ Value make_env(VM *vm, Env *parent) {
 }
 
 /* ---------- map / env access ---------- */
+
+/* A fresh map with the same keys (copied) and values (shared). The copy is
+ * shallow on purpose: `{ p with y := 3 }` replaces one slot, and nested
+ * containers stay shared exactly as they do in Lean — and the mark-sweep GC
+ * keeps a shared child alive through either map, so no refcount is needed.
+ * The caller must have `src` rooted when calling: the single gc_alloc below
+ * may collect, and everything after it is plain malloc (no GC trigger). */
+Obj *map_shallow_copy(VM *vm, Obj *src) {
+    Obj *dst = gc_alloc(vm, OBJ_MAP, 0);
+    dst->as.map.count = 0;
+    dst->as.map.cap = src->as.map.count;
+    dst->as.map.keys = NULL;
+    dst->as.map.vals = NULL;
+    if (dst->as.map.cap) {
+        dst->as.map.keys = malloc(sizeof(char *) * (size_t)dst->as.map.cap);
+        dst->as.map.vals = malloc(sizeof(Value) * (size_t)dst->as.map.cap);
+    }
+    for (int i = 0; i < src->as.map.count; i++) {
+        dst->as.map.keys[i] = strdup(src->as.map.keys[i]);
+        dst->as.map.vals[i] = src->as.map.vals[i];
+    }
+    dst->as.map.count = src->as.map.count;
+    return dst;
+}
 
 static int map_find(Obj *map, const char *key) {
     for (int i = 0; i < map->as.map.count; i++)

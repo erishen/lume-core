@@ -331,6 +331,38 @@ enum Shape { Circle(r: float) | Rect(w: float, h: float) }
   "r": 2.0 }` 均为 `true` 侧成立）。此前「枚举值不参与 `==`（未定义）」的立场随
   2026-10-12 的结构相等落地移除。
 
+### 3.8 字符串插值 `s!"..."`（2026-10-13，借鉴日常脚本语言）
+
+- 形如 `s!"文本 {expr} 文本"`：双引号前带 `s!` 前缀即进入插值态。普通 `{` `}` 是字面
+  花括号（用 `{{` `}}` 转义出字面花括号）。单个 `{` 进入**表达式态**：括号深度追踪、
+  字符串字面量内的 `}` 不算深度；表达式段交给完整 parser 递归解析——故嵌套插值、
+  索引、调用乃至 `with` 更新都能出现在段里。表达式经 `str()` 转字符串后与字面量段
+  拼接；无插值时退化为普通字符串字面量。
+- 转义序列（`\n` `\t` `\\` `\"` 等）沿用既有规则；BOM/非法 UTF-8 仍按既有 lexer 行为。
+- 段内表达式的结果经 `str()` 统一转为字符串后拼接，因此 `s!"v={1+2}"` 得到 `"v=3"`、
+  `s!"t={1==1}"` 得到 `"t=true"`、`s!"n={s!"{7}"}"` 得到 `"n=7"`（嵌套插值）。
+- **三后端一致**：解释器、文本 IR（`--compile-text`）、libLLVM（`--compile-llvm`）
+  对插值的输出逐字节相同（tests/native-consistency.lume 的插值探针段钉死）。`str()`
+  对容器（list/map/struct）的格式化在两原生后端尚未实现，故探针段回避
+  `str(container)`——这属原生 `str()` 既有缺口，非插值特性本身。
+
+### 3.9 结构体更新 `{ base with ... }`（2026-10-13，借鉴 Lean 的 structure update）
+
+- 形如 `{ base with f: e, ... }`：以现有 map/struct 为基底，浅拷贝其全部槽后按序覆盖
+  指定字段，产出**新**值（基底原值不变，与解释器语义一致）。`base` 可以是变量、字面量、
+  调用、成员访问或嵌套的 `{...with...}`。
+- **map 基底**：结果为匿名 map（运行时堆 map），覆盖/新增键；读回用 `get(m, "k")`。
+- **命名 struct 基底**（基底必须有类型标注，使更新保持为类型化聚合而非匿名 map）：
+  结果为同类型 struct，按字段名覆盖；读回用 `.f` 字段访问。覆盖值的类型须与字段声明
+  兼容，否则类型检查拒绝。
+- **拒绝的形状**：标量/列表/函数/enum/Result 基底报 `'with' update requires a map or
+  struct base`；未知字段报 `unknown field 'f' in struct update (T)`；命名 struct 上重复
+  字段报 `duplicate field 'f' in with update`；空更新（无字段）报 `with update needs at
+  least one field`；字段类型不匹配报 `struct field: cannot use a value of type ...`。
+- **三后端一致**：map 基底与命名 struct 基底（基底带类型标注）的更新，在解释器与两原生
+  后端输出逐字节相同（tests/native-consistency.lume 的更新探针段钉死）；解释器独有的
+  断言（含未标注基底被当作 map 走 `.f` 动态读）见 tests/interp2.lume（仅解释器）。
+
 ---
 
 ## 4. 控制流与闭包

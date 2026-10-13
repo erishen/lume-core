@@ -317,6 +317,7 @@ static const char *node_type_name(NodeType t)
     case N_MATCH:   return "match";             case N_CTOR:   return "constructor";
     case N_INDEX:   return "index";             case N_IMPORT: return "import";
     case N_IF_LET: return "if-let";
+    case N_STRUCT_UPDATE: return "struct update";
     }
     return "node";
 }
@@ -343,7 +344,16 @@ static Val cg_literal(CG *g, Node *n)
         const char *t = n->as.lit.text;
         size_t      len = (size_t)n->as.lit.len;
         if (len >= 2 && t[0] == '"' && t[len - 1] == '"') { t++; len -= 2; }
-        return val_take(type_prim(TY_STRING), cg_string_val(g, t, len));
+        /* Language-level escapes are resolved here, once, through the shared
+         * table (value.c). irbuf_emit_ir_string only escapes for the IR's own
+         * syntax, so without this pass `"a\nb"` emitted four characters while
+         * the interpreter printed a newline — a three-way split only the
+         * interpreter-only builtins-test could have caught. */
+        size_t ulen = 0;
+        char *u = lume_unescape(t, len, &ulen);
+        char *name = cg_string_val(g, u, ulen);
+        free(u);
+        return val_take(type_prim(TY_STRING), name);
     }
 
     if (k == LIT_NUM) {
@@ -1606,6 +1616,139 @@ static Val cg_map_or_struct_lit(CG *g, Node *n)
     return cg_map_lit(g, n);
 }
 
+/* `{ base with k: v, ... }` — a fresh value (the functional update; the base
+ * is never mutated, matching the interpreter). Two shapes, decided by the
+ * base's static type exactly as a literal is: a named struct is a typed
+ * aggregate, so the update rebuilds it field by field (untouched fields are
+ * loaded from the base through a GEP, overridden ones are evaluated and
+ * inserted); an anonymous map is a heap map, cloned at runtime by
+ * lume_map_clone and then overwritten key by key. */
+static Val cg_struct_update(CG *g, Node *n)
+{
+    Val base = cg_expr(g, n->as.supd.base);
+    if (!base.v) return base;
+
+    if (base.ty && base.ty->kind == TY_STRUCT && base.ty->name) {
+        Type *ty = base.ty;
+        SDef *sd = sdef_find(&g->structs, ty->name);
+        if (!sd) {
+            free(base.v);
+            ERRV(g, "line %zu: unknown type '%s'", n->line, ty->name);
+        }
+        const char *st = llvm_type_of(ty);
+        if (!st) {
+            free(base.v);
+            ERRV(g, "line %zu: type '%s' has no codegen type", n->line,
+                 ty->name);
+        }
+
+        /* Normalize to an address (a slot if the base is an aggregate value,
+         * a no-op when it already is a reference). */
+        struct_addr(g, &base);
+        if (!base.v)
+            ERRV(g, "line %zu: cannot update a value of type '%s'", n->line,
+                 ty->name);
+
+        char *cur = xstrdup("undef");
+        for (int j = 0; j < sd->count; j++) {
+            int w = -1;
+            for (int k = 0; k < n->as.supd.count; k++)
+                if (strcmp(n->as.supd.keys[k], sd->names[j]) == 0) { w = k; break; }
+
+            Val fv;
+            if (w >= 0) {
+                fv = cg_expr(g, n->as.supd.vals[w]);
+                if (!fv.v) { free(cur); free(base.v); return fv; }
+            } else {
+                const char *flt = llvm_type_of(sd->types[j]);
+                if (!flt) {
+                    free(cur); free(base.v);
+                    ERRV(g, "line %zu: field '%s' has no codegen type",
+                         n->line, sd->names[j]);
+                }
+                char *pa = emit_instrf(g, ty,
+                                       "getelementptr inbounds %s, %s* %s, i32 0, i32 %d",
+                                       st, st, base.v, j);
+                if (!pa) {
+                    free(cur); free(base.v);
+                    ERRV(g, "line %zu: cannot read field '%s'", n->line,
+                         sd->names[j]);
+                }
+                fv = val_take(sd->types[j],
+                              emit_instrf(g, sd->types[j], "load %s, %s* %s",
+                                          flt, flt, pa));
+                free(pa);
+                if (!fv.v) {
+                    free(cur); free(base.v);
+                    ERRV(g, "line %zu: cannot read field '%s'", n->line,
+                         sd->names[j]);
+                }
+                /* A nested struct loads as an aggregate *value* — tag it so a
+                 * further coercion/compare treats it as a value, not a pointer
+                 * (same rule as cg_struct_eq's field loads). */
+                if (flt[0] == '%') fv.agg = 1;
+            }
+
+            Type *fty = sd->types[j];
+            const char *flt = llvm_type_of(fty);
+            if (!flt) {
+                free(cur); free(fv.v); free(base.v);
+                ERRV(g, "line %zu: field '%s' has no codegen type", n->line,
+                     sd->names[j]);
+            }
+            fv = coerce(g, fty, fv, n->line);
+            if (g->err[0]) {
+                free(cur); free(fv.v); free(base.v);
+                return (Val){ NULL, NULL, 0 };
+            }
+            char *ins = emit_instrf_agg(g, "insertvalue %s %s, %s %s, %d",
+                                        st, cur, flt, fv.v, j);
+            free(cur); free(fv.v);
+            if (!ins) {
+                free(base.v);
+                ERRV(g, "line %zu: cannot build a value of type '%s'", n->line,
+                     ty->name);
+            }
+            cur = ins;
+        }
+        free(base.v);
+        Val r = val_make_agg(ty, cur);
+        free(cur);
+        return r;
+    }
+
+    /* Anonymous map: clone the base at runtime, then overwrite the listed
+     * keys (the clone shares nested containers, like the interpreter). */
+    Val m = rt_call(g, type_anon_struct(), "lume_map_clone", "i8* %s", base.v);
+    free(base.v);
+    if (!m.v) ERRV(g, "line %zu: cannot copy a map for 'with' update", n->line);
+    m.ty = type_anon_struct();
+
+    for (int i = 0; i < n->as.supd.count; i++) {
+        Val v = cg_expr(g, n->as.supd.vals[i]);
+        if (!v.v) { free(m.v); return v; }
+        Val k = val_take(type_prim(TY_STRING),
+                         cg_string_val(g, n->as.supd.keys[i],
+                                       strlen(n->as.supd.keys[i])));
+        const char *fn = map_put_fn(v.ty);
+        if (!fn) {
+            free(k.v); free(v.v); free(m.v);
+            ERRV(g, "line %zu: map values must be int, float, string or a container",
+                 n->line);
+        }
+        if (v.ty && v.ty->kind == TY_BOOL) v = coerce(g, type_prim(TY_INT), v, n->line);
+        Val r = rt_call(g, type_prim(TY_INT), fn, "i8* %s, i8* %s, %s %s",
+                        m.v, k.v, rt_arg_type(v.ty), v.v);
+        free(k.v); free(v.v);
+        if (!r.v) {
+            free(m.v);
+            ERRV(g, "line %zu: cannot store into a map", n->line);
+        }
+        free(r.v);
+    }
+    return m;
+}
+
 /* An enum constructor: the interpreter's `{ "$": V, ...payload }` map, built
  * with the exact same runtime helpers a map literal uses. The value's type is
  * the enum's own (TY_ENUM), whose IR spelling is i8*. */
@@ -2071,6 +2214,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i64 @lume_map_put_f(i8*, i8*, double)\n");
     EMIT(g, "declare i64 @lume_map_put_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_put_obj(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_map_clone(i8*)\n");
     EMIT(g, "declare i64 @lume_map_get_i(i8*, i8*, i64)\n");
     EMIT(g, "declare double @lume_map_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
@@ -2925,6 +3069,7 @@ Val cg_expr(CG *g, Node *n)
     case N_LITERAL: return cg_literal(g, n);
     case N_LIST_LIT: return cg_list_lit(g, n);
     case N_MAP_LIT: return cg_map_or_struct_lit(g, n);
+    case N_STRUCT_UPDATE: return cg_struct_update(g, n);
     /* An assignment in expression position — a C-style `for` header wraps it
      * in an expression statement, and the parser hands those to expressions. */
     case N_ASSIGN:  return cg_assign_expr(g, n);
