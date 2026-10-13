@@ -2946,6 +2946,14 @@ static Type *infer_node_type(CG *g, Node *n)
         return type_anon_struct();
     }
     case N_MEMBER:   return member_field_type(g, n);
+    case N_ASSIGN:
+        /* An assignment expression yields the *target*, which is what `for
+         * (i = 0; ...)` and `a = b` want to carry. Mirrors codegen_scan.c;
+         * without it the LLVM emitter answers "cannot infer a type" where
+         * the text emitter (and the interpreter) accept the assignment. */
+        return infer_node_type(g, n->as.assign.value);
+    case N_ASSIGN_MEMBER:
+        return infer_node_type(g, n->as.assign_mem.value);
     case N_UNARY: {
         /* `let neg = -7` / `let b = not flag` must infer a type so the
          * binding's alloca gets an IR type; otherwise the native backend

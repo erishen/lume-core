@@ -398,8 +398,16 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test eq2-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test eq2-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
+
+# --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
+# 两个原生后端是独立翻译单元，各持一份私有 infer_node_type；某个节点/类型
+# kind 只加在一边 = "一边接受一边拒绝" 的静默漂移（struct-update 轮的
+# N_STRUCT_UPDATE、str() 轮的 TY_STRING 都是这么进来的）。运行期三后端对拍
+# 归 native-consistency 管，这里静态抓"缺 case"这一类。
+case-parity:
+	@bash tests/case-parity.sh
 
 # --- 发布面 (make pack) ---------------------------------------------------
 # 这条路以前根本不存在: 没有任何 pack/release/tar 目标, .gitignore 连 /bin/ 都
