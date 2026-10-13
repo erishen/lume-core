@@ -88,6 +88,13 @@ func main(): int {
   check("istr enum", s!"c={str(Red)}" == "c={\"$\":\"Red\"}");
   check("istr list", s!"l={str([1, 2])}" == "l=[1,2]");
 
+  // ---- str() over containers (interpreter rendering; native parity is
+  // pinned by native-consistency.lume's str-container block) ----
+  check("str map", str({ "a": 1 }) == "{\"a\":1}");
+  check("str empty map", str({}) == "{}");
+  check("str empty list", str([]) == "[]");
+  check("str named struct", str(mkp(1, 2)) == "{\"x\":1,\"y\":2}");
+
   return 0;
 }
 

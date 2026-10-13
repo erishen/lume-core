@@ -381,6 +381,115 @@ static int slot_emit(LumeSlot s)
     }
 }
 
+/* Serialize a slot to a malloc'd JSON string with the same rendering rules
+ * as print() (a string keeps its quotes and escapes, a float prints via %g).
+ * Grows a private buffer instead of sharing slot_emit's static one: str()
+ * can be called on values of arbitrary depth and size, and the static
+ * buffer's documented tail bug (a shorter string leaving the previous one's
+ * bytes after its closing quote) becomes a real correctness hazard here.
+ * Caller frees the result. */
+typedef struct { char *p; size_t len, cap; } JsonBuf;
+
+static void jb_putc(JsonBuf *b, char c)
+{
+    if (b->len + 1 >= b->cap) {
+        b->cap = b->cap ? b->cap * 2 : 64;
+        b->p = realloc(b->p, b->cap);
+        if (!b->p) { fputs("lume(native): out of memory\n", stderr); exit(70); }
+    }
+    b->p[b->len++] = c;
+}
+
+static void jb_puts(JsonBuf *b, const char *s) { while (*s) jb_putc(b, *s++); }
+
+static void jb_escape(JsonBuf *b, const char *s)
+{
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"':  jb_puts(b, "\\\""); break;
+        case '\\': jb_puts(b, "\\\\"); break;
+        case '\n': jb_puts(b, "\\n");  break;
+        case '\t': jb_puts(b, "\\t");  break;
+        case '\r': jb_puts(b, "\\r");  break;
+        default:
+            if (*p < 0x20) {
+                char tmp[8];
+                snprintf(tmp, sizeof tmp, "\\u%04x", *p);
+                jb_puts(b, tmp);
+            } else {
+                jb_putc(b, (char)*p);
+            }
+        }
+    }
+}
+
+/* Mutually recursive with itself: a slot may hold a container, a container
+ * body holds slots. */
+static void slot_to_json(JsonBuf *b, LumeSlot s)
+{
+    switch (s.tag) {
+    case LUME_SLOT_OBJ: {
+        const void *p = (const void *)(intptr_t)s.num;
+        if (!p) { jb_puts(b, "null"); return; }
+        const LumeList *shape = (const LumeList *)p;
+        if (shape->kind == LUME_CTR_LIST) {
+            jb_putc(b, '[');
+            for (long i = 0; i < shape->len; i++) {
+                if (i) jb_putc(b, ',');
+                slot_to_json(b, shape->items[i]);
+            }
+            jb_putc(b, ']');
+        } else {
+            const LumeMap *m = (const LumeMap *)p;
+            jb_putc(b, '{');
+            for (long i = 0; i < m->len; i++) {
+                if (i) jb_putc(b, ',');
+                jb_putc(b, '"');
+                jb_escape(b, m->keys[i]);
+                jb_puts(b, "\":");
+                slot_to_json(b, m->vals[i]);
+            }
+            jb_putc(b, '}');
+        }
+        return;
+    }
+    case LUME_SLOT_STR:
+        jb_putc(b, '"');
+        jb_escape(b, s.str ? s.str : "");
+        jb_putc(b, '"');
+        return;
+    case LUME_SLOT_FLOAT: {
+        double d = 0;
+        memcpy(&d, &s.num, sizeof d);
+        char tmp[32];
+        snprintf(tmp, sizeof tmp, "%g", d);
+        jb_puts(b, tmp);
+        return;
+    }
+    default: {
+        char tmp[32];
+        snprintf(tmp, sizeof tmp, "%ld", s.num);
+        jb_puts(b, tmp);
+        return;
+    }
+    }
+}
+
+/* Entry point for str() on containers: `obj` is the LumeMap or LumeList
+ * pointer the emitted IR passes as i8*. Returns a malloc'd JSON string
+ * (never NULL; a null pointer serializes as "null"). Caller frees. */
+char *lume_rt_to_json_obj(const void *obj)
+{
+    JsonBuf b = { 0, 0, 0 };
+    LumeSlot s;
+    memset(&s, 0, sizeof s);
+    s.tag = LUME_SLOT_OBJ;
+    s.num = (long)(intptr_t)obj;
+    slot_to_json(&b, s);
+    jb_putc(&b, '\0');
+    return b.p;
+}
+
 /* Element access for the three statically known element types — the call
  * site picks the flavour, and a string slot read through the int helper
  * reads 0 rather than a dangling pointer. */

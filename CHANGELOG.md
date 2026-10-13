@@ -29,6 +29,27 @@ All notable changes to Lume are documented here. The format follows
   assertions (incl. `.f` dynamic read on an unannotated map base) live in
   `tests/interp2.lume` (+ 8 negative cases in `tests/interp2-bad/`).
 
+### Fixed — `str()` over containers in the native backends (2026-10-13)
+
+- **`str(map)` / `str(list)` now work in `--compile-text` and `--compile-llvm`**,
+  producing the same JSON the interpreter renders (`{"a":1,"b":2}`, `[1,2,3]`,
+  nested containers and escaped strings included). The SPEC §6 table already
+  promised `map/list→JSON`; only the interpreter delivered it — both native
+  emitters rejected the call with `str() cannot convert this value`, which also
+  made `s!"m={m}"` unusable in compiled binaries. Backed by a new runtime
+  helper `lume_rt_to_json_obj` (rt.c) that serializes a container into a
+  malloc'd JSON string with a private growable buffer (nested strings cannot
+  clobber earlier output the way `slot_emit`'s shared static buffer can).
+- **Scope boundary**: a *named* struct is a raw GEP struct with no runtime
+  header natively, so `str()`/`print()` on one stays native-rejected
+  (`str() cannot convert a named struct value`) — the interpreter still
+  renders it. Also kept out of the consistency fixture: bool values inside
+  containers (the native runtime has no bool slot tag and renders them as `1`,
+  `print()` included) and null map values (native emitters reject them at
+  compile time). All three boundaries are documented in the
+  `tests/native-consistency.lume` header and pinned by its new str-container
+  probe block.
+
 ### Changed — structural `==` / `!=` (SPEC §1.8)
 
 - **`==` / `!=` on containers are structural comparisons** — never pointer

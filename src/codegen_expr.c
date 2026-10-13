@@ -2185,6 +2185,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_str_double(double)\n");
     EMIT(g, "declare i8* @lume_bi_str_bool(i64)\n");
     EMIT(g, "declare i8* @lume_bi_cat(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_rt_to_json_obj(i8*)\n");
     EMIT(g, "declare i64 @lume_bi_int(double)\n");
     EMIT(g, "declare double @lume_bi_float(i64)\n");
     EMIT(g, "declare i64 @lume_bi_len_s(i8*)\n");
@@ -2797,6 +2798,18 @@ static Val cg_builtin(CG *g, Node *n)
             case TY_FLOAT:  fn = "@lume_bi_str_double"; pty = "double"; break;
             case TY_BOOL:   fn = "@lume_bi_str_bool";   pty = "i64";    break;
             case TY_STRING: return a;   /* str of a string is itself */
+            case TY_LIST:
+                /* Containers serialize to the same JSON the interpreter's
+                 * print() produces; a.v holds the i8* container pointer. */
+                fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
+            case TY_STRUCT:
+                /* An anonymous struct is a map (a LumeMap* i8*); a named one
+                 * is a raw GEP struct with no runtime header, which the
+                 * serializer cannot walk — the same representation gap that
+                 * keeps print() off named structs. */
+                if (a.ty->name)
+                    ERRV(g, "line %zu: str() cannot convert a named struct value", n->line);
+                fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
             default:
                 ERRV(g, "line %zu: str() cannot convert this value", n->line);
             }

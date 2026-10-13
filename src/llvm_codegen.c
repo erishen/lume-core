@@ -1661,6 +1661,22 @@ static Val cg_builtin(CG *g, Node *n)
             case TY_FLOAT:  ft = LLVMFunctionType(g->i8ptr, &g->dbl, 1, 0);  pty = g->dbl;    break;
             case TY_BOOL:   ft = LLVMFunctionType(g->i8ptr, &g->i64, 1, 0);  pty = g->i64;    break;
             case TY_STRING: return a;   /* str of a string is itself */
+            case TY_LIST:
+                /* Containers serialize to the same JSON the interpreter's
+                 * print() produces; a.v is the i8* container pointer. */
+                ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
+                pty = g->i8ptr;
+                break;
+            case TY_STRUCT:
+                /* An anonymous struct is a map (a LumeMap* i8*); a named one
+                 * is a raw GEP struct with no runtime header, which the
+                 * serializer cannot walk — the same representation gap that
+                 * keeps print() off named structs. */
+                if (a.ty->name)
+                    ERRV(g, "line %zu: str() cannot convert a named struct value", n->line);
+                ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
+                pty = g->i8ptr;
+                break;
             default:
                 ERRV(g, "line %zu: str() cannot convert this value", n->line);
             }
@@ -1678,7 +1694,10 @@ static Val cg_builtin(CG *g, Node *n)
         }
 
         const char *name;
-        if (strcmp(bname, "str") == 0)
+        if (a.ty && (a.ty->kind == TY_LIST ||
+                     (a.ty->kind == TY_STRUCT && !a.ty->name)))
+            name = "lume_rt_to_json_obj";
+        else if (strcmp(bname, "str") == 0)
             name = (a.ty && a.ty->kind == TY_FLOAT) ? "lume_bi_str_double"
                  : (a.ty && a.ty->kind == TY_BOOL)  ? "lume_bi_str_bool"
                                                      : "lume_bi_str_i64";

@@ -598,7 +598,7 @@ func report(): Result {
 | 内建 | 签名 | 返回 | 边界 |
 | --- | --- | --- | --- |
 | `print(x)` | 1 参| `null` | 字符串原样输出；`int` 按 i64（§1.1）；`float` 按 `%g`（§1.3）；其他走 JSON |
-| `str(x)` | 1 参 | `string` | `int`→精确十进制；`float`→`%g`；`null`→`"null"`；map/list→JSON |
+| `str(x)` | 1 参 | `string` | `int`→精确十进制；`float`→`%g`；`null`→`"null"`；map/list→JSON（三后端一致，2026-10-13 补齐原生）；⚠️ 命名 struct 仅解释器支持——原生是裸 GEP 结构无运行时头，`str`/`print` 均拒绝 |
 | `string(x)` | 1 参 | `string` | 与 `str` 同 |
 | `int(x)` | 1 参 | `int` | **`int` 原样；`float` 截断；非数字字符串静默返回 `0`** |
 | `float(x)` | 1 参 | `float` | `int`→float；⚠️ **非数字字符串静默返回 `0.0`** |

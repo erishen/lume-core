@@ -10,12 +10,14 @@
 // Deliberately narrow, because the native emitters' covered surface is narrow:
 // only integers, floats, an explicit `let` type, struct fields and a function
 // signature the source fully annotates *or* fully leaves to inference.
-// string concatenation, string interpolation (`s!"..."`) and structure update
-// (`{ base with ... }`) ARE now implemented in all three backends and are
-// covered below; mixed string/number arithmetic, nested and heterogeneous
-// lists and map fields holding lists are still rejected by one backend or the
-// other, so adding them here would make the suite red for reasons that have
-// nothing to do with the two emitters agreeing.
+// string concatenation, string interpolation (`s!"..."`), structure update
+// (`{ base with ... }`) and str() over containers (maps, lists, nested and
+// heterogeneous ones) ARE now implemented in all three backends and are
+// covered below. Still three-way divergent, so kept out: bool values inside
+// containers (the native runtime has no bool slot tag and renders them as 1,
+// print() included), null map values (the native emitters reject them at
+// compile time) and named-struct str()/print() (a named struct is a raw GEP
+// struct with no runtime header natively).
 //
 // Adding coverage is fine once a backend actually implements a construct —
 // never before, otherwise the consistency suite goes red and hides its signal.
@@ -714,6 +716,18 @@ print(ic_p2.y);
 let ic_p3 = { ic_p2 with y: 5, x: 0 };
 print(ic_p3.x);
 print(ic_p3.y);
+
+// str() over containers: maps, lists, nested and heterogeneous shapes all
+// serialize to the interpreter's JSON rendering via lume_rt_to_json_obj.
+let sc_m = { "a": 1, "b": 2 };
+print(str(sc_m));
+let sc_xs = [1, 2, 3];
+print(str(sc_xs));
+print(str(["x", 2, 3.5]));
+print(str({ "outer": [1, { "in": "va\"l" }], "n": 7 }));
+print(str({}));
+print(str([]));
+print("len=" + str(len(sc_xs)));
 
 warmup();
 main();
