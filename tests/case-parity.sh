@@ -77,4 +77,19 @@ compare "str() branch TY labels" \
         "$(labels "$(str_branch src/codegen_expr.c)")" \
         "$(labels "$(str_branch src/llvm_codegen.c)")"
 
+# ---- container helper tables: list_push_fn / map_put_fn / map_get_fn ------
+# Same dual-copy class as infer_node_type: each emitter picks the runtime
+# helper by static type from its own private table. History: TY_BOOL used to
+# share TY_INT's INT-tagged helper, which rendered container bools as 1/0;
+# giving BOOL its own tag meant editing all four tables in lockstep -- exactly
+# the drift this section now guards. The str() TY_BOOL note applies here too:
+# map_get_fn still routes BOOL to get_i on purpose (reads come back as 0/1
+# i64; the tag lives on the write side only), so a get-side split must happen
+# in both copies at once or the tripwire fires.
+for tbl in list_push_fn map_put_fn map_get_fn; do
+    compare "$tbl TY labels" \
+            "$(labels "$(body src/codegen_expr.c "$tbl(Type \\*ty)\$")")" \
+            "$(labels "$(body src/llvm_codegen.c "$tbl(Type \\*ty)\$")")"
+done
+
 exit $fail

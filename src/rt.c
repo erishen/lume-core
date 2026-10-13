@@ -174,6 +174,10 @@ long lume_bi_len_s(const char *s) { return s ? (long)strlen(s) : 0; }
  * "list elements must be int, float or string" while the interpreter has
  * always accepted them. */
 #define LUME_SLOT_OBJ    3
+/* A bool. The interpreter renders `true`/`false` inside containers, so the
+ * native side needs its own tag rather than borrowing LUME_SLOT_INT (which
+ * rendered container bools as 1/0). `num` is 0 or 1. */
+#define LUME_SLOT_BOOL   4
 
 typedef struct { long num; const char *str; int tag; } LumeSlot;
 
@@ -241,6 +245,17 @@ long lume_list_push_i(LumeList *l, long v)
     if (l->len >= l->cap) list_grow(l);
     l->items[l->len].num = v;
     l->items[l->len].tag = LUME_SLOT_INT;
+    return ++l->len;
+}
+
+/* Push a bool with its own tag so print()/str() render `true`/`false` the way
+ * the interpreter does (an INT-tagged 1 rendered as `1`). */
+long lume_list_push_b(LumeList *l, long v)
+{
+    if (!l) return 0;
+    if (l->len >= l->cap) list_grow(l);
+    l->items[l->len].num = v ? 1 : 0;
+    l->items[l->len].tag = LUME_SLOT_BOOL;
     return ++l->len;
 }
 
@@ -377,6 +392,8 @@ static int slot_emit(LumeSlot s)
         snprintf(buf, sizeof buf, "%g", d);
         return emit(buf);
     }
+    case LUME_SLOT_BOOL:
+        return emit(s.num ? "true" : "false");
     default:              snprintf(buf, sizeof buf, "%ld", s.num); return emit(buf);
     }
 }
@@ -468,6 +485,9 @@ static void slot_to_json(JsonBuf *b, LumeSlot s)
         jb_puts(b, tmp);
         return;
     }
+    case LUME_SLOT_BOOL:
+        jb_puts(b, s.num ? "true" : "false");
+        return;
     default: {
         char tmp[32];
         snprintf(tmp, sizeof tmp, "%ld", s.num);
@@ -834,6 +854,7 @@ static long map_put(LumeMap *m, const char *k, long num, const char *str, int ta
 }
 
 long lume_map_put_i(LumeMap *m, const char *k, long v) { return map_put(m, k, v, NULL, LUME_SLOT_INT); }
+long lume_map_put_b(LumeMap *m, const char *k, long v) { return map_put(m, k, v ? 1 : 0, NULL, LUME_SLOT_BOOL); }
 long lume_map_put_f(LumeMap *m, const char *k, double v)
 {
     long bits;
@@ -928,6 +949,9 @@ static long slot_eq(const LumeSlot *x, const LumeSlot *y)
     if (x->tag != y->tag) return 0;
     switch (x->tag) {
     case LUME_SLOT_INT:
+        return x->num == y->num;
+    case LUME_SLOT_BOOL:
+        /* both sides normalized to 0/1 by the push/put helpers */
         return x->num == y->num;
     case LUME_SLOT_FLOAT: {
         double a, b;

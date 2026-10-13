@@ -1474,8 +1474,8 @@ static const char *list_push_fn(Type *ty)
     switch (ty->kind) {
     case TY_FLOAT:  return "lume_list_push_f";
     case TY_STRING: return "lume_list_push_s";
-    case TY_INT:
-    case TY_BOOL:   return "lume_list_push_i";
+    case TY_BOOL:   return "lume_list_push_b";
+    case TY_INT:    return "lume_list_push_i";
     /* A nested container travels as the same opaque i8*, so it needs the same
      * argument spelling as the others -- only the slot tag differs, and that
      * is the helper's business. This is what makes `[[1,2],[3]]` buildable. */
@@ -1495,8 +1495,8 @@ static const char *map_put_fn(Type *ty)
     switch (ty->kind) {
     case TY_FLOAT:  return "lume_map_put_f";
     case TY_STRING: return "lume_map_put_s";
-    case TY_INT:
-    case TY_BOOL:   return "lume_map_put_i";
+    case TY_BOOL:   return "lume_map_put_b";
+    case TY_INT:    return "lume_map_put_i";
     /* Containers as values, same reasoning as list_push_fn: this is what makes
      * `{ a: { b: 1 } }` buildable. */
     case TY_LIST:
@@ -2201,6 +2201,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_list_new()\n");
     EMIT(g, "declare i64 @lume_list_len(i8*)\n");
     EMIT(g, "declare i64 @lume_list_push_i(i8*, i64)\n");
+    EMIT(g, "declare i64 @lume_list_push_b(i8*, i64)\n");
     EMIT(g, "declare i64 @lume_list_push_f(i8*, double)\n");
     EMIT(g, "declare i64 @lume_list_push_s(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_list_push_obj(i8*, i8*)\n");
@@ -2213,6 +2214,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_new()\n");
     EMIT(g, "declare i64 @lume_map_len(i8*)\n");
     EMIT(g, "declare i64 @lume_map_put_i(i8*, i8*, i64)\n");
+    EMIT(g, "declare i64 @lume_map_put_b(i8*, i8*, i64)\n");
     EMIT(g, "declare i64 @lume_map_put_f(i8*, i8*, double)\n");
     EMIT(g, "declare i64 @lume_map_put_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_put_obj(i8*, i8*, i8*)\n");

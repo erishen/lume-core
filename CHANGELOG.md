@@ -6,6 +6,22 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — bools inside containers in the native backends
+
+- A container bool used to be stored with the int slot tag, so print()/str()
+  rendered it as `1`/`0` where the interpreter prints `true`/`false`. The
+  native runtime now has a dedicated `LUME_SLOT_BOOL` tag with
+  `lume_list_push_b` / `lume_map_put_b`, and both renderers (print and JSON)
+  plus the structural-equality slot walker handle it. Literals, `push`/`put`
+  builtins and `map`/`filter` with bool results are all three-backend
+  consistent now, pinned by the bool-container probe block in
+  `tests/native-consistency.lume` (which also revives the bool-valued
+  structural-equality probes from the eq round — `.expected` 259 → 267).
+- The container-helper dispatch tables (`list_push_fn` / `map_put_fn` /
+  `map_get_fn`) are dual copies like `infer_node_type`; they are now covered
+  by `tests/case-parity.sh` as well (5 label-set comparisons, negative
+  control verified).
+
 ### Added — `json()` / `stringify()` serialization in the native backends
 
 - The two native emitters (`--compile-text`, `--compile-llvm`) now support

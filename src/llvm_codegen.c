@@ -981,8 +981,8 @@ static const char *list_push_fn(Type *ty)
     switch (ty->kind) {
     case TY_FLOAT:  return "lume_list_push_f";
     case TY_STRING: return "lume_list_push_s";
-    case TY_INT:
-    case TY_BOOL:   return "lume_list_push_i";
+    case TY_BOOL:   return "lume_list_push_b";
+    case TY_INT:    return "lume_list_push_i";
     /* Containers as elements -- the same branch, and the same reasoning, as in
      * codegen_expr.c's copy of this function. Kept in step deliberately: these
      * two are separate implementations of one table, and a type added to one
@@ -1002,8 +1002,8 @@ static const char *map_put_fn(Type *ty)
     switch (ty->kind) {
     case TY_FLOAT:  return "lume_map_put_f";
     case TY_STRING: return "lume_map_put_s";
-    case TY_INT:
-    case TY_BOOL:   return "lume_map_put_i";
+    case TY_BOOL:   return "lume_map_put_b";
+    case TY_INT:    return "lume_map_put_i";
     case TY_LIST:
     case TY_STRUCT:
     case TY_RESULT:

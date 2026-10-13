@@ -240,6 +240,14 @@ true
 5
 [1,2,3]
 {"a":1,"b":2}
+[1,true,false]
+{"b":true,"c":false}
+{"b":true,"c":false}
+[1,true,false]
+[true,false]
+true
+[true,true]
+[false,true,true]
 1
 1
 2

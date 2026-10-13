@@ -15,11 +15,11 @@
 // heterogeneous ones) ARE now implemented in all three backends and are
 // covered below. json()/stringify() serialization is covered too; json(str)
 // *parse* stays interpreter-only (the dynamic result type has no native
-// spelling yet). Still three-way divergent, so kept out: bool values inside
-// containers (the native runtime has no bool slot tag and renders them as 1,
-// print() included), null map values (the native emitters reject them at
-// compile time) and named-struct str()/print() (a named struct is a raw GEP
-// struct with no runtime header natively).
+// spelling yet). Bools inside containers are covered (LUME_SLOT_BOOL).
+// Still three-way divergent, so kept out: null map values (the native
+// emitters reject them at compile time), named-struct str()/print() (a named
+// struct is a raw GEP struct with no runtime header natively) and typed
+// binding m["k"] on a scalar map value (native refuses it; use get()).
 //
 // Adding coverage is fine once a backend actually implements a construct —
 // never before, otherwise the consistency suite goes red and hides its signal.
@@ -734,8 +734,7 @@ print("len=" + str(len(sc_xs)));
 // json()/stringify() serialization: same JSON surface as str() over
 // containers, plus stringify() quoting of a bare string. json(str) *parse*
 // stays interpreter-only (the dynamic result type has no native spelling),
-// and the known divergences above still hold: no bools inside containers,
-// no null map values.
+// and the known divergences in the header still hold.
 let js_s1 = stringify(5);
 print(js_s1);
 print(stringify(3.5));
@@ -750,6 +749,26 @@ print(json(5));
 print(json(sc_xs));
 let js_j = json(sc_m);
 print(js_j);
+
+// Bools inside containers: LUME_SLOT_BOOL keeps print()/str() rendering
+// `true`/`false` the way the interpreter does (an INT-tagged 1 used to
+// render as 1). Literals, push/put builtins, map/filter with bool results,
+// index reads — all three backends agree. Typed binding m["k"] on a scalar
+// value stays a documented native-only rejection, so bool reads here go
+// through list indexing on a list, not map member access.
+let bc_xs = [1, true, false];
+print(bc_xs);
+let bc_m = { "b": true, "c": false };
+print(bc_m);
+print(str(bc_m));
+print(stringify(bc_xs));
+let bc_b = [true];
+push(bc_b, false);
+print(bc_b);
+print(bc_b[0]);
+let bc_f = filter((x: bool) => x, [true, false, true]);
+print(bc_f);
+print(map((x) => x > 1, [1, 2, 3]));
 
 warmup();
 main();
