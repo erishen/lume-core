@@ -1648,19 +1648,33 @@ static Val cg_builtin(CG *g, Node *n)
 
     /* str() / int() / float(): which helper they need depends on the operand. */
     if (strcmp(bname, "str") == 0 || strcmp(bname, "int") == 0 ||
-        strcmp(bname, "float") == 0) {
+        strcmp(bname, "float") == 0 || strcmp(bname, "stringify") == 0 ||
+        strcmp(bname, "json") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: '%s' takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         LLVMTypeRef ft = NULL, pty = NULL, rty = NULL;
         Type *rt = NULL;
+        bool is_str = strcmp(bname, "str") == 0;
+        bool is_json = strcmp(bname, "json") == 0;
 
-        if (strcmp(bname, "str") == 0) {
+        if (is_str || strcmp(bname, "stringify") == 0 || is_json) {
             switch (a.ty ? a.ty->kind : TY_ANY) {
             case TY_INT:    ft = LLVMFunctionType(g->i8ptr, &g->i64, 1, 0);  pty = g->i64;    break;
             case TY_FLOAT:  ft = LLVMFunctionType(g->i8ptr, &g->dbl, 1, 0);  pty = g->dbl;    break;
             case TY_BOOL:   ft = LLVMFunctionType(g->i8ptr, &g->i64, 1, 0);  pty = g->i64;    break;
-            case TY_STRING: return a;   /* str of a string is itself */
+            case TY_STRING:
+                /* str of a string is itself; stringify quotes it (the
+                 * interpreter's json_append_value does); json(str) means
+                 * parse, whose result type is dynamic -- the statically
+                 * typed emitters cannot spell it yet. */
+                if (is_str) return a;
+                if (is_json)
+                    ERRV(g, "line %zu: json() string parsing is interpreter-only;"
+                            " the native backends cannot type the dynamic result",
+                         n->line);
+                ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0); pty = g->i8ptr;
+                break;
             case TY_LIST:
                 /* Containers serialize to the same JSON the interpreter's
                  * print() produces; a.v is the i8* container pointer. */
@@ -1673,12 +1687,14 @@ static Val cg_builtin(CG *g, Node *n)
                  * serializer cannot walk — the same representation gap that
                  * keeps print() off named structs. */
                 if (a.ty->name)
-                    ERRV(g, "line %zu: str() cannot convert a named struct value", n->line);
+                    ERRV(g, "line %zu: %s() cannot convert a named struct value",
+                         n->line, bname);
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
                 pty = g->i8ptr;
                 break;
             default:
-                ERRV(g, "line %zu: str() cannot convert this value", n->line);
+                ERRV(g, "line %zu: %s() cannot convert this value",
+                     n->line, bname);
             }
             rty = g->i8ptr; rt = type_prim(TY_STRING);
         } else if (strcmp(bname, "int") == 0) {
@@ -1697,7 +1713,13 @@ static Val cg_builtin(CG *g, Node *n)
         if (a.ty && (a.ty->kind == TY_LIST ||
                      (a.ty->kind == TY_STRUCT && !a.ty->name)))
             name = "lume_rt_to_json_obj";
-        else if (strcmp(bname, "str") == 0)
+        else if (a.ty && a.ty->kind == TY_STRING)
+            /* only stringify reaches here with a string (str returns it as-is,
+             * json(str) is rejected above): the quoted-string flavour. */
+            name = "lume_rt_quote_str";
+        else if (strcmp(bname, "int") != 0 && strcmp(bname, "float") != 0)
+            /* str / stringify / json share the scalar stringifying flavours
+             * (int/float take their own conversion helpers below). */
             name = (a.ty && a.ty->kind == TY_FLOAT) ? "lume_bi_str_double"
                  : (a.ty && a.ty->kind == TY_BOOL)  ? "lume_bi_str_bool"
                                                      : "lume_bi_str_i64";
@@ -2915,6 +2937,17 @@ static Type *infer_node_type(CG *g, Node *n)
         }
         if (strcmp(name, "reduce") == 0)
             return infer_node_type(g, n->as.call.args[2]);
+
+        /* json()/stringify() serialize to a JSON string. json(str) means
+         * parse, whose result type is dynamic — NULL here keeps the slot
+         * opaque and lets the emit-time diagnostic do the explaining. */
+        if ((strcmp(name, "stringify") == 0 || strcmp(name, "json") == 0) &&
+            n->as.call.argc == 1) {
+            Type *at = infer_node_type(g, n->as.call.args[0]);
+            if (strcmp(name, "json") == 0 && at && at->kind == TY_STRING)
+                return NULL;
+            return type_prim(TY_STRING);
+        }
 
         Sig *s = sig_find(&g->sigs, name);
         if (!s) return NULL;

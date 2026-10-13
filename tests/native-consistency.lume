@@ -13,7 +13,9 @@
 // string concatenation, string interpolation (`s!"..."`), structure update
 // (`{ base with ... }`) and str() over containers (maps, lists, nested and
 // heterogeneous ones) ARE now implemented in all three backends and are
-// covered below. Still three-way divergent, so kept out: bool values inside
+// covered below. json()/stringify() serialization is covered too; json(str)
+// *parse* stays interpreter-only (the dynamic result type has no native
+// spelling yet). Still three-way divergent, so kept out: bool values inside
 // containers (the native runtime has no bool slot tag and renders them as 1,
 // print() included), null map values (the native emitters reject them at
 // compile time) and named-struct str()/print() (a named struct is a raw GEP
@@ -728,6 +730,26 @@ print(str({ "outer": [1, { "in": "va\"l" }], "n": 7 }));
 print(str({}));
 print(str([]));
 print("len=" + str(len(sc_xs)));
+
+// json()/stringify() serialization: same JSON surface as str() over
+// containers, plus stringify() quoting of a bare string. json(str) *parse*
+// stays interpreter-only (the dynamic result type has no native spelling),
+// and the known divergences above still hold: no bools inside containers,
+// no null map values.
+let js_s1 = stringify(5);
+print(js_s1);
+print(stringify(3.5));
+print(stringify(true));
+print(stringify("q\"b\\s\n\t\r"));
+print(stringify(sc_m));
+print(stringify(sc_xs));
+print(stringify({ "n": [1, { "in": "v" }] }));
+print(stringify([]));
+print(stringify({}));
+print(json(5));
+print(json(sc_xs));
+let js_j = json(sc_m);
+print(js_j);
 
 warmup();
 main();

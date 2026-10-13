@@ -6,6 +6,25 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — `json()` / `stringify()` serialization in the native backends
+
+- The two native emitters (`--compile-text`, `--compile-llvm`) now support
+  `stringify(x)` for every representable type and `json(x)` for serialization
+  (non-string argument): scalars via the existing `lume_bi_str_*` flavours,
+  a bare string via the new `lume_rt_quote_str` (quotes + escapes, matching the
+  interpreter's `json_append_value`), containers via `lume_rt_to_json_obj`.
+  `let`-bound results type as `string` in both emitters' `infer_node_type`.
+- `jb_escape` now emits `\b`/`\f` short escapes like the interpreter does
+  (previously `\u0008`/`\u000c`), so `str()`/`stringify()` over containers
+  agree byte-for-byte on those too.
+- **Boundary kept honest**: `json(str)` — the parse direction — stays
+  interpreter-only. The parse result's type is dynamic and the statically
+  typed emitters cannot spell it; both backends now reject it at emit time
+  with a clear diagnostic instead of "unknown function". Documented in
+  SPEC §6 and pinned by the json/stringify probe block in
+  `tests/native-consistency.lume`; interpreter-side round-trip assertions in
+  `tests/interp2.lume` (now 54 checks).
+
 ### Added — string interpolation `s!"..."` and structure update `{ base with ... }` (SPEC §3.8 / §3.9)
 
 - **String interpolation `s!"..."`** — `s!"text {expr} text"` splices an

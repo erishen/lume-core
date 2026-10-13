@@ -137,6 +137,17 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "reduce") == 0)
             return infer_node_type(g, n->as.call.args[2]);
 
+        /* json()/stringify() serialize to a JSON string. json(str) means
+         * parse, whose result type is dynamic — NULL here keeps the slot
+         * opaque and lets the emit-time diagnostic do the explaining. */
+        if ((strcmp(name, "stringify") == 0 || strcmp(name, "json") == 0) &&
+            n->as.call.argc == 1) {
+            Type *at = infer_node_type(g, n->as.call.args[0]);
+            if (strcmp(name, "json") == 0 && at && at->kind == TY_STRING)
+                return NULL;
+            return type_prim(TY_STRING);
+        }
+
         /* Native server handler: int() lowers to atoi -> int. */
         if (g->in_handler && strcmp(name, "int") == 0)
             return type_prim(TY_INT);

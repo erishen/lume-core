@@ -2186,6 +2186,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_str_bool(i64)\n");
     EMIT(g, "declare i8* @lume_bi_cat(i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_rt_to_json_obj(i8*)\n");
+    EMIT(g, "declare i8* @lume_rt_quote_str(i8*)\n");
     EMIT(g, "declare i64 @lume_bi_int(double)\n");
     EMIT(g, "declare double @lume_bi_float(i64)\n");
     EMIT(g, "declare i64 @lume_bi_len_s(i8*)\n");
@@ -2785,19 +2786,32 @@ static Val cg_builtin(CG *g, Node *n)
 
     /* str() / int() / float(): which helper they need depends on the operand. */
     if (strcmp(bname, "str") == 0 || strcmp(bname, "int") == 0 ||
-        strcmp(bname, "float") == 0) {
+        strcmp(bname, "float") == 0 || strcmp(bname, "stringify") == 0 ||
+        strcmp(bname, "json") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: '%s' takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         const char *fn = NULL, *pty = NULL, *rty = NULL;
         Type *rt = NULL;
+        bool is_str = strcmp(bname, "str") == 0;
+        bool is_json = strcmp(bname, "json") == 0;
 
-        if (strcmp(bname, "str") == 0) {
+        if (is_str || strcmp(bname, "stringify") == 0 || is_json) {
             switch (a.ty ? a.ty->kind : TY_ANY) {
             case TY_INT:    fn = "@lume_bi_str_i64";    pty = "i64";    break;
             case TY_FLOAT:  fn = "@lume_bi_str_double"; pty = "double"; break;
             case TY_BOOL:   fn = "@lume_bi_str_bool";   pty = "i64";    break;
-            case TY_STRING: return a;   /* str of a string is itself */
+            case TY_STRING:
+                /* str of a string is itself; stringify quotes it (the
+                 * interpreter's json_append_value does); json(str) means
+                 * parse, whose result type is dynamic -- the statically
+                 * typed emitters cannot spell it yet. */
+                if (is_str) return a;
+                if (is_json)
+                    ERRV(g, "line %zu: json() string parsing is interpreter-only;"
+                            " the native backends cannot type the dynamic result",
+                         n->line);
+                fn = "@lume_rt_quote_str"; pty = "i8*"; break;
             case TY_LIST:
                 /* Containers serialize to the same JSON the interpreter's
                  * print() produces; a.v holds the i8* container pointer. */
@@ -2808,10 +2822,12 @@ static Val cg_builtin(CG *g, Node *n)
                  * serializer cannot walk — the same representation gap that
                  * keeps print() off named structs. */
                 if (a.ty->name)
-                    ERRV(g, "line %zu: str() cannot convert a named struct value", n->line);
+                    ERRV(g, "line %zu: %s() cannot convert a named struct value",
+                         n->line, bname);
                 fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
             default:
-                ERRV(g, "line %zu: str() cannot convert this value", n->line);
+                ERRV(g, "line %zu: %s() cannot convert this value",
+                     n->line, bname);
             }
             rty = "i8*"; rt = type_prim(TY_STRING);
         } else if (strcmp(bname, "int") == 0) {

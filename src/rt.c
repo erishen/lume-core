@@ -411,6 +411,8 @@ static void jb_escape(JsonBuf *b, const char *s)
         case '\n': jb_puts(b, "\\n");  break;
         case '\t': jb_puts(b, "\\t");  break;
         case '\r': jb_puts(b, "\\r");  break;
+        case '\b': jb_puts(b, "\\b");  break;
+        case '\f': jb_puts(b, "\\f");  break;
         default:
             if (*p < 0x20) {
                 char tmp[8];
@@ -486,6 +488,19 @@ char *lume_rt_to_json_obj(const void *obj)
     s.tag = LUME_SLOT_OBJ;
     s.num = (long)(intptr_t)obj;
     slot_to_json(&b, s);
+    jb_putc(&b, '\0');
+    return b.p;
+}
+
+/* Entry point for stringify() on a string: the interpreter's json_append_value
+ * quotes it (stringify("x") is "\"x\""), so the native flavour must too.
+ * Same escape set as jb_escape, wrapped in double quotes. Caller frees. */
+char *lume_rt_quote_str(const char *s)
+{
+    JsonBuf b = { 0, 0, 0 };
+    jb_putc(&b, '"');
+    if (s) jb_escape(&b, s);
+    jb_putc(&b, '"');
     jb_putc(&b, '\0');
     return b.p;
 }
