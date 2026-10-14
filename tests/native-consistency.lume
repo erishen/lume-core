@@ -22,15 +22,19 @@
 // natively as well: the emitter builds a map from its declared fields (the
 // type already carries their names and types) and serializes that, so
 // `print(p)` / `str(p)` / `stringify(p)` match the interpreter's JSON.
-// Still three-way divergent, so kept out: `let x: list = null` (a bare null
-// bound to a container type; the native emitters cannot infer the variable)
-// and for-in over a list holding nulls (the element decays to list<any>,
-// the same refusal class as a heterogeneous list) and typed binding
-// m["k"] on a scalar map value (native refuses it; use get()). A literal
-// whose *field* is itself a named struct now builds natively (the emitter
-// loads the nested aggregate before insertvalue), and `o.inner` member
-// access on a named-struct field prints/str()s through the same serializer
-// that handles `print(o)` recursion — both covered below.
+// Still three-way divergent, so kept out: for-in over a list holding nulls
+// (the element decays to list<any>, the same refusal class as a
+// heterogeneous list). A bare `let x: list = null` used to be here too — the
+// type-annotation parser built a phantom struct named "list" instead of
+// TY_LIST, so the native emitters saw "no codegen type"; that is fixed and
+// covered below. Typed binding `m["k"]` on a scalar map value is
+// *intentionally* refused by the native emitters (map value types are not
+// tracked — use get(m, k, d)); the interpreter tolerates it via runtime
+// types, so it is a documented phase-1 boundary, not a silent divergence. A
+// literal whose *field* is itself a named struct now builds natively (the
+// emitter loads the nested aggregate before insertvalue), and `o.inner`
+// member access on a named-struct field prints/str()s through the same
+// serializer that handles `print(o)` recursion — both covered below.
 //
 // Adding coverage is fine once a backend actually implements a construct —
 // never before, otherwise the consistency suite goes red and hides its signal.
@@ -852,6 +856,23 @@ print(str(nst_o1));
 print(stringify(nst_o1));
 print(str(nst_o1.sub));
 print(str(nst_o2.sub));
+
+// ---- bare container-type annotation `let x: list = ...` -----------------
+//
+// The type-annotation parser must build TY_LIST for the bare `list` keyword
+// (not a phantom struct named "list"), so the native emitters give the
+// variable an i8* codegen type. The interpreter already tolerated the old
+// phantom-struct annotation; both native emitters used to report "no codegen
+// type". All three backends must agree byte-for-byte. `int[]` is the
+// element-typed form and was already covered by the index block above.
+let lac: list = null;
+print(str(lac));                 // null
+let lab: list = [1, 2, 3];
+print(str(lab));                 // [1,2,3]
+let lan: list = [null, 2, null];
+print(str(lan));                 // [null,2,null]
+let lai: int[] = [4, 5, 6];
+print(str(lai));                 // [4,5,6]
 
 warmup();
 main();

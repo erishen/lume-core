@@ -6,6 +6,22 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — bare `list` type annotation (`let x: list = ...`)
+
+- The type-annotation parser used to route the bare `list` keyword through the
+  `TOK_IDENT` branch and build `type_struct("list")` — a *named struct* with no
+  definition. The native emitters then read `llvm_type_of` / `ty_of` off the
+  annotation and saw "no codegen type" for `let x: list = null`,
+  `let x: list = [...]` and friends, while the interpreter (which uses the
+  checker-resolved type) tolerated it. `parse_type` now recognizes `list` and
+  builds `type_list(any_type())` — the same `TY_LIST` representation list
+  literals already carry — so all three backends agree byte-for-byte. (`map`
+  stays a struct reference: a map is an anonymous struct at runtime and there
+  is no singleton `TY_MAP` to annotate.) Pinned by the `: list` block in
+  `tests/native-consistency.lume` (`.expected` 295 → 299). Also added the
+  `any_type` declaration to `parser_internal.h` (it lived only as a
+  backend-local forward declaration before).
+
 ### Fixed — null values inside containers in the native backends
 
 - A map or list literal with a `null` value (`{ "b": null }`, `[1, null]`),
@@ -19,12 +35,12 @@ All notable changes to Lume are documented here. The format follows
   `lume_map_print` / `lume_list_print` on a null pointer now print `null`
   (not `{}` / `[]`, which remain what a live empty container prints).
 - `str(null)` / `stringify(null)` work natively too (the serializer's null
-  entry point). Still native-only refusals, documented in SPEC: `let x: list
-  = null` (the variable's type cannot be inferred) and for-in over a list
-  holding nulls (the element decays to `list<any>`, same refusal class as a
-  heterogeneous list). Pinned by the null probe block in
-  `tests/native-consistency.lume` (`.expected` 267 → 282) and ten interpreter
-  assertions in `tests/interp2.lume` (54 → 64).
+  entry point). The bare `let x: list = null` refusal is fixed separately
+  (see the `: list` annotation entry above); the one remaining native-only
+  refusal is for-in over a list holding nulls (the element decays to
+  `list<any>`, same refusal class as a heterogeneous list). Pinned by the null
+  probe block in `tests/native-consistency.lume` (`.expected` 267 → 282) and
+  ten interpreter assertions in `tests/interp2.lume` (54 → 64).
 
 ### Fixed — named-struct print() / str() / stringify() in the native backends
 

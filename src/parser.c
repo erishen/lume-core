@@ -184,8 +184,20 @@ Type *parse_type(Parser *p) {
             /* ident_name() allocates the name, type_struct() copies it into
              * the Type — so the throwaway has to be released here. Owning
              * both ends in one expression silently leaked a block per named
-             * type parsed (`let p: Pt = ...`, `func f(): Pt`, ...). */
+             * type parsed (`let p: Pt = ...`, `func f(): Pt`, ...).
+             *
+             * The bare built-in container name `list` is NOT a struct: it is
+             * the homogeneous container (TY_LIST). Building `type_struct("list")`
+             * here made `let x: list = ...` annotate as a *named struct called
+             * "list"* with no definition, so the native emitters (which read
+             * llvm_type_of/ty_of off the annotation) reported "no codegen type"
+             * while the interpreter — which uses the checker-resolved type —
+             * tolerated it. Redirect the keyword to TY_LIST so the annotation
+             * matches the way list literals are already typed. (`map` stays a
+             * struct reference: a map is an anonymous struct at runtime and
+             * there is no singleton TY_MAP representation to annotate.) */
             char *nm = ident_name(p, t);
+            if (strcmp(nm, "list") == 0) { free(nm); ty = type_list(any_type()); break; }
             ty = type_struct(nm);
             free(nm);
             break;

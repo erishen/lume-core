@@ -42,6 +42,7 @@ void node_free_orphan(Node *n);
 void node_unjournal(Node *n);
 
 /* ---- 类型 / 块 / 函数声明(parser.c) ---- */
+Type *any_type(void);          /* defined in typecheck.c; the "anything" type */
 Type *parse_type(Parser *p);
 bool parse_params(Parser *p, char ***names_out, Type ***types_out,
                   int *arity_out);
