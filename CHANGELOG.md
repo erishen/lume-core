@@ -4,7 +4,7 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] - 2026-10-14
 
 ### Added — let expressions: `let x = e1 in e2` (SPEC §4.15)
 
@@ -213,6 +213,20 @@ All notable changes to Lume are documented here. The format follows
   rejection cases wired into `ternary-test`), and the if-expression block in
   `tests/native-consistency.lume` (`.expected` 318 → 328). SPEC §4.10 documents
   the semantics.
+
+### Added — ternary conditional `cond ? then : else` (SPEC §4.9)
+
+- Right-associative, sitting between `or` and assignment; only the taken branch
+  evaluates (lazy in the interpreter, three-block alloca+br+load in both native
+  emitters). Branch types unify under the ternary rules: same type → that type,
+  int/float mix widens to float, anything else is a type error.
+- Coexists with the result-propagation suffix via an adjacency-first rule:
+  a tight `f()?` is always propagate; a spaced `?` defers to a paired-colon
+  lookahead scan, so `divide(8, 2)? > 3 ? "big" : "small"` stays legal.
+- `tests/ternary.lume` (16 checks: precedence, right-assoc, int/float widening,
+  map-value colons, call conditions, propagate interplay, multiline, lazy
+  branch) wired as `ternary-test`; native-consistency probes with all three
+  legs agreeing.
 
 ### Fixed — `TOKEN_NAMES` was missing four entries, shifting every diagnostic
 
@@ -504,6 +518,34 @@ All notable changes to Lume are documented here. The format follows
   for JSON/CLI tooling. Regression suite: `tests/builtins-sort-regex.lume`
   (17 checks, wired into `make check` / `make test`).
 
+### Added — self-contained SQLite builtins and two-way `json()`
+
+- `sql_query` / `sql_write` now live in the standalone tree (`src/builtins_sql.c`),
+  fully self-contained: no db_layer, no agent-httpd. Guardrails are host-identical —
+  single statement, SELECT-only reads (opened READONLY), INSERT/UPDATE/DELETE-with-WHERE
+  /CREATE TABLE writes, `?` placeholders bound as text (values never enter the SQL
+  string), rows capped at 200, empty or relative DSN falls back to env `SQLITE_DB`.
+- libsqlite3 is probed with a compile test at build time; without it the build still
+  succeeds and the builtins fail clearly at runtime (same pattern as `http_*`
+  without `LUME_HAS_HTTP`).
+- `json()` now also serializes non-string values (the `stringify()` direction);
+  strings keep parsing, and `json(map)` / `stringify(map)` produce identical output.
+- Tests: probe-gated `sql-test` (SKIPs on stub builds) and `json()` direction
+  assertions in `builtins-test`, both wired into `make test`.
+
+### Added — serve: docroot static files and `:name` route segments
+
+- `server { docroot = "..." }` serves route-miss GETs from disk: URL-decoded
+  (encoded `%2e%2e` traversal attempts rejected), `index.html` for directory-shaped
+  paths, extension MIME table, 64 MB size cap.
+- Dynamic route patterns (`"/api/user/:id"`) capture segments into `req.params` as
+  a map; literal matches still win, patterns are tried in registration order, and
+  `req.params` is always present (empty map on literal routes).
+- Response float serialization moved from `%.17g` to `%g`, matching `value.c`'s
+  `json_append_value` (1234.56, not 1234.5599999999999).
+- Tests: `docroot-test` (curl probes including traversal attempts and a dynamic
+  route) wired into `make test`.
+
 ### Added — NO_PROXY bypass for outbound HTTP
 
 - Outbound `http_get/post/put/patch/delete` now honor `NO_PROXY` / `no_proxy`
@@ -531,6 +573,18 @@ All notable changes to Lume are documented here. The format follows
 - Regression suite: `tests/map-index-scalar.lume` (compliant paths, three
   backends agree) + `tests/map-index-scalar-bad.lume` (asserts the accurate
   message on both native backends), wired into `make test` via `map-index-test`.
+
+### Fixed — `install.sh` crash when the release tarball shipped no examples
+
+- The one-line installer no longer fails when the tarball it unpacks carries no
+  `examples/` directory.
+
+### Fixed — Windows build / CI follow-ups
+
+- MSYS2 environment migrated MINGW64 → UCRT64 (checkout action bumped to v5);
+  parse-time `$(shell cmd /c …)` calls replaced with idempotent recipes and the
+  `build/bin` directories created via parse-time `mkdir -p`, so a cold Windows
+  tree builds cleanly.
 
 ## [0.5.1] - 2026-10-09
 
