@@ -288,6 +288,12 @@ null
 2
 3
 done
+lume
+7
+3.5
+true
+1
+{"name":"lume","age":7,"score":3.5,"flag":true,"inner":{"k":1}}
 1
 1
 2

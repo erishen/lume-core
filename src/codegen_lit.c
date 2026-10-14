@@ -49,9 +49,16 @@ Type *struct_field_type(CG *g, const char *sname, int idx)
 Type *member_field_type(CG *g, Node *n)
 {
     Type *t = infer_node_type(g, n->as.member.obj);
-    if (t && t->kind == TY_STRUCT && t->name) {
-        int idx = struct_field_idx(g, t->name, n->as.member.name);
-        if (idx >= 0) return struct_field_type(g, t->name, idx);
+    if (t && t->kind == TY_STRUCT) {
+        if (t->name) {
+            int idx = struct_field_idx(g, t->name, n->as.member.name);
+            if (idx >= 0) return struct_field_type(g, t->name, idx);
+        } else {
+            /* A runtime map: the type checker required the key to be a
+             * declared field, so the result type is exactly the field's
+             * value type it recorded on the member node. */
+            return n->as.member.type;
+        }
     }
     return NULL;
 }

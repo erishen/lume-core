@@ -440,6 +440,47 @@ static Val cg_member(CG *g, Node *n)
             return cg_len_of(g, "lume_bi_len_s", obj.v);
     }
 
+    /* `m.x` on a runtime map: the type checker requires `x` to be a declared
+     * key, so the value is always present. Lower onto lume_map_get_*, exactly
+     * as the `?` unwrap does, dispatched by the field's value type. (obj.v is
+     * an LLVMValueRef here, not heap — nothing to free.) */
+    if (obj.ty && obj.ty->kind == TY_STRUCT && !obj.ty->name) {
+        Type *vt = n->as.member.type;
+        const char *gfn = map_get_fn(vt);
+        if (!gfn)
+            ERRV(g, "line %zu: map field '%s' has no codegen type",
+                 n->line, n->as.member.name);
+
+        LLVMTypeRef ret_ty, dflt_ty;
+        LLVMValueRef dflt;
+        if (vt->kind == TY_FLOAT) {
+            ret_ty = g->dbl;  dflt_ty = g->dbl;
+            dflt = LLVMConstReal(g->dbl, 0.0);
+        } else if (vt->kind == TY_STRING || vt->kind == TY_LIST ||
+                   vt->kind == TY_STRUCT || vt->kind == TY_RESULT ||
+                   vt->kind == TY_ENUM  || vt->kind == TY_NULL) {
+            ret_ty = g->i8ptr; dflt_ty = g->i8ptr;
+            dflt = LLVMConstNull(g->i8ptr);
+        } else {
+            ret_ty = g->i64;  dflt_ty = g->i64;
+            dflt = LLVMConstInt(g->i64, 0, 0);   /* int / bool */
+        }
+
+        LLVMValueRef key = cg_string_val(g, n->as.member.name,
+                                         (int)strlen(n->as.member.name));
+        LLVMTypeRef params[3] = { g->i8ptr, g->i8ptr, dflt_ty };
+        LLVMValueRef args[3] = { obj.v, key, dflt };
+        LLVMValueRef call = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(ret_ty, params, 3, 0),
+                rt_decl(g, gfn, ret_ty, params, 3),
+                args, 3, "mf");
+        /* A bool comes back from lume_map_get_i as an i64 (0/1); narrow it to
+         * the backend's i1 bool representation. */
+        if (vt->kind == TY_BOOL)
+            call = LLVMBuildTrunc(g->ab, call, g->i1, "mf");
+        return val_make(vt, call);
+    }
+
     struct_addr(g, &obj);
 
     /* Look the field up through the *object's* type, not the member node's
@@ -951,9 +992,16 @@ static void cg_if_let(CG *g, Node *n)
 static Type *member_field_type(CG *g, Node *n)
 {
     Type *t = infer_node_type(g, n->as.member.obj);
-    if (t && t->kind == TY_STRUCT && t->name) {
-        int idx = struct_field_idx(g, t->name, n->as.member.name);
-        if (idx >= 0) return struct_field_type(g, t->name, idx);
+    if (t && t->kind == TY_STRUCT) {
+        if (t->name) {
+            int idx = struct_field_idx(g, t->name, n->as.member.name);
+            if (idx >= 0) return struct_field_type(g, t->name, idx);
+        } else {
+            /* A runtime map: the type checker required the key to be a
+             * declared field, so the result type is exactly the field's
+             * value type it recorded on the member node. */
+            return n->as.member.type;
+        }
     }
     return NULL;
 }

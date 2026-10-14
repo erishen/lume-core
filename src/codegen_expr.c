@@ -880,6 +880,46 @@ static Val cg_member(CG *g, Node *n)
         return r;
     }
 
+    /* `m.x` on a runtime map: the type checker (typecheck_expr.c) already
+     * required `x` to be a *declared* key, so the value is always present at
+     * run time. Lower it onto the same lume_map_get_* the `?` unwrap and the
+     * index read use, dispatched by the field's value type. This matches the
+     * interpreter, which does a plain map_get and only falls back to a zero
+     * value on a missing key (which a type-checked program cannot produce). */
+    if (is_map) {
+        Type *vt = n->as.member.type;
+        const char *gfn = map_get_fn(vt);
+        if (!gfn) {
+            free(obj.v);
+            ERRV(g, "line %zu: map field '%s' has no codegen type",
+                 n->line, n->as.member.name);
+        }
+        const char *pty = rt_arg_type(vt);
+        const char *darg = strcmp(pty, "i8*") == 0   ? "i8* null"
+                         : strcmp(pty, "double") == 0 ? "double 0.0"
+                                                      : "i64 0";
+        Val key = val_take(type_prim(TY_STRING),
+                           cg_string_val(g, n->as.member.name,
+                                         strlen(n->as.member.name)));
+        char *res = emit_instrf(g, vt,
+                                "call %s @%s(i8* %s, i8* %s, %s)",
+                                pty, gfn, obj.v, key.v, darg);
+        free(obj.v); free(key.v);
+        if (!res) ERRV(g, "line %zu: cannot read map field '%s'",
+                       n->line, n->as.member.name);
+        /* A bool travels out of lume_map_get_i as an i64 (0/1) but the
+         * backend represents bool as i1; narrow it so downstream coerce and
+         * print see a proper bool. */
+        if (vt->kind == TY_BOOL) {
+            char *b = emit_instrf(g, vt, "trunc i64 %s to i1", res);
+            free(res);
+            if (!b) ERRV(g, "line %zu: cannot read map field '%s'",
+                         n->line, n->as.member.name);
+            res = b;
+        }
+        return val_take(vt, res);
+    }
+
     struct_addr(g, &obj);
 
     /* Look the field up through the *object's* type, not the member node's

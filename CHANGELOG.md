@@ -40,6 +40,22 @@ All notable changes to Lume are documented here. The format follows
   (renders it via `slot_emit` + newline). Pinned by the for-in-over-nulls
   block in `tests/native-consistency.lume` (`.expected` 299 → 307).
 
+### Fixed — map field dot access (`m.x`)
+
+- A runtime map (anonymous struct) answering `.x` used to be refused by both
+  native emitters with "field access on a non-struct value", while the
+  interpreter read it with a plain `map_get`. The type checker already
+  requires `x` to be a *declared* key (typecheck_expr.c rejects unknown keys
+  at compile time), so the value is always present at run time. `cg_member`
+  now lowers `m.x` onto the same `lume_map_get_*` family the `?` unwrap and
+  the index read use, dispatched by the field's value type (`map_get_fn`),
+  with a zero of the right type as the default. `member_field_type` was
+  taught the map case too, so `let v = m.x` infers the value type. A bool
+  value travels out of `lume_map_get_i` as an `i64` (0/1) and is narrowed to
+  the backend's `i1` bool representation. Pinned by the map-field block in
+  `tests/native-consistency.lume` (`.expected` 307 → 313). `m["k"]` indexing
+  remains a separate, intentional boundary (native returns an opaque value).
+
 ### Fixed — null values inside containers in the native backends
 
 - A map or list literal with a `null` value (`{ "b": null }`, `[1, null]`),
