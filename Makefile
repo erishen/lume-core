@@ -875,6 +875,9 @@ map-index-test: all
 	   /tmp/mib_$$be > /tmp/mib_$$be.out 2>&1; rc=$$?; \
 	   if [ $$rc -eq 0 ] || ! grep -q "map value at this key is a scalar" /tmp/mib_$$be.out; then \
 	     echo "==> map-index $$be 未标注标量读未给出准确错误 (rc=$$rc):"; cat /tmp/mib_$$be.out; exit 1; fi; \
+	   ./$(TARGET) $$flag tests/map-get-default-bad.lume -o /tmp/mgb_$$be > /tmp/mgb_$$be.out 2>&1; rc=$$?; \
+	   if [ $$rc -eq 0 ] || ! grep -q "get() default is int but key" /tmp/mgb_$$be.out; then \
+	     echo "==> map-index $$be get() 默认/形状冲突未在编译期拒绝 (rc=$$rc):"; cat /tmp/mgb_$$be.out; exit 1; fi; \
 	   echo "ok   map-index: $$be 合规路径正确 + 标量读报错准确"; \
 	 done; \
 	 echo "==> map-index 单测通过"

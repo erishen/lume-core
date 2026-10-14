@@ -6,6 +6,31 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — `get(m, k)` read every value through the int getter (native)
+
+- The two-argument form of `get()` dispatched on the *default's* type, and with
+  no default it always used `lume_map_get_i`. A string value then read back as
+  `0` (`print(get(m, "name"))` printed `0`, the interpreter printed `lume`), and
+  a default of a different type than the key's value was silently mis-read.
+- Both emitters now dispatch on the key's **static shape** — the key set a map
+  literal carries, or a declared struct's fields — so the value at a key the
+  shape declares reads through the getter its type needs (`_s` / `_f` / `_i` /
+  `_obj`). `infer_node_type`'s `N_MAP_LIT` keeps that shape (both copies), and
+  `let x = get(m, "name")` infers without an annotation. A default whose type
+  conflicts with the key's declared type is a compile error (it could only ever
+  fire for an absent key, and one static call cannot serve both).
+- The libLLVM emitter also passed **two** operands to the three-operand runtime
+  getters, so an absent key read whatever sat in the default's register/stack
+  slot — `str(get(m, "missing"))` printed garbage such as `73896`. The call now
+  always passes three operands, the third being the read flavour's zero.
+- An absent key with no default still reads as the flavour's zero in the native
+  backends (the interpreter says `null`); use `get(m, k, null)` for the null
+  semantics, which all three backends share.
+- `tests/native-consistency.lume` covers the matrix (string/int/float/bool,
+  annotated and bare `let`, typed defaults, absent key, null default, inline
+  literal); `tests/map-get-default-bad.lume` pins the conflict rejection, wired
+  into `map-index-test`.
+
 ### Added — `if` as an expression (`if (cond) expr else expr`)
 
 - The Lean if-then-else in expression position. `parse_primary` folds it onto the

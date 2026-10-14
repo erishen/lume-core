@@ -148,6 +148,44 @@ Type *infer_node_type(CG *g, Node *n)
             return type_prim(TY_STRING);
         }
 
+        /* get(m, "k"): the value type the key's static shape declares, so
+         * `let x = get(m, "n")` infers without an annotation the way the
+         * interpreter's dynamic read already does. A key that is not a
+         * literal, or that the shape does not declare, falls through to
+         * NULL — the explicit-annotation path then applies. */
+        if (strcmp(name, "get") == 0 && n->as.call.argc >= 2) {
+            Node *kn = n->as.call.args[1];
+            if (kn->type == N_LITERAL && kn->as.lit.kind == LIT_STR) {
+                Type *mt = infer_node_type(g, n->as.call.args[0]);
+                if (mt && mt->kind == TY_STRUCT) {
+                    /* A string literal's text keeps its quotes; keys do not. */
+                    const char *kt = kn->as.lit.text;
+                    size_t kl = (size_t)kn->as.lit.len;
+                    if (kl >= 2 && kt[0] == '"' && kt[kl - 1] == '"') { kt++; kl -= 2; }
+                    if (mt->name) {
+                        char kb[128];
+                        if (kl < sizeof kb) {
+                            memcpy(kb, kt, kl);
+                            kb[kl] = '\0';
+                            int idx = struct_field_idx(g, mt->name, kb);
+                            if (idx >= 0) {
+                                Type *ft = struct_field_type(g, mt->name, idx);
+                                if (ft && ft->kind != TY_ANY) return ft;
+                            }
+                        }
+                    } else {
+                        for (int i = 0; i < mt->count; i++)
+                            if (strlen(mt->names[i]) == kl &&
+                                strncmp(mt->names[i], kt, kl) == 0) {
+                                Type *ft = mt->types[i];
+                                if (ft->kind != TY_ANY) return ft;
+                            }
+                    }
+                }
+            }
+            return NULL;
+        }
+
         /* Native server handler: int() lowers to atoi -> int. */
         if (g->in_handler && strcmp(name, "int") == 0)
             return type_prim(TY_INT);
@@ -172,7 +210,18 @@ Type *infer_node_type(CG *g, Node *n)
             return ot->elem && ot->elem->kind != TY_ANY ? ot->elem : any_type();
         return type_anon_struct();
     }
-    case N_MAP_LIT: return type_anon_struct();
+    case N_MAP_LIT: {
+        /* Keep the literal's key -> value-type shape, mirroring the checker's
+         * copy: get(m, "k") dispatches its runtime getter on the value type,
+         * and a map literal is the only place that type is recoverable. A
+         * value whose own type cannot be inferred lands as `any`. */
+        Type *at = type_anon_struct();
+        for (int i = 0; i < n->as.map.count; i++) {
+            Type *vt = infer_node_type(g, n->as.map.vals[i]);
+            type_add_member(at, n->as.map.keys[i], vt ? vt : any_type());
+        }
+        return at;
+    }
     case N_STRUCT_UPDATE: {
         /* `{ base with k: v, ... }` — the result type mirrors the base's
          * shape for slot typing: a named struct keeps its declared schema, a

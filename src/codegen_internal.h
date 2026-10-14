@@ -220,6 +220,9 @@ const char *rt_arg_type(Type *ty);
 const char *map_get_fn(Type *ty);
 const char *list_push_fn(Type *ty);
 const char *map_put_fn(Type *ty);
+/* from typecheck.c — spells a Type for diagnostics; this TU does not include
+ * typecheck_internal.h, so the declaration lives here. */
+const char *ty_str(Type *t);
 Type *list_type(void);
 Val cg_list_lit(CG *g, Node *n);
 Val cg_map_or_struct_lit(CG *g, Node *n);

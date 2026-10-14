@@ -961,5 +961,26 @@ let mdi = md.inner;
 print(mdi.k);                    // 1
 print(str(md));                  // {"name":"lume","age":7,"score":3.5,"flag":true,"inner":{"k":1}}
 
+// ---- get(): 形状派发（value type 驱动运行时 getter）--------------------
+// 两参数 get(m, "k") 曾永远走 lume_map_get_i：string 值静默读成 0，缺键时
+// libLLVM 端还把未初始化的 default 槽当返回值吐出来（打印成 73896 这类垃圾）。
+// 现在字符串字面量键按 map 静态形状的 value type 派发（解释器的动态读本来
+// 就是这个类型）；libLLVM 端调用固定传 3 个操作数。缺键且无默认时 native 给
+// 该类型的零值（解释器给 null）——要 null 语义就用三参数 null 默认，三端一致。
+// default 与形状类型冲突在编译期拒绝（tests/map-get-default-bad.lume）。
+let gm = { name: "lume", age: 7, score: 3.5, flag: true };
+print(get(gm, "name"));             // lume
+let gms = get(gm, "name");
+print(gms);                         // lume (无标注 let 也定型)
+print(get(gm, "age"));              // 7
+print(get(gm, "score"));            // 3.5
+let gmb: bool = get(gm, "flag");
+print(gmb);                         // true
+print(get(gm, "age", 0));           // 7 (三参数同型默认)
+print(get(gm, "missing", 42));      // 42 (缺键走默认)
+print(get(gm, "missing", null));    // null (null 默认走 obj getter)
+print(get({ a: 1, b: 2 }, "b", 0)); // 2 (内联字面量同样按形状)
+
+
 warmup();
 main();

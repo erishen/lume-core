@@ -309,6 +309,15 @@ lume
 true
 1
 {"name":"lume","age":7,"score":3.5,"flag":true,"inner":{"k":1}}
+lume
+lume
+7
+3.5
+true
+7
+42
+null
+2
 1
 1
 2

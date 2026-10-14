@@ -190,6 +190,54 @@ static const Bi *builtin_find(const char *name)
     return NULL;
 }
 
+/* The value type a literal key maps to in m's static shape — the key set a
+ * map literal carries, or a named struct's declared fields — or NULL when the
+ * key is not a string literal or the shape does not mention it. get(m, "k")
+ * dispatches its runtime getter on this: the value sitting at a key the shape
+ * declares is always that type, whatever a default would have been. */
+static Type *map_key_shape(CG *g, Val *m, Node *knode)
+{
+    if (!knode || knode->type != N_LITERAL ||
+        knode->as.lit.kind != LIT_STR || !m->ty || m->ty->kind != TY_STRUCT)
+        return NULL;
+    /* A string literal's text keeps its quotes; map keys do not carry any. */
+    const char *kt = knode->as.lit.text;
+    size_t kl = (size_t)knode->as.lit.len;
+    if (kl >= 2 && kt[0] == '"' && kt[kl - 1] == '"') { kt++; kl -= 2; }
+    Type *mt = m->ty;
+    if (mt->name) {
+        /* A declared struct's shape lives in the SDef table, not on the Type. */
+        char kb[128];
+        if (kl >= sizeof kb) return NULL;
+        memcpy(kb, kt, kl);
+        kb[kl] = '\0';
+        int idx = struct_field_idx(g, mt->name, kb);
+        return idx >= 0 ? struct_field_type(g, mt->name, idx) : NULL;
+    }
+    for (int i = 0; i < mt->count; i++)
+        if (strlen(mt->names[i]) == kl && strncmp(mt->names[i], kt, kl) == 0)
+            return mt->types[i];
+    return NULL;
+}
+
+/* Which lume_map_get_* flavour reads a value of type t, and the static type
+ * the read result carries. Returns 0 for a type no getter covers. */
+static int get_flavour(Type *t, const char **fn, Type **rty)
+{
+    if (!t) return 0;
+    switch (t->kind) {
+    case TY_STRING: *fn = "lume_map_get_s";   *rty = type_prim(TY_STRING);  return 1;
+    case TY_FLOAT:  *fn = "lume_map_get_f";   *rty = type_prim(TY_FLOAT);   return 1;
+    case TY_INT:
+    case TY_BOOL:   *fn = "lume_map_get_i";   *rty = type_prim(TY_INT);     return 1;
+    case TY_LIST:
+    case TY_STRUCT:
+    case TY_RESULT:
+    case TY_NULL:   *fn = "lume_map_get_obj"; *rty = type_anon_struct();    return 1;
+    default: return 0;
+    }
+}
+
 void emit_builtin_declares(CG *g)
 {
     EMIT(g, "; runtime helpers (src/rt.c)\n");
@@ -778,28 +826,34 @@ static Val cg_builtin(CG *g, Node *n)
         if (!m.v || !k.v)
             ERRV(g, "line %zu: get() needs a map, a key and a scalar default", n->line);
 
-        /* The flavour follows the *default*, and a key that is absent reads as
-         * that default — so an unannotated get(m, k) in a bool context stays
-         * an int read rather than silently becoming a string. */
+        /* The flavour follows the *shape* of the key when the map's static
+         * type declares it: the value at that key is always the declared
+         * type. A default of a different type could only ever fire for an
+         * absent key, so it is refused here rather than silently reading the
+         * slot through the wrong getter. Without a shape the flavour follows
+         * the *default* — so an unannotated get(m, k) in a bool context stays
+         * an int read rather than silently becoming a string — and the int
+         * read when neither says (an absent key then reads as the zero of
+         * that flavour, spelled below). */
         const char *fn = "lume_map_get_i";
         Type *rty = type_prim(TY_INT);
-        if (d.v && d.ty && d.ty->kind == TY_FLOAT)       { fn = "lume_map_get_f"; rty = type_prim(TY_FLOAT); }
-        else if (d.v && d.ty && d.ty->kind == TY_STRING) { fn = "lume_map_get_s"; rty = type_prim(TY_STRING); }
-        /* A container default (`get(m, k, { x: 1 })`, and the shape a nested
-         * read takes once the checker knows a container is there) needs the
-         * pointer-returning getter. Without this branch a container came back
-         * through lume_map_get_i as the integer in its slot field, which
-         * clang then rejected because the call was spelled i64 against an
-         * i8* argument. */
-        else if (d.v && d.ty && (d.ty->kind == TY_LIST ||
-                                  d.ty->kind == TY_STRUCT ||
-                                  d.ty->kind == TY_RESULT))
-                                      { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
-        /* A null default reads through the obj getter too: the result is an
-         * i8* that is null both for a null slot and (as with every obj read)
-         * for an absent key, and `i8* null` is the argument spelling. */
-        else if (d.v && d.ty && d.ty->kind == TY_NULL)
-                                      { fn = "lume_map_get_obj"; rty = type_anon_struct(); }
+        Type *shape = map_key_shape(g, &m, n->as.call.args[1]);
+        if (shape && shape->kind != TY_ANY) {
+            const char *sfn; Type *srty;
+            if (!get_flavour(shape, &sfn, &srty))
+                ERRV(g, "line %zu: get() cannot read a value of type %s",
+                     n->line, ty_str(shape));
+            if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
+                !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
+                !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
+                ERRV(g, "line %zu: get() default is %s but key %s holds %s",
+                     n->line, ty_str(d.ty), n->as.call.args[1]->as.lit.text,
+                     ty_str(shape));
+            fn = sfn; rty = srty;
+        } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
+            const char *dfn; Type *drty;
+            if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+        }
 
         char dflt[96];
         const char *darg = "i64 0";
@@ -808,6 +862,14 @@ static Val cg_builtin(CG *g, Node *n)
             snprintf(dflt, sizeof dflt, "%s %s", rt_arg_type(d.ty), d.v);
             darg = dflt;
             free(d.v);
+        } else if (rty->kind == TY_STRING || rty->kind == TY_NULL ||
+                   rty->kind == TY_LIST || rty->kind == TY_STRUCT ||
+                   rty->kind == TY_RESULT) {
+            /* The pointer-returning getters take an i8* default; i64 0 would
+             * not verify. */
+            darg = "i8* null";
+        } else if (rty->kind == TY_FLOAT) {
+            darg = "double 0.0";
         }
         Val r = rt_call(g, rty, fn, "i8* %s, i8* %s, %s", m.v, k.v, darg);
         free(m.v); free(k.v);

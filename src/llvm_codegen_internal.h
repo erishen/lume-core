@@ -183,6 +183,9 @@ static Val cg_member(CG *g, Node *n);
 static const char *map_get_fn(Type *ty);
 static const char *list_push_fn(Type *ty);
 static const char *map_put_fn(Type *ty);
+/* from typecheck.c — spells a Type for diagnostics; this TU does not include
+ * typecheck_internal.h, so the declaration lives here. */
+const char *ty_str(Type *t);
 static Val rt_call(CG *g, Type *rty, const char *fn, int n,
                    LLVMTypeRef *ats, LLVMValueRef *vs);
 static Type *infer_list_elem(Node *lit);
