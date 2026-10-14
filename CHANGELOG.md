@@ -6,6 +6,44 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — trailing closures `f(args) { |x| body }`
+
+- A closure written after a call's argument list is sugar for passing it as one
+  more argument (Rust / Swift / Kotlin's trailing closure). `parse_postfix`
+  folds it into an ordinary `N_FUNC_LIT` argument, so the checker and both
+  emitters never learn the syntax exists — one grammar, three consumers.
+- The body is a statement sequence whose final expression (the one with no
+  trailing `;`) is the closure's value, Rust-style; a trailing `;` discards it
+  (the closure returns null). `let` / `if` / `for` / `while` statements are all
+  allowed in the body. Parameters are bare names with optional `: type`
+  annotations, exactly as capable as the arrow form; the zero-parameter form is
+  `{ || body }` (the lexer fuses the two pipes into one `TOK_OR` token).
+- Recognition is a two-token lookahead: `{` must be followed by `|` (or `||`).
+  A map literal's first token is a key, a structure update starts with the base
+  name, and no statement or match arm starts with `|` — so the condition braces
+  of `if (f()) { ... }`, `while (f()) { ... }` and the scrutinee brace of
+  `match (f()) { ... }` can never be swallowed. A `{` not followed by `|` is not
+  a trailing closure (pinned by a negative test).
+- Covered by `tests/trailing-closure.lume` (16 checks: expression bodies,
+  multi-statement bodies, discarded values, zero-parameter, nesting, return
+  position, statement bodies, annotated parameters + capture, for-in position,
+  and the brace-intactness regressions), `tests/trailing-closure-bad/` (5
+  rejection cases wired into `trailing-closure-test`), and a probe block in
+  `tests/native-consistency.lume` (`.expected` 337 → 346). SPEC §4.11 documents
+  the semantics.
+
+### Fixed — a void call result used as a value emitted the type name as the value
+
+- Both native emitters carried the result of a call to a function with no
+  return type as the literal token `void`. Used as a value (e.g. pushed into a
+  list), the text emitter produced `i8* void` — not IR, and clang rejected the
+  module with "expected value token"; the libLLVM emitter refused at the
+  consumer ("push() needs a list and a scalar"). The interpreter's answer is
+  `null`, and both emitters now build a null `i8*` (`TY_NULL`), so
+  `push(out, f(x))` with a value-less closure prints `[null,null,null]` on all
+  three backends. Found by the trailing-closure probe, reachable with the arrow
+  form too.
+
 ### Fixed — `get(m, k)` read every value through the int getter (native)
 
 - The two-argument form of `get()` dispatched on the *default's* type, and with

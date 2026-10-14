@@ -164,6 +164,11 @@ static Val cg_clo_call(CG *g, Node *n, Node *lambda)
     free(avs);
     if (!r) ERRV(g, "line %zu: cannot call through this closure", n->line);
     Type *ret = lambda->as.funclit.ret;
+    /* A closure whose body yields no value is null when its result is used
+     * as one — the interpreter's answer, and what the text emitter now
+     * builds (it used to emit the type name as a value token). */
+    if (!ret)
+        return val_make(type_prim(TY_NULL), LLVMConstNull(g->i8ptr));
     return val_make(ret, r);
 }
 
@@ -953,6 +958,11 @@ static Val cg_call(CG *g, Node *n)
         return val_make(payload, LLVMBuildLoad2(g->ab, pty, slot, "pv"));
     }
 
+    /* A call to a function with no return type yields null when its result
+     * is used as a value (the interpreter's answer, and the text emitter's
+     * — see cg_clo_call above). */
+    if (!s->ret)
+        return val_make(type_prim(TY_NULL), LLVMConstNull(g->i8ptr));
     return val_make(s->ret, res);
 }
 

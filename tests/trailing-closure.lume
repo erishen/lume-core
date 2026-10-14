@@ -1,0 +1,122 @@
+// tests/trailing-closure.lume — 尾随闭包 `f(args) { |x| body }` 回归
+// 运行: make trailing-closure-test (并入 make test)
+//
+// 覆盖: 表达式体(隐式 return)、多语句体+末尾表达式值、尾随 `;` 丢弃值、
+// 零参 `{ || expr }`(lexer 把两个 | 融合成 TOK_OR)、嵌套尾随闭包、return
+// 位置、语句体(if/for/while)、参数类型注解、捕获外层变量、for-in 可迭代
+// 位置、以及**条件位花括号不被吞**的回归（if/while/for/match 的 `{` 后
+// 永远不跟 `|`，双 token 前瞻据此消歧）。
+// 纯解析器层糖: 折叠成普通 N_FUNC_LIT 实参， checker 与两个发射器零改动;
+// 三后端一致值由 native-consistency.lume 覆盖。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+// 高阶宿主: 函数参数在末位（尾随闭包的前提）
+func apply(list, f) {
+  let out = [];
+  for (x in list) { push(out, f(x)); }
+  return out;
+}
+// 双参宿主: 尾随闭包传两个实参
+func apply2(list, f) {
+  let out = [];
+  for (x in list) { push(out, f(x, x * 10)); }
+  return out;
+}
+func each(list, f) {
+  for (x in list) { f(x); }
+}
+// 零参闭包的宿主: 返回类型必须注解（原生后端推不出 f() 的结果类型，
+// 与箭头 lambda 同一既有局限）
+func thunk(f): int { return f(); }
+// return 位置的宿主
+func mk() {
+  return apply([1, 2, 3]) { |x| x * x };
+}
+// match 回归用的 enum 宿主（match 只收 enum scrutinee）
+enum Any { A }
+func tagOf(): Any { return A; }
+
+func main(): int {
+  let nums = [1, 2, 3];
+
+  // --- 表达式体: 末尾无 `;` 的表达式即闭包值（隐式 return） ---
+  let doubled = apply(nums) { |x| x * 2 };
+  check("expr body", doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6);
+
+  // --- 多语句体: 语句序列 + 末尾表达式值（Rust 式块体） ---
+  let r1 = apply(nums) {
+    |x|
+    let d = x * 2;
+    d + 1
+  };
+  check("stmt body + value", r1[0] == 3 && r1[1] == 5 && r1[2] == 7);
+
+  // --- 尾随 `;` 丢弃值: 块值为 null ---
+  let r2 = apply(nums) { |x| let y = x + 1; y; };
+  check("trailing semi drops value", r2[0] == null && r2[1] == null && r2[2] == null);
+
+  // --- 多参数 ---
+  let pairs = apply2(nums) { |a, b| a * 10 + b };
+  // a=x, b=x*10 → 20x
+  check("two params", pairs[0] == 20 && pairs[1] == 40 && pairs[2] == 60);
+
+  // --- 零参闭包: `{ || expr }`(两个 | 被 lexer 融合成单个 TOK_OR) ---
+  check("zero-param closure", thunk() { || 7 } == 7);
+
+  // --- 嵌套尾随闭包（内层作外层的实参） ---
+  let r3 = apply(apply(nums) { |x| x * 10 }) { |y| y + 1 };
+  check("nested trailing", r3[0] == 11 && r3[1] == 21 && r3[2] == 31);
+
+  // --- return 位置 ---
+  let r4 = mk();
+  check("return position", r4[0] == 1 && r4[1] == 4 && r4[2] == 9);
+
+  // --- 语句体: if/for 在闭包里 ---
+  let seen = [];
+  each(nums) {
+    |x|
+    if (x == 2) { push(seen, "two"); }
+    for (i in [0]) { push(seen, "loop"); }
+  };
+  check("stmt body if/for", seen[0] == "loop" && seen[1] == "two" && seen[2] == "loop" && seen[3] == "loop");
+
+  // --- 参数类型注解（原生后端在推不出参数类型时的逃生门, 与箭头形式一致） ---
+  let base = 10;
+  let r5 = apply(nums) { |x: int| x + base };
+  check("annotated param + capture", r5[0] == 11 && r5[1] == 12 && r5[2] == 13);
+
+  // --- for-in 的可迭代位置 ---
+  let total = 0;
+  for (v in apply(nums) { |x| x * 3 }) {
+    total = total + v;
+  }
+  check("for-in iterable position", total == 18);
+
+  // --- 回归: 条件位/语句体的花括号绝不被尾随闭包吞掉 ---
+  if (len(nums) > 0) { check("if body brace intact", true); }
+  let w = 0;
+  while (w < 2) { w = w + 1; }
+  check("while body brace intact", w == 2);
+  let cnt = 0;
+  for (k in nums) { if (k > 1) { cnt = cnt + 1; } }
+  check("for body brace intact", cnt == 2);
+  // match 的 scrutinee 是调用时, match 自己的 `{` 不能被吞（通配臂）
+  let mv = match (tagOf()) { _ => "any" };
+  check("match brace intact", mv == "any");
+
+  // --- 回归: `{` 后不跟 `|` 时一律不是尾随闭包（map 字面量/块原样） ---
+  let m = { "a": 1 };
+  check("map literal stays map", get(m, "a", 0) == 1);
+  {
+    let shadow = 5;
+    check("bare block still a block", shadow == 5);
+  }
+
+  return 0;
+}
+
+main();

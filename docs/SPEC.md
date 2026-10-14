@@ -555,6 +555,47 @@ print(if (ok) compute() else fallback());          // 只求值选中侧
 
 ---
 
+### 4.11 尾随闭包 `f(args) { |x| body }`（2026-10-14）
+
+调用实参表的右花括号之后再跟一个闭包，是「把它当作最后一个实参传入」的语法糖
+（Rust / Swift / Kotlin 的 trailing closure）。parser 把它折叠成普通 `N_FUNC_LIT`
+实参——typecheck 与两个发射器零改动：一种语法，三个消费者。
+
+- **形如 `{ |a, b| body }`**：参数是裸名字，可带 `: type` 注解（注解能力与箭头
+  形式完全一致；原生后端在推不出参数类型时需要它）。
+- **零参写作 `{ || body }`**：lexer 把相邻两个 `|` 融合成单个 `||`（`TOK_OR`）
+  token，解析器据此识别空参数表。
+- **body 是语句序列**：最后一个**不带 `;`** 的表达式即闭包的值（隐式 return，
+  Rust 式块体）；以 `;` 结尾则弃值（闭包返回 null）。`let` / `if` / `for` /
+  `while` 等语句均可入体。
+- **只挂在带实参表的调用之后**（`f(...) { ... }`）。识别靠双 token 前瞻：`{` 后
+  必须紧跟 `|`（或 `||`）——map 字面量的首 token 是键、结构更新以基名开头、语句
+  与 match 臂都不以 `|` 开头。因此 `if (f()) { ... }`、`while (f()) { ... }`、
+  `match (f()) { ... }` 的条件位 / scrutinee 花括号绝不会被误吞。
+- **void 闭包的结果用作数值时是 null**（解释器口径；两个原生后端一致——文本
+  后端曾把类型名 `void` 当值 token 发射出非法 IR，本轮已修）。
+- 内建 `map` / `filter` / `reduce` 的参数序是 `(fn, list)`，尾随闭包追加在**尾
+  部**，所以这三个内建仍用箭头形式书写（`map((x) => x * 2, l)`）；尾随形式服务
+  于函数参数在末位的宿主（`each(items) { |x| ... }`）。
+
+```lume
+func each(list, f) { for (x in list) { f(x); } }
+func apply(list, f): int[] {
+  let out = [];
+  for (x in list) { push(out, f(x)); }
+  return out;
+}
+each([1, 2]) { |x| print(x); };                    // 语句体
+print(apply([1, 2, 3]) { |x| x * 2 });             // [2,4,6]  表达式体即值
+print(apply([1, 2, 3]) { |x: int| let d = x * 2; d + 1 });  // [3,5,7]
+```
+
+负例（`{` 后无 `|`、参数非裸名、花括号不闭、坏注解、闭包计入 arity）由
+`tests/trailing-closure-bad/` 断言；三后端值语义由 `tests/native-consistency.lume`
+的尾随闭包探针段覆盖。
+
+---
+
 ## 5. Result 与 `?` 传播
 
 `Result` 是内建的 `{ ok: ... }` / `{ err: ... }` 形状。函数返回 `Result` 后，调用点用

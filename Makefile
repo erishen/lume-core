@@ -403,7 +403,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test enum-test match2-test eq2-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -703,6 +703,31 @@ ternary-test: all
 	check_bad_t if-no-else "an if-expression needs an else branch"; \
 	check_bad_t if-arm-type "ternary branches have different types"; \
 	echo "==> ternary 单测全部通过"
+
+# 尾随闭包 f(args) { |x| body } (2026-10-14): 纯解析器层糖, 折叠成普通
+# N_FUNC_LIT 实参——表达式体(隐式 return)/多语句体+末尾值/尾随 ; 弃值/
+# 零参 { || expr }(lexer 把两个 | 融合成 TOK_OR)/嵌套/return 位置/语句体/
+# 注解参数/捕获, 以及条件位花括号不被吞的回归。三后端一致值(含 void 结果
+# 取 null 的修复)由 native-consistency 覆盖。
+trailing-closure-test: all
+	@./$(TARGET) tests/trailing-closure.lume > /tmp/lume-tc-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-tc-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-tc-test.out; then \
+		echo "==> trailing-closure 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-tc-test.out) -ne 16 ]; then \
+		echo "==> trailing-closure 断言数不是 16"; exit 1; fi; \
+	set -e; \
+	check_bad_tc() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/trailing-closure-bad/$$f.lume > /tmp/lume-tc-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-tc-bad.out; then \
+	    echo "==> trailing-closure 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-tc-bad.out; exit 1; fi; \
+	  echo "ok   trailing-closure-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad_tc no-pipe "expected ), got {"; \
+	check_bad_tc bad-param "trailing closure parameters must be plain names"; \
+	check_bad_tc unclosed "expected }, got end of input"; \
+	check_bad_tc bad-annotation "unknown type 'nosuchtype'"; \
+	check_bad_tc extra-arg "function expects 0 arguments, got 1"; \
+	echo "==> trailing-closure 单测全部通过"
 
 # enum + match (2026-10-12): 解释器 19 断言全 PASS; 8 个编译期拒绝各断言
 # 自己的诊断句(穷尽性/未知变体/重复臂/arity/载荷类型/非 enum match/构造名

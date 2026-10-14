@@ -484,6 +484,50 @@ let ez: int[] = [];
 print(map((x) => x * 2, ez));                   // []
 print(reduce((a, x) => a + x, ez, 100));        // 100
 
+// --- trailing closures: f(args) { |x| body } (parser sugar, SPEC §4.11) ---
+// Folds into an ordinary lambda argument, so all three backends see the
+// same tree. Parameters are annotated here because the native signature
+// pass cannot pin an unannotated lambda parameter from a user host's
+// call site (the arrow form has the same constraint, and the same escape);
+// the hosts carry a return annotation for the same reason — an untyped
+// `[]` result would leave one function name with two signatures.
+func tc_apply(list: int[], f): int[] {
+  let out = [];
+  for (x in list) { push(out, f(x)); }
+  return out;
+}
+func tc_apply2(list: int[], f): int[] {
+  let out = [];
+  for (x in list) { push(out, f(x, x * 10)); }
+  return out;
+}
+// Dedicated host for the discarded-value case: sharing tc_apply with the
+// value-returning closures above would pin f's signature to (int) -> int on
+// the first call, and the native backends then coerce the null to 0 while
+// the interpreter stays null — the "one function name has one signature"
+// rule, identical for the arrow form (pre-existing, not this syntax's).
+func tc_applyv(list: int[], f): int[] {
+  let out = [];
+  for (x in list) { push(out, f(x)); }
+  return out;
+}
+func tc_thunk(f): int { return f(); }
+func tc_mk(): int[] {
+  return tc_apply([1, 2, 3]) { |x: int| x * x };
+}
+print(tc_apply([1, 2, 3]) { |x: int| x * 2 });              // [2,4,6]
+print(tc_apply([1, 2, 3]) { |x: int| let d = x * 2; d + 1 }); // [3,5,7]
+print(tc_applyv([1, 2, 3]) { |x: int| let y = x + 1; y; }); // [null,null,null]
+print(tc_apply2([1, 2, 3]) { |a: int, b: int| a * 10 + b }); // [20,40,60]
+print(tc_thunk() { || 7 });                                  // 7
+print(tc_apply(tc_apply([1, 2, 3]) { |x: int| x * 10 }) { |y: int| y + 1 }); // [11,21,31]
+print(tc_mk());                                             // [1,4,9]
+let tc_base = 10;
+print(tc_apply([1, 2]) { |x: int| x + tc_base });           // [11,12]
+let tc_total = 0;
+for (v in tc_apply([1, 2, 3]) { |x: int| x * 3 }) { tc_total = tc_total + v; }
+print(tc_total);                                            // 18
+
 // --- locals lookup is position-aware (SPEC 8.1 #12) ---
 // The pre-scanned locals table can hold several same-name bindings; a use
 // site sees the latest one declared at or above its own line. Sibling-block

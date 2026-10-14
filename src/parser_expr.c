@@ -528,6 +528,120 @@ static bool ternary_colon_ahead(Parser *p)
     return found;
 }
 
+/* `{ |a, b| body }` — the trailing-closure form, reached only when the
+ * caller proved by lookahead that `{` is followed by `|`. The body is a
+ * statement sequence whose final expression (the one with no trailing
+ * `;`) becomes the closure's value, exactly like a Rust block: a trailing
+ * `;` discards it. Parameters are plain names — types come from inference,
+ * exactly as in the arrow form. Folds into an ordinary N_FUNC_LIT, so the
+ * checker and both emitters never learn that trailing closures exist. */
+static Node *parse_trailing_closure(Parser *p) {
+    size_t line = peek(p).line;
+    char **names = NULL;
+    Type **types = NULL;
+    int arity = 0;
+    advance(p);                       /* { */
+    if (check(p, TOK_OR)) {
+        /* `{ || body }` — zero parameters. The lexer fused the two pipes
+         * into one `||` (TOK_OR) token, so this is both the opening and
+         * the closing delimiter at once. */
+        advance(p);
+    } else {
+        if (!expect(p, TOK_PIPE)) goto fail;
+        if (!check(p, TOK_PIPE)) {
+            for (;;) {
+                if (!check(p, TOK_IDENT)) {
+                    perror_at(p, peek(p).line,
+                              "trailing closure parameters must be plain names "
+                              "('{ |a, b| body }')", NULL);
+                    goto fail;
+                }
+                Token nm = peek(p);
+                advance(p);
+                names = realloc(names, sizeof(char *) * ((size_t)arity + 1));
+                types = realloc(types, sizeof(Type *) * ((size_t)arity + 1));
+                names[arity] = ident_name(p, nm);
+                types[arity] = NULL;
+                /* Optional `: type`, same as the arrow form — the native
+                 * backends need a known element type when the callee's own
+                 * signature left the lambda's parameters unconstrained. */
+                if (match(p, TOK_COLON)) {
+                    types[arity] = parse_type(p);
+                    if (!types[arity]) {
+                        /* names[arity] is live; freeing the first `arity`
+                         * names only would drop it (parse_params' lesson). */
+                        for (int i = 0; i <= arity; i++) free(names[i]);
+                        free(names);
+                        free(types);
+                        return NULL;
+                    }
+                }
+                arity++;
+                if (!match(p, TOK_COMMA)) break;
+                if (check(p, TOK_PIPE)) break;   /* trailing comma */
+            }
+        }
+        if (!expect(p, TOK_PIPE)) goto fail;
+    }
+
+    Node *blk = nalloc(N_BLOCK, line);
+    blk->as.block.stmts = NULL;
+    blk->as.block.count = 0;
+    while (!check(p, TOK_RBRACE) && !at_end(p)) {
+        /* Dispatch on the first token instead of probing with save/restore:
+         * an abandoned probe subtree would sit in the orphan journal with no
+         * owner and leak on the success path. Only tokens that can *only*
+         * start an expression take the expression path; every statement
+         * keyword (let/if/while/for/return/func/...) goes to parse_statement,
+         * so the body accepts the same statements a plain block does. */
+        TokenType t = peek(p).type;
+        bool expr_only = t == TOK_IDENT || t == TOK_NUMBER ||
+                         t == TOK_STRING || t == TOK_ISTR ||
+                         t == TOK_TRUE || t == TOK_FALSE || t == TOK_NULL ||
+                         t == TOK_LPAREN || t == TOK_LBRACKET ||
+                         t == TOK_MINUS || t == TOK_NOT || t == TOK_MATCH;
+        if (expr_only) {
+            Node *e = parse_expression(p);
+            if (!e) goto fail;
+            if (match(p, TOK_SEMI)) {
+                /* statement position: `e;` runs for effect */
+                Node *es = nalloc(N_EXPR_STMT, e->line);
+                es->as.expr_stmt.expr = e;
+                blk->as.block.stmts = realloc(blk->as.block.stmts,
+                        sizeof(Node *) * ((size_t)blk->as.block.count + 1));
+                blk->as.block.stmts[blk->as.block.count++] = es;
+                continue;
+            }
+            /* no `;` — the closure's value: an implicit return */
+            Node *ret = nalloc(N_RETURN, e->line);
+            ret->as.ret.expr = e;
+            blk->as.block.stmts = realloc(blk->as.block.stmts,
+                    sizeof(Node *) * ((size_t)blk->as.block.count + 1));
+            blk->as.block.stmts[blk->as.block.count++] = ret;
+            break;
+        }
+        Node *s = parse_statement(p);
+        if (!s) goto fail;
+        blk->as.block.stmts = realloc(blk->as.block.stmts,
+                sizeof(Node *) * ((size_t)blk->as.block.count + 1));
+        blk->as.block.stmts[blk->as.block.count++] = s;
+    }
+    if (!expect(p, TOK_RBRACE)) goto fail;
+
+    Node *n = nalloc(N_FUNC_LIT, line);
+    n->as.funclit.names = names;
+    n->as.funclit.param_types = types;
+    n->as.funclit.arity = arity;
+    n->as.funclit.ret = NULL;
+    n->as.funclit.body = blk;
+    return n;
+fail:
+    for (int i = 0; i < arity; i++) free(names[i]);
+    free(names);
+    free(types);
+    return NULL;
+}
+
 static Node *parse_postfix(Parser *p) {
     Node *n = parse_primary(p);
     if (!n) return NULL;
@@ -577,6 +691,23 @@ static Node *parse_postfix(Parser *p) {
                     advance(p);
                     call->as.call.propagate = true;
                 }
+            }
+            /* Trailing closure: `f(args) { |x| body }` — sugar for passing
+             * the closure as one more argument. Recognised by pure lookahead
+             * (`{` followed by `|`, or by `||` which the lexer fuses into one
+             * TOK_OR token for the zero-parameter form), which no other
+             * construct can produce: a map literal's first token is a key, a
+             * struct update starts with the base name, and no statement or
+             * match arm starts with `|`. That is what keeps `if (f()) { ... }`
+             * and `match (f()) { ... }` intact — their braces are followed by
+             * a statement or a pattern, never `|`. */
+            if (check(p, TOK_LBRACE) &&
+                (peek2(p).type == TOK_PIPE || peek2(p).type == TOK_OR)) {
+                Node *clo = parse_trailing_closure(p);
+                if (!clo) return NULL;
+                call->as.call.args = realloc(call->as.call.args,
+                        sizeof(Node *) * ((size_t)call->as.call.argc + 1));
+                call->as.call.args[call->as.call.argc++] = clo;
             }
             n = call;
         } else if (match(p, TOK_DOT)) {

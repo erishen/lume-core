@@ -164,7 +164,14 @@ static Val cg_clo_call(CG *g, Node *n, Node *lambda)
 
     Type *ret = lambda->as.funclit.ret;
     const char *rty = ret ? llvm_type_of(ret) : NULL;
-    if (!rty) { free(res); return val_make(type_prim(TY_NULL), "void"); }
+    if (!rty) {
+        /* A closure whose body yields no value is null when its result is
+         * used as one — the interpreter pushes/prints null. Spelling the
+         * type name as the value token ("void") emitted `i8* void`, which
+         * is not IR; a null i8* is (TY_NULL lowers to i8*). */
+        free(res);
+        return val_make(type_prim(TY_NULL), "null");
+    }
     Val v = val_make(ret, res);
     free(res);
     if (rty[0] == '%') v.agg = 1;
@@ -983,7 +990,7 @@ Val cg_call(CG *g, Node *n)
         if (n->as.call.argc != 0)
             ERRV(g, "line %zu: run() takes no arguments", n->line);
         EMIT(g, "  call void @lume_srv_run()\n");
-        return val_make(type_prim(TY_NULL), "void");
+        return val_make(type_prim(TY_NULL), "null");
     }
 
     /* Native server handler: get(req.query_params, key, default?) lowers to
@@ -1121,7 +1128,10 @@ Val cg_call(CG *g, Node *n)
         snprintf(g->exit_tmp, sizeof g->exit_tmp, "%s", name_res);
     }
 
-    if (!rty) return val_make(s->ret, "void");
+    /* A call to a function with no return type yields null when its result
+     * is used as a value (the interpreter's answer); "void" as a value
+     * token is not IR — see the same fix in cg_clo_call. */
+    if (!rty) return val_make(type_prim(TY_NULL), "null");
 
     /* `f()?` — the callee handed back a Result; the error has to travel out of
      * *this* function before the payload is read. The interpreter does exactly

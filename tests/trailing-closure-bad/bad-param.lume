@@ -1,0 +1,6 @@
+func apply(list, f) {
+  let out = [];
+  for (x in list) { push(out, f(x)); }
+  return out;
+}
+print(apply([1]) { |1| 2 });
