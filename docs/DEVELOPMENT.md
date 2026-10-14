@@ -40,6 +40,7 @@ lume-core/
 │   ├── rt.c                 # 孤儿文件：代码不参与构建（不在 SRCS），早期原生后端残留；只被 RT_DEFS 当路径字符串塞进 LUME_RT_SRC
 │   ├── codegen.c + codegen_internal.h  # 原生发射入口（CG context、容器助手、codegen_emit_ir）
 │   ├── codegen_{types,expr,scan,sig,stmt}.c   # 按原注释区段切分（纯搬移）
+│   ├── codegen_{lit,call,match,print}.c       # expr 段二次切分：字面量/调用/match/print
 │   ├── irbuf.c              # IR 文本缓冲（文本后端专用）
 │   ├── backend.c / backend_llvm.c   # 两条原生后端的编排与链接收尾
 │   ├── llvm_codegen.c + llvm_codegen_internal.h  # libLLVM 路：C API 建 IR（仅 HAVE_LLVM 时编）

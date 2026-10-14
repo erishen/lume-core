@@ -210,4 +210,25 @@ Val val_take(Type *ty, char *owned);
 int struct_field_idx(CG *g, const char *sname, const char *fname);
 Type *struct_field_type(CG *g, const char *sname, int idx);
 
+
+/* Promoted when codegen_expr.c was cut into codegen_{lit,call,match,
+ * print}.c: the dispatcher and the builtin/call emitters reach across
+ * the new file boundaries, so these lost their `static`. */
+Val val_make_agg(Type *ty, const char *v);
+char *emit_instrf_agg(CG *g, const char *fmt, ...);
+const char *rt_arg_type(Type *ty);
+const char *map_get_fn(Type *ty);
+const char *list_push_fn(Type *ty);
+const char *map_put_fn(Type *ty);
+Type *list_type(void);
+Val cg_list_lit(CG *g, Node *n);
+Val cg_map_or_struct_lit(CG *g, Node *n);
+Val cg_struct_update(CG *g, Node *n);
+Val cg_ctor(CG *g, Node *n);
+Val cg_funclit(CG *g, Node *n);
+Val cg_call(CG *g, Node *n);
+Val cg_match(CG *g, Node *n);
+Val cg_print(CG *g, Node *n, Val a);
+Val emit_struct_to_map(CG *g, const char *sv, Type *st);
+
 #endif /* LUME_CODEGEN_INTERNAL_H */

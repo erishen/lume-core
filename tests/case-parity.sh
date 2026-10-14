@@ -16,11 +16,12 @@
 # that is what tests/native-consistency.lume is for (runtime three-way
 # parity); this catches the missing-case class statically.
 #
-# The LLVM side is split into .inc fragments (llvm_codegen.c textually
-# includes llvm_cg_expr/lit/call/stmt/scan.inc), so the extraction paths
-# below point at the fragment that holds each function: infer_node_type
-# lives in llvm_cg_scan.inc, the str() builtin branch in llvm_cg_call.inc,
-# and the container helper tables in llvm_cg_lit.inc.
+# Both sides are split into per-section files, so the extraction paths below
+# point at the file that holds each function: on the text side infer_node_type
+# lives in codegen_scan.c, the str() builtin branch in codegen_call.c and the
+# container helper tables in codegen_lit.c; on the LLVM side (llvm_codegen.c
+# textually includes llvm_cg_expr/lit/call/stmt/scan.inc) they are
+# llvm_cg_scan.inc, llvm_cg_call.inc and llvm_cg_lit.inc.
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -53,7 +54,7 @@ compare() {
     if [ -n "$d" ]; then
         echo "FAIL case-parity $name: the two emitters' copies disagree:"
         echo "$d" | sed 's/^/    /'
-        echo "    (< is codegen_scan.c / codegen_expr.c, > is llvm_cg_scan.inc / llvm_cg_call.inc / llvm_cg_lit.inc)"
+        echo "    (< is codegen_scan.c / codegen_call.c / codegen_lit.c, > is llvm_cg_scan.inc / llvm_cg_call.inc / llvm_cg_lit.inc)"
         echo "    a label known to one copy but not the other is the"
         echo "    missing-case drift this tripwire exists for -- add the"
         echo "    case to both or document why they must differ."
@@ -80,7 +81,7 @@ str_branch() {
          f && /\} else if \(strcmp\(bname, "int"\)/ { exit }' "$1"
 }
 compare "str() branch TY labels" \
-        "$(labels "$(str_branch src/codegen_expr.c)")" \
+        "$(labels "$(str_branch src/codegen_call.c)")" \
         "$(labels "$(str_branch src/llvm_cg_call.inc)")"
 
 # ---- container helper tables: list_push_fn / map_put_fn / map_get_fn ------
@@ -94,7 +95,7 @@ compare "str() branch TY labels" \
 # in both copies at once or the tripwire fires.
 for tbl in list_push_fn map_put_fn map_get_fn; do
     compare "$tbl TY labels" \
-            "$(labels "$(body src/codegen_expr.c "$tbl(Type \\*ty)\$")")" \
+            "$(labels "$(body src/codegen_lit.c "$tbl(Type \\*ty)\$")")" \
             "$(labels "$(body src/llvm_cg_lit.inc "$tbl(Type \\*ty)\$")")"
 done
 
