@@ -485,7 +485,8 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
     int nfns = 0, ntops = 0;
     for (int i = 0; i < ntop; i++) {
         if (top[i]->type == N_TYPE_DECL || top[i]->type == N_IMPORT ||
-            top[i]->type == N_ENUM_DECL) continue;
+            top[i]->type == N_ENUM_DECL || top[i]->type == N_FUNC_DECL)
+            continue;   /* emitted above / resolved by the loader / collected below */
         else ntops++;
     }
     /* Every function gets a define: top-level ones and hoisted locals alike. */
