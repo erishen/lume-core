@@ -258,6 +258,20 @@ All notable changes to Lume are documented here. The format follows
   `match2-test`; match probes extended in `tests/native-consistency.lume`.
   SPEC §3.7 documents the semantics.
 
+### Tests — three-way coverage of `match` as an expression
+
+- `match` already lowers to a value in all three backends: the native
+  emitters allocate a result slot, each arm stores through `coerce`, and the
+  join loads it (`cg_match` in `codegen_match.c` and `llvm_cg_expr.inc`
+  return a `Val`). It was only exercised as a `return` value in
+  `tests/match2.lume` and `tests/native-consistency.lume`, so the bare
+  expression contexts were unguarded. `tests/native-consistency.lume` now also
+  pins `let r = match {..}`, `print(match {..})`, arithmetic on the result,
+  and a nested `match`, with the interpreter's stdout regenerated
+  (`.expected` 313 → 318). No emitter change was needed — the feature was
+  already consistent across backends; this only adds the cross-backend
+  assertion.
+
 ### Added — collection + string-search builtins
 
 - `sort(list)` — sort a list **in place** and return it. Homogeneous lists

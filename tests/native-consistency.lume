@@ -627,6 +627,41 @@ print(ifkind(Name("ab")));                       // n:ab
 print(ifkind(Id(5)));                            // i:5
 print(ifkind(None));                             // other
 
+// ---- match 作为表达式（值语义，非仅 return 形态）-----------------------
+// 钉三后端在「match 结果当作普通值」的各上下文必须逐字节一致: 变量绑定 /
+// 直接 print 实参 / 对结果算术 / 嵌套 match。match2.lume 只走解释器且只用
+// return 形态, 这里补 native 三后端的 cross-backend 断言。
+let me_r = match (Red) {
+  Red => 10,
+  Green => 20,
+  Blue => 30
+};
+print(me_r);                                       // 10
+print(match (Green) {
+  Red => 100,
+  Green => 200,
+  Blue => 300
+});                                                // 200
+let me_s = match (Blue) {
+  Red => 1,
+  Green => 2,
+  Blue => 3
+};
+print(me_s * 10);                                 // 30
+let me_t = match (Green) {
+  Red => "r",
+  Green => "g",
+  Blue => "b"
+};
+print(me_t);                                      // g
+let me_n = match (Blue) {
+  Red => match (Green) { Red => 1, Green => 2, Blue => 3 },
+  Green => 4,
+  Blue => 5
+};
+print(me_n);                                      // 5
+
+
 // ---- structural `==` / `!=` (docs/SPEC.md §1.8) -----------------------------
 //
 // `==` used to answer pointer-luck (native: two i8* icmp) or a flat false
