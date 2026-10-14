@@ -99,7 +99,13 @@ static void cg_for_in(CG *g, Node *n)
     Asg *a = asg_find(&g->locals, n->as.fors.var, n->line);
     if (!a) ERRX(g, "line %zu: unknown variable '%s'", n->line, n->as.fors.var);
     Type *et = a->ty;
-    const char *fn = is_map ? NULL : list_at_fn(et);
+    /* An `any` element (a list that decayed to list<any>, e.g. [null, 2, null])
+     * is boxed as a LumeSlot*; read it back through lume_list_at_slot, which
+     * returns the slot for ANY tag. lume_list_at_obj only serves LUME_SLOT_OBJ.
+     * ty_of(g, TY_ANY) returns i8*, so the loop variable's alloca and the
+     * store below stay consistent. */
+    const char *fn = is_map ? NULL
+                            : (et->kind == TY_ANY ? "lume_list_at_slot" : list_at_fn(et));
     if (!is_map && !fn)
         ERRX(g, "line %zu: a list of this element type cannot be iterated", n->line);
 

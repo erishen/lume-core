@@ -226,6 +226,9 @@ static LLVMTypeRef ty_of(CG *g, Type *t)
          * llvm_type_of() in codegen_types.c, which the text emitter uses. */
         return g->i8ptr;
     case TY_FUNC:   return g->i8ptr;   /* closure record pointer (LumeClosure*) */
+    /* An `any` value (a for-in loop variable over list<any>) is a boxed
+     * LumeSlot* travelled as an opaque pointer. */
+    case TY_ANY:    return g->i8ptr;
     case TY_STRUCT:
         /* An anonymous struct is a runtime map (a `{...}` no declared type
          * claimed) and a list is a heap object: both are opaque pointers, not

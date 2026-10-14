@@ -22,6 +22,24 @@ All notable changes to Lume are documented here. The format follows
   `any_type` declaration to `parser_internal.h` (it lived only as a
   backend-local forward declaration before).
 
+### Fixed — for-in over a list holding nulls (`list<any>`)
+
+- A list literal whose elements include `null` (`[null, 2, null]`) decays to
+  `list<any>`; the for-in loop variable then carries a boxed `LumeSlot*`
+  (`i8*`). Both native emitters used to reject this — `llvm_type_of` /
+  `ty_of` had no `TY_ANY` case (returned NULL → "no codegen type"),
+  `list_at_fn(any)` returned NULL (→ "cannot be iterated"), and `cg_print`
+  fell through to "print() cannot print this value". The element is now
+  spelled as `i8*` in both emitters (`case TY_ANY` in `llvm_type_of` and
+  `ty_of`), `cg_for_in` selects the new `lume_list_at_slot` accessor when the
+  element type is `any`, `cg_print` dispatches `TY_ANY` to the new
+  `lume_print_slot` runtime helper (which reuses `slot_emit` for tag-based
+  rendering), and both `declare` blocks name the new runtime functions. Two
+  runtime helpers added to `rt.c`: `lume_list_at_slot` (returns a pointer to
+  the boxed slot so any tag survives the iteration) and `lume_print_slot`
+  (renders it via `slot_emit` + newline). Pinned by the for-in-over-nulls
+  block in `tests/native-consistency.lume` (`.expected` 299 → 307).
+
 ### Fixed — null values inside containers in the native backends
 
 - A map or list literal with a `null` value (`{ "b": null }`, `[1, null]`),

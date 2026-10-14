@@ -22,12 +22,13 @@
 // natively as well: the emitter builds a map from its declared fields (the
 // type already carries their names and types) and serializes that, so
 // `print(p)` / `str(p)` / `stringify(p)` match the interpreter's JSON.
-// Still three-way divergent, so kept out: for-in over a list holding nulls
-// (the element decays to list<any>, the same refusal class as a
-// heterogeneous list). A bare `let x: list = null` used to be here too — the
-// type-annotation parser built a phantom struct named "list" instead of
-// TY_LIST, so the native emitters saw "no codegen type"; that is fixed and
-// covered below. Typed binding `m["k"]` on a scalar map value is
+// A bare `let x: list = null` used to be kept out too — the type-annotation
+// parser built a phantom struct named "list" instead of TY_LIST, so the
+// native emitters saw "no codegen type"; that is fixed and covered below.
+// for-in over a list holding nulls is now covered as well: the element decays
+// to list<any>, but both emitters box the loop variable as a tagged
+// LumeSlot* (i8*) and print() dispatches on the runtime tag, so they agree
+// byte-for-byte with the interpreter. Typed binding `m["k"]` on a scalar map value is
 // *intentionally* refused by the native emitters (map value types are not
 // tracked — use get(m, k, d)); the interpreter tolerates it via runtime
 // types, so it is a documented phase-1 boundary, not a silent divergence. A
@@ -873,6 +874,21 @@ let lan: list = [null, 2, null];
 print(str(lan));                 // [null,2,null]
 let lai: int[] = [4, 5, 6];
 print(str(lai));                 // [4,5,6]
+
+// ---- for-in over a list holding nulls (list<any>) ----------------------
+//
+// A list literal whose elements include `null` decays to `list<any>`; the
+// loop variable carries a boxed LumeSlot* (i8*) and print() dispatches on the
+// runtime tag. Both native emitters used to reject this ("no codegen type"
+// / "cannot be iterated"). All three backends must agree byte-for-byte. The
+// plain `int` list right after guards against a regression in the normal
+// path.
+let fhn = [null, 2, null];
+for (e in fhn) { print(e); }     // null / 2 / null
+print("---");
+let fhi = [1, 2, 3];
+for (f in fhi) { print(f); }     // 1 / 2 / 3
+print("done");
 
 warmup();
 main();

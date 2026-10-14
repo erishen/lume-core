@@ -468,6 +468,17 @@ static Val cg_print(CG *g, Node *n, Val a)
                         LLVMBuildCall2(g->ab, LLVMFunctionType(ret, NULL, 0, 0),
                                        rt_decl(g, "lume_print_null", ret, NULL, 0),
                                        NULL, 0, "p"));
+    case TY_ANY: {
+        /* A for-in loop variable over list<any> (e.g. [null, 2, null]) is a
+         * boxed LumeSlot*; print() dispatches on its tag through
+         * lume_print_slot (src/rt.c), matching the interpreter byte-for-byte. */
+        LLVMTypeRef p[1] = { g->i8ptr };
+        LLVMValueRef v[1] = { a.v };
+        return val_make(type_prim(TY_INT),
+                        LLVMBuildCall2(g->ab, LLVMFunctionType(ret, p, 1, 0),
+                                       rt_decl(g, "lume_print_slot", ret, p, 1),
+                                       v, 1, "p"));
+    }
     default:
         ERRV(g, "line %zu: print() cannot print this value", n->line);
     }

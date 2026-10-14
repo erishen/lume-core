@@ -558,6 +558,32 @@ void *lume_list_at_obj(const LumeList *l, long i)
     return (void *)(intptr_t)l->items[i].num;
 }
 
+/* Read back a boxed LumeSlot for ANY element kind (null/int/float/str/bool/
+ * obj), used by `for (x in xs)` when xs decayed to list<any> (e.g. [null, 2,
+ * null]). Contrast with lume_list_at_obj, which only returns non-NULL for
+ * LUME_SLOT_OBJ — an any-typed iteration must see every element, so it cannot
+ * use that accessor. Returns NULL for an out-of-range index. The returned
+ * pointer is into the list's own items array and stays valid while the list
+ * lives (the whole iteration). */
+void *lume_list_at_slot(const LumeList *l, long i)
+{
+    if (!l || i < 0 || i >= l->len) return NULL;
+    return (void *)&l->items[i];
+}
+
+/* Print a single boxed value the way the interpreter would — used by
+ * print(x) when x is an `any`-typed for-in variable. NULL prints the bare
+ * word "null" (matching lume_print_null and the interpreter). Reuses
+ * slot_emit(), which renders one LumeSlot by its tag (scalars, escaped
+ * strings, and nested containers alike), so native and interpreter agree
+ * byte-for-byte. */
+long lume_print_slot(const LumeSlot *s)
+{
+    if (!s) return emit("null\n");
+    int n = slot_emit(*s);
+    return n + emit("\n");
+}
+
 long lume_list_print(const LumeList *l)
 {
     /* A null list value (a null element read back, or `let l: list = null`)

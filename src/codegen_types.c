@@ -120,6 +120,10 @@ const char *llvm_type_of(Type *t)
     /* A function value is a closure record pointer (LumeClosure*) — opaque to
      * the IR, read back as `.fn`/`.cap` by fixed offset when called. */
     case TY_FUNC:   return "i8*";
+    /* An `any` value — a for-in loop variable over a list<any> (e.g.
+     * [null, 2, null]) — is a boxed LumeSlot* travelled as an opaque i8*.
+     * print()/str() dispatch on its tag at runtime (src/rt.c). */
+    case TY_ANY:    return "i8*";
     default:        return NULL;
     }
 }

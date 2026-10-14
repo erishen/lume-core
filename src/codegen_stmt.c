@@ -178,7 +178,18 @@ static void cg_for_in(CG *g, Node *n)
     const char *lt = llvm_type_of(et);
     if (!lt) { free(it.v); ERRX(g, "line %zu: variable '%s' has no codegen type",
                                 n->line, n->as.fors.var); }
-    if (!is_map && !list_at_fn(et)) {
+
+    /* The element accessor: a statically-known element type has its own
+     * flavour (lume_list_at_i / _s / _f / _obj); an `any` element (a list that
+     * decayed to list<any>, e.g. [null, 2, null]) is boxed as a LumeSlot* and
+     * read back through lume_list_at_slot, which returns the slot for ANY tag.
+     * lume_list_at_obj would only return non-NULL for LUME_SLOT_OBJ, so it
+     * cannot serve an any-typed iteration. */
+    const char *acc;
+    Type *accty;
+    if (et->kind == TY_ANY) { acc = "lume_list_at_slot"; accty = type_prim(TY_STRING); }
+    else                    { acc = list_at_fn(et);    accty = elem_rty(et); }
+    if (!is_map && !acc) {
         free(it.v);
         ERRX(g, "line %zu: a list of this element type cannot be iterated", n->line);
     }
@@ -236,7 +247,7 @@ static void cg_for_in(CG *g, Node *n)
     EMIT(g, "L%d:\n", lb);
     Val e = is_map
         ? rt_call(g, type_prim(TY_STRING), "lume_map_key_at", "i8* %s, i64 %s", it.v, cur)
-        : rt_call(g, elem_rty(et), list_at_fn(et), "i8* %s, i64 %s", it.v, cur);
+        : rt_call(g, accty, acc, "i8* %s, i64 %s", it.v, cur);
     if (!e.v) { free(it.v); free(cur); ERRX(g, "line %zu: cannot read an element", n->line); }
     /* A bool iteration variable gets its slot narrowed here, so the store and
      * the later `load` both speak i1 and `print(x)` still says true/false. */

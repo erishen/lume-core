@@ -238,6 +238,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_list_at_f(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_list_at_s(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_list_at_obj(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_list_at_slot(i8*, i64)\n");
     EMIT(g, "declare i64 @lume_list_print(i8*)\n");
 
     EMIT(g, "declare i8* @lume_map_new()\n");

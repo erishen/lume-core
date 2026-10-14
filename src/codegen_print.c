@@ -77,6 +77,10 @@ Val cg_print(CG *g, Node *n, Val a)
     /* An enum value is the same heap map with a "$" tag, so it prints the
      * same way — matching the interpreter, which prints the raw map. */
     case TY_ENUM:   fn = "lume_map_print"; pty = "i8*"; break;
+    /* An `any` value (a for-in loop variable over list<any>, e.g. [null, 2,
+     * null]) is a boxed LumeSlot*; print() dispatches on its tag through
+     * lume_print_slot (src/rt.c), matching the interpreter byte-for-byte. */
+    case TY_ANY:    fn = "lume_print_slot"; pty = "i8*"; break;
     default:
         ERRV(g, "line %zu: print() cannot print this value", n->line);
     }
