@@ -15,6 +15,12 @@
 # asymmetric label. It cannot catch semantic drift *within* a shared label --
 # that is what tests/native-consistency.lume is for (runtime three-way
 # parity); this catches the missing-case class statically.
+#
+# The LLVM side is split into .inc fragments (llvm_codegen.c textually
+# includes llvm_cg_expr/lit/call/stmt/scan.inc), so the extraction paths
+# below point at the fragment that holds each function: infer_node_type
+# lives in llvm_cg_scan.inc, the str() builtin branch in llvm_cg_call.inc,
+# and the container helper tables in llvm_cg_lit.inc.
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -34,7 +40,7 @@ body() {
 
 # labels TEXT -- the node/literal/type kinds a function body knows about.
 # OP_* is excluded on purpose: the copies dispatch operators differently
-# (codegen_scan.c uses an inner `case OP_...` switch, llvm_codegen.c an if
+# (codegen_scan.c uses an inner `case OP_...` switch, llvm_cg_scan.inc an if
 # chain), and that is style, not missing-case drift.
 labels() {
     printf '%s\n' "$1" | grep -oE 'case (N_|TY_|LIT_)[A-Z_0-9]+' | sort -u
@@ -47,7 +53,7 @@ compare() {
     if [ -n "$d" ]; then
         echo "FAIL case-parity $name: the two emitters' copies disagree:"
         echo "$d" | sed 's/^/    /'
-        echo "    (< is codegen_scan.c / codegen_expr.c, > is llvm_codegen.c)"
+        echo "    (< is codegen_scan.c / codegen_expr.c, > is llvm_cg_scan.inc / llvm_cg_call.inc / llvm_cg_lit.inc)"
         echo "    a label known to one copy but not the other is the"
         echo "    missing-case drift this tripwire exists for -- add the"
         echo "    case to both or document why they must differ."
@@ -61,7 +67,7 @@ compare() {
 # The `$` anchor skips the forward declaration (`...Node *n);`), which would
 # otherwise be picked first and slice out the wrong region.
 scan_infer=$(body src/codegen_scan.c 'infer_node_type(CG \*g, Node \*n)$')
-llvm_infer=$(body src/llvm_codegen.c 'static Type \*infer_node_type(CG \*g, Node \*n)$')
+llvm_infer=$(body src/llvm_cg_scan.inc 'static Type \*infer_node_type(CG \*g, Node \*n)$')
 compare "infer_node_type case labels" \
         "$(labels "$scan_infer")" "$(labels "$llvm_infer")"
 
@@ -75,7 +81,7 @@ str_branch() {
 }
 compare "str() branch TY labels" \
         "$(labels "$(str_branch src/codegen_expr.c)")" \
-        "$(labels "$(str_branch src/llvm_codegen.c)")"
+        "$(labels "$(str_branch src/llvm_cg_call.inc)")"
 
 # ---- container helper tables: list_push_fn / map_put_fn / map_get_fn ------
 # Same dual-copy class as infer_node_type: each emitter picks the runtime
@@ -89,7 +95,7 @@ compare "str() branch TY labels" \
 for tbl in list_push_fn map_put_fn map_get_fn; do
     compare "$tbl TY labels" \
             "$(labels "$(body src/codegen_expr.c "$tbl(Type \\*ty)\$")")" \
-            "$(labels "$(body src/llvm_codegen.c "$tbl(Type \\*ty)\$")")"
+            "$(labels "$(body src/llvm_cg_lit.inc "$tbl(Type \\*ty)\$")")"
 done
 
 exit $fail

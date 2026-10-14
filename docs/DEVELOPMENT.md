@@ -42,7 +42,8 @@ lume-core/
 │   ├── codegen_{types,expr,scan,sig,stmt}.c   # 按原注释区段切分（纯搬移）
 │   ├── irbuf.c              # IR 文本缓冲（文本后端专用）
 │   ├── backend.c / backend_llvm.c   # 两条原生后端的编排与链接收尾
-│   ├── llvm_codegen.c       # libLLVM 路：用 LLVM C API 建 IR（仅 HAVE_LLVM 时编）
+│   ├── llvm_codegen.c + llvm_codegen_internal.h  # libLLVM 路：C API 建 IR（仅 HAVE_LLVM 时编）
+│   ├── llvm_cg_{expr,lit,call,stmt,scan}.inc     # 按注释区段切分，被 llvm_codegen.c 文本包含（单 TU，static 不变式）
 │   └── main.c               # CLI：--check / --dump / --watch / --compile / --no-pass
 ├── examples/                # 语言本体示例（无 UI、无服务器）
 │   ├── hello.lume               # 最小入门

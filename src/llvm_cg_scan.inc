@@ -1,0 +1,363 @@
+/* llvm_cg_scan.inc - LLVM backend scan functions.
+ * Textually included by llvm_codegen.c (single translation unit).
+ * Do not compile this file on its own. */
+
+/* The element type of a list literal, read off its own elements. Only ever
+ * asked about a list *literal*: a value is just an i8*, and what a for-in has
+ * to know is which reader to call, which is a static question. A heterogeneous
+ * literal (`[1.5, 2]`) yields `list<any>`, and iterating that natively would
+ * read one slot through the wrong accessor, so it is reported as unknown. */
+static Type *infer_list_elem(Node *lit)
+{
+    if (!lit || lit->type != N_LIST_LIT) return NULL;
+
+    Type *et = NULL;
+    for (int i = 0; i < lit->as.list.count; i++) {
+        Node *e = lit->as.list.items[i];
+        Type *t = NULL;
+
+        if (e->type == N_LITERAL) {
+            switch (e->as.lit.kind) {
+            case LIT_NUM:   t = type_prim(e->as.lit.is_float ? TY_FLOAT : TY_INT); break;
+            case LIT_STR:   t = type_prim(TY_STRING); break;
+            case LIT_TRUE:
+            case LIT_FALSE: t = type_prim(TY_BOOL);   break;
+            default: break;
+            }
+        }
+        else if (e->type == N_CTOR) {
+            /* A bare constructor value (`[Red, Green]`): resolve_ctors
+             * stamped the enum's name onto the node, so the element type is
+             * statically spelled. Same branch as codegen_expr.c's shared
+             * copy of this function. */
+            t = e->as.ctor.ename ? type_enum(e->as.ctor.ename) : NULL;
+        }
+        if (!t) return NULL;          /* a call, another list, ... is not static */
+        if (et && et->kind != t->kind) return NULL;
+        et = t;
+    }
+    return et;   /* `[]` has no element kind; it iterates zero times anyway */
+}
+
+static Type *infer_node_type(CG *g, Node *n)
+{
+    if (!n) return NULL;
+    switch (n->type) {
+    case N_LITERAL:
+        switch (n->as.lit.kind) {
+        case LIT_NUM:   return type_prim(n->as.lit.is_float ? TY_FLOAT : TY_INT);
+        case LIT_STR:   return type_prim(TY_STRING);
+        case LIT_TRUE:
+        case LIT_FALSE: return type_prim(TY_BOOL);
+        case LIT_NULL:  return type_prim(TY_NULL);
+        default:        return NULL;
+        }
+    case N_VAR: {
+        Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
+        if (a) return a->ty;
+        /* A top-level binding lifts to a module global (SPEC 8.1 #10). */
+        a = gvar_find(&g->gvars, n->as.var.name);
+        if (a) return a->ty;
+        /* A match arm whose body is being type-inferred: its binds. */
+        return lt_find(&g->arm_scope, n->as.var.name);
+    }
+    case N_FUNC_LIT: {
+        /* A closure value; thread the node through Type.func (mirrors
+         * codegen_scan.c). */
+        Type *ft = type_func(n->as.funclit.arity, n->as.funclit.param_types,
+                             n->as.funclit.ret);
+        ft->func = n;
+        return ft;
+    }
+    case N_CALL: {
+        if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
+        const char *name = n->as.call.callee->as.var.name;
+
+        /* Closure-valued variable call: `f(3)` where f : func. */
+        {
+            Type *ct = infer_node_type(g, n->as.call.callee);
+            if (ct && ct->kind == TY_FUNC && ct->func &&
+                ct->func->type == N_FUNC_LIT)
+                return ct->func->as.funclit.ret;
+        }
+
+        /* Higher-order builtins that consume a closure. */
+        if (strcmp(name, "map") == 0) {
+            Node *clo = n->as.call.argc > 0 ? n->as.call.args[0] : NULL;
+            Node *lambda = NULL;
+            if (clo && clo->type == N_FUNC_LIT) lambda = clo;
+            else if (clo && clo->type == N_VAR) {
+                Type *ct = infer_node_type(g, clo);
+                if (ct && ct->kind == TY_FUNC && ct->func &&
+                    ct->func->type == N_FUNC_LIT)
+                    lambda = ct->func;
+            }
+            if (lambda && lambda->as.funclit.ret)
+                return type_list(lambda->as.funclit.ret);
+            return type_list(any_type());
+        }
+        if (strcmp(name, "filter") == 0) {
+            Type *lt = infer_node_type(g, n->as.call.args[1]);
+            if (lt && lt->kind == TY_LIST) return lt;
+            return type_list(any_type());
+        }
+        if (strcmp(name, "reduce") == 0)
+            return infer_node_type(g, n->as.call.args[2]);
+
+        /* json()/stringify() serialize to a JSON string. json(str) means
+         * parse, whose result type is dynamic — NULL here keeps the slot
+         * opaque and lets the emit-time diagnostic do the explaining. */
+        if ((strcmp(name, "stringify") == 0 || strcmp(name, "json") == 0) &&
+            n->as.call.argc == 1) {
+            Type *at = infer_node_type(g, n->as.call.args[0]);
+            if (strcmp(name, "json") == 0 && at && at->kind == TY_STRING)
+                return NULL;
+            return type_prim(TY_STRING);
+        }
+
+        Sig *s = sig_find(&g->sigs, name);
+        if (!s) return NULL;
+        /* `f()?` is the `ok` payload, not a Result -- see the same branch in
+         * codegen_scan.c. Reading the declared return type here alloca'd a
+         * pointer for an int payload and the emitter then printed the integer
+         * through lume_map_print, which segfaulted. */
+        if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
+        return s->ret;
+    }
+    case N_LIST_LIT: { Type *et = infer_list_elem(n); return type_list(et ? et : any_type()); }
+    case N_INDEX: {
+        /* Kept in step with codegen_scan.c's copy -- the two backends each carry
+         * their own infer_node_type, and a kind handled in one but not the other
+         * shows up as a backend that refuses what the other accepts. */
+        Type *ot = infer_node_type(g, n->as.index.obj);
+        if (ot && ot->kind == TY_LIST)
+            return ot->elem && ot->elem->kind != TY_ANY ? ot->elem : any_type();
+        return type_anon_struct();
+    }
+    case N_MAP_LIT:  return type_anon_struct();
+    case N_STRUCT_UPDATE: {
+        /* Kept in step with codegen_scan.c's copy: a `let` whose init is a
+         * `with` update must infer a slot type. Named struct keeps its schema,
+         * map becomes a fresh anonymous struct. */
+        Type *bt = infer_node_type(g, n->as.supd.base);
+        if (bt && bt->kind == TY_STRUCT && bt->name)
+            return bt;
+        return type_anon_struct();
+    }
+    case N_MEMBER:   return member_field_type(g, n);
+    case N_ASSIGN:
+        /* An assignment expression yields the *target*, which is what `for
+         * (i = 0; ...)` and `a = b` want to carry. Mirrors codegen_scan.c;
+         * without it the LLVM emitter answers "cannot infer a type" where
+         * the text emitter (and the interpreter) accept the assignment. */
+        return infer_node_type(g, n->as.assign.value);
+    case N_ASSIGN_MEMBER:
+        return infer_node_type(g, n->as.assign_mem.value);
+    case N_UNARY: {
+        /* `let neg = -7` / `let b = not flag` must infer a type so the
+         * binding's alloca gets an IR type; otherwise the native backend
+         * falls back to "cannot infer a type for 'neg'" while the
+         * interpreter accepts it (§8.1 #2). */
+        Type *ot = infer_node_type(g, n->as.unary.operand);
+        if (n->as.unary.op == OP_NOT) return type_prim(TY_BOOL);
+        if (!ot) return NULL;
+        return type_prim(ot->kind == TY_FLOAT ? TY_FLOAT : TY_INT);
+    }
+    case N_BINARY: {
+        int op = (int)n->as.binary.op;
+        if (op == OP_AND || op == OP_OR) return type_prim(TY_BOOL);
+        if (op >= OP_EQ && op <= OP_GE)  return type_prim(TY_BOOL);
+        Type *lt = infer_node_type(g, n->as.binary.left);
+        Type *rt = infer_node_type(g, n->as.binary.right);
+        bool lf = lt && lt->kind == TY_FLOAT;
+        bool rf = rt && rt->kind == TY_FLOAT;
+        /* Catch float % at inference so the libLLVM backend rejects it with
+         * the same "'%' does not apply to floats" the text backend and the
+         * interpreter use, instead of a downstream "print() cannot print
+         * this value" (§8.1 #1). */
+        if (op == OP_MOD && (lf || rf))
+            ERR(g, "line %zu: '%%' does not apply to floats", n->line);
+        if (op == OP_ADD && lt && rt &&
+            lt->kind == TY_STRING && rt->kind == TY_STRING)
+            return type_prim(TY_STRING);
+        if (lf || rf) return type_prim(TY_FLOAT);
+        return type_prim(TY_INT);
+    }
+    case N_TERNARY: {
+        /* 与 codegen_scan.c / typecheck_expr.c 同一套统一规则：同型→它，
+         * int/float 混合→float，任一 any/未知→any。cg_ternary 拿它给
+         * 结果 alloca 定型。 */
+        Type *tt = infer_node_type(g, n->as.ternary.then);
+        Type *et = infer_node_type(g, n->as.ternary.els);
+        if (!tt || !et || tt->kind == TY_ANY || et->kind == TY_ANY)
+            return any_type();
+        if (tt->kind == et->kind)
+            return tt;
+        bool tf = tt->kind == TY_INT || tt->kind == TY_FLOAT;
+        bool ef = et->kind == TY_INT || et->kind == TY_FLOAT;
+        if (tf && ef)
+            return type_prim(TY_FLOAT);
+        return NULL;
+    }
+    case N_CTOR:
+        /* 构造值的类型 = 它的 enum（resolve_ctors 盖了 ename）。 */
+        return n->as.ctor.ename ? type_enum(n->as.ctor.ename) : NULL;
+    case N_MATCH: {
+        /* 臂体按三元的统一规则收拢——与 codegen_scan.c 同一套。臂内绑定
+         * 只在它自己的臂里可见（arm_scope 推断窗口，嵌套 match 恢复外层
+         * 视图，最外层收尾释放）。 */
+        int saved = g->arm_scope.n;
+        Type *result = NULL;
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            MatchArm *arm = &n->as.matchn.arms[i];
+            g->arm_scope.n = saved;
+            /* the arm's single binding set: the checker guarantees every
+             * alternative binds the same names with the same types */
+            MatchPat *p0 = &arm->pats[0];
+            for (int b = 0; b < p0->bindc; b++)
+                arm_scope_push(g, p0->binds[b],
+                               p0->vfield_types ? p0->vfield_types[b] : NULL);
+            Type *bt = infer_node_type(g, arm->body);
+            /* Same rule as codegen_scan.c: an arm with no statically
+             * readable type is skipped (its real type exists at emit time);
+             * only an explicit `any` arm widens the match. */
+            if (!bt) continue;
+            if (bt->kind == TY_ANY) { result = any_type(); break; }
+            if (!result) { result = bt; continue; }
+            if (result->kind == bt->kind) continue;
+            bool r_num = result->kind == TY_INT || result->kind == TY_FLOAT;
+            bool b_num = bt->kind == TY_INT || bt->kind == TY_FLOAT;
+            if (r_num && b_num) { result = type_prim(TY_FLOAT); continue; }
+            result = NULL;
+            break;
+        }
+        g->arm_scope.n = saved;
+        if (saved == 0) arm_scope_clear(g);
+        return result ? result : any_type();
+    }
+    default:
+        return NULL;
+    }
+}
+
+static LLVMValueRef gvar_make(CG *g, const char *name, Type *ty)
+{
+    static int s_uid = 0;
+    char buf[128];
+    snprintf(buf, sizeof buf, "lv_%s_%d", name, s_uid++);
+    LLVMTypeRef lt = ty_of(g, ty);
+    if (!lt) return NULL;
+    LLVMValueRef gv = LLVMAddGlobal(g->mod, lt, buf);
+    LLVMSetInitializer(gv, LLVMConstNull(lt));
+    return gv;
+}
+
+static void scan_stmt(CG *g, Node *n)
+{
+    if (!n) return;
+
+    switch (n->type) {
+    case N_LET: {
+        Type *ty = n->as.let.annot ? n->as.let.annot : infer_node_type(g, n->as.let.init);
+        if (!ty)
+            ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
+                 n->line, n->as.let.name);
+        if (g->scanning_top) {
+            /* Module storage, registered twice (mirrors codegen_scan.c):
+             * gvars for what function bodies resolve through, L_top's own
+             * locals for what the top level's stores hit. */
+            LLVMValueRef slot = gvar_make(g, n->as.let.name, ty);
+            if (!slot)
+                ERRX(g, "line %zu: top-level variable '%s' has no codegen type",
+                     n->line, n->as.let.name);
+            asg_push(&g->gvars, n->as.let.name, ty, slot, n->line);
+            asg_push(&g->locals, n->as.let.name, ty, slot, n->line);
+            break;
+        }
+        asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
+        break;
+    }
+    case N_FOR: {
+        /* `for (x in xs)` binds the loop variable — it is not a `let`, so
+         * without registering it here the body's use of it dies in codegen.
+         * It binds in the enclosing scope (mirrors codegen_scan.c). At the
+         * top level that scope is the module: a function the top level calls
+         * after the loop must see the rebound value. */
+        if (n->as.fors.is_in) {
+            Type *et = for_in_elem_type(g, n);
+            if (g->scanning_top) {
+                LLVMValueRef slot = gvar_make(g, n->as.fors.var, et);
+                if (!slot)
+                    ERRX(g, "line %zu: variable '%s' has no codegen type",
+                         n->line, n->as.fors.var);
+                asg_push(&g->gvars, n->as.fors.var, et, slot, n->line);
+                asg_push(&g->locals, n->as.fors.var, et, slot, n->line);
+            } else {
+                asg_push(&g->locals, n->as.fors.var, for_in_elem_type(g, n), NULL,
+                         n->line);
+            }
+            scan_stmt(g, n->as.fors.body);
+            break;
+        }
+        Node *init = n->as.fors.init;
+        if (init && init->type == N_LET) {
+            Type *ty = init->as.let.annot ? init->as.let.annot
+                                          : infer_node_type(g, init->as.let.init);
+            if (!ty)
+                ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
+                     init->line, init->as.let.name);
+            /* A C-style for's init `let` stays a plain local (mirrors
+             * codegen_scan.c: the interpreter binds it for the loop). */
+            asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
+        } else if (init) {
+            scan_stmt(g, init);
+        }
+        if (n->as.fors.incr &&
+            (n->as.fors.incr->type == N_ASSIGN ||
+             n->as.fors.incr->type == N_EXPR_STMT))
+            scan_stmt(g, n->as.fors.incr);
+        scan_stmt(g, n->as.fors.body);
+        break;
+    }
+    /* An assignment to a name that is not a local defines a fresh
+     * function-local cell (the interpreter never assigns through to a
+     * top-level binding) — register it so the alloca pass sees it. Mirrors
+     * codegen_scan.c's N_ASSIGN case. */
+    case N_ASSIGN: {
+        if (!g->scanning_top &&
+            !asg_find(&g->locals, n->as.assign.name, n->line)) {
+            Asg *gv = gvar_find(&g->gvars, n->as.assign.name);
+            if (gv) {
+                Type *ty = infer_node_type(g, n->as.assign.value);
+                asg_push(&g->locals, n->as.assign.name, ty ? ty : gv->ty,
+                         NULL, n->line);
+            }
+        }
+        break;
+    }
+    /* A bare `x = e;` wraps its assignment in an expr-stmt: unwrap so the
+     * registration above can fire (mirrors codegen_scan.c). */
+    case N_EXPR_STMT: {
+        Node *e = n->as.expr_stmt.expr;
+        if (e && (e->type == N_ASSIGN || e->type == N_ASSIGN_MEMBER))
+            scan_stmt(g, e);
+        break;
+    }
+    /* A nested block is the body of if/while/for and any bare { } — its `let`s
+     * have to be registered too, or every use of such a local dies in codegen
+     * ("bad operands" on a read, "unknown variable" on an assignment). */
+    case N_BLOCK:  scan_block(g, n); break;
+    case N_IF:     scan_stmt(g, n->as.ifs.then); scan_stmt(g, n->as.ifs.els); break;
+    /* if-let binds are registered at emit time (like match arms); the
+     * branches still need walking for their lets/assignments. */
+    case N_IF_LET: scan_stmt(g, n->as.iflet.then); scan_stmt(g, n->as.iflet.els); break;
+    case N_WHILE:  scan_stmt(g, n->as.whiles.body); break;
+    default: break;
+    }
+}
+
+static void scan_block(CG *g, Node *blk)
+{
+    if (!blk) return;
+    for (int i = 0; i < blk->as.block.count; i++) scan_stmt(g, blk->as.block.stmts[i]);
+}

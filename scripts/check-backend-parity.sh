@@ -4,6 +4,7 @@
 #
 #   src/codegen*.c       text emitter   (LUME -> LLVM IR text -> cc -> binary)
 #   src/llvm_codegen.c   libLLVM emitter (LUME -> LLVM IR -> libLLVM -> binary)
+#                         (+ its .inc fragments, textually included)
 #
 # Both sides dispatch on the AST with `switch (n->type) { case N_...: }`.
 # A node kind handled in only one emitter is a silent divergence: the other
@@ -13,7 +14,9 @@
 #
 # The text side is cut into one tu per section (see the header of src/codegen.c),
 # so they are concatenated here: a label that lives in codegen_stmt.c is still a
-# hit, not a divergence.
+# hit, not a divergence. The LLVM side is likewise split into .inc fragments
+# (llvm_cg_expr/lit/call/stmt/scan.inc, textually included by llvm_codegen.c),
+# so it is concatenated the same way.
 #
 # Nodes that are deliberately absent from one side go in KNOWN_DIFF below.
 
@@ -22,8 +25,8 @@ cd "$(dirname "$0")/.." || exit 1
 
 LEFT='src/codegen*.c'
 LEFT_TEXT="$(cat src/codegen*.c)"
-RIGHT=src/llvm_codegen.c
-RIGHT_TEXT="$(cat "$RIGHT")"
+RIGHT='src/llvm_codegen.c src/llvm_cg_*.inc'
+RIGHT_TEXT="$(cat src/llvm_codegen.c src/llvm_cg_*.inc)"
 
 # Lines that may legitimately differ (one emitter handles a node the other
 # does not, or vice versa). Each entry keeps its comment.

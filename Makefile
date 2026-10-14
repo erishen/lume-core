@@ -257,6 +257,11 @@ endif
 build/%.o: src/%.c src/lume.h $(INT_HDRS) | build $(AH_LIB)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# llvm_codegen.c 文本包含 llvm_cg_{expr,lit,call,stmt,scan}.inc(不是独立 TU,
+# 静态符号不变式因此不受影响)。.inc 不是 *_internal.h,INT_HDRS 通配抓不到,
+# 显式挂依赖: 改任一 .inc 必须重建 llvm_codegen.o, 否则又是"绿了没生效"。
+build/llvm_codegen.o: $(wildcard src/llvm_cg_*.inc)
+
 # HAVE_LIBLLVM is a compile-time macro, so it is baked into main.o, not only
 # into llvm_codegen.o. Rebuilding only the libLLVM translation units after
 # llvm-config showed up (or after a version bump) links a half-fresh binary:
