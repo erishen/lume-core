@@ -3,7 +3,10 @@
 //
 // 覆盖: 值选择、优先级（低于 or、高于赋值）、右结合嵌套、int/float 加宽、
 // map 值位置、调用结果作条件（与 `f()?` 传播后缀的前瞻消歧）、传播后缀
-// 不回归、多行书写。
+// 不回归、多行书写、分支惰性。
+// 同文件覆盖**表达式位 `if (cond) a else b`**——parser 把它折叠成 N_TERNARY，
+// 因此它天然继承以上全部规则；负例（缺 else / 分支类型不兼容）在
+// tests/ternary-bad/。
 // 只走解释器；三后端一致的值语义由 native-consistency.lume 覆盖。
 
 func check(name, cond) {
@@ -75,6 +78,26 @@ func main(): int {
   // --- 分支惰性: 未选中分支不求值（除法不执行即不报错） ---
   let lz = true ? 42 : json("{not-parsed");
   check("lazy else", lz == 42);
+
+  // --- 表达式位 if (cond) a else b：折叠为 N_TERNARY，继承三元全部规则 ---
+  check("if then arm", (if (1 > 0) 10 else 20) == 10);
+  check("if else arm", (if (1 < 0) 10 else 20) == 20);
+  // 优先级与三元一致：else 侧吃到整个表达式（"b" + "c"）
+  check("if string arms", (if (false) "a" else "b" + "c") == "bc");
+  // int/float 混合分支 -> float 加宽
+  check("if widen", (if (true) 1 else 2.5) == 1.0);
+  // else-if 链右结合
+  check("if nested", (if (false) 1 else if (true) 2 else 3) == 2);
+  // 分支惰性：未选中侧的 json 不得执行
+  check("if lazy", (if (true) 42 else json("{not-parsed")) == 42);
+  // map 值位置
+  check("if in map value", get({ "k": if (1 > 0) 10 else 20 }, "k", 0) == 10);
+  // 参与算术 / 与三元混用
+  check("if arith", (if (true) 3 else 7) * 2 == 6);
+  check("if mixes ternary", (if (true) 1 else 2) + (false ? 10 : 20) == 21);
+  // let 绑定与直接实参
+  let iev = if (1 < 2) 7 else 8;
+  check("if as let", iev == 7);
 
   return 0;
 }

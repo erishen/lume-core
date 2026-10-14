@@ -1,0 +1,6 @@
+// 负例: 表达式位 `if (cond) then else els` 两侧类型不兼容。
+// if 表达式折叠成 N_TERNARY，分支类型按三元规则统一（同型 -> 该型；
+// int/float 混合 -> float；其余组合拒绝）。string 与 int 无法统一，
+// 故编译期拒绝，诊断与三元同一措辞（"ternary branches ..."）。
+let a = if (1 < 2) "x" else 1;
+print(a);

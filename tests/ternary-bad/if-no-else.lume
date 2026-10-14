@@ -1,0 +1,5 @@
+// 负例: 表达式位 `if (cond) expr else expr` 缺 else。
+// if 表达式折叠成 N_TERNARY，而三元要求两侧都有值（`c ? a` 不是三元），
+// 所以无 else 必须编译期拒绝，而不是造一个没有值的 false 分支。
+let a = if (1 < 2) 10;
+print(a);

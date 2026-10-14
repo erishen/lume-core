@@ -6,6 +6,36 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — `if` as an expression (`if (cond) expr else expr`)
+
+- The Lean if-then-else in expression position. `parse_primary` folds it onto the
+  very same `N_TERNARY` the `? :` operator builds, so every §4.9 rule applies
+  unchanged — only the taken branch is evaluated, branch types unify under the
+  ternary rules (same type → that type; int/float mix → float; anything else is a
+  type error), and else-if chains fold right. `let`, direct arguments, arithmetic
+  operands and ternary mixing all work, and all three backends agree because they
+  share `cg_ternary`.
+- `else` is **required**: without it the false branch has no value, exactly as a
+  bare `c ? a` is not a ternary. Missing `else` is a compile error
+  (`an if-expression needs an else branch`), pinned in `tests/ternary-bad/`.
+- **No braces** in the expression form: `{` already means a map literal /
+  structure update in expression position, so `if (c) { 1 } else { 2 }` would be
+  ambiguous. The statement form `if (cond) { ... }` keeps its braces and still
+  allows a bare `if`.
+- Covered by `tests/ternary.lume` (10 new checks), `tests/ternary-bad/` (2
+  rejection cases wired into `ternary-test`), and the if-expression block in
+  `tests/native-consistency.lume` (`.expected` 318 → 328). SPEC §4.10 documents
+  the semantics.
+
+### Fixed — `TOKEN_NAMES` was missing four entries, shifting every diagnostic
+
+- `src/token.c`'s `TOKEN_NAMES[]` predated the `TOK_ISTR`, `TOK_ENUM`, `TOK_MATCH`
+  and `TOK_PIPE` tokens, so every token after `TOK_STRING` reported the *next*
+  token's name: `if` printed as `else`, `while` as `for`, `(` as `}`, `;` as `?`,
+  and so on. Every "unexpected token" / "expected X, got Y" diagnostic was
+  misleading. The four names are restored and the table is 1:1 with `TokenType`
+  again.
+
 ### Fixed — bare `list` type annotation (`let x: list = ...`)
 
 - The type-annotation parser used to route the bare `list` keyword through the

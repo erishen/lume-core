@@ -532,6 +532,27 @@ let w: float = 5 > 3 ? 1 : 2.5;      // int/float 混合分支 → float，w == 
 let label = n > 100 ? "big" : n > 0 ? "small" : "neg";   // 右结合嵌套
 ```
 
+### 4.10 if 表达式 `if (cond) expr else expr`
+
+表达式位的 `if`（Lean 的 if-then-else）。parser 把它**折叠成 `N_TERNARY`**，因此
+§4.9 的全部规则原样适用：只求值选中分支、分支类型同一规则统一、右结合。三后端
+一致（`cg_ternary` 一条路径）。
+
+- **`else` 必需**。没有 else 就没有 false 分支的值——同 `c ? a` 不是三元。缺 else
+  编译期报 `an if-expression needs an else branch`。
+- **不带花括号**。`{` 在表达式位已是 map 字面量 / 结构更新，加了会歧义；语句位的
+  `if (cond) { ... }`（控制流语句）保持花括号，且仍可省 else。
+- 与三元可自由混用，嵌套、`let` 绑定、直接实参、算术操作数均可。
+
+```lume
+let w: float = if (n > 0) 1 else 2.5;              // 1.0
+let label  = if (n > 100) "big" else if (n > 0) "small" else "neg";  // 右结合
+print(if (ok) compute() else fallback());          // 只求值选中侧
+```
+
+负例（缺 else / 分支类型不兼容）由 `tests/ternary-bad/` 断言；三后端值语义由
+`tests/native-consistency.lume` 覆盖。
+
 ---
 
 ## 5. Result 与 `?` 传播

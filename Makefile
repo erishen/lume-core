@@ -694,6 +694,14 @@ ternary-test: all
 	rc=$$?; cat /tmp/lume-ternary-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ternary-test.out; then \
 		echo "==> ternary 单测失败 (rc=$$rc)"; exit 1; fi; \
+	set -e; \
+	check_bad_t() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/ternary-bad/$$f.lume > /tmp/lume-ternary-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-ternary-bad.out; then \
+	    echo "==> ternary 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-ternary-bad.out; exit 1; fi; \
+	  echo "ok   ternary-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad_t if-no-else "an if-expression needs an else branch"; \
+	check_bad_t if-arm-type "ternary branches have different types"; \
 	echo "==> ternary 单测全部通过"
 
 # enum + match (2026-10-12): 解释器 19 断言全 PASS; 8 个编译期拒绝各断言

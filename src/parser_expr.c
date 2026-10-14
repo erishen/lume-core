@@ -192,6 +192,8 @@ static Node *parse_struct_update(Parser *p, Node *base, size_t line) {
     return n;
 }
 
+static Node *parse_ternary(Parser *p);
+
 static Node *parse_primary(Parser *p) {
     Token t = peek(p);
 
@@ -434,6 +436,43 @@ static Node *parse_primary(Parser *p) {
             if (check(p, TOK_RBRACE)) break; /* trailing comma */
         }
         if (!expect(p, TOK_RBRACE)) return NULL;
+        return n;
+    }
+    if (t.type == TOK_IF) {
+        /* `if (cond) expr else expr` in expression position — the Lean
+         * if-then-else. Folded onto the very same N_TERNARY the `? :`
+         * operator builds, so the checker and all three emitters reuse the
+         * ternary path verbatim: only the taken branch is evaluated, and the
+         * branch types unify under the ternary rules (same type -> that type;
+         * int/float mix -> float; anything else is a type error).
+         *
+         * The else is required: without it the false branch has no value, the
+         * same reason a bare `c ? a` is not a ternary. else-if chains fold to
+         * the right exactly like `a ? b : c ? d : e`.
+         *
+         * No braces: `{` already means a map literal / structure update in
+         * expression position, so `if (c) { 1 } else { 2 }` would be ambiguous.
+         * The statement form `if (cond) { ... }` in parse_statement() keeps
+         * its braces and stays a statement (it needs no else either). */
+        advance(p);
+        if (!expect(p, TOK_LPAREN)) return NULL;
+        Node *cond = parse_expression(p);
+        if (!cond) return NULL;
+        if (!expect(p, TOK_RPAREN)) return NULL;
+        Node *then_e = parse_expression(p);
+        if (!then_e) return NULL;
+        if (!check(p, TOK_ELSE)) {
+            perror_at(p, peek(p).line,
+                      "an if-expression needs an else branch", NULL);
+            return NULL;
+        }
+        advance(p); /* consume `else` */
+        Node *els_e = parse_ternary(p);   /* right-assoc: else-if chains */
+        if (!els_e) return NULL;
+        Node *n = nalloc(N_TERNARY, t.line);
+        n->as.ternary.cond = cond;
+        n->as.ternary.then = then_e;
+        n->as.ternary.els  = els_e;
         return n;
     }
     if (t.type == TOK_IDENT || t.type == TOK_TYPE || t.type == TOK_INT ||
