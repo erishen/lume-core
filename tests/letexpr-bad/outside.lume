@@ -1,0 +1,6 @@
+// 绑定在 body 之外不可见 — 三后端一致报 undefined variable
+func main() {
+  let y = (let x = 1 in x) + x;
+  print(y);
+}
+main();

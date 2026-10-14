@@ -441,6 +441,55 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return any_type();
         }
 
+        case N_LET_EXPR: {
+            /* `let x = e1 in e2` — e1 checks against the annotation (if
+             * any) and its type (or the annotation) becomes x's type in a
+             * child scope that lives exactly as long as e2; the whole
+             * expression's type is e2's. The child scope is created fresh
+             * on every walk (pass D walks statements twice), so re-declaring
+             * into it can never trip scope_decl's same-scope duplicate
+             * check — unlike a statement `let`, no collecting branch is
+             * needed here. */
+            ck_ctor_shadow(c, n->as.letx.name, n->line);
+            Type *annot = n->as.letx.annot
+                              ? resolve(c, n->as.letx.annot, n->line) : NULL;
+            /* Write the resolved annotation back for the native emitters,
+             * same write-back a statement let does. */
+            if (n->as.letx.annot) n->as.letx.annot = annot;
+            Type *it = ck_expr(c, n->as.letx.init, annot);
+            if (annot && it && !type_compat(c, it, annot, n->line)) {
+                ck_fail(c, n->line,
+                        "'%s' is not assignable to the declared type '%s' of '%s'",
+                        ty_str(it), ty_str(annot), n->as.letx.name);
+            }
+            CScope *saved = c->scope;
+            c->scope = scope_new(saved);
+            scope_decl(c, c->scope, n->as.letx.name,
+                       annot ? annot : (it ? it : any_type()), n->line);
+            Type *bt = ck_expr(c, n->as.letx.body, expected);
+            c->scope = saved;
+            /* An assignment body yields the assigned value, but ck_expr has
+             * no N_ASSIGN/N_ASSIGN_MEMBER case — the default answers any,
+             * which would mistype the whole expression as opaque i8* storage.
+             * Both emitters coerce an assignment's result to the target
+             * slot's type (the binding's own), so that is the honest type
+             * here. A genuinely-any body keeps its any: the binding's type
+             * is derived from the same init, so the fallback can only narrow
+             * the checker's non-answer, never a real one. */
+            if (bt && bt->kind == TY_ANY && n->as.letx.body &&
+                (n->as.letx.body->type == N_ASSIGN ||
+                 n->as.letx.body->type == N_ASSIGN_MEMBER))
+                bt = (annot ? annot : it);
+            /* Stamp the result for the native backends' infer_node_type: the
+             * emitters' tables have no child scope, so a scan-time infer that
+             * descended into the body would resolve the binding's name
+             * against the OUTER scope — an outer same-name binding of a
+             * different type would then disagree with what the emitter
+             * stores (the resolve-vs-infer split this stamp closes). */
+            n->as.letx.ty = bt;
+            return bt ? bt : (annot ? annot : (it ? it : any_type()));
+        }
+
         case N_CTOR: {
             /* A rewritten constructor application (parser.c). Arity and
              * payload types come from the enum table; the result is the

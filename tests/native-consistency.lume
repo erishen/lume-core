@@ -1126,5 +1126,23 @@ func lf_probe(): int {
 }
 print(lf_probe());           // 0
 
+// ---- let expressions: `let x = e1 in e2` (SPEC §4.15) ----
+print(let a = 5 in a * 2);                     // 10
+let lex1 = (let b = 3 in b + 1) * 2;
+print(lex1);                                   // 8
+let lex2 = let c = 2 in c * 10;
+print(lex2);                                   // 20
+let lexs = 1;
+print((let lexs = 100 in lexs) + lexs);        // 101 (同行遮蔽, 内层只在 body)
+print(let p = 2 in let q = p * 10 in q + p);   // 22 (嵌套)
+print(let m = 20 in m + 2);                    // 22 (实参位等价形式)
+let lexw: int = let k = 7 in if (k > 5) k else 0 - k;
+print(lexw);                                   // 7 (注解 + if 表达式 body)
+let lexr = (let lx = 10 in lx = 2);
+print(lexr);                                   // 2 (body 内赋值产出新值)
+print(lexs);                                   // 1 (外层绑定不动)
+let lexo = (let tmp = lexs * 2 in tmp) + lexs;
+print(lexo);                                   // 3 (body 外不可见, 外层可见)
+
 warmup();
 main();

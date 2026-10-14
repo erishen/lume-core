@@ -156,6 +156,10 @@ static void hoist_local_fns(VM *vm, Env *env, Node *n)
             hoist_local_fns(vm, env, n->as.matchn.arms[i].body);
         }
         return;
+    case N_LET_EXPR:
+        hoist_local_fns(vm, env, n->as.letx.init);
+        hoist_local_fns(vm, env, n->as.letx.body);
+        return;
     default: return;
     }
 }
@@ -412,6 +416,35 @@ static void eval_expr(VM *vm, Node *n, Env *env) {
                                               : n->as.ternary.els, env);
             }
             return;
+        case N_LET_EXPR: {
+            /* `let x = e1 in e2` — e1 evaluates once, the binding lands in
+             * a child env that lives exactly as long as e2, and e2's value
+             * is the expression's. The child env is what makes the binding
+             * invisible after the expression and what lets it shadow an
+             * outer same-name binding for the body only — the same scope
+             * the native backends spell as an emit-time slot push plus a
+             * truncate. Assignments inside the body still reach through:
+             * the env-chain walk in N_ASSIGN stops at the first boundary,
+             * and this child is not one. */
+            eval_expr(vm, n->as.letx.init, env);
+            if (vm->error) return;
+            Value v = vm_pop(vm);
+            /* Keep the named struct type on the object when a map literal
+             * is bound to it (same stamp a statement let applies, so `.len`
+             * reads the declared field here too). */
+            Type *at = n->as.letx.annot;
+            if (at && at->kind == TY_STRUCT && at->name &&
+                IS_OBJ(v) && AS_OBJ(v)->type == OBJ_MAP)
+                AS_OBJ(v)->sname = at->name;
+            Value envv = make_env(vm, env);
+            Env *benv = (Env *)AS_OBJ(envv);
+            env_set(vm, benv, n->as.letx.name, v);
+            benv->next_active = vm->active_envs;
+            vm->active_envs = benv;
+            eval_expr(vm, n->as.letx.body, benv);
+            vm->active_envs = benv->next_active;
+            return; /* e2's value is already on the stack */
+        }
         case N_CTOR: {
             /* 构造值 = 带 "$" 标签的 map：`{ "$": V, f1: a1, ... }`。字段名
              * 由 parser.c 的 resolve_ctors 盖戳（借用 enum decl），这里无需

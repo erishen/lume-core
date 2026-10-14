@@ -517,6 +517,46 @@ static Node *parse_primary(Parser *p) {
         n->as.ternary.els  = els_e;
         return n;
     }
+    if (t.type == TOK_LET) {
+        /* `let x = e1 in e2` in expression position — Lean's let-in. The
+         * binding is visible only inside e2, and e2 is the expression's
+         * value. Statement position never reaches here (parse_statement
+         * claims a leading `let` first and ends a plain binding with `;`);
+         * this path fires where an expression may start, e.g. call
+         * arguments, return values, match-arm bodies, grouped operands.
+         * The body is a full expression, so it extends as far right as
+         * possible: `let x = 1 in x + f(x)` puts both operands inside. */
+        advance(p);
+        if (!check(p, TOK_IDENT)) {
+            perror_at(p, peek(p).line, "expected a name after 'let'", NULL);
+            return NULL;
+        }
+        Token name = peek(p);
+        advance(p);
+        Type *annot = NULL;
+        if (match(p, TOK_COLON)) {
+            annot = parse_type(p);
+            if (!annot) return NULL;
+        }
+        if (!expect(p, TOK_EQ)) return NULL;
+        Node *init = parse_expression(p);
+        if (!init) return NULL;
+        if (!check(p, TOK_IN)) {
+            perror_at(p, peek(p).line,
+                      "a let-expression needs 'in' (a statement let ends with ';')",
+                      NULL);
+            return NULL;
+        }
+        advance(p); /* consume `in` */
+        Node *body = parse_expression(p);
+        if (!body) return NULL;
+        Node *n = nalloc(N_LET_EXPR, t.line);
+        n->as.letx.name = ident_name(p, name);
+        n->as.letx.annot = annot;
+        n->as.letx.init = init;
+        n->as.letx.body = body;
+        return n;
+    }
     if (t.type == TOK_IDENT || t.type == TOK_TYPE || t.type == TOK_INT ||
         t.type == TOK_FLOAT || t.type == TOK_KW_STRING || t.type == TOK_BOOL ||
         t.type == TOK_RESULT || is_method_keyword(t.type)) {

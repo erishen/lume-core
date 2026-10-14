@@ -364,6 +364,24 @@ Node *parse_statement(Parser *p) {
         if (!expect(p, TOK_EQ)) return NULL;
         Node *init = parse_expression(p);
         if (!init) return NULL;
+        if (match(p, TOK_IN)) {
+            /* `let x = e1 in e2;` — the expression form at statement
+             * position: the binding lives only in e2 and the whole thing
+             * is an expr-statement (its value is dropped). A plain `let
+             * x = e1;` binding never sees this: it ends with `;`, not
+             * `in`. */
+            Node *body = parse_expression(p);
+            if (!body) return NULL;
+            if (!expect(p, TOK_SEMI)) return NULL;
+            Node *le = nalloc(N_LET_EXPR, t.line);
+            le->as.letx.name = ident_name(p, name);
+            le->as.letx.annot = annot;
+            le->as.letx.init = init;
+            le->as.letx.body = body;
+            Node *wrap = nalloc(N_EXPR_STMT, t.line);
+            wrap->as.expr_stmt.expr = le;
+            return wrap;
+        }
         if (!expect(p, TOK_SEMI)) return NULL;
         Node *n = nalloc(N_LET, t.line);
         n->as.let.name = ident_name(p, name);

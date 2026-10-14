@@ -1,0 +1,6 @@
+// init 类型与注解不匹配 — 编译期拒绝
+func main() {
+  let w: int = let s: string = "hi" in s;
+  print(w);
+}
+main();

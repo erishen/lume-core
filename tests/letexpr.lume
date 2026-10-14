@@ -1,0 +1,73 @@
+// tests/letexpr.lume — let 表达式: `let x = e1 in e2`（SPEC §4.15）
+// 运行: make letexpr-test (并入 make test)
+//
+// 绑定只在 e2（body）内可见，e2 的值即整个表达式的值。三后端语义对齐靠同一套
+// 机制：checker 子作用域 / 两个原生后端发射时 asg_push + body 后截断（match 臂
+// 同款）/ 解释器子环境。覆盖：基本绑定、body 向右 maximal munch、语句位 RHS、
+// 同行遮蔽外层同名、嵌套、实参位、注解（含形状写回）、body 内对绑定赋值（外层
+// 不动）、结构绑定成员访问、if 表达式作 body、body 外不可见但外层名可见。本文件
+// 三后端各编各跑，输出须同为 12 条 PASS 无 FAIL。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func add(a: int, b: int): int {
+  return a + b;
+}
+
+func main(): int {
+  // --- 基本绑定 + body 即表达式的值 ---
+  check("basic", let a = 5 in a * 2 == 10);
+
+  // --- body 向右 maximal munch: 整个表达式都在 body 里 ---
+  check("maximal-body", (let b = 3 in b + 1) * 2 == 8);
+
+  // --- 语句位 let 表达式作为 RHS ---
+  let z = let c = 2 in c * 10;
+  check("stmt-rhs", z == 20);
+
+  // --- 同行遮蔽外层同名绑定: 内层只在 body 里可见 ---
+  let s = 1;
+  check("same-line-shadow", (let s = 100 in s) + s == 101);
+
+  // --- 嵌套 let 表达式: 内层绑定对外层 body 可见 ---
+  check("nested", let p = 2 in let q = p * 10 in q + p == 22);
+
+  // --- 实参位 ---
+  check("call-arg", add(let m = 20 in m, 2) == 22);
+
+  // --- 注解: init 对注解定型并写回 ---
+  let n = 7;
+  let w: int = let k = n in if (k > 5) k else 0 - k;
+  check("annot-if-body", w == 7);
+
+  // --- 字符串注解同型通过(注解不匹配由 letexpr-bad 拒绝) ---
+  let strv: string = let t: string = "ok" in t;
+  check("annot-string", strv == "ok");
+
+  // --- body 内对绑定赋值: 赋值是表达式, 产出新值; 外层不动 ---
+  let x = 1;
+  let r = (let x = 10 in x = 2);
+  check("assign-in-body", r == 2 && x == 1);
+
+  // --- 结构绑定: 注解命名形状, 成员访问走绑定名 ---
+  let pt: Point = let q: Point = { x: 3, y: 4 } in q;
+  check("struct-binding", pt.x + pt.y == 7);
+
+  // --- if 表达式作 body 的右折叠(§4.10 复用) ---
+  let lab = let v = 0 - 8 in if (v > 0) "pos" else "neg";
+  check("if-body", lab == "neg");
+
+  // --- 绑定在 body 之外不可见, 但作用域内既有的外层名继续可见 ---
+  let base = 5;
+  let out = (let tmp = base * 2 in tmp) + base;
+  check("outer-visible", out == 15);
+
+  return 0;
+}
+
+type Point = { x: int, y: int };
+
+main();

@@ -185,6 +185,7 @@ static const char *node_type_name(NodeType t)
     case N_INDEX:   return "index";             case N_IMPORT: return "import";
     case N_IF_LET: return "if-let";
     case N_LET_PAT: return "let-pattern";
+    case N_LET_EXPR: return "let-expression";
     case N_STRUCT_UPDATE: return "struct update";
     }
     return "node";
@@ -1083,6 +1084,56 @@ Val cg_assign_expr(CG *g, Node *n)
     return v;
 }
 
+static Val cg_let_expr(CG *g, Node *n)
+{
+    /* `let x = e1 in e2` — e1 evaluates into a fresh slot that only e2
+     * sees. The slot registers HERE rather than in the scan pass (the scan
+     * never walks expressions): pushed just before the body is emitted and
+     * truncated right after — the same emit-time registration match arms
+     * use, which is also what keeps two same-name nested let-expressions
+     * from aliasing one slot and what makes the binding invisible to reads
+     * after the expression. The alloca sits mid-function like a for-index
+     * or an and/or slot: legal anywhere, and dominated by every block the
+     * body later branches to. */
+    Type *prev = g->expect;
+    g->expect = n->as.letx.annot;
+    Val v = cg_expr(g, n->as.letx.init);
+    g->expect = prev;
+
+    /* Prefer the annotation so the stored value matches the slot (same
+     * rule as a statement let). */
+    Type *ty = n->as.letx.annot ? n->as.letx.annot : v.ty;
+    v = coerce(g, ty, v, n->line);
+    if (g->err[0]) { free(v.v); return (Val){ NULL, NULL, 0 }; }
+    const char *lt = llvm_type_of(ty);
+    if (!lt) { free(v.v); ERRV(g, "line %zu: cannot store '%s' into a typed local",
+                               n->line, n->as.letx.name); }
+    /* A named struct may arrive as an address rather than an aggregate —
+     * load it first, exactly as a statement let's store does. */
+    if (ty->kind == TY_STRUCT && ty->name && !v.agg) {
+        char *ld = emit_instrf(g, ty, "load %s, %s* %s", lt, lt, v.v);
+        free(v.v);
+        if (!ld) ERRV(g, "line %zu: cannot load '%s'", n->line, n->as.letx.name);
+        v = val_make_agg(ty, ld);
+        free(ld);
+    }
+
+    /* The slot name comes from asg_push's own uid counter — the same source
+     * the scan pass names locals from — so a let-expression slot can never
+     * collide with a scanned local of the same source name. */
+    int saved_n = g->locals.n;
+    asg_push(&g->locals, n->as.letx.name, ty, NULL, n->line);
+    Asg *a = asg_find(&g->locals, n->as.letx.name, n->line);
+    if (!a) ERRV(g, "internal: let-expression slot missing");
+    EMIT(g, "  %s = alloca %s\n", a->slot, lt);
+    EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
+    free(v.v);
+
+    Val bv = cg_expr(g, n->as.letx.body);
+    g->locals.n = saved_n;   /* the binding dies with the body */
+    return bv;
+}
+
 Val cg_expr(CG *g, Node *n)
 {
     if (!n) ERRV(g, "internal: null expression");
@@ -1103,6 +1154,7 @@ Val cg_expr(CG *g, Node *n)
     case N_BINARY:  return cg_binary(g, n);
     case N_TERNARY: return cg_ternary(g, n);
     case N_MATCH:   return cg_match(g, n);
+    case N_LET_EXPR: return cg_let_expr(g, n);
     case N_CTOR:    return cg_ctor(g, n);
     case N_MEMBER:  return cg_member(g, n);
     case N_INDEX:   return cg_index(g, n);

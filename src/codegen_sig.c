@@ -235,6 +235,10 @@ static void preregister_lambdas(CG *g, Node *n, int in_handler)
         return;
     case N_LET:        preregister_lambdas(g, n->as.let.init, 0); return;
     case N_LET_PAT:    preregister_lambdas(g, n->as.letpat.init, 0); return;
+    case N_LET_EXPR:
+        preregister_lambdas(g, n->as.letx.init, 0);
+        preregister_lambdas(g, n->as.letx.body, 0);
+        return;
     case N_IF:
         preregister_lambdas(g, n->as.ifs.cond, 0);
         preregister_lambdas(g, n->as.ifs.then, 0);
@@ -369,6 +373,10 @@ static void fn_collect_walk(Node *n, NodeVec *out)
         return;
     case N_LET:        fn_collect_walk(n->as.let.init, out); return;
     case N_LET_PAT:    fn_collect_walk(n->as.letpat.init, out); return;
+    case N_LET_EXPR:
+        fn_collect_walk(n->as.letx.init, out);
+        fn_collect_walk(n->as.letx.body, out);
+        return;
     case N_IF:
         fn_collect_walk(n->as.ifs.cond, out);
         fn_collect_walk(n->as.ifs.then, out);
@@ -479,6 +487,10 @@ static void lf_rename_calls(Node *n, const char *from, const char *to)
         return;
     case N_LET:        lf_rename_calls(n->as.let.init, from, to); return;
     case N_LET_PAT:    lf_rename_calls(n->as.letpat.init, from, to); return;
+    case N_LET_EXPR:
+        lf_rename_calls(n->as.letx.init, from, to);
+        lf_rename_calls(n->as.letx.body, from, to);
+        return;
     case N_IF:
         lf_rename_calls(n->as.ifs.cond, from, to);
         lf_rename_calls(n->as.ifs.then, from, to);
@@ -582,6 +594,10 @@ static void lf_scan_locals(Node *n, NodeVec *out)
         return;
     case N_LET:        lf_scan_locals(n->as.let.init, out); return;
     case N_LET_PAT:    lf_scan_locals(n->as.letpat.init, out); return;
+    case N_LET_EXPR:
+        lf_scan_locals(n->as.letx.init, out);
+        lf_scan_locals(n->as.letx.body, out);
+        return;
     case N_IF:
         lf_scan_locals(n->as.ifs.cond, out);
         lf_scan_locals(n->as.ifs.then, out);

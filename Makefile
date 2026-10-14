@@ -445,7 +445,35 @@ localfn-test: all
 	done; \
 	echo "==> localfn 单测通过"
 
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+letexpr-test: all
+	@set -e; \
+	./$(TARGET) tests/letexpr.lume > /tmp/lume-letexpr-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-letexpr-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-letexpr-test.out; then \
+		echo "==> letexpr 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-letexpr-test.out) -ne 12 ]; then \
+		echo "==> letexpr 断言数不符 (期望 12)"; exit 1; fi; \
+	check_bad_le() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/letexpr-bad/$$f.lume > /tmp/lume-letexpr-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-letexpr-bad.out; then \
+	    echo "==> letexpr 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-letexpr-bad.out; exit 1; fi; \
+	  echo "ok   letexpr-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad_le outside "undefined variable 'x'"; \
+	check_bad_le annot-mismatch "is not assignable to the declared type"; \
+	check_bad_le missing-in "needs 'in'"; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/letexpr.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   letexpr: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/letexpr.lume -o /tmp/letexpr_$$be > /dev/null 2>&1 || { echo "==> letexpr $$be 编译失败"; exit 1; }; \
+	  /tmp/letexpr_$$be > /tmp/letexpr_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/letexpr_$$be.out || [ $$(grep -c PASS /tmp/letexpr_$$be.out) -ne 12 ]; then \
+	    echo "==> letexpr $$be 输出不符 (rc=$$rc):"; cat /tmp/letexpr_$$be.out; exit 1; fi; \
+	  echo "ok   letexpr: $$be 后端 12/12"; \
+	done; \
+	echo "==> letexpr 单测通过"
+
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------

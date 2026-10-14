@@ -70,6 +70,14 @@ static Type *infer_node_type(CG *g, Node *n)
         case LIT_NULL:  return type_prim(TY_NULL);
         default:        return NULL;
         }
+    case N_LET_EXPR:
+        /* `let x = e1 in e2` — the expression's type is the body's (the
+         * annotation wins when spelled). Prefer the checker's stamp, same
+         * reason as codegen_scan.c: a scan-time descent into the body would
+         * resolve the binding against the outer scope. */
+        if (n->as.letx.annot) return n->as.letx.annot;
+        if (n->as.letx.ty) return n->as.letx.ty;
+        return infer_node_type(g, n->as.letx.body);
     case N_VAR: {
         Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
         if (a) return a->ty;

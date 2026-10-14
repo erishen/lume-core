@@ -6,6 +6,32 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — let expressions: `let x = e1 in e2` (SPEC §4.15)
+
+- `let` now has an expression form (Lean's let-in): `let x = e1 in e2` evaluates
+  `e1`, binds `x` to its value, and evaluates `e2` — whose value is the whole
+  expression's. The binding is visible only inside `e2`: it disappears after,
+  it shadows an outer same-name binding for the body only (safe even on the
+  same source line), and it nests. The body is a full expression and extends
+  as far right as possible; `in` is required in expression position (a plain
+  statement `let` still ends with `;`, and `let x = e1 in e2;` at statement
+  position folds into an expression statement).
+- Optional annotation: `let x: T = e1 in e2` constrains `e1` (checked at
+  compile time) and types the binding; the expression's own type is the body's.
+- Scoping is one mechanism per backend, all agreeing: the checker uses a child
+  scope; both native emitters register the binding's slot at emit time and
+  truncate the locals table when the body ends (the same mechanism match-arm
+  binds use, which also keeps same-name nested let-expressions from aliasing
+  one slot); the interpreter runs the body in a child env. The checker stamps
+  the body's computed type onto the node so scan-time inference reads the
+  stamp instead of descending into the body — where the binding's name would
+  resolve against the outer scope and could disagree with what the emitter
+  stores.
+- `tests/letexpr.lume` (12 assertions, all three backends) +
+  `tests/letexpr-bad/` (out-of-scope use, annotation mismatch, missing `in`)
+  wired as `make letexpr-test`; a probe section was added to
+  `tests/native-consistency.lume` (baseline now 408 lines).
+
 ### Added — local functions: `func` inside a function body (SPEC §4.14)
 
 - A `func` declared inside a function body is a **local function**: it compiles

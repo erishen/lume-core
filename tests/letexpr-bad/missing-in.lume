@@ -1,0 +1,5 @@
+// 表达式位缺 `in`(语句 let 以 `;` 结尾, 表达式 let 必须 `in`) — 解析期拒绝
+func main() {
+  print(let a = 1 a * 2);
+}
+main();

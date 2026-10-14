@@ -11,6 +11,7 @@ static const char *node_type_name(NodeType t)
     case N_LET:     return "let";               case N_IF:     return "if";
     case N_IF_LET:  return "if-let";
     case N_LET_PAT: return "let-pattern";
+    case N_LET_EXPR: return "let-expression";
     case N_WHILE:   return "while";             case N_FOR:    return "for";
     case N_BREAK:   return "break";             case N_CONTINUE: return "continue";
     case N_RETURN:  return "return";            case N_EXPR_STMT: return "expression statement";
@@ -583,6 +584,44 @@ static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
 
 static Type *list_type(void) { return type_list(infer_list_elem(NULL, NULL)); }
 
+static Val cg_let_expr(CG *g, Node *n)
+{
+    /* `let x = e1 in e2` — e1 evaluates into a fresh alloca that only e2
+     * sees. The binding registers HERE (the scan never walks expressions):
+     * pushed just before the body and truncated right after — the same
+     * emit-time registration match arms use, which also keeps two same-name
+     * nested let-expressions from aliasing one slot and makes the binding
+     * invisible to reads after the expression. The alloca is dominated by
+     * every block the body later branches to, so loads inside the body are
+     * legal IR. Mirrors codegen_expr.c's cg_let_expr. */
+    Type *prev = g->expect;
+    g->expect = n->as.letx.annot;
+    Val v = cg_expr(g, n->as.letx.init);
+    g->expect = prev;
+
+    /* Prefer the annotation so the stored value matches the slot. */
+    Type *ty = n->as.letx.annot ? n->as.letx.annot : v.ty;
+    v = coerce(g, ty, v, n->line);
+    if (g->err[0]) return (Val){ NULL, NULL };
+    if (!ty_of(g, ty))
+        ERRV(g, "line %zu: cannot store '%s' into a typed local",
+             n->line, n->as.letx.name);
+
+    /* A named struct may arrive as an address rather than an aggregate —
+     * load it first, exactly as a statement let's store does. */
+    if (ty->kind == TY_STRUCT && ty->name && struct_is_addr(v.v))
+        v.v = LLVMBuildLoad2(g->ab, ty_of(g, ty), v.v, "ld");
+
+    LLVMValueRef slot = LLVMBuildAlloca(g->ab, ty_of(g, ty), "lv");
+    int saved_n = g->locals.n;
+    asg_push(&g->locals, n->as.letx.name, ty, slot, n->line);
+    LLVMBuildStore(g->ab, v.v, slot);
+
+    Val bv = cg_expr(g, n->as.letx.body);
+    g->locals.n = saved_n;   /* the binding dies with the body */
+    return bv;
+}
+
 static Val cg_expr(CG *g, Node *n)
 {
     if (!n) ERRV(g, "internal: null expression");
@@ -601,6 +640,7 @@ static Val cg_expr(CG *g, Node *n)
     case N_BINARY:   return cg_binary(g, n);
     case N_TERNARY:  return cg_ternary(g, n);
     case N_MATCH:    return cg_match(g, n);
+    case N_LET_EXPR: return cg_let_expr(g, n);
     case N_CTOR:     return cg_ctor(g, n);
     case N_MEMBER:   return cg_member(g, n);
     case N_INDEX:    return cg_index(g, n);

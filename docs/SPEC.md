@@ -719,6 +719,46 @@ print(sq(2));                        // 编译错误: undefined variable 'sq'
 
 ---
 
+### 4.15 let 表达式 `let x = e1 in e2`（2026-10-14）
+
+`let` 也有表达式形式（Lean 的 let-in）：`let x = e1 in e2` 先求值 `e1`，把 `x`
+绑定到它的值上，再求值 `e2`——**`e2` 的值就是整个表达式的值**。
+
+```lume
+print(let a = 5 in a * 2);              // 10
+let y = (let b = 3 in b + 1) * 2;       // 8 —— 语句位 RHS 也可以
+let w: int = let k = n in if (k > 5) k else 0 - k;   // 注解 + if 表达式作 body
+print(add(let m = 20 in m, 2));         // 22 —— 实参位
+```
+
+规则（三后端 + 解释器同一语义）：
+
+- **作用域 = body**：`x` 只在 `e2` 内可见，`e2` 求值完绑定即消失——`e2` 之外的
+  代码看不到它，`undefined variable`；body 内可以遮蔽外层同名绑定，body 结束后
+  外层绑定原样可见（同行也能安全遮蔽，见下）。
+- **可嵌套**：`let p = 2 in let q = p * 10 in q + p`——内层绑定对外层 body 可见。
+- **body 向右 maximal munch**：body 是完整表达式，`let x = 1 in x + f(x)` 的两个
+  操作数都在 body 里；要提前结束就加括号。
+- **`in` 必需**。语句位以 `;` 结尾的普通 `let` 绑定不受影响；表达式位缺 `in` 是
+  解析错误（`a let-expression needs 'in'`）。语句位写 `let x = e1 in e2;` 也合法
+  ——整 体折叠成一条表达式语句，值被丢弃。
+- **注解**：`let x: T = e1 in e2` 的 `T` 既约束 `e1`（不匹配编译期拒绝）也定型
+  绑定；未注解时绑定的类型来自 `e1`，整个表达式的类型来自 `e2`。
+- **赋值也是表达式**：body 里可以对绑定赋值（`let x = 10 in x = 2` 产出 `2`），
+  外层同名绑定不受影响；赋值表达式的类型按绑定的类型算。
+- **实现注记**（不影响源码层语义）：两个原生后端在**发射时**注册绑定槽并在 body
+  发射完后截断 locals 表（match 臂绑定的同一套机制），所以「可见/不可见」由同一
+  份发射序决定，同行遮蔽天然正确；解释器用子环境，同一语义。checker 把 body 的
+  定型结果盖戳到节点上，scan 期推断读戳而不下钻 body——否则绑定名会落到外层同名
+  绑定上（resolve-vs-infer 分裂的老坑）。
+
+正向 12 条断言由 `tests/letexpr.lume` 覆盖（解释器 + 两个原生后端各编各跑，输出
+同为 12/12）；3 个负例（`body 外使用` / `注解不匹配` / `缺 in`）由
+`tests/letexpr-bad/` 断言；三后端值语义由 `tests/native-consistency.lume` 的
+let 表达式探针段覆盖。
+
+---
+
 ## 5. Result 与 `?` 传播
 
 `Result` 是内建的 `{ ok: ... }` / `{ err: ... }` 形状。函数返回 `Result` 后，调用点用

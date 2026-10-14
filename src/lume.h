@@ -533,6 +533,7 @@ typedef enum {
     N_UNARY, N_BINARY, N_TERNARY,
     N_MATCH, N_CTOR, N_IF_LET,
     N_LET_PAT, /* `let { a, b } = e;` — record destructuring */
+    N_LET_EXPR, /* `let x = e1 in e2` in expression position — Lean's let-in */
     N_STRUCT_UPDATE, /* `{ base with f: e, ... }` — Lean's structure update */
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
@@ -585,6 +586,8 @@ typedef struct Node {
         struct { struct Node **stmts; int count; } program;
         struct { struct Node **stmts; int count; } block;
         struct { char *name; Type *annot; struct Node *init; } let;
+        struct { char *name; Type *annot; struct Node *init; struct Node *body;
+                 Type *ty; } letx;   /* ty: checker-stamped body type (SPEC 4.15) */
         struct { struct Node *cond, *then, *els; } ifs;
         struct { struct Node *cond, *body; } whiles;
         /* for: C-style uses init/cond/incr (is_in=false); for-in uses

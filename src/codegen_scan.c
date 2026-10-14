@@ -75,6 +75,16 @@ Type *infer_node_type(CG *g, Node *n)
         case LIT_NULL:  return type_prim(TY_NULL);
         default:        return NULL;
         }
+    case N_LET_EXPR:
+        /* `let x = e1 in e2` — the expression's type is the body's (the
+         * annotation wins when spelled). Prefer the checker's stamp: a
+         * scan-time descent into the body would resolve the binding's name
+         * against the outer scope (the emit-time slot does not exist yet),
+         * so an outer same-name binding of another type would poison the
+         * inferred type. */
+        if (n->as.letx.annot) return n->as.letx.annot;
+        if (n->as.letx.ty) return n->as.letx.ty;
+        return infer_node_type(g, n->as.letx.body);
     case N_VAR: {
         Asg *a = asg_find(&g->locals, n->as.var.name, n->line);
         if (a) return a->ty;
