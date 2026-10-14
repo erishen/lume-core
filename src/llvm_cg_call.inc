@@ -409,6 +409,37 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(list_type(), r);
     }
 
+    /* range(...) — the helper runs the same double arithmetic the
+     * interpreter's native_range() does (whole values become INT slots), so
+     * print/for-in agree compiled or interpreted. Numeric args only: a slot
+     * holds a statically-typed number, and an `any` has no reader. */
+    if (strcmp(bname, "range") == 0) {
+        if (argc < 1 || argc > 3)
+            ERRV(g, "line %zu: range() takes one to three arguments", n->line);
+        Val a = argc >= 2 ? cg_expr(g, n->as.call.args[0]) : (Val){ NULL, NULL };
+        Val b = cg_expr(g, n->as.call.args[argc == 1 ? 0 : 1]);
+        Val s = argc == 3 ? cg_expr(g, n->as.call.args[2]) : (Val){ NULL, NULL };
+        Val *xs[3] = { &a, &b, &s };
+        for (int i = 0; i < 3; i++) {
+            Val *x = xs[i];
+            if (!x->v) continue;                    /* absent start/step    */
+            if (!x->ty || (x->ty->kind != TY_INT && x->ty->kind != TY_FLOAT))
+                ERRV(g, "line %zu: range() arguments must be numbers", n->line);
+            *x = coerce(g, type_prim(TY_FLOAT), *x, n->line);
+        }
+        LLVMTypeRef ats[3] = { g->dbl, g->dbl, g->dbl };
+        LLVMValueRef vs[3] = {
+            a.v ? a.v : LLVMConstReal(g->dbl, 0.0),
+            b.v,
+            s.v ? s.v : LLVMConstReal(g->dbl, 1.0),
+        };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, ats, 3, 0),
+            rt_decl(g, "lume_range", g->i8ptr, ats, 3), vs, 3, "range");
+        if (!r) ERRV(g, "line %zu: range() failed", n->line);
+        return val_make(list_type(), r);
+    }
+
     /* get(m, k[, default]) — an absent key yields the default, so the flavour
      * follows the default and an unannotated get(m, k) in a bool context stays
      * an int read rather than silently becoming a string. */

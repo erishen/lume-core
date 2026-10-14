@@ -403,7 +403,22 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+# --- range: 内建 range() 三后端统一 (2026-10-14) ---
+# 解释器正例 10 断言; 三后端值语义由 native-consistency 的 range 探针段覆盖。
+range-test: all
+	@set -e; \
+	./$(TARGET) tests/range.lume > /tmp/lume-range-test.out 2>&1; \
+	if ! grep -q "^PASS" /tmp/lume-range-test.out; then \
+		echo "==> range 解释器单测失败:"; cat /tmp/lume-range-test.out; exit 1; fi; \
+	echo "ok   range interp 10/10"; \
+	./$(TARGET) --compile-text tests/range.lume > /dev/null 2>&1; \
+	./out/range | grep -q "^PASS" || { echo "==> range text 腿失败"; exit 1; }; \
+	echo "ok   range text 10/10"; \
+	./$(TARGET) --compile-llvm tests/range.lume > /dev/null 2>&1; \
+	./out/range | grep -q "^PASS" || { echo "==> range llvm 腿失败"; exit 1; }; \
+	echo "ok   range llvm 10/10"
+
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------

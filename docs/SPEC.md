@@ -377,6 +377,9 @@ for (let k in { a: 1 })  { print(k); }        // 逐**键**
 for (let i in range(0, 3)) { print(str(i)); } // range 结果是列表
 ```
 
+range 的元素类型静态可推：全 int 实参 → `int[]`，含 float 实参 → `float[]`（解释器与两原生后端
+同一条 `infer` 规则）；实参没有静态数值类型时原生编译期给「cannot infer」族诊断。
+
 ⚠️ **字符串不能迭代**：`for (let c in "ab")` 报 `for-in expects a list or map`。
 ⚠️ **map 的遍历顺序是插入顺序**，不是排序序：`for (let k in { b: 1, a: 2 })` 依次打出
 `b`、`a`。要确定顺序请先 `keys()` 再排序。
@@ -776,7 +779,7 @@ string 值静默读成 `0`），`let x = get(m, "name")` 无标注也能定型�
 （两参数）。
 | `put(m, k, v)` | 3 参 | **map** | **原地**写 map，并返回写完的 map；`v` 为 `null` 三后端一致（obj 槽空载荷） |
 | `push(l, v)` | 2 参 | **list** | **原地**追加，并返回写完的 list |
-| `range(a, b)` | 2 参 | `int[]` | `[a, b)`，**不含 b** |
+| `range(a, b)` | 1–3 参 | `int[]` | `[a, b)`，**不含 b**。`range(stop)`＝`range(0, stop)`；第三参 `step` 可负（`range(5, 0, -2)`＝`[5,3,1]`），`step` 为 0 运行期报错。**三后端统一**：原生 `lume_range`（rt 助手）跑与解释器相同的 double 运算，整值落 int 槽，`print`/`for-in`/`len`/下标/`str` 逐一致 |
 | `sort(l)` | 1 参 | **list** | **原地**排序 `l` 并返回它；仅支持**同构**列表——全数字（升序，全 int 按 i64 精确比较、含 float 走 double）或全字符串（`strcmp` 字节序）；异构或含容器/map 报错 |
 
 **下标语法**（规范变更）：`m["k"]` 与 `l[0]` 现在**存在**了。

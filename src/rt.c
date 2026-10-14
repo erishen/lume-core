@@ -539,6 +539,10 @@ double lume_list_at_f(const LumeList *l, long i)
     double d = 0;
     if (!l || i < 0 || i >= l->len) return d;
     if (l->items[i].tag == LUME_SLOT_STR) return d;
+    /* lume_range pushes a whole value as an INT slot even in a float-arg
+     * range (the interpreter's rule), so the float reader widens it instead
+     * of reinterpreting the integer as a bit pattern. */
+    if (l->items[i].tag == LUME_SLOT_INT) return (double)l->items[i].num;
     memcpy(&d, &l->items[i].num, sizeof d);
     return d;
 }
@@ -1067,6 +1071,29 @@ LumeList *lume_map_keys(const LumeMap *m)
     LumeList *l = lume_list_new();
     if (!m) return l;
     for (long i = 0; i < m->len; i++) lume_list_push_s(l, m->keys[i]);
+    return l;
+}
+
+/* range(stop) / range(start, stop) / range(start, stop, step) — the same
+ * double arithmetic the interpreter's native_range() runs, whole values
+ * included, so a compiled range prints and iterates exactly like the
+ * interpreted one. step == 0 is the interpreter's run-time error. */
+LumeList *lume_range(double a, double b, double step)
+{
+    if (step == 0) {
+        fputs("lume: range() step must not be zero\n", stderr);
+        exit(1);
+    }
+    LumeList *l = lume_list_new();
+    if (step > 0) {
+        for (double v = a; v < b; v += step)
+            if (v == (double)(long long)v) lume_list_push_i(l, (long long)v);
+            else lume_list_push_f(l, v);
+    } else {
+        for (double v = a; v > b; v += step)
+            if (v == (double)(long long)v) lume_list_push_i(l, (long long)v);
+            else lume_list_push_f(l, v);
+    }
     return l;
 }
 

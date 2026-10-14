@@ -1,0 +1,32 @@
+// range() — three arities, negative step, empty range, element readers.
+// Value parity across the three backends is native-consistency's range
+// block; this file is the interpreter-facing assertion suite.
+func eq(a: int[], b: int[]): bool {
+  if (len(a) != len(b)) { return false; }
+  for (let i in range(len(a))) {
+    if (a[i] != b[i]) { return false; }
+  }
+  return true;
+}
+
+let n = 0;
+if (eq(range(3), [0, 1, 2])) { n = n + 1; }          // 1
+if (eq(range(1, 4), [1, 2, 3])) { n = n + 1; }       // 2
+if (eq(range(0, 9, 3), [0, 3, 6])) { n = n + 1; }    // 3
+if (eq(range(5, 0, -2), [5, 3, 1])) { n = n + 1; }   // 4
+if (len(range(5, 1)) == 0) { n = n + 1; }            // 5 (empty: stop < start)
+if (len(range(0)) == 0) { n = n + 1; }               // 6
+
+let s = 0;
+for (let i in range(1, 5)) { let s2 = s + i; s = s2; }
+if (s == 10) { n = n + 1; }                          // 7
+
+let l = range(4);
+if (len(l) == 4) { n = n + 1; }                      // 8
+if (l[0] == 0 && l[3] == 3) { n = n + 1; }           // 9
+let mut = range(2);
+push(mut, 99);
+if (len(mut) == 3 && mut[2] == 99) { n = n + 1; }    // 10 (pushable)
+
+print(str(n) + "/10");
+if (n == 10) { print("PASS"); } else { print("FAIL"); }

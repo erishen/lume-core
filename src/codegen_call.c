@@ -329,6 +329,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare void @lume_index_error(i8*)\n");
     EMIT(g, "declare i8* @lume_map_key_at(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
+    EMIT(g, "declare i8* @lume_range(double, double, double)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
 
     /* Closures (SPEC 4.8): the box a lambda literal builds and every call
@@ -826,6 +827,35 @@ static Val cg_builtin(CG *g, Node *n)
         Val r = rt_call(g, list_type(), "lume_map_keys", "i8* %s", a.v);
         free(a.v);
         if (!r.v) ERRV(g, "line %zu: keys() failed", n->line);
+        return r;
+    }
+
+    /* range(...) — the helper runs the same double arithmetic the
+     * interpreter's native_range() does (whole values become INT slots), so
+     * print/for-in agree compiled or interpreted. Numeric args only: a slot
+     * holds a statically-typed number, and an `any` has no reader. */
+    if (strcmp(bname, "range") == 0) {
+        if (argc < 1 || argc > 3)
+            ERRV(g, "line %zu: range() takes one to three arguments", n->line);
+        Val a = argc >= 2 ? cg_expr(g, n->as.call.args[0])
+                          : (Val){ NULL, NULL, 0 };
+        Val b = cg_expr(g, n->as.call.args[argc == 1 ? 0 : 1]);
+        Val s = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL, 0 };
+        Val *xs[3] = { &a, &b, &s };
+        for (int i = 0; i < 3; i++) {
+            Val *x = xs[i];
+            if (!x->v) continue;                    /* absent start/step    */
+            if (!x->ty || (x->ty->kind != TY_INT && x->ty->kind != TY_FLOAT))
+                ERRV(g, "line %zu: range() arguments must be numbers", n->line);
+            *x = coerce(g, type_prim(TY_FLOAT), *x, n->line);
+        }
+        Val r = rt_call(g, list_type(), "lume_range",
+                        "double %s, double %s, double %s",
+                        a.v ? a.v : "0.000000e+00",
+                        b.v, s.v ? s.v : "1.000000e+00");
+        free(a.v); free(b.v); free(s.v);
+        if (!r.v) ERRV(g, "line %zu: range() failed", n->line);
         return r;
     }
 

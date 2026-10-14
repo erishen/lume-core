@@ -137,6 +137,27 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "reduce") == 0)
             return infer_node_type(g, n->as.call.args[2]);
 
+        /* len() is always an int, whoever it measures. */
+        if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
+            return type_prim(TY_INT);
+
+        /* range(...) builds a list of numbers: all-int arguments iterate as
+         * ints, one float argument makes the whole range float (the helper's
+         * whole-value rule keeps every element readable either way). An arg
+         * without a static numeric type leaves the call untyped — the usual
+         * explicit-annotation diagnostic explains. */
+        if (strcmp(name, "range") == 0 &&
+            n->as.call.argc >= 1 && n->as.call.argc <= 3) {
+            Type *et = type_prim(TY_INT);
+            for (int i = 0; i < n->as.call.argc; i++) {
+                Type *at = infer_node_type(g, n->as.call.args[i]);
+                if (!at || (at->kind != TY_INT && at->kind != TY_FLOAT))
+                    return NULL;
+                if (at->kind == TY_FLOAT) et = type_prim(TY_FLOAT);
+            }
+            return type_list(et);
+        }
+
         /* json()/stringify() serialize to a JSON string. json(str) means
          * parse, whose result type is dynamic — NULL here keeps the slot
          * opaque and lets the emit-time diagnostic do the explaining. */

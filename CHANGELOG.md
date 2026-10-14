@@ -6,6 +6,24 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — `range()` on the native backends
+
+- The interpreter always had `range(stop)` / `range(start, stop)` /
+  `range(start, stop, step)`; both native emitters rejected iterating it
+  ("can only iterate a list or a map") because the call had no static type.
+  Both now lower it onto a new rt helper `lume_range(double, double, double)`
+  that runs the same double arithmetic the interpreter's `native_range` does —
+  whole values become INT slots, so `print`, `for-in`, `len`, indexing, `str`
+  and `stringify` agree compiled or interpreted. `step == 0` reports the
+  interpreter's run-time error.
+- Element type is static: all-int arguments infer `int[]`, one float argument
+  makes the whole range `float[]` (the interpreter's whole-value rule keeps
+  every element readable through either accessor; `lume_list_at_f` now widens
+  an INT slot instead of reinterpreting its bits). An argument without a
+  static numeric type keeps the usual cannot-infer diagnostics.
+- `len(x)` now infers `int` in both emitters' static type read (it previously
+  had no branch, so `range(len(xs))` inside a `for-in` could not type).
+
 ### Added — tuples `(a, b, ...)` (SPEC §4.13)
 
 - A tuple is an anonymous struct with positional fields `_0`, `_1`, … — zero new

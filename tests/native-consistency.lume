@@ -1088,5 +1088,24 @@ print(tuts[1].1);          // 4
 let tuprec = { u: 8, v: 9 };
 print(tuprec.u);           // 8 (无注解 map 字面量保持匿名, 不再被形状提升)
 
+// ---- range: 三后端统一的内建 (rt 助手镜像解释器 double 运算 + whole→int) ----
+print(range(3));           // [0,1,2]
+print(range(1, 4));        // [1,2,3]
+print(range(0, 10, 3));    // [0,3,6,9]
+print(range(5, 0, -2));    // [5,3,1]
+print(len(range(7)));      // 7
+print(len(range(5, 1)));   // 0
+let rgl = range(4);
+print(rgl);                // [0,1,2,3]
+print(str(range(2)));      // [0,1]
+for (rgi in range(3)) { print(rgi); }          // 0 1 2
+for (rgj in range(2, 7, 2)) { print(rgj); }    // 2 4 6
+let rgf = range(0.0, 1.0, 0.5);
+print(rgf);                // [0,0.5]
+for (rgx in rgf) { print(rgx); }               // 0 0.5
+let rgsum = 0;
+for (rgk in range(1, 5)) { let rgsum2 = rgsum + rgk; rgsum = rgsum2; }
+print(rgsum);              // 10
+
 warmup();
 main();
