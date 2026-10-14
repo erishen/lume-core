@@ -316,7 +316,12 @@ void ck_stmt(Checker *c, Node *n) {
             ck_expr(c, n->as.expr_stmt.expr, NULL);
             return;
         case N_FUNC_DECL: {
-            Type *ft = scope_get(c->scope, n->as.func.name);
+            /* A local function was registered (and its call sites rewritten)
+             * under its synthetic cname; a top-level function keeps its
+             * source name. Same lookup rule in both cases. */
+            const char *fname = n->as.func.cname ? n->as.func.cname
+                                                 : n->as.func.name;
+            Type *ft = scope_get(c->scope, fname);
             if (ft && ft->kind == TY_FUNC)
                 ck_fn(c, n->as.func.names, ft, n->as.func.body);
             return;

@@ -1107,5 +1107,24 @@ let rgsum = 0;
 for (rgk in range(1, 5)) { let rgsum2 = rgsum + rgk; rgsum = rgsum2; }
 print(rgsum);              // 10
 
+// ---- local functions: hoisted named declarations (SPEC §4.14) ----
+func lf_probe(): int {
+  func lfsq(x: int): int { return x * x; }
+  func lffact(n: int): int {
+    if (n <= 1) { return 1; }
+    return n * lffact(n - 1);
+  }
+  print(lfsq(7));            // 49
+  print(lffact(6));          // 720 (递归)
+  print(lfforward(9));       // 10  (前向引用: 提升语义, 声明前可调)
+  func lfforward(x: int): int { return x + 1; }
+  print(lftop());            // 55  (局部互调)
+  func lftop(): int { return lfsq(5) + lfsq(5) + 5; }
+  let lfclo = (x) => lfsq(x) - 1;
+  print(lfclo(8));           // 63  (lambda 体里调局部)
+  return 0;
+}
+print(lf_probe());           // 0
+
 warmup();
 main();

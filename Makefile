@@ -418,7 +418,34 @@ range-test: all
 	./out/range | grep -q "^PASS" || { echo "==> range llvm 腿失败"; exit 1; }; \
 	echo "ok   range llvm 10/10"
 
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+localfn-test: all
+	@set -e; \
+	./$(TARGET) tests/localfn.lume > /tmp/lume-localfn-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-localfn-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-localfn-test.out; then \
+		echo "==> localfn 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-localfn-test.out) -ne 12 ]; then \
+		echo "==> localfn 断言数不符 (期望 12)"; exit 1; fi; \
+	check_bad_lf() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/localfn-bad/$$f.lume > /tmp/lume-localfn-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-localfn-bad.out; then \
+	    echo "==> localfn 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-localfn-bad.out; exit 1; fi; \
+	  echo "ok   localfn-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad_lf dup-name "local function 'dup' is declared twice"; \
+	check_bad_lf outside "undefined variable 'inner'"; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/localfn.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   localfn: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/localfn.lume -o /tmp/localfn_$$be > /dev/null 2>&1 || { echo "==> localfn $$be 编译失败"; exit 1; }; \
+	  /tmp/localfn_$$be > /tmp/localfn_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/localfn_$$be.out || [ $$(grep -c PASS /tmp/localfn_$$be.out) -ne 12 ]; then \
+	    echo "==> localfn $$be 输出不符 (rc=$$rc):"; cat /tmp/localfn_$$be.out; exit 1; fi; \
+	  echo "ok   localfn: $$be 后端 12/12"; \
+	done; \
+	echo "==> localfn 单测通过"
+
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------

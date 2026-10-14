@@ -356,11 +356,27 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
     Node **top  = prog->as.program.stmts;
     int    ntop = prog->as.program.count;
 
+    /* Local functions first: stamp cnames and rewrite call sites before any
+     * signature table is built (idempotent — the checker already ran this;
+     * this is the guard for paths that compile without checking). */
+    if (!lume_resolve_localfns(prog, err, err_size)) {
+        cg_free(&cg);
+        return NULL;
+    }
+
     /* ---- pass 1: signatures and structs, so calls can be resolved in any order ---- */
-    for (int i = 0; i < ntop; i++) {
-        Node *n = top[i];
-        if (n->type == N_FUNC_DECL) {
-            sig_push(&cg.sigs, n->as.func.name, n->as.func.ret,
+    /* Local functions ride the same table under their cname (stamped and
+     * call-rewritten by lume_resolve_localfns above), so a call inside the
+     * enclosing function resolves and the emit loop below defines them. */
+    {
+        int nfn = lume_collect_funcs(prog, NULL, 0);
+        Node **allfns = nfn > 0 ? xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
+        if (nfn > 0) lume_collect_funcs(prog, allfns, nfn);
+        for (int i = 0; i < nfn; i++) {
+            Node *n = allfns[i];
+            const char *fname = n->as.func.cname ? n->as.func.cname
+                                                 : n->as.func.name;
+            sig_push(&cg.sigs, fname, n->as.func.ret,
                      n->as.func.param_types, n->as.func.arity);
             /* The body and the parameter names are what let the pass below
              * infer an unannotated return type, and match arguments to the
@@ -369,7 +385,11 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
             cg.sigs.v[cg.sigs.n - 1].pnames = n->as.func.names;
             cg.sigs.v[cg.sigs.n - 1].node   = n;
         }
-        else if (n->type == N_TYPE_DECL)
+        free(allfns);
+    }
+    for (int i = 0; i < ntop; i++) {
+        Node *n = top[i];
+        if (n->type == N_TYPE_DECL)
             sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
                       n->as.type_decl.field_types, n->as.type_decl.count);
         /* An enum has no runtime presence of its own: every variant value is
@@ -415,7 +435,11 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
      * cg_def through preset_locals further down, so L_top is never scanned
      * twice. */
     int nfns = 0, ntops = 0;
-    Node **fns  = ntop > 0 ? xmalloc(sizeof(Node *) * ntop) : NULL;
+    /* Every function gets a define: top-level ones and hoisted locals alike.
+     * The collector returns the full count first so one allocation fits. */
+    nfns = lume_collect_funcs(prog, NULL, 0);
+    Node **fns  = nfns > 0 ? xmalloc(sizeof(Node *) * (size_t)nfns) : NULL;
+    if (nfns > 0) lume_collect_funcs(prog, fns, nfns);
     Node **tops = ntop > 0 ? xmalloc(sizeof(Node *) * ntop) : NULL;
     /* Does the top level actually call `main`? Only then is `main` a thing the
      * process can take its status from — a `main` nobody runs is an ordinary
@@ -423,7 +447,7 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
     int tops_main = 0;
     for (int i = 0; i < ntop; i++) {
         Node *n = top[i];
-        if (n->type == N_FUNC_DECL)      fns[nfns++] = n;
+        if (n->type == N_FUNC_DECL)      continue;    /* collected above */
         else if (n->type == N_TYPE_DECL) continue;   /* already emitted */
         else if (n->type == N_ENUM_DECL) continue;   /* no runtime presence */
         else if (n->type == N_IMPORT)    continue;   /* resolved by the loader */

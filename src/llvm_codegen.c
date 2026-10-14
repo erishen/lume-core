@@ -425,14 +425,33 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
     Node **top  = prog->as.program.stmts;
     int    ntop = prog->as.program.count;
 
-    /* ---- pass 1: signatures and declared shapes, so calls resolve in any order ---- */
+    /* Local functions first: stamp cnames and rewrite call sites before any
+     * signature table is built (idempotent — the driver's inference pass and
+     * the checker already ran this; this is the last-resort guard). */
+    if (!lume_resolve_localfns(prog, err, err_size)) {
+        LLVMDisposeBuilder(cg.ab);
+        LLVMDisposeModule(cg.mod);
+        LLVMContextDispose(ctx);
+        return NULL;
+    }
+
+    /* ---- pass 1: signatures and declared shapes, so calls resolve in any order ----
+     * Top-level and hoisted local functions alike, locals under their cname. */
+    {
+        int nfn = lume_collect_funcs(prog, NULL, 0);
+        Node **allfns = nfn > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
+        if (nfn > 0) lume_collect_funcs(prog, allfns, nfn);
+        for (int i = 0; i < nfn; i++) {
+            Node *n = allfns[i];
+            sig_push(&cg.sigs,
+                     n->as.func.cname ? n->as.func.cname : n->as.func.name,
+                     n->as.func.ret, n->as.func.param_types, n->as.func.arity);
+        }
+        free(allfns);
+    }
     for (int i = 0; i < ntop; i++) {
         Node *n = top[i];
-        if (n->type == N_FUNC_DECL) {
-            sig_push(&cg.sigs, n->as.func.name, n->as.func.ret,
-                     n->as.func.param_types, n->as.func.arity);
-        }
-        else if (n->type == N_TYPE_DECL)
+        if (n->type == N_TYPE_DECL)
             sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
                       n->as.type_decl.field_types, n->as.type_decl.count);
         /* An enum has no runtime presence of its own: every variant value is
@@ -465,12 +484,14 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
      * takes. */
     int nfns = 0, ntops = 0;
     for (int i = 0; i < ntop; i++) {
-        if (top[i]->type == N_FUNC_DECL) nfns++;
-        else if (top[i]->type == N_TYPE_DECL || top[i]->type == N_IMPORT ||
-                 top[i]->type == N_ENUM_DECL) continue;
+        if (top[i]->type == N_TYPE_DECL || top[i]->type == N_IMPORT ||
+            top[i]->type == N_ENUM_DECL) continue;
         else ntops++;
     }
+    /* Every function gets a define: top-level ones and hoisted locals alike. */
+    nfns = lume_collect_funcs(prog, NULL, 0);
     Node **fns  = nfns  > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfns)  : NULL;
+    if (nfns > 0) lume_collect_funcs(prog, fns, nfns);
     Node **tops = ntops > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)ntops) : NULL;
     /* Does the top level actually call `main`? Only then is main() a thing the
      * process can take its status from — a main nobody runs is an ordinary
@@ -478,9 +499,9 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
      * the two backends report the same exit code for the same source. */
     int tops_main = 0;
     {
-        int k = 0, m = 0;
+        int m = 0;
         for (int i = 0; i < ntop; i++) {
-            if (top[i]->type == N_FUNC_DECL)      fns[k++] = top[i];
+            if (top[i]->type == N_FUNC_DECL)      continue;   /* collected above */
             else if (top[i]->type == N_TYPE_DECL) continue;   /* emitted above */
             else if (top[i]->type == N_ENUM_DECL) continue;   /* no runtime presence */
             else if (top[i]->type == N_IMPORT)    continue;   /* the loader resolved it */

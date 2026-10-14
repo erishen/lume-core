@@ -500,6 +500,14 @@ void cg_stmt(CG *g, Node *n)
         break;
     }
 
+    case N_FUNC_DECL:
+        /* A local function: hoisted by lume_resolve_localfns into its own
+         * module-level define (emitted from the collected function set), so
+         * the declaration site itself contributes no code. Top-level
+         * declarations never reach cg_stmt — they are collected into the
+         * same set and excluded from L_top. */
+        break;
+
     default:
         ERRX(g, "%s", bad(g, n, "this construct"));
     }
@@ -807,8 +815,12 @@ static void cg_def(CG *g, const char *sym, const char *title,
 void cg_function(CG *g, Node *fn)
 {
     char sym[256];
-    snprintf(sym, sizeof sym, "L_%s", fn->as.func.name);
-    cg_def(g, sym, fn->as.func.name, fn->as.func.names,
+    /* A local function is defined (and called) under its synthetic cname;
+     * top-level functions keep their source name. */
+    const char *fname = fn->as.func.cname ? fn->as.func.cname
+                                          : fn->as.func.name;
+    snprintf(sym, sizeof sym, "L_%s", fname);
+    cg_def(g, sym, fname, fn->as.func.names,
            fn->as.func.param_types, fn->as.func.arity, fn->as.func.ret,
            fn->as.func.body, 0, fn->line);
 }

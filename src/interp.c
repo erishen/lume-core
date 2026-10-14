@@ -69,6 +69,97 @@ static char *unescape_literal(const char *s, int n, int *out_len) {
 #include "builtins.h"
 /* ---------- function call engine ---------- */
 
+/* Bind one function declaration into `env`, under the name its call sites
+ * spell: the synthetic cname for a hoisted local function, the source name
+ * for a top-level one. Shared by the statement executor and the frame hoist
+ * below. */
+static void bind_func_decl(VM *vm, Env *env, Node *n)
+{
+    const char *fname = n->as.func.cname ? n->as.func.cname
+                                         : n->as.func.name;
+    Value f = make_func(vm, fname, n->as.func.names,
+                        n->as.func.arity, n->as.func.body, env);
+    env_set(vm, env, fname, f);
+}
+
+/* Pre-bind every local function declared inside `body` into the frame env
+ * before the body runs. The native backends resolve a local through a
+ * signature table built before any code executes, so a call that textually
+ * precedes the declaration works there; hoisting at frame setup gives the
+ * interpreter the same reach, recursion included. The walk mirrors the
+ * resolver's scan: statement level, control-flow blocks and lambda bodies —
+ * but never a nested function's own body, whose locals bind when that
+ * function's own frame is set up (through this same hoist). */
+static void hoist_local_fns(VM *vm, Env *env, Node *n)
+{
+    if (!n || vm->error) return;
+    switch (n->type) {
+    case N_FUNC_DECL:
+        bind_func_decl(vm, env, n);
+        return;
+    case N_FUNC_LIT:
+        hoist_local_fns(vm, env, n->as.funclit.body);
+        return;
+    case N_PROGRAM: case N_BLOCK:
+        for (int i = 0; i < n->as.block.count; i++)
+            hoist_local_fns(vm, env, n->as.block.stmts[i]);
+        return;
+    case N_LET:        hoist_local_fns(vm, env, n->as.let.init); return;
+    case N_LET_PAT:    hoist_local_fns(vm, env, n->as.letpat.init); return;
+    case N_IF:
+        hoist_local_fns(vm, env, n->as.ifs.cond);
+        hoist_local_fns(vm, env, n->as.ifs.then);
+        hoist_local_fns(vm, env, n->as.ifs.els);
+        return;
+    case N_WHILE:
+        hoist_local_fns(vm, env, n->as.whiles.cond);
+        hoist_local_fns(vm, env, n->as.whiles.body);
+        return;
+    case N_FOR:
+        hoist_local_fns(vm, env, n->as.fors.init);
+        hoist_local_fns(vm, env, n->as.fors.cond);
+        hoist_local_fns(vm, env, n->as.fors.incr);
+        hoist_local_fns(vm, env, n->as.fors.iterable);
+        hoist_local_fns(vm, env, n->as.fors.body);
+        return;
+    case N_RETURN:     hoist_local_fns(vm, env, n->as.ret.expr); return;
+    case N_EXPR_STMT:  hoist_local_fns(vm, env, n->as.expr_stmt.expr); return;
+    case N_ASSIGN:     hoist_local_fns(vm, env, n->as.assign.value); return;
+    case N_ASSIGN_MEMBER:
+        hoist_local_fns(vm, env, n->as.assign_mem.obj);
+        hoist_local_fns(vm, env, n->as.assign_mem.value);
+        return;
+    case N_CALL:
+        hoist_local_fns(vm, env, n->as.call.callee);
+        for (int i = 0; i < n->as.call.argc; i++)
+            hoist_local_fns(vm, env, n->as.call.args[i]);
+        return;
+    case N_MEMBER:     hoist_local_fns(vm, env, n->as.member.obj); return;
+    case N_INDEX:
+        hoist_local_fns(vm, env, n->as.index.obj);
+        hoist_local_fns(vm, env, n->as.index.index);
+        return;
+    case N_UNARY:      hoist_local_fns(vm, env, n->as.unary.operand); return;
+    case N_BINARY:
+        hoist_local_fns(vm, env, n->as.binary.left);
+        hoist_local_fns(vm, env, n->as.binary.right);
+        return;
+    case N_TERNARY:
+        hoist_local_fns(vm, env, n->as.ternary.cond);
+        hoist_local_fns(vm, env, n->as.ternary.then);
+        hoist_local_fns(vm, env, n->as.ternary.els);
+        return;
+    case N_MATCH:
+        hoist_local_fns(vm, env, n->as.matchn.scrutinee);
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            hoist_local_fns(vm, env, n->as.matchn.arms[i].guard);
+            hoist_local_fns(vm, env, n->as.matchn.arms[i].body);
+        }
+        return;
+    default: return;
+    }
+}
+
 /* Contract: the caller has already pushed the callee and its args onto the
  * value stack (callee first, then the args for a total of argc+1 slots).
  * call_function replaces that region with a single result value. */
@@ -119,6 +210,11 @@ void call_function(VM *vm, Value callee, int argc) {
 
     for (int i = 0; i < argc; i++)
         env_set(vm, frame, f->as.fn.params[i], vm->stack[slot + 1 + i]);
+    if (vm->error) goto user_done;
+
+    /* Locals of this body bind before the body runs, matching the native
+     * backends' pre-built signature tables (forward calls and recursion). */
+    hoist_local_fns(vm, frame, (Node *)f->as.fn.body);
     if (vm->error) goto user_done;
 
     frame->next_active = vm->active_envs;
@@ -913,11 +1009,19 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
             break; /* unreachable */
         }
         case N_FUNC_DECL: {
-            Value f = make_func(vm, n->as.func.name, n->as.func.names,
+            /* A local function was hoisted by lume_resolve_localfns: its call
+             * sites inside the enclosing function spell the synthetic cname,
+             * so the binding must land under the same name (and the frame
+             * hoist has usually bound it already — this re-set is harmless).
+             * A local is never exported, so the export path only fires for
+             * top-level declarations, whose cname is NULL. */
+            const char *fname = n->as.func.cname ? n->as.func.cname
+                                                 : n->as.func.name;
+            Value f = make_func(vm, fname, n->as.func.names,
                                 n->as.func.arity, n->as.func.body, env);
-            env_set(vm, env, n->as.func.name, f);
+            env_set(vm, env, fname, f);
             if (n->is_export && vm->export_env)
-                env_set(vm, vm->export_env, n->as.func.name, f);
+                env_set(vm, vm->export_env, fname, f);
             return;
         }
         case N_TYPE_DECL:

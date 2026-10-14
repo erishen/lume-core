@@ -337,6 +337,13 @@ static void cg_stmt(CG *g, Node *n)
         cg_block(g, n);
         break;
 
+    case N_FUNC_DECL:
+        /* A local function: hoisted by lume_resolve_localfns into its own
+         * module-level define (emitted from the collected function set), so
+         * the declaration site itself contributes no code. Same rule as the
+         * text backend's cg_stmt. */
+        break;
+
     default:
         ERRX(g, "%s", bad(g, n, "this construct"));
     }
@@ -484,7 +491,12 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
 static void cg_function(CG *g, Node *fn)
 {
     char sym[160];
-    snprintf(sym, sizeof sym, "L_%s", fn->as.func.name ? fn->as.func.name : "?");
+    /* A local function is defined (and called) under its synthetic cname;
+     * top-level functions keep their source name. Same rule as the text
+     * backend's cg_function. */
+    const char *fname = fn->as.func.cname ? fn->as.func.cname
+                        : (fn->as.func.name ? fn->as.func.name : "?");
+    snprintf(sym, sizeof sym, "L_%s", fname);
     cg_def(g, sym, fn->as.func.names, fn->as.func.param_types,
            fn->as.func.arity, fn->as.func.ret, fn->as.func.body, 0, fn->line);
 }

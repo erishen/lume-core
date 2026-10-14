@@ -160,6 +160,31 @@ void type_release_all(void);
  * first error. Runs after parsing, before execution. */
 bool type_check_program(Node *prog, char *errbuf, size_t errbuf_size);
 bool is_builtin_name(const char *name);
+
+/* Local functions (SPEC §4.14): rewrite `func` declarations nested inside a
+ * function body into hoisted module-level functions.
+ *
+ * Every nested N_FUNC_DECL gets a synthetic name (`cname`), and every call
+ * inside its enclosing function that names the local is rewritten to that
+ * synthetic name. The local therefore resolves nowhere else — a top-level
+ * call to the source name is an undefined variable in all three backends,
+ * which is exactly the scoping a local declaration should have. Locals do
+ * not capture: they compile like any other module function.
+ *
+ * Idempotent (cnames are stamped once; already-rewritten calls no longer
+ * match the source name). Returns false + errbuf when two locals in one
+ * enclosing function share a name — the rewrite would otherwise rename
+ * both call sets to the second cname. Runs before the checker and again
+ * (as a guard) before native codegen. */
+bool lume_resolve_localfns(Node *prog, char *errbuf, size_t errbuf_size);
+
+/* Every N_FUNC_DECL in the program, top-level and nested (locals), in
+ * pre-order. Writes at most `cap` entries into `out` (which may be NULL);
+ * always returns the full count, so callers size their array with a NULL
+ * first pass. Shared by the checker's registration pass and both native
+ * backends. */
+int lume_collect_funcs(Node *prog, Node **out, int cap);
+
 /* Module-aware variant (loader.c): self = module being checked, mods =
  * registry of every loaded module (used to resolve `import "x" as ns`). */
 bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
@@ -578,7 +603,13 @@ typedef struct Node {
         struct { char *name; char *desc; struct Node *params;
                  struct Node *handler; } tool;
         struct { char *name; char **names; Type **param_types; Type *ret;
-                 int arity; struct Node *body; } func;
+                 int arity; struct Node *body;
+                 char *cname; /* local function only: synthetic module-level
+                               * name assigned by lume_resolve_localfns();
+                               * call sites inside the enclosing function are
+                               * rewritten to it, so the local stays invisible
+                               * everywhere else. NULL = top-level function. */
+               } func;
         struct { char *name; char **field_names; Type **field_types;
                  int count; } type_decl;
         /* `enum Name { V | V(f: t) | ... }` — variants in source order.

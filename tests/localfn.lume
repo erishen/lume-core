@@ -1,0 +1,94 @@
+// tests/localfn.lume — local functions: `func` nested in a function body (SPEC §4.14)
+// 运行: make localfn-test (并入 make test)
+//
+// 局部函数 = 提升为模块级函数的具名声明: 不捕获外部局部变量, 只在其包含函数
+// 内可见(实现上被赋合成名并改写调用点, 合成名不出现在源码层语义里)。提升语义:
+// 在包含函数内全程可见 — 声明位置之前也能调(与 Rust 嵌套 fn 一致), 因此同函数
+// 内"先调顶层同名函数再声明同名局部"不可表达, 遮蔽场景放在独立函数里测。覆盖:
+// 基本声明+调用、递归(fact)、前向引用(声明前调用)、两个局部互调、局部调用顶层
+// 函数、局部遮蔽顶层同名(独立函数, 顶层原样)、不同函数里同名局部各自独立、无
+// 注解返回类型推断、lambda 体里调用局部函数、if 块内声明的局部。本文件三后端
+// 各编各跑, 输出须同为 12 条 PASS 无 FAIL。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func top_base(): int {
+  return 100;   // top-level function a local can call (and can shadow)
+}
+
+func main(): int {
+  // --- 基本声明 + 调用 ---
+  func sq(x: int): int {
+    return x * x;
+  }
+  check("basic", sq(7) == 49);
+
+  // --- 递归 ---
+  func fact(n: int): int {
+    if (n <= 1) { return 1; }
+    return n * fact(n - 1);
+  }
+  check("recursion", fact(6) == 720);
+
+  // --- 前向引用(声明在调用之后) ---
+  check("forward", later(41) == 42);
+  func later(x: int): int {
+    return x + 1;
+  }
+
+  // --- 两个局部互调 ---
+  func dbl(x: int): int {
+    return x * 2;
+  }
+  func quad(x: int): int {
+    return dbl(dbl(x));
+  }
+  check("locals-calling-locals", quad(3) == 12);
+
+  // --- 局部调用顶层函数 ---
+  check("calls-top-level", sq(top_base()) == 10000);
+
+  // --- 无注解返回类型推断 ---
+  func neg(x: int) {
+    return -x;
+  }
+  check("inferred-ret", neg(5) == -5);
+
+  // --- lambda 体里调用局部函数 ---
+  let f = (x) => sq(x) + 1;
+  check("lambda-calls-local", f(4) == 17);
+
+  // --- if 块内声明的局部 ---
+  if (true) {
+    func inner(): int {
+      return 31;
+    }
+    check("inside-if", inner() == 31);
+  }
+
+  return 0;
+}
+
+// 局部遮蔽顶层同名: 提升语义下局部在整个包含函数内赢, 顶层不受影响
+func shadow(): int {
+  func top_base(): int {
+    return 7;
+  }
+  return top_base();
+}
+
+func other(): int {
+  // 不同函数里的同名局部 — 各自独立, 互不干扰
+  func helper(): int {
+    return 500;
+  }
+  return helper();
+}
+
+check("main-locals", main() == 0);
+check("shadows-top-level", shadow() == 7);
+check("top-level-intact", top_base() == 100);
+check("other-locals-independent", other() == 500);

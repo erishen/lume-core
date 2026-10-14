@@ -1,0 +1,11 @@
+// 两个局部函数同名 — 拒绝(重命名按名做, 同名会把两组调用都送到后一个 cname)
+func main() {
+  func dup(x: int): int {
+    return x;
+  }
+  func dup(y: int): int {
+    return y;
+  }
+  print(dup(1));
+}
+main();

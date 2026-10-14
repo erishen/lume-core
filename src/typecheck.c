@@ -719,6 +719,11 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
                        Node *prog, char *errbuf, size_t errbuf_size) {
     if (!prog || prog->type != N_PROGRAM) return true;
 
+    /* Local functions first: stamp cnames and rewrite the call sites inside
+     * each enclosing function, so every pass below sees the hoisted names
+     * (SPEC §4.14). Idempotent; the native backends re-run it as a guard. */
+    if (!lume_resolve_localfns(prog, errbuf, errbuf_size)) return false;
+
     Checker c;
     memset(&c, 0, sizeof(c));
     if (errbuf && errbuf_size) errbuf[0] = '\0';
@@ -829,34 +834,48 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
     }
 
     /* Pass C: register function signatures (two passes so mutual recursion
-     * between functions resolves). */
-    for (int i = 0; i < prog->as.program.count && !c.failed; i++) {
-        Node *s = prog->as.program.stmts[i];
-        if (s->type != N_FUNC_DECL) continue;
-        ck_ctor_shadow(&c, s->as.func.name, s->line);
-        Type **params = calloc((size_t)s->as.func.arity + 1, sizeof(Type *));
-        for (int j = 0; j < s->as.func.arity; j++) {
-            params[j] = s->as.func.param_types[j]
-                            ? resolve(&c, s->as.func.param_types[j], s->line)
-                            : any_type();
-            /* Write the resolved type back: the native emitters read the
-             * AST's param_types directly, and a TY_STRUCT shell spelled
-             * `Shape` must not be mistaken for a struct aggregate when the
-             * name is an enum (the emitters have no checker tables). Only
-             * annotated slots are written — NULL means "left to inference"
-             * and the signature pass keys off that. */
-            if (s->as.func.param_types[j])
-                s->as.func.param_types[j] = params[j];
+     * between functions resolves). Local functions register too, under their
+     * synthetic cname: the call sites inside the enclosing function were
+     * rewritten to that name, and the source name exists in no scope at all,
+     * so a call from anywhere else is an undefined variable — the scoping a
+     * local declaration should have (SPEC §4.14). */
+    {
+        int nfn = lume_collect_funcs(prog, NULL, 0);
+        Node **allfns = nfn > 0 ? malloc(sizeof(Node *) * (size_t)nfn) : NULL;
+        if (nfn > 0) lume_collect_funcs(prog, allfns, nfn);
+        for (int i = 0; i < nfn && !c.failed; i++) {
+            Node *s = allfns[i];
+            const char *fname = s->as.func.cname ? s->as.func.cname
+                                                 : s->as.func.name;
+            ck_ctor_shadow(&c, fname, s->line);
+            Type **params = calloc((size_t)s->as.func.arity + 1, sizeof(Type *));
+            for (int j = 0; j < s->as.func.arity; j++) {
+                params[j] = s->as.func.param_types[j]
+                                ? resolve(&c, s->as.func.param_types[j], s->line)
+                                : any_type();
+                /* Write the resolved type back: the native emitters read the
+                 * AST's param_types directly, and a TY_STRUCT shell spelled
+                 * `Shape` must not be mistaken for a struct aggregate when the
+                 * name is an enum (the emitters have no checker tables). Only
+                 * annotated slots are written — NULL means "left to inference"
+                 * and the signature pass keys off that. */
+                if (s->as.func.param_types[j])
+                    s->as.func.param_types[j] = params[j];
+            }
+            Type *ret = s->as.func.ret ? resolve(&c, s->as.func.ret, s->line)
+                                       : any_type();
+            if (s->as.func.ret)
+                s->as.func.ret = ret;   /* same write-back, for the emitters */
+            scope_decl(&c, c.scope, fname,
+                       type_func(s->as.func.arity, params, ret), s->line);
+            /* Only a top-level function can be exported; a local's export
+             * flag is never set by the parser, and its cname must not leak
+             * into the module surface anyway. */
+            if (s->is_export && !s->as.func.cname)
+                export_add(&c, s->as.func.name,
+                           scope_get(c.scope, fname));
         }
-        Type *ret = s->as.func.ret ? resolve(&c, s->as.func.ret, s->line)
-                                   : any_type();
-        if (s->as.func.ret)
-            s->as.func.ret = ret;   /* same write-back, for the emitters */
-        scope_decl(&c, c.scope, s->as.func.name,
-                   type_func(s->as.func.arity, params, ret), s->line);
-        if (s->is_export)
-            export_add(&c, s->as.func.name,
-                       scope_get(c.scope, s->as.func.name));
+        free(allfns);
     }
 
     /* Pass D: walk everything (function bodies included).

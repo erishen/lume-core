@@ -6,6 +6,34 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — local functions: `func` inside a function body (SPEC §4.14)
+
+- A `func` declared inside a function body is a **local function**: it compiles
+  like any module function (no capture — its body sees only its own parameters)
+  but resolves nowhere except inside the function that declares it. Hoisting
+  semantics: the local is visible throughout its enclosing function, including
+  before its declaration (forward calls and recursion work in all three
+  backends), and it shadows a same-named top-level function for the whole
+  enclosing body while leaving top-level callers untouched.
+- The mechanism is one rewrite run before the checker and re-run as a guard
+  before each native emitter: every nested declaration gets a synthetic
+  module-level name, and every call inside the enclosing function that spells
+  the local's source name is rewritten to it (`lume_resolve_localfns`). Scope
+  is therefore decided by one shared rewrite rather than four separate symbol
+  tables — a call outside the enclosing function still spells the source name,
+  which resolves to nothing, identically in the interpreter, the text backend
+  and libLLVM.
+- Two locals in one enclosing function may not share a name — diagnosed with a
+  dedicated message, since the blanket rename would otherwise route both call
+  sets to whichever synthetic name was assigned last. Same-named locals in
+  different functions are independent.
+- The interpreter pre-binds a frame's locals before the body runs (mirroring
+  the native signature tables), which is what makes forward references agree.
+- `tests/localfn.lume` (12 assertions, all three backends) +
+  `tests/localfn-bad/` (duplicate name, out-of-scope call) wired as
+  `make localfn-test`; a probe section was added to
+  `tests/native-consistency.lume` (baseline now 398 lines).
+
 ### Added — `range()` on the native backends
 
 - The interpreter always had `range(stop)` / `range(start, stop)` /

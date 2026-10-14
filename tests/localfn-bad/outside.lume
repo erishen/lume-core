@@ -1,0 +1,9 @@
+// 局部函数在包含函数之外不可见 — 三后端一致报 undefined variable
+func main() {
+  func inner(): int {
+    return 1;
+  }
+  print(inner());
+}
+main();
+print(inner());
