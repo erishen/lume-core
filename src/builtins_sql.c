@@ -153,9 +153,19 @@ static int kw_at(const char *s, const char *w) {
            !(isalnum((unsigned char)s[n]) || s[n] == '_');
 }
 
+/* Case-insensitive substring search. strcasestr is a GNU/BSD extension and
+ * does not exist on Windows; strncasecmp is portable everywhere we build. */
+static const char *ci_strstr(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    if (!n) return hay;
+    for (; *hay; hay++)
+        if (strncasecmp(hay, needle, n) == 0) return hay;
+    return NULL;
+}
+
 static int kw_anywhere(const char *s, const char *w) {
     size_t n = strlen(w);
-    for (const char *p = s; (p = strcasestr(p, w)) != NULL; p += n) {
+    for (const char *p = s; (p = ci_strstr(p, w)) != NULL; p += n) {
         int left_ok = (p == s) ||
                       !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
         if (left_ok && !(isalnum((unsigned char)p[n]) || p[n] == '_')) return 1;
