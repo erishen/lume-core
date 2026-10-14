@@ -364,6 +364,21 @@ void cg_stmt(CG *g, Node *n)
         const char *lt = llvm_type_of(ty);
         if (!lt) ERRX(g, "line %zu: cannot store '%s' into a typed local",
                      n->line, n->as.let.name);
+        /* A named struct may arrive as an address (a variable read or a field
+         * load — v.agg == 0) rather than an aggregate value (a call or a
+         * literal — v.agg == 1), but a let's slot holds the aggregate. Load
+         * it first, exactly as a struct literal's field does (codegen_lit.c);
+         * without this, `let inner = o.inner` and `let o2 = o` store a pointer
+         * where a %Inner is expected and clang rejects the whole module. */
+        if (ty->kind == TY_STRUCT && ty->name && !v.agg) {
+            const char *stf = llvm_type_of(ty);
+            char *ld = emit_instrf(g, ty, "load %s, %s* %s", stf, stf, v.v);
+            free(v.v);
+            if (!ld) ERRX(g, "line %zu: cannot load '%s'",
+                          n->line, n->as.let.name);
+            v = val_make_agg(ty, ld);
+            free(ld);
+        }
         Asg *a = asg_find(&g->locals, n->as.let.name, n->line);
         if (!a) { free(v.v); ERRX(g, "line %zu: unknown variable '%s'", n->line, n->as.let.name); }
         EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
@@ -374,6 +389,8 @@ void cg_stmt(CG *g, Node *n)
     case N_ASSIGN:
         free(cg_assign_expr(g, n).v);
         break;
+
+    case N_LET_PAT:  cg_let_pat(g, n); break;
 
     case N_ASSIGN_MEMBER:
         (void)cg_assign_mem(g, n);

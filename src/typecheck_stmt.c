@@ -179,6 +179,56 @@ void ck_stmt(Checker *c, Node *n) {
                            scope_get(c->scope, n->as.let.name));
             return;
         }
+        case N_LET_PAT: {
+            /* `let { a, b } = e;` — bind every name to the like-named key
+             * of e's map, in the current scope, e evaluated once. The rules
+             * mirror m.x exactly: a shaped map (a literal or a named
+             * struct) must declare every pattern name, and the stamped
+             * type is what the emitters dispatch on and what the
+             * interpreter's missing-key fallback materialises; a map of
+             * unknown shape (any) is accepted dynamically — the native
+             * backends refuse those at emit time, just as they refuse
+             * `m.x` on a dynamic map. */
+            Type *it = ck_expr(c, n->as.letpat.init, NULL);
+            it = resolve(c, it, n->line);
+            if (it->kind == TY_ENUM)
+                ck_fail(c, n->line,
+                        "destructuring needs a map value (got %s) — use "
+                        "if-let to destructure an enum", ty_str(it));
+            else if (it->kind != TY_STRUCT && it->kind != TY_ANY)
+                ck_fail(c, n->line,
+                        "destructuring needs a map value (got %s)",
+                        ty_str(it));
+            for (int i = 0; i < n->as.letpat.count; i++) {
+                const char *nm = n->as.letpat.names[i];
+                ck_ctor_shadow(c, nm, n->line);
+                Type *vt = NULL;
+                if (it->kind == TY_STRUCT) {
+                    for (int j = 0; j < it->count; j++)
+                        if (strcmp(nm, it->names[j]) == 0) {
+                            vt = it->types[j];
+                            break;
+                        }
+                    if (!vt) {
+                        ck_fail(c, n->line, "type has no field '%s'", nm);
+                        vt = any_type();
+                    }
+                }
+                /* NULL stays NULL for a dynamic map: the same state
+                 * N_MEMBER.type is in after `m.x` on an any-typed base. */
+                n->as.letpat.types[i] = vt;
+                if (c->collecting)
+                    scope_put(c->scope, nm, vt ? vt : any_type());
+                else
+                    scope_decl(c, c->scope, nm, vt ? vt : any_type(),
+                               n->line);
+            }
+            if (n->is_export)
+                for (int i = 0; i < n->as.letpat.count; i++)
+                    export_add(c, n->as.letpat.names[i],
+                               scope_get(c->scope, n->as.letpat.names[i]));
+            return;
+        }
         case N_IF: {
             Type *ct = ck_expr(c, n->as.ifs.cond, NULL);
             is_bool_ok(c, ct, n->line);

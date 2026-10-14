@@ -4,6 +4,64 @@
 
 #include "parser_internal.h"
 
+/* `let { a, b } = e;` — record destructuring (SPEC §4.12). The pattern is
+ * a plain comma-separated name list: each name binds to the like-named
+ * key of e, in the current scope, with e evaluated once. Nested and
+ * renaming forms are later features. `len`/`length` are refused because
+ * on an anonymous map they name the container property, not a key (the
+ * same footgun `.len` already is); a named struct that really declares
+ * such a field is read through a plain `let` instead. */
+static Node *parse_let_pattern(Parser *p, size_t line) {
+    advance(p);                       /* { */
+    char **names = NULL;
+    int count = 0;
+    if (check(p, TOK_RBRACE)) {
+        perror_at(p, peek(p).line,
+                  "a destructuring pattern needs at least one name", NULL);
+        return NULL;
+    }
+    for (;;) {
+        if (!check(p, TOK_IDENT)) {
+            perror_at(p, peek(p).line,
+                      "expected a name in the destructuring pattern", NULL);
+            goto fail;
+        }
+        Token nm = peek(p);
+        if ((nm.length == 3 && memcmp(nm.start, "len", 3) == 0) ||
+            (nm.length == 6 && memcmp(nm.start, "length", 6) == 0)) {
+            perror_at(p, nm.line,
+                      "'len' is a container property, not a map key — "
+                      "choose another name", NULL);
+            goto fail;
+        }
+        for (int i = 0; i < count; i++)
+            if (strlen(names[i]) == (size_t)nm.length &&
+                memcmp(names[i], nm.start, (size_t)nm.length) == 0) {
+                perror_at(p, nm.line, "pattern binds '%s' twice", names[i]);
+                goto fail;
+            }
+        advance(p);
+        names = realloc(names, sizeof(char *) * ((size_t)count + 1));
+        names[count++] = ident_name(p, nm);
+        if (!match(p, TOK_COMMA)) break;
+    }
+    if (!expect(p, TOK_RBRACE)) goto fail;
+    if (!expect(p, TOK_EQ)) goto fail;
+    Node *init = parse_expression(p);
+    if (!init) goto fail;
+    if (!expect(p, TOK_SEMI)) goto fail;
+    Node *n = nalloc(N_LET_PAT, line);
+    n->as.letpat.names = names;
+    n->as.letpat.types = calloc((size_t)count, sizeof(Type *));
+    n->as.letpat.count = count;
+    n->as.letpat.init = init;
+    return n;
+fail:
+    for (int i = 0; i < count; i++) free(names[i]);
+    free(names);
+    return NULL;
+}
+
 Node *parse_statement(Parser *p) {
     Token t = peek(p);
 
@@ -212,6 +270,11 @@ Node *parse_statement(Parser *p) {
     }
     if (t.type == TOK_LET) {
         advance(p);
+        /* `let { a, b } = e;` — a `{` where the bound name would be is a
+         * destructuring pattern, not a variable (the name path requires an
+         * identifier). */
+        if (check(p, TOK_LBRACE))
+            return parse_let_pattern(p, t.line);
         if (!check(p, TOK_IDENT)) {
             perror_at(p, peek(p).line, "expected variable name after 'let'", NULL);
             return NULL;

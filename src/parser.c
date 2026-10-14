@@ -525,6 +525,7 @@ static void ctor_rewrite(Node *n, CtorTab *tab) {
         return; /* count/stmts are the same union member for both kinds */
     case N_ENUM_DECL: return; /* declarations carry no expressions */
     case N_LET:        ctor_rewrite(n->as.let.init, tab); return;
+    case N_LET_PAT:    ctor_rewrite(n->as.letpat.init, tab); return;
     case N_IF:
         ctor_rewrite(n->as.ifs.cond, tab);
         ctor_rewrite(n->as.ifs.then, tab);
@@ -724,6 +725,7 @@ static void node_free_kids(Node *n) {
         break;
     }
     case N_LET:  node_free(n->as.let.init); break;
+    case N_LET_PAT: node_free(n->as.letpat.init); break;
     case N_IF:
         node_free(n->as.ifs.cond);
         node_free(n->as.ifs.then);
@@ -827,6 +829,10 @@ static void node_free_own(Node *n) {
         break;
     }
     case N_LET:           free(n->as.let.name); break;
+    case N_LET_PAT:
+        free_name_array(n->as.letpat.names, n->as.letpat.count);
+        free(n->as.letpat.types);   /* Type* elements: type_release_all() */
+        break;
     case N_FOR:           free(n->as.fors.var); break;
     case N_ROUTE:
         free(n->as.route.method);
@@ -996,6 +1002,14 @@ void node_print(Node *n, int depth) {
         case N_LET:
             indent_print(depth); printf("let %s\n", n->as.let.name);
             node_print(n->as.let.init, depth + 1);
+            break;
+        case N_LET_PAT:
+            indent_print(depth);
+            printf("let-pattern {");
+            for (int i = 0; i < n->as.letpat.count; i++)
+                printf("%s%s", i ? ", " : "", n->as.letpat.names[i]);
+            printf("}\n");
+            node_print(n->as.letpat.init, depth + 1);
             break;
         case N_ROUTE:
             indent_print(depth);

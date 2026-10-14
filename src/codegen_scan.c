@@ -405,6 +405,34 @@ static void scan_stmt(CG *g, Node *n)
         break;
     }
 
+    case N_LET_PAT: {
+        /* One binding per pattern name, registered exactly like a `let`:
+         * a top-level name becomes module storage (the @lv_ global plus
+         * L_top's own local), a function-local name a plain local. The
+         * types were stamped by the checker; a NULL stamp means the map's
+         * shape was unknown, which has no codegen type — the wall `m.x`
+         * hits on a dynamic map, reported here because a binding needs a
+         * slot. The init is an expression and needs no scanning of its
+         * own (lambdas inside it are pre-registered elsewhere). */
+        for (int i = 0; i < n->as.letpat.count; i++) {
+            Type *ty = n->as.letpat.types[i];
+            const char *nm = n->as.letpat.names[i];
+            if (!ty)
+                ERRX(g, "line %zu: cannot infer a type for '%s' (the "
+                        "destructured map has no known shape)",
+                     n->line, nm);
+            if (g->scanning_top) {
+                char slot[128];
+                gvar_slot(slot, sizeof slot, nm);
+                asg_push(&g->gvars, nm, ty, slot, n->line);
+                asg_push(&g->locals, nm, ty, slot, n->line);
+            } else {
+                asg_push(&g->locals, nm, ty, NULL, n->line);
+            }
+        }
+        break;
+    }
+
     case N_FOR: {
         /* A for-in variable is a *binding*, not a `let`, so nothing registers
          * it and the entry-block alloca pass would silently skip it — every

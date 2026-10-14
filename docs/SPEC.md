@@ -594,6 +594,42 @@ print(apply([1, 2, 3]) { |x: int| let d = x * 2; d + 1 });  // [3,5,7]
 `tests/trailing-closure-bad/` 断言；三后端值语义由 `tests/native-consistency.lume`
 的尾随闭包探针段覆盖。
 
+### 4.12 记录解构 `let { a, b } = e;`（2026-10-14）
+
+一次性求值 `e`，再把 `e` 的每个同名 key 绑定到当前作用域的一个裸名上——等价于
+`let a = e.a; let b = e.b;` 但 `e` 只求一次，且名字与字段同名（MVP 不支持
+`let { x: x2 } = e` 改名）。规则与 `m.x` 点访问一一对应：
+
+- **init 必须已知形状**：匿名 struct 字面量（`{ "a": 1, "b": 2 }`）或命名 struct。
+  其字段集在编译期确定，每个模式名都必须存在，否则 `type has no field 'x'`。
+- **动态 any map 故意不绑**：`let m: map = ...; let { a } = m;` 在编译期被接受
+  （`types[i] = NULL`），但两个原生后端在发射期拒绝（"the destructured map has
+  no known shape"）——与 `m.x` 在动态 map 上的同一既有边界；要解构未知形状的
+  map 用 `get(m, k, d)`。
+- **enum 不可解构**：`let { a } = SomeEnum` 报 "destructuring needs a map value
+  (got E) — use if-let to destructure an enum"；enum 用 `if let` / `match`。
+- **`len` / `length` 拒绝**：它们是容器的属性名而非 map key，同名遮蔽会踩与
+  `.len` 一样的坑，解析期即拒（"choose another name"）。
+- **命名 struct 字段绑定是地址还是值**：命名 struct 在 Val 槽里存的是地址
+  （`agg = 0`），解构时须先 load 成聚合值再存储——这一路正是「struct 字段绑定
+  未 load 成值」既有 bug 的现场（普通 `let v = o.inner` 同样踩中，本轮一并修掉）。
+  匿名 struct 字面量 / 调用 / 字面量产生的字段已是聚合值（`agg = 1`），直接存。
+
+```lume
+type Point = { x: int, y: int };
+let p = { x: 3, y: 4 };
+let { x, y } = p;                 // x=3, y=4; p 原值仍可用
+let { u, v } = { "u": 10, "v": 20 };   // 匿名 struct 字面量
+let { s, f, t } = { "s": "txt", "f": 1.5, "t": true };  // 标量类型全支持
+let { ix, iy } = p;               // 链式: 对已解构出的 struct 再解构一层
+let { a } = { "a": 1, "b": 2 };   // 部分解构(只绑子集)
+```
+
+正向 12 条断言由 `tests/letpat.lume` 覆盖（解释器 + 两个原生后端各编各跑，输出
+同为 12/12）；7 个编译期负例（`空模式` / `非名` / `容器属性名` / `重名` / `非 map`
+/ `缺字段` / `enum init`）由 `tests/letpat-bad/` 断言；三后端值语义由
+`tests/native-consistency.lume` 的解构探针段覆盖。
+
 ---
 
 ## 5. Result 与 `?` 传播

@@ -326,6 +326,33 @@ static void scan_stmt(CG *g, Node *n)
         asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
         break;
     }
+    case N_LET_PAT: {
+        /* One binding per pattern name, registered exactly like a `let`
+         * (mirrors codegen_scan.c): a top-level name becomes module
+         * storage, a function-local name a plain local. The types were
+         * stamped by the checker; a NULL stamp means the map's shape was
+         * unknown, which has no codegen type — reported here because a
+         * binding needs a slot. */
+        for (int i = 0; i < n->as.letpat.count; i++) {
+            Type *ty = n->as.letpat.types[i];
+            const char *nm = n->as.letpat.names[i];
+            if (!ty)
+                ERRX(g, "line %zu: cannot infer a type for '%s' (the "
+                        "destructured map has no known shape)",
+                     n->line, nm);
+            if (g->scanning_top) {
+                LLVMValueRef slot = gvar_make(g, nm, ty);
+                if (!slot)
+                    ERRX(g, "line %zu: top-level variable '%s' has no "
+                            "codegen type", n->line, nm);
+                asg_push(&g->gvars, nm, ty, slot, n->line);
+                asg_push(&g->locals, nm, ty, slot, n->line);
+            } else {
+                asg_push(&g->locals, nm, ty, NULL, n->line);
+            }
+        }
+        break;
+    }
     case N_FOR: {
         /* `for (x in xs)` binds the loop variable — it is not a `let`, so
          * without registering it here the body's use of it dies in codegen.

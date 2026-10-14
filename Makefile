@@ -403,7 +403,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -669,7 +669,7 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test backend-parity pack packcheck \
-         treecheck
+         treecheck letpat-test
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \
@@ -862,6 +862,43 @@ interp2-test: all
 	check_bad with-type-mismatch "struct field: cannot use a value of type string where int is expected"; \
 	check_bad with-unknown-field "unknown field 'z' in struct update"; \
 	echo "==> interp2 单测通过"
+
+# 记录解构 `let { a, b } = e;` (SPEC §4.12): 解释器 12 条断言全 PASS; 两个原生
+# 后端各编各跑，输出必须同为 12/12 无 FAIL; 7 个编译期拒绝各断言自己的诊断句
+# (空模式 / 非名 / 容器属性名 / 重名 / 非 map / 缺字段 / enum init)，改名或
+# 改措辞都会在这里红。动态 any map 的解构在原生后端被拒(与 m.x 同边界),
+# 三后端一致值由 native-consistency 探针段覆盖。
+letpat-test: all
+	@./$(TARGET) tests/letpat.lume > /tmp/lume-letpat-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-letpat-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-letpat-test.out; then \
+		echo "==> letpat 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-letpat-test.out) -ne 12 ]; then \
+		echo "==> letpat 断言数不符 (期望 12)"; exit 1; fi; \
+	set -e; \
+	check_bad() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/letpat-bad/$$f.lume > /tmp/lume-letpat-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-letpat-bad.out; then \
+	    echo "==> letpat 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-letpat-bad.out; exit 1; fi; \
+	  echo "ok   letpat-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad empty "a destructuring pattern needs at least one name"; \
+	check_bad not-name "expected a name in the destructuring pattern"; \
+	check_bad len-name "'len' is a container property, not a map key"; \
+	check_bad dup-name "pattern binds 'a' twice"; \
+	check_bad non-map "destructuring needs a map value (got int)"; \
+	check_bad missing-field "type has no field 'z'"; \
+	check_bad enum-init "destructuring needs a map value (got E)"; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/letpat.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   letpat: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/letpat.lume -o /tmp/letpat_$$be > /dev/null 2>&1 || { echo "==> letpat $$be 编译失败"; exit 1; }; \
+	  /tmp/letpat_$$be > /tmp/letpat_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/letpat_$$be.out || [ $$(grep -c PASS /tmp/letpat_$$be.out) -ne 12 ]; then \
+	    echo "==> letpat $$be 输出不符 (rc=$$rc):"; cat /tmp/letpat_$$be.out; exit 1; fi; \
+	  echo "ok   letpat: $$be 后端 12/12"; \
+	done; \
+	echo "==> letpat 单测通过"
 
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),

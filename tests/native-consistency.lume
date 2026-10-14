@@ -1026,5 +1026,32 @@ print(get(gm, "missing", null));    // null (null 默认走 obj getter)
 print(get({ a: 1, b: 2 }, "b", 0)); // 2 (内联字面量同样按形状)
 
 
+// ---- record destructuring (`let { a, b } = e;`) ------------------------
+// SPEC §4.12. 一次性求值 init，逐字段按 shape 绑定裸名。命名 struct 字段
+// 绑定正是「struct 字段绑定未 load 成值」既有 bug 的现场（cg_let_pat /
+// cg_member_load 的 agg 处理），三后端必须一致。仅已知形状（匿名 struct
+// 字面量 / 命名 struct），动态 any map 的同款解构在原生后端被拒。
+type DZDPT = { dzpx: int, dzpy: int };
+type DZDBX = { dzpt: DZDPT, dztag: string };
+let dzd: DZDPT = { dzpx: 3, dzpy: 4 };
+let { dzpx, dzpy } = dzd;
+print(dzpx);                // 3
+print(dzpy);                // 4
+let dzm = { dzu: 10, dzv: 20 };
+let { dzu, dzv } = dzm;
+print(dzu);                 // 10
+print(dzv);                 // 20
+let dzs = { dzs2: "txt", dzf: 1.5, dzt: true };
+let { dzs2, dzf, dzt } = dzs;
+print(dzs2);                // txt
+print(dzf);                 // 1.5
+print(dzt);                 // true
+let dzp2: DZDPT = { dzpx: 1, dzpy: 2 };
+let dzbx: DZDBX = { dzpt: dzp2, dztag: "hi" };
+let { dzpt, dztag } = dzbx;
+print(dzpt.dzpx);           // 1
+print(dzpt.dzpy);           // 2
+print(dztag);               // hi
+
 warmup();
 main();

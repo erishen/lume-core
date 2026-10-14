@@ -10,6 +10,7 @@ static const char *node_type_name(NodeType t)
     case N_PROGRAM: return "program";           case N_BLOCK:  return "block";
     case N_LET:     return "let";               case N_IF:     return "if";
     case N_IF_LET:  return "if-let";
+    case N_LET_PAT: return "let-pattern";
     case N_WHILE:   return "while";             case N_FOR:    return "for";
     case N_BREAK:   return "break";             case N_CONTINUE: return "continue";
     case N_RETURN:  return "return";            case N_EXPR_STMT: return "expression statement";
@@ -417,6 +418,44 @@ static Val cg_len_of(CG *g, const char *fn, LLVMValueRef obj)
     return r ? val_make(type_prim(TY_INT), r) : (Val){ NULL, NULL };
 }
 
+static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
+                          size_t line);
+
+/* `let { a, b } = e;` — SPEC §4.12. One evaluation of the init, then every
+ * name stored from a field load of that single value: the emitter's
+ * spelling of `let a = e.a; let b = e.b;` with one e. The checker stamped
+ * the field types, so each load dispatches exactly like the `m.x` it
+ * mirrors. */
+static void cg_let_pat(CG *g, Node *n)
+{
+    AT(g);
+    Val base = cg_expr(g, n->as.letpat.init);
+    if (!base.v) ERRX(g, "line %zu: bad destructuring value", n->line);
+    for (int i = 0; i < n->as.letpat.count && !g->err[0]; i++) {
+        Type *ty = n->as.letpat.types[i];
+        const char *nm = n->as.letpat.names[i];
+        if (!ty)
+            ERRX(g, "line %zu: cannot store '%s' (the destructured map has "
+                    "no known shape)", n->line, nm);
+        Val v = cg_member_load(g, base, nm, ty, n->line);
+        if (!v.v) break;
+        v = coerce(g, ty, v, n->line);
+        if (g->err[0]) break;   /* coerce refused (e.g. null into a scalar) */
+        if (!ty_of(g, ty))
+            ERRX(g, "line %zu: cannot store this into a typed local", n->line);
+        /* A named-struct field arrives as an address; the slot holds the
+         * aggregate, so load it first — the same conversion a struct
+         * literal's field makes (see cg_stmt's N_LET). */
+        if (ty->kind == TY_STRUCT && ty->name && struct_is_addr(v.v))
+            v.v = LLVMBuildLoad2(g->ab, ty_of(g, ty), v.v, "ld");
+        Asg *a = asg_find(&g->locals, nm, n->line);
+        if (!a) ERRX(g, "line %zu: internal: '%s' was not allocated by the "
+                        "scan pass", n->line, nm);
+        if (!a->slot) a->slot = LLVMBuildAlloca(g->ab, ty_of(g, ty), "lv");
+        LLVMBuildStore(g->ab, v.v, a->slot);
+    }
+}
+
 static Val cg_member(CG *g, Node *n)
 {
     AT(g);
@@ -440,16 +479,23 @@ static Val cg_member(CG *g, Node *n)
             return cg_len_of(g, "lume_bi_len_s", obj.v);
     }
 
-    /* `m.x` on a runtime map: the type checker requires `x` to be a declared
-     * key, so the value is always present. Lower onto lume_map_get_*, exactly
-     * as the `?` unwrap does, dispatched by the field's value type. (obj.v is
-     * an LLVMValueRef here, not heap — nothing to free.) */
+    return cg_member_load(g, obj, n->as.member.name, n->as.member.type,
+                          n->line);
+}
+
+/* Load one field out of an already-evaluated base: the runtime-map path
+ * (`m.x` on an anonymous struct — lume_map_get_*, dispatched by the
+ * field's value type) or the named-struct path (gep + load). obj.v is an
+ * LLVMValueRef, so there is nothing to free and a caller may reuse one
+ * base for several fields (a destructuring `let { a, b } = e`). */
+static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
+                          size_t line)
+{
     if (obj.ty && obj.ty->kind == TY_STRUCT && !obj.ty->name) {
-        Type *vt = n->as.member.type;
         const char *gfn = map_get_fn(vt);
         if (!gfn)
             ERRV(g, "line %zu: map field '%s' has no codegen type",
-                 n->line, n->as.member.name);
+                 line, name);
 
         LLVMTypeRef ret_ty, dflt_ty;
         LLVMValueRef dflt;
@@ -466,8 +512,7 @@ static Val cg_member(CG *g, Node *n)
             dflt = LLVMConstInt(g->i64, 0, 0);   /* int / bool */
         }
 
-        LLVMValueRef key = cg_string_val(g, n->as.member.name,
-                                         (int)strlen(n->as.member.name));
+        LLVMValueRef key = cg_string_val(g, name, (int)strlen(name));
         LLVMTypeRef params[3] = { g->i8ptr, g->i8ptr, dflt_ty };
         LLVMValueRef args[3] = { obj.v, key, dflt };
         LLVMValueRef call = LLVMBuildCall2(g->ab,
@@ -489,23 +534,23 @@ static Val cg_member(CG *g, Node *n)
      * struct. The object is always the owner of the field. */
     Type *st = obj.ty;
     if (!st || st->kind != TY_STRUCT || !st->name)
-        ERRV(g, "line %zu: field access on a non-struct value", n->line);
+        ERRV(g, "line %zu: field access on a non-struct value", line);
 
-    int idx = struct_field_idx(g, st->name, n->as.member.name);
+    int idx = struct_field_idx(g, st->name, name);
     if (idx < 0) ERRV(g, "line %zu: unknown field '%s' on '%s'",
-                      n->line, n->as.member.name, st->name);
-    if (!ty_of(g, st)) ERRV(g, "line %zu: cannot access '%s'", n->line, n->as.member.name);
+                      line, name, st->name);
+    if (!ty_of(g, st)) ERRV(g, "line %zu: cannot access '%s'", line, name);
 
     Type *fty = struct_field_type(g, st->name, idx);
     if (!fty || !ty_of(g, fty))
-        ERRV(g, "line %zu: field '%s' has no codegen type", n->line, n->as.member.name);
+        ERRV(g, "line %zu: field '%s' has no codegen type", line, name);
 
     /* StructGEP walks `%Rect* -> field` in one index, so the text backend's
      * `getelementptr inbounds %Rect, %Rect* %r, i32 0, i32 <field>` double
      * index (and the silent wrong-field bug it avoids) is gone. A struct value
      * was never loaded, so obj.v is its address already. */
     LLVMValueRef p = gep_field(g, st, obj.v, idx);
-    if (!p) ERRV(g, "line %zu: cannot take the address of '%s'", n->line, n->as.member.name);
+    if (!p) ERRV(g, "line %zu: cannot take the address of '%s'", line, name);
 
     /* A struct field is returned by address, so a chain like `o1.inner.x`
      * keeps working; scalar fields are loaded into a value as before. The

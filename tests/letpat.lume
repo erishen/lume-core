@@ -1,0 +1,79 @@
+// tests/letpat.lume — record destructuring `let { a, b } = e;` (SPEC §4.12)
+// 运行: make letpat-test (并入 make test)
+//
+// 覆盖: 匿名 map 字面量解构、命名 struct 解构(本地值 / 函数返回值)、
+// 解构后原值仍可访问(命名 struct 字段绑定不复制也不破坏原值 —— 这是
+// 引爆「struct 字段绑定未 load 成值」既有 bug 的现场)、嵌套 struct 字段、
+// 链式解构、标量字段类型(int/float/string/bool)、解构出的变量参与后续
+// 表达式、多字段求和、部分解构(只绑子集)。
+//
+// 仅裸名(MVP 不支持 `let { x: x2 } = e` 改名)。每次 init 必须已知形状
+// (匿名 struct 字面量或命名 struct)——动态 any map 的解构在原生后端被拒
+// (与 `m.x` 同一既有边界), 三后端一致值由 native-consistency 探针段覆盖。
+// 本文件在解释器与两个原生后端各编各跑, 输出必须同为 12 条 PASS 无 FAIL。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+type LPRec  = { u: int };
+type LPRec2 = { mx: int, my: int };
+
+func mk2(): LPRec2 { return { mx: 1, my: 2 }; }
+
+func main(): int {
+  // --- 匿名 map 字面量解构 ---
+  let { la, lb } = { "la": 10, "lb": 20 };
+  check("map literal", la == 10 && lb == 20);
+
+  // --- 命名 struct 解构(本地值) ---
+  let lp = { x: 3, y: 4 };
+  let { x, y } = lp;
+  check("struct local", x == 3 && y == 4);
+
+  // --- 解构后原值仍可用(struct 字段绑定不破坏/不复制原值) ---
+  check("struct intact", lp.x == 3 && lp.y == 4);
+
+  // --- 命名 struct 解构(函数返回值) ---
+  let lpp = mk2();
+  let { mx, my } = lpp;
+  check("struct return", mx == 1 && my == 2);
+
+  // --- 嵌套 struct 字段(解构出 struct, 再点访问) ---
+  let lbx = { pt: { ix: 1, iy: 2 }, tag: "hi" };
+  let { pt, tag } = lbx;
+  check("nested struct", pt.ix == 1 && pt.iy == 2 && tag == "hi");
+
+  // --- 链式解构: 对解构出的 struct 再解构一层 ---
+  let { ix, iy } = pt;
+  check("chained", ix == 1 && iy == 2);
+
+  // --- 标量字段类型(int/float/string/bool) ---
+  let { ss, ff, tt } = { "ss": "txt", "ff": 1.5, "tt": true };
+  check("scalar types", ss == "txt" && ff == 1.5 && tt == true);
+
+  // --- 解构出的变量参与后续表达式 ---
+  let { ex, ey } = { "ex": 5, "ey": 6 };
+  check("use in expr", (ex + ey) * 2 == 22);
+
+  // --- 多字段求和 ---
+  let { ca, cb, cc } = { "ca": 1, "cb": 2, "cc": 3 };
+  check("three fields", ca + cb + cc == 6);
+
+  // --- float 字段 ---
+  let { gf } = { "gf": 2.25 };
+  check("float field", gf == 2.25);
+
+  // --- bool 字段(false 也正确绑定) ---
+  let { gok } = { "gok": false };
+  check("bool field", gok == false);
+
+  // --- 部分解构(只绑子集, 其余字段忽略) ---
+  let { pa } = { "pa": 1, "pb": 2 };
+  check("partial", pa == 1);
+
+  return 0;
+}
+
+main();

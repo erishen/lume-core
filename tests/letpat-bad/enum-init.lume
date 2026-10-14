@@ -1,0 +1,2 @@
+enum E { A | B }
+let { a } = A;

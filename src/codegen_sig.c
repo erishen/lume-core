@@ -207,6 +207,7 @@ static void preregister_lambdas(CG *g, Node *n, int in_handler)
         preregister_lambdas(g, n->as.func.body, 0);
         return;
     case N_LET:        preregister_lambdas(g, n->as.let.init, 0); return;
+    case N_LET_PAT:    preregister_lambdas(g, n->as.letpat.init, 0); return;
     case N_IF:
         preregister_lambdas(g, n->as.ifs.cond, 0);
         preregister_lambdas(g, n->as.ifs.then, 0);
@@ -536,6 +537,7 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
         return changed;
     case N_MEMBER:      return walk_sigs(g, n->as.member.obj, t, s);
     case N_LET:         return walk_sigs(g, n->as.let.init, t, s);
+    case N_LET_PAT:     return walk_sigs(g, n->as.letpat.init, t, s);
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
             changed += walk_sigs(g, n->as.list.items[i], t, s);

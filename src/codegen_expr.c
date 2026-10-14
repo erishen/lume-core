@@ -25,6 +25,8 @@ static char *cg_val_eq(CG *g, Val a, Val b, bool ne, size_t line);
 static char *cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line);
 static Val cg_literal(CG *g, Node *n);
 static Val cg_member(CG *g, Node *n);
+static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
+                          size_t line);
 static Val cg_index(CG *g, Node *n);
 char *cg_string_val(CG *g, const char *text, size_t len);
 static Val cg_unary(CG *g, Node *n);
@@ -182,6 +184,7 @@ static const char *node_type_name(NodeType t)
     case N_MATCH:   return "match";             case N_CTOR:   return "constructor";
     case N_INDEX:   return "index";             case N_IMPORT: return "import";
     case N_IF_LET: return "if-let";
+    case N_LET_PAT: return "let-pattern";
     case N_STRUCT_UPDATE: return "struct update";
     }
     return "node";
@@ -880,33 +883,47 @@ static Val cg_member(CG *g, Node *n)
         return r;
     }
 
-    /* `m.x` on a runtime map: the type checker (typecheck_expr.c) already
-     * required `x` to be a *declared* key, so the value is always present at
-     * run time. Lower it onto the same lume_map_get_* the `?` unwrap and the
-     * index read use, dispatched by the field's value type. This matches the
-     * interpreter, which does a plain map_get and only falls back to a zero
-     * value on a missing key (which a type-checked program cannot produce). */
+    return cg_member_load(g, obj, n->as.member.name, n->as.member.type,
+                          n->line);
+}
+
+/* Load one field out of an already-evaluated base: the runtime-map path
+ * (`m.x` on an anonymous struct — lume_map_get_*, dispatched by the
+ * field's value type) or the named-struct path (gep + load). obj.v is
+ * freed on every path — including the ones struct_addr rewrites — so a
+ * caller that reuses one base for several fields (a destructuring
+ * `let { a, b } = e`) hands in a fresh copy of the token each time. */
+static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
+                          size_t line)
+{
+    /* An anonymous struct is a runtime map, which also has no declared field
+     * behind `.len` — the same shape as the list case above. */
+    int is_map = obj.ty && obj.ty->kind == TY_STRUCT && !obj.ty->name;
     if (is_map) {
-        Type *vt = n->as.member.type;
+        /* `m.x` on a runtime map: the type checker (typecheck_expr.c) already
+         * required `x` to be a *declared* key, so the value is always present at
+         * run time. Lower it onto the same lume_map_get_* the `?` unwrap and the
+         * index read use, dispatched by the field's value type. This matches the
+         * interpreter, which does a plain map_get and only falls back to a zero
+         * value on a missing key (which a type-checked program cannot produce). */
         const char *gfn = map_get_fn(vt);
         if (!gfn) {
             free(obj.v);
             ERRV(g, "line %zu: map field '%s' has no codegen type",
-                 n->line, n->as.member.name);
+                 line, name);
         }
         const char *pty = rt_arg_type(vt);
         const char *darg = strcmp(pty, "i8*") == 0   ? "i8* null"
                          : strcmp(pty, "double") == 0 ? "double 0.0"
                                                       : "i64 0";
         Val key = val_take(type_prim(TY_STRING),
-                           cg_string_val(g, n->as.member.name,
-                                         strlen(n->as.member.name)));
+                           cg_string_val(g, name, strlen(name)));
         char *res = emit_instrf(g, vt,
                                 "call %s @%s(i8* %s, i8* %s, %s)",
                                 pty, gfn, obj.v, key.v, darg);
         free(obj.v); free(key.v);
         if (!res) ERRV(g, "line %zu: cannot read map field '%s'",
-                       n->line, n->as.member.name);
+                       line, name);
         /* A bool travels out of lume_map_get_i as an i64 (0/1) but the
          * backend represents bool as i1; narrow it so downstream coerce and
          * print see a proper bool. */
@@ -914,7 +931,7 @@ static Val cg_member(CG *g, Node *n)
             char *b = emit_instrf(g, vt, "trunc i64 %s to i1", res);
             free(res);
             if (!b) ERRV(g, "line %zu: cannot read map field '%s'",
-                         n->line, n->as.member.name);
+                         line, name);
             res = b;
         }
         return val_take(vt, res);
@@ -929,30 +946,30 @@ static Val cg_member(CG *g, Node *n)
     Type *st = obj.ty;
     if (!st || st->kind != TY_STRUCT || !st->name) {
         free(obj.v);
-        ERRV(g, "line %zu: field access on a non-struct value", n->line);
+        ERRV(g, "line %zu: field access on a non-struct value", line);
     }
 
-    int idx = struct_field_idx(g, st->name, n->as.member.name);
+    int idx = struct_field_idx(g, st->name, name);
     if (idx < 0) {
         free(obj.v);
-        ERRV(g, "line %zu: unknown field '%s' on '%s'", n->line, n->as.member.name, st->name);
+        ERRV(g, "line %zu: unknown field '%s' on '%s'", line, name, st->name);
     }
 
     /* llvm_type_of, not st->name: the spelling needs its `%` sigil. */
     const char *stn = llvm_type_of(st);
-    if (!stn) { free(obj.v); ERRV(g, "line %zu: cannot access '%s'", n->line, n->as.member.name); }
+    if (!stn) { free(obj.v); ERRV(g, "line %zu: cannot access '%s'", line, name); }
 
     /* Two indices: the leading `0` walks the pointer to the struct, the second
      * is the field. Omitting it would turn `1` into an *array* subscript,
      * silently reading offset 16 — the wrong field. */
     char *p = emit_instrf(g, st, "getelementptr inbounds %s, %s* %s, i32 0, i32 %d",
                           stn, stn, obj.v, idx);
-    if (!p) { free(obj.v); ERRV(g, "line %zu: cannot access '%s'", n->line, n->as.member.name); }
+    if (!p) { free(obj.v); ERRV(g, "line %zu: cannot access '%s'", line, name); }
 
     Type *fty = struct_field_type(g, st->name, idx);
     if (!fty || !llvm_type_of(fty)) {
         free(obj.v); free(p);
-        ERRV(g, "line %zu: field '%s' has no codegen type", n->line, n->as.member.name);
+        ERRV(g, "line %zu: field '%s' has no codegen type", line, name);
     }
 
     /* A struct field is returned by address, so a chain like `o1.inner.x`
@@ -966,8 +983,64 @@ static Val cg_member(CG *g, Node *n)
     }
     char *r = emit_instrf(g, fty, "load %s, %s* %s", llvm_type_of(fty), llvm_type_of(fty), p);
     free(obj.v); free(p);
-    if (!r) ERRV(g, "line %zu: cannot read '%s'", n->line, n->as.member.name);
+    if (!r) ERRV(g, "line %zu: cannot read '%s'", line, name);
     return val_take(fty, r);
+}
+
+/* `let { a, b } = e;` — SPEC §4.12. The init is evaluated once and every
+ * name is stored from a field load of that single value, so this is the
+ * emitter's spelling of `let a = e.a; let b = e.b;` with one e. The
+ * checker has already stamped the field types and rejected unknown
+ * names, so each load dispatches exactly like the `m.x` it mirrors. */
+void cg_let_pat(CG *g, Node *n)
+{
+    Val base = cg_expr(g, n->as.letpat.init);
+    if (!base.v) ERRX(g, "line %zu: bad destructuring value", n->line);
+    for (int i = 0; i < n->as.letpat.count && !g->err[0]; i++) {
+        Type *ty = n->as.letpat.types[i];
+        const char *nm = n->as.letpat.names[i];
+        if (!ty) {
+            free(base.v);
+            ERRX(g, "line %zu: cannot store '%s' (the destructured map has "
+                    "no known shape)", n->line, nm);
+        }
+        /* cg_member_load frees the token it is given, so each field gets
+         * its own copy of the base's name. */
+        Val b = base;
+        b.v = xstrdup(base.v);
+        Val v = cg_member_load(g, b, nm, ty, n->line);
+        if (!v.v) break;
+        v = coerce(g, ty, v, n->line);
+        if (g->err[0]) { free(v.v); break; }
+        const char *lt = llvm_type_of(ty);
+        if (!lt) {
+            free(v.v); free(base.v);
+            ERRX(g, "line %zu: cannot store '%s' into a typed local",
+                 n->line, nm);
+        }
+        /* A named-struct field arrives as an address (v.agg == 0); the slot
+         * holds the aggregate, so load it first — the same conversion a
+         * struct literal's field makes (see cg_stmt's N_LET). */
+        if (ty->kind == TY_STRUCT && ty->name && !v.agg) {
+            const char *stf = llvm_type_of(ty);
+            char *ld = emit_instrf(g, ty, "load %s, %s* %s", stf, stf, v.v);
+            free(v.v);
+            if (!ld) {
+                free(base.v);
+                ERRX(g, "line %zu: cannot load '%s'", n->line, nm);
+            }
+            v = val_make_agg(ty, ld);
+            free(ld);
+        }
+        Asg *a = asg_find(&g->locals, nm, n->line);
+        if (!a) {
+            free(v.v); free(base.v);
+            ERRX(g, "line %zu: unknown variable '%s'", n->line, nm);
+        }
+        EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
+        free(v.v);
+    }
+    free(base.v);
 }
 
 Val cg_assign_expr(CG *g, Node *n)

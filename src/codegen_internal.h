@@ -178,6 +178,7 @@ Val cg_expr(CG *g, Node *n);
  * then/else branches. */
 void cg_stmt(CG *g, Node *n);
 void cg_if_let(CG *g, Node *n);
+void cg_let_pat(CG *g, Node *n);   /* `let { a, b } = e;` — codegen_expr.c */
 char *cg_string_val(CG *g, const char *text, size_t len);
 void cg_function(CG *g, Node *fn);
 void cg_closure(CG *g, Node *fn);

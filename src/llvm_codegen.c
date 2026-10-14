@@ -318,6 +318,7 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
         collect_lambdas(n->as.func.body, out, cnt, cap);
         return;
     case N_LET:        collect_lambdas(n->as.let.init, out, cnt, cap); return;
+    case N_LET_PAT:    collect_lambdas(n->as.letpat.init, out, cnt, cap); return;
     case N_IF:
         collect_lambdas(n->as.ifs.cond, out, cnt, cap);
         collect_lambdas(n->as.ifs.then, out, cnt, cap);

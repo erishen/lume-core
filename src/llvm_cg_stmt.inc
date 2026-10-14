@@ -259,6 +259,15 @@ static void cg_stmt(CG *g, Node *n)
         if (!ty_of(g, ty))
             ERRX(g, "line %zu: cannot store this into a typed local", n->line);
 
+        /* A named struct may arrive as an address (a variable read or a field
+         * load) rather than an aggregate value (a call or a literal), but the
+         * slot holds the aggregate — load it first, exactly as a struct
+         * literal's field does (llvm_cg_lit.c's struct_is_addr test). Without
+         * this, `let inner = o.inner` and `let o2 = o` store pointer bits
+         * into a struct slot and the next read sees garbage. */
+        if (ty->kind == TY_STRUCT && ty->name && struct_is_addr(v.v))
+            v.v = LLVMBuildLoad2(g->ab, ty_of(g, ty), v.v, "ld");
+
         Asg *a = asg_find(&g->locals, n->as.let.name, n->line);
         if (!a) ERRX(g, "internal: '%s' was not allocated by the scan pass",
                      n->as.let.name);
@@ -270,6 +279,8 @@ static void cg_stmt(CG *g, Node *n)
     case N_ASSIGN:
         (void)cg_assign_expr(g, n);
         break;
+
+    case N_LET_PAT:  cg_let_pat(g, n); break;
 
     case N_ASSIGN_MEMBER:
         (void)cg_assign_mem(g, n);

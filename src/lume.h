@@ -507,6 +507,7 @@ typedef enum {
     N_CALL, N_MEMBER, N_INDEX,
     N_UNARY, N_BINARY, N_TERNARY,
     N_MATCH, N_CTOR, N_IF_LET,
+    N_LET_PAT, /* `let { a, b } = e;` — record destructuring */
     N_STRUCT_UPDATE, /* `{ base with f: e, ... }` — Lean's structure update */
     N_IMPORT   /* `import "path" as ns;` — top-level only */
 } NodeType;
@@ -604,6 +605,18 @@ typedef struct Node {
          * part of the form. patc >= 1. */
         struct { MatchPat *pats; int patc; struct Node *value,
                  *then, *els; } iflet;
+        /* `let { a, b } = e;` — record destructuring (Lean's
+         * `let ⟨x, y⟩ := p`). Binds every name to the like-named key of
+         * the map e evaluates to, in the CURRENT scope (if-let's binds
+         * live in the then-branch only), with e evaluated once —
+         * equivalent to `let a = e.a; let b = e.b;` sharing one value.
+         * types[i] is stamped by the checker with the field's value type,
+         * exactly as N_MEMBER.type carries it; NULL for a map whose shape
+         * is not statically known (the native backends refuse those, the
+         * same way they refuse `m.x` on a dynamic map). names are owned
+         * (ident_name copies); types are borrowed from the type tables. */
+        struct { char **names; Type **types; int count;
+                 struct Node *init; } letpat;
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
         struct { struct Node *obj; char *name; struct Node *value; } assign_mem;

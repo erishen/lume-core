@@ -779,6 +779,48 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
                 env_set(vm, vm->export_env, n->as.let.name, v);
             return;
         }
+        case N_LET_PAT: {
+            /* `let { a, b } = e;` — one evaluation of e, then every name
+             * bound to e's like-named key in the CURRENT env (if-let's
+             * binds live in a child env; this is a let, so it stays).
+             * A missing key reads as the stamped type's zero value when
+             * the checker knew the shape — the same fallback m.x uses,
+             * and the same value the native getters' zero default gives —
+             * and fails on a dynamic map, where nothing is known. */
+            eval_expr(vm, n->as.letpat.init, env);
+            if (vm->error) return;
+            Value v = vm_pop(vm);
+            if (!IS_OBJ(v) || AS_OBJ(v)->type != OBJ_MAP) {
+                vm_set_error(vm, "line %zu: destructuring needs a map value",
+                             n->line);
+                return;
+            }
+            Obj *m = AS_OBJ(v);
+            /* Root the map across the loop: env_set (and a zero value's
+             * allocation) can collect, and every bound value either lives
+             * inside m or is kept on the stack around its own env_set. */
+            vm_push(vm, v);
+            for (int i = 0; i < n->as.letpat.count; i++) {
+                int found = 0;
+                Value fv = map_get(vm, m, n->as.letpat.names[i], &found);
+                if (!found) {
+                    Type *vt = n->as.letpat.types[i];
+                    if (!vt) {
+                        vm_set_error(vm, "line %zu: map has no field '%s'",
+                                     n->line, n->as.letpat.names[i]);
+                        return;
+                    }
+                    fv = vm_zero_value(vm, vt);
+                    vm_push(vm, fv);   /* root the fresh zero value */
+                }
+                env_set(vm, env, n->as.letpat.names[i], fv);
+                if (n->is_export && vm->export_env)
+                    env_set(vm, vm->export_env, n->as.letpat.names[i], fv);
+                if (!found) vm_pop(vm);
+            }
+            vm_pop(vm);
+            return;
+        }
         case N_IF: {
             eval_expr(vm, n->as.ifs.cond, env);
             if (vm->error) return;

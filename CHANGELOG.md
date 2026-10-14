@@ -6,6 +6,26 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — record destructuring `let { a, b } = e;`
+
+- Binds every name in the pattern to the like-named field of `e` in the current
+  scope, evaluating `e` exactly once — the emitter's spelling of
+  `let a = e.a; let b = e.b;` with one `e` (SPEC §4.12). The pattern is a plain
+  comma-separated name list (no `let { x: x2 }` renaming in the MVP); the rules
+  mirror `m.x` exactly: a shaped map (literal or named struct) must declare every
+  pattern name, a dynamic `any` map is accepted at type-check but refused by both
+  native emitters ("no known shape"), and an enum init is steered to `if let` /
+  `match`.
+- Named-struct field binding arrives as an *address* (`agg = 0`); the store now
+  loads it into the value first. This fixes a latent cross-feature bug where
+  `let v = o.inner` (and any struct field bound into a local) read garbage from a
+  store of the un-loaded address in both native backends — ordinary `let` of a
+  struct field benefits too.
+- Regression: `tests/letpat.lume` (12 assertions, interpreter + both native
+  backends 12/12), `tests/letpat-bad/` (7 compile-time rejects with pinned
+  diagnostics), and a destructuring probe block in `tests/native-consistency.lume`
+  (interpreter / text / libLLVM all agree).
+
 ### Added — trailing closures `f(args) { |x| body }`
 
 - A closure written after a call's argument list is sugar for passing it as one
