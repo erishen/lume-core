@@ -615,7 +615,13 @@ typedef struct Node {
          * is not statically known (the native backends refuse those, the
          * same way they refuse `m.x` on a dynamic map). names are owned
          * (ident_name copies); types are borrowed from the type tables. */
-        struct { char **names; Type **types; int count;
+        struct { char **names;     /* bound names (always owned) */
+                 char **fields;    /* struct field read per name
+                                    * (rename form `{ f: n }`); for a bare
+                                    * `{ a }` fields[i] == names[i] but is a
+                                    * SEPARATE strdup so both arrays free
+                                    * independently). */
+                 Type **types; int count;
                  struct Node *init; } letpat;
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
@@ -645,7 +651,12 @@ typedef struct Node {
                                  * when it does. Still set at type-check time
                                  * means the source had no such minus. */
                } lit; /* is_float: LIT_NUM came from `1.5` */
-        struct { char **keys; struct Node **vals; int count; } map;
+        struct { char **keys; struct Node **vals; int count;
+                 bool is_tuple; /* set by the `(a, b)` literal sugar. A tuple
+                                 * is anonymous by default — resolve_struct_lit
+                                 * names a literal only from its context — and
+                                 * infer_list_elem uses the flag to type a
+                                 * homogeneous list of tuples by their shape. */ } map;
         struct { struct Node **items; int count; } list;
         struct { char **names; Type **param_types; Type *ret; int arity;
                  struct Node *body;

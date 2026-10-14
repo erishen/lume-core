@@ -1,0 +1,65 @@
+// tests/tuple.lume — tuples `(a, b, ...)` (SPEC §4.13)
+// 运行: make tuple-test (并入 make test)
+//
+// 元组 = 带位置字段 `_0`,`_1`,... 的匿名 struct。覆盖: 字面量 + `.0`/`.1` 与
+// `._0`/`.1` 两种访问、元组解构 `let (a,b)=e`、嵌套元组、命名 struct 元组类型
+// 作函数签名(返回/传入)、异构元组(int/string/float/bool)、单元素元组 `(x,)`、
+// 元组列表、解构出的变量参与表达式、N_LET_PAT 改名解构 `{ f: n }`(同一特性的
+// 附带能力)。`.N` 数字访问仅在顶层可用(链式 `.1.0` 会被词法合并成浮点 `1.0`),
+// 嵌套请用 `._N` 形式。本文件三后端各编各跑, 输出须同为 15 条 PASS 无 FAIL。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+type T2 = { _0: int, _1: int };
+type Rec = { u: int, v: int };
+
+func mk(): T2 { return (3, 4); }
+func swap(p: T2): T2 { return (p.1, p.0); }
+
+func main(): int {
+  // --- 字面量 + `.0`/`.1` 数字访问 ---
+  let p = (1, 2);
+  check("lit .0", p.0 == 1);
+  check("lit .1", p.1 == 2);
+  // --- `._0`/`.1` 下划线访问(链式安全) ---
+  check("lit _0", p._0 == 1);
+  check("lit _1", p._1 == 2);
+  // --- 元组解构 ---
+  let (a, b) = p;
+  check("destructure", a == 1 && b == 2);
+  // --- 嵌套元组(下划线形式访问内层) ---
+  let q = (1, (2, 3));
+  check("nested top", q.0 == 1);
+  check("nested inner", q._1._0 == 2 && q._1._1 == 3);
+  // --- 命名 struct 元组类型作返回 ---
+  let r = mk();
+  check("return type", r.0 == 3 && r.1 == 4);
+  // --- 元组传入并交换返回 ---
+  let s = swap((7, 9));
+  check("swap", s.0 == 9 && s.1 == 7);
+  // --- 异构元组 ---
+  let m = (1, "hi", 2.5, true);
+  check("hetero", m.0 == 1 && m.1 == "hi" && m.2 == 2.5 && m.3 == true);
+  // --- 单元素元组 `(x,)` ---
+  let one = (42,);
+  check("singleton", one.0 == 42);
+  // --- 元组列表 ---
+  let ts = [ (1, 2), (3, 4) ];
+  check("list of tuples", ts[0].0 == 1 && ts[1].1 == 4);
+  // --- 解构变量参与表达式 ---
+  let (x, y) = (5, 6);
+  check("use in expr", (x + y) * 2 == 22);
+  // --- N_LET_PAT 改名解构 `{ f: n }`(同一特性附带) ---
+  let rec = { u: 8, v: 9 };
+  let { u: uu, v: vv } = rec;
+  check("rename destructure", uu == 8 && vv == 9);
+  // --- 改名后原值仍可用 ---
+  check("rename intact", rec.u == 8 && rec.v == 9);
+
+  return 0;
+}
+
+main();

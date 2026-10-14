@@ -6,12 +6,44 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — tuples `(a, b, ...)` (SPEC §4.13)
+
+- A tuple is an anonymous struct with positional fields `_0`, `_1`, … — zero new
+  runtime representation. Three pieces of sugar, all folded at parse or lookup
+  time: the literal `(a, b)` builds an `N_MAP_LIT` with auto-numbered keys
+  (`(a)` without a comma stays a grouped expression; `(a,)` is a 1-tuple),
+  `p.0` reads field `_0` (a member read like any other, so `._N` works too),
+  and `let (x, y) = e` is a renaming `let { _0: x, _1: y } = e` reusing the
+  §4.12 destructuring machinery (`fields[i]` vs `names[i]`, which also lands
+  the `{ field: name }` rename form for plain records).
+- **Context-only naming, everywhere** (fixes a latent cross-feature bug): a
+  map/struct literal is a named struct *iff* its context says so — a `let`
+  annotation, a return type, a parameter, a struct field, or (new) the other
+  operand of `==` / `!=`. The old field-name shape scan in the two native
+  emitters' `resolve_struct_lit` answered differently from `infer_node_type`
+  inside one backend — under `type T2 = { _0: int, _1: int }`, the un-annotated
+  `let rec = { u: 8, v: 9 }` stored a `%Rec` aggregate into the `i8*` slot the
+  inference had allocated and the next `rec.u` handed the field value to
+  `lume_map_get_i` as a pointer (SIGSEGV in both backends, pre-existing); the
+  same disagreement also mis-built nested tuples. The scan is gone; call sites
+  and the libLLVM `return` now pin `expect` from the parameter / return type,
+  exactly where the checker threads it.
+- Known lexical edge (documented, not a bug): a chained `p.1.0` fuses into the
+  float literal `1.0`; nested positional access uses the underscore form
+  `p._1._0`.
+- Regression: `tests/tuple.lume` (15 assertions, interpreter + both native
+  backends 15/15), `tests/tuple-bad/` (4 compile-time rejects with pinned
+  diagnostics), and a tuple probe block in `tests/native-consistency.lume`
+  (baseline 356 → 374 lines; interpreter / text / libLLVM all agree).
+
 ### Added — record destructuring `let { a, b } = e;`
 
 - Binds every name in the pattern to the like-named field of `e` in the current
   scope, evaluating `e` exactly once — the emitter's spelling of
-  `let a = e.a; let b = e.b;` with one `e` (SPEC §4.12). The pattern is a plain
-  comma-separated name list (no `let { x: x2 }` renaming in the MVP); the rules
+  `let a = e.a; let b = e.b;` with one `e` (SPEC §4.12). The MVP pattern is a
+  plain comma-separated name list; the rename form `let { field: name, ... } = e`
+  landed with the tuple work (§4.13), which needed exactly that machinery.
+  The rules
   mirror `m.x` exactly: a shaped map (literal or named struct) must declare every
   pattern name, a dynamic `any` map is accepted at type-check but refused by both
   native emitters ("no known shape"), and an enum init is steered to `if let` /

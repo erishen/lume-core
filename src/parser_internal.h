@@ -26,6 +26,7 @@ bool advance(Parser *p);
 bool match(Parser *p, TokenType t);
 bool expect(Parser *p, TokenType t);
 char *ident_name(Parser *p, Token t);
+char *dupcstr(const char *s);   /* owned strdup, freed by free_name_array */
 bool is_method_keyword(TokenType t);
 const char *method_keyword_name(TokenType t);
 bool is_field_token(TokenType t);

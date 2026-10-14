@@ -137,6 +137,13 @@ char *ident_name(Parser *p, Token t) {
     return s;
 }
 
+char *dupcstr(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *r = malloc(n);
+    memcpy(r, s, n);
+    return r;
+}
+
 /* `type`/`int`/... are keywords in type position but stay usable as map keys
  * and member field names (e.g. a route response's `type` field). */
 /* `get`/`post`/... are route-shorthand keywords at statement level, but stay
@@ -831,6 +838,7 @@ static void node_free_own(Node *n) {
     case N_LET:           free(n->as.let.name); break;
     case N_LET_PAT:
         free_name_array(n->as.letpat.names, n->as.letpat.count);
+        free_name_array(n->as.letpat.fields, n->as.letpat.count);
         free(n->as.letpat.types);   /* Type* elements: type_release_all() */
         break;
     case N_FOR:           free(n->as.fors.var); break;
@@ -1006,8 +1014,12 @@ void node_print(Node *n, int depth) {
         case N_LET_PAT:
             indent_print(depth);
             printf("let-pattern {");
-            for (int i = 0; i < n->as.letpat.count; i++)
-                printf("%s%s", i ? ", " : "", n->as.letpat.names[i]);
+            for (int i = 0; i < n->as.letpat.count; i++) {
+                const char *f = n->as.letpat.fields[i];
+                const char *nm = n->as.letpat.names[i];
+                printf("%s%s", i ? ", " : "", f);
+                if (strcmp(f, nm) != 0) printf(": %s", nm);
+            }
             printf("}\n");
             node_print(n->as.letpat.init, depth + 1);
             break;

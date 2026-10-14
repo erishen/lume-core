@@ -527,6 +527,27 @@ static char *cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line)
 
 static Val cg_binary(CG *g, Node *n)
 {
+    /* == / != against a named struct: when the *other* operand is statically a
+     * named struct, pin it as the expect type while both operands evaluate, so
+     * `p == { x: 1, y: 2 }` rebuilds the literal as a %P aggregate and
+     * cg_val_eq sees named-vs-named — the content comparison the interpreter
+     * answers. Only a literal consults expect; a variable or member read
+     * ignores it. Never active for and/or (their operands are bools and the
+     * short-circuit block below returns mid-way). */
+    Type *named_side = NULL;
+    if (n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE) {
+        Type *lt = infer_node_type(g, n->as.binary.left);
+        Type *rt = infer_node_type(g, n->as.binary.right);
+        if (lt && lt->kind == TY_STRUCT && lt->name &&
+            sdef_find(&g->structs, lt->name))
+            named_side = lt;
+        else if (rt && rt->kind == TY_STRUCT && rt->name &&
+                 sdef_find(&g->structs, rt->name))
+            named_side = rt;
+    }
+    Type *saved_exp = g->expect;
+    if (named_side) g->expect = named_side;
+
     Val a = cg_expr(g, n->as.binary.left);
     Type *boolty = type_prim(TY_BOOL);
 
@@ -578,6 +599,7 @@ static Val cg_binary(CG *g, Node *n)
     }
 
     Val b = cg_expr(g, n->as.binary.right);
+    if (named_side) g->expect = saved_exp;
 
     /* Promote both operands to the arithmetic type *before* emitting anything:
      * `x / 2` with x: float must not become `fdiv double %x, 2`, because that
@@ -1008,7 +1030,7 @@ void cg_let_pat(CG *g, Node *n)
          * its own copy of the base's name. */
         Val b = base;
         b.v = xstrdup(base.v);
-        Val v = cg_member_load(g, b, nm, ty, n->line);
+        Val v = cg_member_load(g, b, n->as.letpat.fields[i], ty, n->line);
         if (!v.v) break;
         v = coerce(g, ty, v, n->line);
         if (g->err[0]) { free(v.v); break; }

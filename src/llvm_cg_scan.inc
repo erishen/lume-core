@@ -7,7 +7,7 @@
  * to know is which reader to call, which is a static question. A heterogeneous
  * literal (`[1.5, 2]`) yields `list<any>`, and iterating that natively would
  * read one slot through the wrong accessor, so it is reported as unknown. */
-static Type *infer_list_elem(Node *lit)
+static Type *infer_list_elem(CG *g, Node *lit)
 {
     if (!lit || lit->type != N_LIST_LIT) return NULL;
 
@@ -32,8 +32,26 @@ static Type *infer_list_elem(Node *lit)
              * copy of this function. */
             t = e->as.ctor.ename ? type_enum(e->as.ctor.ename) : NULL;
         }
+        else if (e->type == N_MAP_LIT && e->as.map.is_tuple && g) {
+            /* A tuple element `(1, 2)` is a positional anonymous struct: its
+             * shape is exactly what infer_node_type computes for it. This is
+             * what keeps `ts[0].0` off the list<any> path, where a member read
+             * has no static field type to dispatch a getter with. */
+            t = infer_node_type(g, e);
+        }
         if (!t) return NULL;          /* a call, another list, ... is not static */
         if (et && et->kind != t->kind) return NULL;
+        /* Two anonymous shapes unify only field-for-field: `(1, 2)` and
+         * `(3, "x")` are both TY_STRUCT but must not melt into one element
+         * type — the checker's heterogeneous rule (ck_list) falls back to
+         * any, and so does this. */
+        if (et && et->kind == TY_STRUCT && !et->name && !t->name) {
+            if (et->count != t->count) return NULL;
+            for (int j = 0; j < et->count; j++)
+                if (!et->types[j] || !t->types[j] ||
+                    strcmp(et->names[j], t->names[j]) != 0 ||
+                    et->types[j]->kind != t->types[j]->kind) return NULL;
+        }
         et = t;
     }
     return et;   /* `[]` has no element kind; it iterates zero times anyway */
@@ -163,7 +181,7 @@ static Type *infer_node_type(CG *g, Node *n)
         if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
         return s->ret;
     }
-    case N_LIST_LIT: { Type *et = infer_list_elem(n); return type_list(et ? et : any_type()); }
+    case N_LIST_LIT: { Type *et = infer_list_elem(g, n); return type_list(et ? et : any_type()); }
     case N_INDEX: {
         /* Kept in step with codegen_scan.c's copy -- the two backends each carry
          * their own infer_node_type, and a kind handled in one but not the other

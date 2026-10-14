@@ -176,7 +176,7 @@ static Val cg_map_lit(CG *g, Node *n)
  * is a struct value (see cg_struct_lit). */
 static Val cg_map_or_struct_lit(CG *g, Node *n)
 {
-    if (resolve_struct_lit(g, n, 0)) return cg_struct_lit(g, n);
+    if (resolve_struct_lit(g, n)) return cg_struct_lit(g, n);
     return cg_map_lit(g, n);
 }
 
@@ -289,44 +289,32 @@ static Val cg_assign_expr(CG *g, Node *n)
     return v;
 }
 
-/* A struct literal carries no type of its own (the parser makes it a map
- * literal), so it is resolved from the context — a `let` annotation or a
- * function return type — and failing that from the declared type whose field
- * set matches the literal exactly. */
-static Type *resolve_struct_lit(CG *g, Node *n, int fatal)
+/* A map/struct literal is a named struct exactly when its *context* names one
+ * — a let annotation, a return type, a parameter, a struct field (g->expect).
+ * That is the same rule the type checker applies: typecheck_expr.c's N_MAP_LIT
+ * reads `expected` and never scans declared shapes, and infer_node_type
+ * (llvm_cg_scan.inc) answers "anonymous" for every un-annotated literal. The
+ * emitters must give the same answer to the same question — an older version
+ * of this function also promoted on a field-name scan, which disagreed with
+ * infer_node_type inside one backend: `let rec = { u: 8, v: 9 }` under a
+ * declared `type Rec = { u: int, v: int }` stored a %Rec aggregate into the
+ * i8* slot the inference had allocated, and the next `rec.u` handed the field
+ * value (8) to lume_map_get_i as a pointer and crashed. Kept in step with the
+ * text emitter's copy in codegen_lit.c. Tuple literals `(a, b)` are the
+ * anonymous-by-default case in its purest form (SPEC §4.13). */
+static Type *resolve_struct_lit(CG *g, Node *n)
 {
+    (void)n;
     Type *e = g->expect;
     if (e && e->kind == TY_STRUCT && e->name && sdef_find(&g->structs, e->name))
         return e;
-
-    Type *hit = NULL;
-    for (int i = 0; i < g->structs.n; i++) {
-        SDef *sd = &g->structs.v[i];
-        if (sd->count != n->as.map.count) continue;
-        int all = 1;
-        for (int j = 0; j < sd->count; j++) {
-            int seen = 0;
-            for (int k = 0; k < n->as.map.count; k++)
-                if (strcmp(n->as.map.keys[k], sd->names[j]) == 0) { seen = 1; break; }
-            if (!seen) { all = 0; break; }
-        }
-        if (!all) continue;
-        if (hit) ERR(g, "line %zu: ambiguous struct literal; annotate the type explicitly",
-                     n->line);
-        hit = type_struct(sd->name);
-    }
-    if (!hit) {
-        if (fatal)
-            ERR(g, "line %zu: cannot resolve this struct literal to a declared type", n->line);
-        return NULL;   /* nobody claimed it: a runtime map, not a struct value */
-    }
-    return hit;
+    return NULL;
 }
 
 static Val cg_struct_lit(CG *g, Node *n)
 {
     AT(g);
-    Type *ty = resolve_struct_lit(g, n, 1);
+    Type *ty = resolve_struct_lit(g, n);
     SDef *sd = sdef_find(&g->structs, ty->name);
     if (!sd) ERRV(g, "line %zu: unknown type '%s'", n->line, ty->name);
     if (sd->count != n->as.map.count)

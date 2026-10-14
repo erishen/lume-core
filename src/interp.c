@@ -802,12 +802,12 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
             vm_push(vm, v);
             for (int i = 0; i < n->as.letpat.count; i++) {
                 int found = 0;
-                Value fv = map_get(vm, m, n->as.letpat.names[i], &found);
+                Value fv = map_get(vm, m, n->as.letpat.fields[i], &found);
                 if (!found) {
                     Type *vt = n->as.letpat.types[i];
                     if (!vt) {
                         vm_set_error(vm, "line %zu: map has no field '%s'",
-                                     n->line, n->as.letpat.names[i]);
+                                     n->line, n->as.letpat.fields[i]);
                         return;
                     }
                     fv = vm_zero_value(vm, vt);

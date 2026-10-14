@@ -145,7 +145,15 @@ static Val cg_clo_call(CG *g, Node *n, Node *lambda)
         avs = (LLVMValueRef *)xmalloc(
             sizeof(LLVMValueRef) * (size_t)n->as.call.argc);
         for (int i = 0; i < n->as.call.argc; i++) {
+            /* Same expect pinning as a named call: the checker threads the
+             * parameter type into the argument (ck_expr(arg, param)), so a
+             * struct/tuple literal argument resolves to the parameter's
+             * declared type here too. */
+            Type *prev = g->expect;
+            g->expect = lambda->as.funclit.param_types
+                ? lambda->as.funclit.param_types[i] : NULL;
             Val a = cg_expr(g, n->as.call.args[i]);
+            g->expect = prev;
             if (a.ty && a.ty->kind == TY_STRUCT && !struct_is_addr(a.v)) {
                 LLVMValueRef slot = LLVMBuildAlloca(g->ab, ty_of(g, a.ty), "sa");
                 LLVMBuildStore(g->ab, a.v, slot);
@@ -844,7 +852,18 @@ static Val cg_call(CG *g, Node *n)
     LLVMValueRef *avs = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef) * (argc > 0 ? argc : 1));
     LLVMTypeRef *ats = (LLVMTypeRef *)xmalloc(sizeof(LLVMTypeRef) * (argc > 0 ? argc : 1));
     for (int i = 0; i < argc; i++) {
+        /* Pin each argument's expected type to the parameter's, so a
+         * struct/tuple literal in argument position resolves to the
+         * parameter's declared type — the same rule the type checker applies
+         * (ck_expr(arg, callee_t->types[i]) in typecheck_expr.c) and the same
+         * pinning codegen_call.c's copy of this loop makes. Without this an
+         * unannotated `(7, 9)` passed to a `T2` parameter would stay an
+         * anonymous runtime map while the callee's body reads declared fields
+         * off a %T2 aggregate. */
+        Type *prev = g->expect;
+        g->expect = s->params ? s->params[i] : NULL;
         Val a = cg_expr(g, n->as.call.args[i]);
+        g->expect = prev;
         avs[i] = a.v;
         if (a.ty && a.ty->kind == TY_STRUCT && !struct_is_addr(a.v)) {
             /* An aggregate (an insertvalue chain) has to be materialised into

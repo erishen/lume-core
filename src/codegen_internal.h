@@ -191,7 +191,7 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size);
 Val coerce(CG *g, Type *to, Val v, size_t line);
 void emit_builtin_declares(CG *g);
 char *emit_instrf(CG *g, Type *ty, const char *fmt, ...);
-Type *infer_list_elem(Node *lit);
+Type *infer_list_elem(CG *g, Node *lit);
 Type *infer_node_type(CG *g, Node *n);
 const char *llvm_ptr_type_of(Type *t);
 const char *llvm_type_of(Type *t);

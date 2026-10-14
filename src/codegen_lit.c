@@ -27,7 +27,7 @@ static Val cg_struct_lit(CG *g, Node *n);
 const char *list_push_fn(Type *ty);
 Type *list_type(void);
 const char *map_put_fn(Type *ty);
-static Type *resolve_struct_lit(CG *g, Node *n, int fatal);
+static Type *resolve_struct_lit(CG *g, Node *n);
 const char *rt_arg_type(Type *ty);
 
 int struct_field_idx(CG *g, const char *sname, const char *fname)
@@ -63,41 +63,30 @@ Type *member_field_type(CG *g, Node *n)
     return NULL;
 }
 
-static Type *resolve_struct_lit(CG *g, Node *n, int fatal)
+/* A map/struct literal is a named struct exactly when its *context* names one
+ * — a let annotation, a return type, a parameter, a struct field (g->expect).
+ * That is the same rule the type checker applies: typecheck_expr.c's N_MAP_LIT
+ * reads `expected` and never scans declared shapes, and infer_node_type
+ * (codegen_scan.c) answers "anonymous" for every un-annotated literal. The
+ * emitters must give the same answer to the same question — an older version
+ * of this function also promoted on a field-name scan, which disagreed with
+ * infer_node_type inside one backend: `let rec = { u: 8, v: 9 }` under a
+ * declared `type Rec = { u: int, v: int }` stored a %Rec aggregate into the
+ * i8* slot the inference had allocated, and the next `rec.u` handed the field
+ * value (8) to lume_map_get_i as a pointer and crashed. Tuple literals `(a, b)`
+ * are the anonymous-by-default case in its purest form (SPEC §4.13). */
+static Type *resolve_struct_lit(CG *g, Node *n)
 {
+    (void)n;
     Type *e = g->expect;
     if (e && e->kind == TY_STRUCT && e->name && sdef_find(&g->structs, e->name))
         return e;
-
-    Type *hit = NULL;
-    for (int i = 0; i < g->structs.n; i++) {
-        SDef *sd = &g->structs.v[i];
-        if (sd->count != n->as.map.count) continue;
-        int all = 1;
-        for (int j = 0; j < sd->count; j++) {
-            int seen = 0;
-            for (int k = 0; k < n->as.map.count; k++)
-                if (strcmp(n->as.map.keys[k], sd->names[j]) == 0) { seen = 1; break; }
-            if (!seen) { all = 0; break; }
-        }
-        if (!all) continue;
-        if (hit) {
-            if (!fatal) return NULL;
-            ERR(g, "line %zu: ambiguous struct literal; annotate the type explicitly",
-                n->line);
-        }
-        hit = type_struct(sd->name);
-    }
-    if (!hit) {
-        if (!fatal) return NULL;
-        ERR(g, "line %zu: cannot resolve this struct literal to a declared type", n->line);
-    }
-    return hit;
+    return NULL;
 }
 
 static Val cg_struct_lit(CG *g, Node *n)
 {
-    Type *ty = resolve_struct_lit(g, n, 1);
+    Type *ty = resolve_struct_lit(g, n);
     SDef *sd = sdef_find(&g->structs, ty->name);
     if (!sd) ERRV(g, "line %zu: unknown type '%s'", n->line, ty->name);
     if (sd->count != n->as.map.count)
@@ -257,7 +246,7 @@ const char *map_put_fn(Type *ty)
     }
 }
 
-Type *infer_list_elem(Node *lit)
+Type *infer_list_elem(CG *g, Node *lit)
 {
     if (!lit || lit->type != N_LIST_LIT) return NULL;
 
@@ -281,16 +270,34 @@ Type *infer_list_elem(Node *lit)
              * statically spelled and the list does not decay to list<any>. */
             t = e->as.ctor.ename ? type_enum(e->as.ctor.ename) : NULL;
         }
+        else if (e->type == N_MAP_LIT && e->as.map.is_tuple && g) {
+            /* A tuple element `(1, 2)` is a positional anonymous struct: its
+             * shape is exactly what infer_node_type computes for it. This is
+             * what keeps `ts[0].0` off the list<any> path, where a member read
+             * has no static field type to dispatch a getter with. */
+            t = infer_node_type(g, e);
+        }
         /* Anything else (a call, another list, ...) is a kind this emitter
          * cannot read statically. */
         if (!t) return NULL;
         if (et && et->kind != t->kind) return NULL;
+        /* Two anonymous shapes unify only field-for-field: `(1, 2)` and
+         * `(3, "x")` are both TY_STRUCT but must not melt into one element
+         * type — the checker's heterogeneous rule (ck_list) falls back to
+         * any, and so does this. */
+        if (et && et->kind == TY_STRUCT && !et->name && !t->name) {
+            if (et->count != t->count) return NULL;
+            for (int j = 0; j < et->count; j++)
+                if (!et->types[j] || !t->types[j] ||
+                    strcmp(et->names[j], t->names[j]) != 0 ||
+                    et->types[j]->kind != t->types[j]->kind) return NULL;
+        }
         et = t;
     }
     return et;   /* `[]` has no element kind; it iterates zero times anyway */
 }
 
-Type *list_type(void) { return type_list(infer_list_elem(NULL)); }
+Type *list_type(void) { return type_list(infer_list_elem(NULL, NULL)); }
 
 Val cg_list_lit(CG *g, Node *n)
 {
@@ -341,7 +348,7 @@ static Val cg_map_lit(CG *g, Node *n)
 
 Val cg_map_or_struct_lit(CG *g, Node *n)
 {
-    if (resolve_struct_lit(g, n, 0)) return cg_struct_lit(g, n);
+    if (resolve_struct_lit(g, n)) return cg_struct_lit(g, n);
     return cg_map_lit(g, n);
 }
 

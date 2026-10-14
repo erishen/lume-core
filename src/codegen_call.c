@@ -138,7 +138,15 @@ static Val cg_clo_call(CG *g, Node *n, Node *lambda)
     if (n->as.call.argc > 0) {
         args = (Val *)xmalloc((size_t)n->as.call.argc * sizeof *args);
         for (int i = 0; i < n->as.call.argc; i++) {
+            /* Same expect pinning as a named call: the checker threads the
+             * parameter type into the argument (ck_expr(arg, param)), so a
+             * struct/tuple literal argument resolves to the parameter's
+             * declared type here too. */
+            Type *prev = g->expect;
+            g->expect = lambda->as.funclit.param_types
+                ? lambda->as.funclit.param_types[i] : NULL;
             args[i] = cg_expr(g, n->as.call.args[i]);
+            g->expect = prev;
             if (args[i].ty && args[i].ty->kind == TY_STRUCT)
                 struct_addr(g, &args[i]);
             /* Pin the value to the parameter's spelling, the way a named
@@ -1095,7 +1103,17 @@ Val cg_call(CG *g, Node *n)
         args = (Val *)xmalloc((size_t)n->as.call.argc * sizeof *args);
         ats  = (const char **)xmalloc((size_t)n->as.call.argc * sizeof *ats);
         for (int i = 0; i < n->as.call.argc; i++) {
+            /* Pin each argument's expected type to the parameter's, so a
+             * struct/tuple literal in argument position resolves to the
+             * parameter's declared type — the same rule the type checker
+             * applies (ck_expr(arg, callee_t->types[i]) in typecheck_expr.c).
+             * Without this an unannotated `(7, 9)` passed to a `T2` parameter
+             * would stay an anonymous runtime map while the callee's body
+             * reads declared fields off a %T2 aggregate. */
+            Type *prev = g->expect;
+            g->expect = s->params ? s->params[i] : NULL;
             args[i] = cg_expr(g, n->as.call.args[i]);
+            g->expect = prev;
             /* Struct arguments travel as pointers: decay an aggregate value
              * (an insertvalue chain, or a call that returns one) into a stack
              * slot. An address is already what the callee wants. */

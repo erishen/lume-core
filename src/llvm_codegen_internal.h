@@ -188,14 +188,14 @@ static const char *map_put_fn(Type *ty);
 const char *ty_str(Type *t);
 static Val rt_call(CG *g, Type *rty, const char *fn, int n,
                    LLVMTypeRef *ats, LLVMValueRef *vs);
-static Type *infer_list_elem(Node *lit);
+static Type *infer_list_elem(CG *g, Node *lit);
 static Type *list_type(void);
 static Val cg_list_lit(CG *g, Node *n);
 static Val cg_map_lit(CG *g, Node *n);
 static Val cg_map_or_struct_lit(CG *g, Node *n);
 static Val cg_struct_update(CG *g, Node *n);
 static Val cg_assign_expr(CG *g, Node *n);
-static Type *resolve_struct_lit(CG *g, Node *n, int fatal);
+static Type *resolve_struct_lit(CG *g, Node *n);
 static Val cg_struct_lit(CG *g, Node *n);
 static LLVMValueRef rt_decl(CG *g, const char *name, LLVMTypeRef ret,
                             LLVMTypeRef *params, int n);

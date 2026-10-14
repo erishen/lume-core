@@ -1,0 +1,1 @@
+func f(p: (int, int)): int { return 0; }

@@ -201,16 +201,17 @@ void ck_stmt(Checker *c, Node *n) {
                         ty_str(it));
             for (int i = 0; i < n->as.letpat.count; i++) {
                 const char *nm = n->as.letpat.names[i];
+                const char *fld = n->as.letpat.fields[i];
                 ck_ctor_shadow(c, nm, n->line);
                 Type *vt = NULL;
                 if (it->kind == TY_STRUCT) {
                     for (int j = 0; j < it->count; j++)
-                        if (strcmp(nm, it->names[j]) == 0) {
+                        if (strcmp(fld, it->names[j]) == 0) {
                             vt = it->types[j];
                             break;
                         }
                     if (!vt) {
-                        ck_fail(c, n->line, "type has no field '%s'", nm);
+                        ck_fail(c, n->line, "type has no field '%s'", fld);
                         vt = any_type();
                     }
                 }

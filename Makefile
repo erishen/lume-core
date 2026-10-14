@@ -403,7 +403,7 @@ vscode-cpp:
 # Core regression: interpreter unit tests + crypto + both native paths. There
 # is no server here, so there is no run_all.sh leg (that is the host tree's
 # HTTP/e2e suite) and no `ui` bundle — those only exist in lume.
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -837,6 +837,38 @@ eq2-test: all
 	  echo "ok   eq2: $$be 后端 43/43"; \
 	done; \
 	echo "==> eq2 单测通过"
+
+# --- tuple: 元组 (a, b) + .N 访问 + let (x, y) = e 解构 (SPEC §4.13) ---
+# 元组 = 位置字段 _0/_1/... 的匿名 struct, 无新运行时表示。解释器 15 断言 +
+# 4 负例诊断键 + text/llvm 双腿 15/15。
+tuple-test: all
+	@./$(TARGET) tests/tuple.lume > /tmp/lume-tuple-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-tuple-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-tuple-test.out; then \
+		echo "==> tuple 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-tuple-test.out) -ne 15 ]; then \
+		echo "==> tuple 断言数不符 (期望 15)"; exit 1; fi; \
+	set -e; \
+	check_bad_tup() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/tuple-bad/$$f.lume > /tmp/lume-tuple-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-tuple-bad.out; then \
+	    echo "==> tuple 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-tuple-bad.out; exit 1; fi; \
+	  echo "ok   tuple-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad_tup dup-name "pattern binds 'x' twice"; \
+	check_bad_tup non-struct "destructuring needs a map value (got int)"; \
+	check_bad_tup missing-field "type has no field '_0'"; \
+	check_bad_tup type-annot "expected a type, got ("; \
+	for be in text llvm; do \
+	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/tuple.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
+	    echo "ok   tuple: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
+	  ./$(TARGET) $$flag tests/tuple.lume -o /tmp/tuple_$$be > /dev/null 2>&1 || { echo "==> tuple $$be 编译失败"; exit 1; }; \
+	  /tmp/tuple_$$be > /tmp/tuple_$$be.out 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/tuple_$$be.out || [ $$(grep -c PASS /tmp/tuple_$$be.out) -ne 15 ]; then \
+	    echo "==> tuple $$be 输出不符 (rc=$$rc):"; cat /tmp/tuple_$$be.out; exit 1; fi; \
+	  echo "ok   tuple: $$be 后端 15/15"; \
+	done; \
+	echo "==> tuple 单测通过"
 
 # --- interp2: 字符串插值 s!"..." + 结构体更新 { base with ... } (仅解释器) ---
 # 三后端一致由 native-consistency 的插值/更新探针段覆盖, 这里只验解释器腿的

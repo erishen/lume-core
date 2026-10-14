@@ -276,8 +276,28 @@ static LLVMValueRef cg_struct_eq(CG *g, Val a, Val b, bool ne, size_t line)
 static Val cg_binary(CG *g, Node *n)
 {
     AT(g);
+    /* == / != against a named struct: when the *other* operand is statically a
+     * named struct, pin it as the expect type while both operands evaluate, so
+     * `p == { x: 1, y: 2 }` rebuilds the literal as a %P aggregate and
+     * cg_val_eq sees named-vs-named — the content comparison the interpreter
+     * answers. Only a literal consults expect; a variable or member read
+     * ignores it. Mirrors codegen_expr.c's cg_binary. */
+    Type *named_side = NULL;
+    if (n->as.binary.op == OP_EQ || n->as.binary.op == OP_NE) {
+        Type *lt = infer_node_type(g, n->as.binary.left);
+        Type *rt = infer_node_type(g, n->as.binary.right);
+        if (lt && lt->kind == TY_STRUCT && lt->name &&
+            sdef_find(&g->structs, lt->name))
+            named_side = lt;
+        else if (rt && rt->kind == TY_STRUCT && rt->name &&
+                 sdef_find(&g->structs, rt->name))
+            named_side = rt;
+    }
+    Type *saved_exp = g->expect;
+    if (named_side) g->expect = named_side;
     Val a = cg_expr(g, n->as.binary.left);
     Val b = cg_expr(g, n->as.binary.right);
+    if (named_side) g->expect = saved_exp;
 
     /* Promote before emitting anything: `x / 2` with x: double would otherwise
      * hand LLVM an i64 constant where a double operand is required. */
@@ -437,7 +457,7 @@ static void cg_let_pat(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot store '%s' (the destructured map has "
                     "no known shape)", n->line, nm);
-        Val v = cg_member_load(g, base, nm, ty, n->line);
+        Val v = cg_member_load(g, base, n->as.letpat.fields[i], ty, n->line);
         if (!v.v) break;
         v = coerce(g, ty, v, n->line);
         if (g->err[0]) break;   /* coerce refused (e.g. null into a scalar) */
@@ -561,7 +581,7 @@ static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
     return val_make(fty, LLVMBuildLoad2(g->ab, ty_of(g, fty), p, "f"));
 }
 
-static Type *list_type(void) { return type_list(infer_list_elem(NULL)); }
+static Type *list_type(void) { return type_list(infer_list_elem(NULL, NULL)); }
 
 static Val cg_expr(CG *g, Node *n)
 {

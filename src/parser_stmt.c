@@ -4,16 +4,31 @@
 
 #include "parser_internal.h"
 
+/* Build an N_LET_PAT node from parallel fields[]/names[] arrays. The
+ * caller owns both arrays and every string in them (ident_name copies or
+ * dupcstr); node_free_own releases them. */
+static Node *make_let_pat(Parser *p, size_t line, char **fields,
+                          char **names, int count, Node *init) {
+    (void)p;
+    Node *n = nalloc(N_LET_PAT, line);
+    n->as.letpat.names = names;
+    n->as.letpat.fields = fields;
+    n->as.letpat.types = calloc((size_t)count, sizeof(Type *));
+    n->as.letpat.count = count;
+    n->as.letpat.init = init;
+    return n;
+}
+
 /* `let { a, b } = e;` — record destructuring (SPEC §4.12). The pattern is
- * a plain comma-separated name list: each name binds to the like-named
- * key of e, in the current scope, with e evaluated once. Nested and
- * renaming forms are later features. `len`/`length` are refused because
- * on an anonymous map they name the container property, not a key (the
- * same footgun `.len` already is); a named struct that really declares
- * such a field is read through a plain `let` instead. */
+ * a comma-separated name list; each name binds to the like-named key of
+ * e (or to a renamed key via `{ field: bind }`, a Lean record-update-style
+ * rename) in the current scope, with e evaluated once. `len`/`length` are
+ * refused because on an anonymous map they name the container property, not
+ * a key (the same footgun `.len` already is); a named struct that really
+ * declares such a field is read through a plain `let` instead. */
 static Node *parse_let_pattern(Parser *p, size_t line) {
     advance(p);                       /* { */
-    char **names = NULL;
+    char **names = NULL, **fields = NULL;
     int count = 0;
     if (check(p, TOK_RBRACE)) {
         perror_at(p, peek(p).line,
@@ -26,12 +41,69 @@ static Node *parse_let_pattern(Parser *p, size_t line) {
                       "expected a name in the destructuring pattern", NULL);
             goto fail;
         }
+        Token fld = peek(p);
+        if ((fld.length == 3 && memcmp(fld.start, "len", 3) == 0) ||
+            (fld.length == 6 && memcmp(fld.start, "length", 6) == 0)) {
+            perror_at(p, fld.line,
+                      "'len' is a container property, not a map key — "
+                      "choose another name", NULL);
+            goto fail;
+        }
+        advance(p);
+        Token nm = fld;               /* bind name defaults to the field */
+        if (match(p, TOK_COLON)) {    /* rename form: `field: bind` */
+            if (!check(p, TOK_IDENT)) {
+                perror_at(p, peek(p).line,
+                          "expected a bind name after ':'", NULL);
+                goto fail;
+            }
+            nm = peek(p);
+            advance(p);
+        }
+        for (int i = 0; i < count; i++)
+            if (strlen(names[i]) == (size_t)nm.length &&
+                memcmp(names[i], nm.start, (size_t)nm.length) == 0) {
+                perror_at(p, nm.line, "pattern binds '%s' twice", names[i]);
+                goto fail;
+            }
+        names = realloc(names, sizeof(char *) * ((size_t)count + 1));
+        fields = realloc(fields, sizeof(char *) * ((size_t)count + 1));
+        names[count] = ident_name(p, nm);
+        fields[count] = ident_name(p, fld);
+        count++;
+        if (!match(p, TOK_COMMA)) break;
+    }
+    if (!expect(p, TOK_RBRACE)) goto fail;
+    if (!expect(p, TOK_EQ)) goto fail;
+    Node *init = parse_expression(p);
+    if (!init) goto fail;
+    if (!expect(p, TOK_SEMI)) goto fail;
+    return make_let_pat(p, line, fields, names, count, init);
+fail:
+    for (int i = 0; i < count; i++) { free(names[i]); free(fields[i]); }
+    free(names); free(fields);
+    return NULL;
+}
+
+/* `let (x, y) = e;` — tuple destructuring (SPEC §4.13). A tuple is an
+ * anonymous struct with positional fields `_0`, `_1`, ... (see the tuple
+ * literal in parser_expr.c), so this desugars to a rename N_LET_PAT that
+ * binds field `_0` to x, `_1` to y, and so on. Requires >= 1 name. */
+static Node *parse_tuple_pattern(Parser *p, size_t line) {
+    advance(p);                       /* ( */
+    char **names = NULL, **fields = NULL;
+    int count = 0;
+    for (;;) {
+        if (!check(p, TOK_IDENT)) {
+            perror_at(p, peek(p).line,
+                      "expected a name in the tuple pattern", NULL);
+            goto fail;
+        }
         Token nm = peek(p);
         if ((nm.length == 3 && memcmp(nm.start, "len", 3) == 0) ||
             (nm.length == 6 && memcmp(nm.start, "length", 6) == 0)) {
             perror_at(p, nm.line,
-                      "'len' is a container property, not a map key — "
-                      "choose another name", NULL);
+                      "'len' is a container property, not a tuple slot", NULL);
             goto fail;
         }
         for (int i = 0; i < count; i++)
@@ -41,24 +113,25 @@ static Node *parse_let_pattern(Parser *p, size_t line) {
                 goto fail;
             }
         advance(p);
+        char fbuf[16];
+        snprintf(fbuf, sizeof fbuf, "_%d", count);
         names = realloc(names, sizeof(char *) * ((size_t)count + 1));
-        names[count++] = ident_name(p, nm);
+        fields = realloc(fields, sizeof(char *) * ((size_t)count + 1));
+        names[count] = ident_name(p, nm);
+        fields[count] = dupcstr(fbuf);
+        count++;
         if (!match(p, TOK_COMMA)) break;
+        if (check(p, TOK_RPAREN)) break;   /* trailing comma */
     }
-    if (!expect(p, TOK_RBRACE)) goto fail;
+    if (!expect(p, TOK_RPAREN)) goto fail;
     if (!expect(p, TOK_EQ)) goto fail;
     Node *init = parse_expression(p);
     if (!init) goto fail;
     if (!expect(p, TOK_SEMI)) goto fail;
-    Node *n = nalloc(N_LET_PAT, line);
-    n->as.letpat.names = names;
-    n->as.letpat.types = calloc((size_t)count, sizeof(Type *));
-    n->as.letpat.count = count;
-    n->as.letpat.init = init;
-    return n;
+    return make_let_pat(p, line, fields, names, count, init);
 fail:
-    for (int i = 0; i < count; i++) free(names[i]);
-    free(names);
+    for (int i = 0; i < count; i++) { free(names[i]); free(fields[i]); }
+    free(names); free(fields);
     return NULL;
 }
 
@@ -275,6 +348,8 @@ Node *parse_statement(Parser *p) {
          * identifier). */
         if (check(p, TOK_LBRACE))
             return parse_let_pattern(p, t.line);
+        if (check(p, TOK_LPAREN))
+            return parse_tuple_pattern(p, t.line);
         if (!check(p, TOK_IDENT)) {
             perror_at(p, peek(p).line, "expected variable name after 'let'", NULL);
             return NULL;

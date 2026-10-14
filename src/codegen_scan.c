@@ -239,7 +239,7 @@ Type *infer_node_type(CG *g, Node *n)
          * a value's own type is only ever spelled `i8*`, so without this a
          * `for (x in xs)` would see list<any> — and `any` has no spelling, so
          * the iteration variable would be rejected as untypable. */
-        Type *et = infer_list_elem(n);
+        Type *et = infer_list_elem(g, n);
         return type_list(et ? et : any_type());
     }
     case N_BINARY: {

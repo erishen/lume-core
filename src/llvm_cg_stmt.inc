@@ -292,8 +292,15 @@ static void cg_stmt(CG *g, Node *n)
             if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
             break;
         }
-        /* `return { .. }` needs the function's declared return type. */
+        /* `return { .. }` needs the function's declared return type. Pin the
+         * expect type the way the text emitter's copy (codegen_stmt.c) and the
+         * checker (ck_stmt's return pass) both do, so a struct/tuple literal
+         * in return position resolves to the declared return type instead of
+         * staying anonymous. */
+        Type *prev_exp = g->expect;
+        g->expect = g->cur_ret;
         Val v = cg_expr(g, n->as.ret.expr);
+        g->expect = prev_exp;
         LLVMTypeRef rty = ty_of(g, g->cur_ret);
         if (!rty) rty = ty_of(g, v.ty);
         if (!rty) ERRX(g, "line %zu: cannot return this value", n->line);

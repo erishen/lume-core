@@ -296,6 +296,48 @@ static Node *parse_primary(Parser *p) {
         advance(p);
         Node *e = parse_expression(p);
         if (!e) return NULL;
+        if (check(p, TOK_COMMA)) {
+            /* Tuple literal `(a, b, ...)`: an anonymous struct with
+             * positional fields `_0`, `_1`, ... A struct in lume is just a
+             * map literal whose keys are identifiers (see N_LET_PAT's
+             * tuple destructuring and the destructuring tests), so we build
+             * an N_MAP_LIT with auto-numbered identifier keys. `(a)` with no
+             * comma stays a plain grouped expression; `(a,)` is a 1-tuple. */
+            Node **items = NULL;
+            int count = 0;
+            items = realloc(items, sizeof(Node *) * ((size_t)count + 1));
+            items[count++] = e;
+            for (;;) {
+                if (!match(p, TOK_COMMA)) break;
+                if (check(p, TOK_RPAREN)) break;   /* trailing comma */
+                Node *it = parse_expression(p);
+                if (!it) {
+                    for (int i = 0; i < count; i++) node_free(items[i]);
+                    free(items);
+                    return NULL;
+                }
+                items = realloc(items, sizeof(Node *) * ((size_t)count + 1));
+                items[count++] = it;
+            }
+            if (!expect(p, TOK_RPAREN)) {
+                for (int i = 0; i < count; i++) node_free(items[i]);
+                free(items);
+                return NULL;
+            }
+            Node *n = nalloc(N_MAP_LIT, t.line);
+            n->as.map.keys = malloc(sizeof(char *) * (size_t)count);
+            n->as.map.vals = malloc(sizeof(Node *) * (size_t)count);
+            n->as.map.count = count;
+            n->as.map.is_tuple = true;
+            for (int i = 0; i < count; i++) {
+                char fbuf[16];
+                snprintf(fbuf, sizeof fbuf, "_%d", i);
+                n->as.map.keys[i] = dupcstr(fbuf);
+                n->as.map.vals[i] = items[i];
+            }
+            free(items);
+            return n;
+        }
         if (!expect(p, TOK_RPAREN)) return NULL;
         return e;
     }
@@ -711,15 +753,29 @@ static Node *parse_postfix(Parser *p) {
             }
             n = call;
         } else if (match(p, TOK_DOT)) {
-            if (!is_field_token(peek(p).type)) {
-                perror_at(p, peek(p).line, "expected field name after '.'", NULL);
+            Token f = peek(p);
+            bool is_int_idx = (f.type == TOK_NUMBER && f.is_int);
+            if (!is_field_token(f.type) && !is_int_idx) {
+                perror_at(p, f.line, "expected field name after '.'", NULL);
                 return NULL;
             }
-            Token f = peek(p);
             advance(p);
+            char *fname;
+            if (is_int_idx) {
+                /* tuple index: `p.0` / `p.1` read the positional fields
+                 * `_0` / `_1` of the struct a tuple is (numbers are
+                 * TOK_NUMBER with is_int, not a dedicated TOK_INT). */
+                size_t need = (size_t)f.length + 2;
+                fname = malloc(need);
+                fname[0] = '_';
+                memcpy(fname + 1, f.start, (size_t)f.length);
+                fname[f.length + 1] = '\0';
+            } else {
+                fname = ident_name(p, f);
+            }
             Node *member = nalloc(N_MEMBER, f.line);
             member->as.member.obj = n;
-            member->as.member.name = ident_name(p, f);
+            member->as.member.name = fname;
             n = member;
         } else if (check(p, TOK_LBRACKET)) {
             /* `m["k"]` / `l[0]`. A postfix loop rather than part of parse_primary

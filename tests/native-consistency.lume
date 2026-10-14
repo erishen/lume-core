@@ -1053,5 +1053,40 @@ print(dzpt.dzpx);           // 1
 print(dzpt.dzpy);           // 2
 print(dztag);               // hi
 
+// ---- tuples `(a, b)` + `.N` access + `let (x, y) = e` -------------------
+// SPEC §4.13. 元组 = 位置字段 _0/_1/... 的匿名 struct: 无注解字面量在任何
+// 上下文都保持匿名(运行时 map), 命名只来自显式上下文(注解/返回类型/参数
+// —— resolve_struct_lit 只看 expect, 形状扫描已移除)。三后端必须一致。
+type TUT2 = { _0: int, _1: int };
+func tumk(): TUT2 { return (3, 4); }
+func tuswap(p: TUT2): TUT2 { return (p.1, p.0); }
+let tup = (1, 2);
+print(tup.0);              // 1
+print(tup._1);             // 2
+let (tux, tuy) = tup;
+print(tux + tuy);          // 3
+let tuq = (1, (2, 3));
+print(tuq.0);              // 1
+print(tuq._1._0);          // 2
+print(tuq._1._1);          // 3
+let tur = tumk();
+print(tur.0);              // 3
+print(tur.1);              // 4
+let tus = tuswap((7, 9));
+print(tus.0);              // 9
+print(tus.1);              // 7
+let tuh = (1, "hi", 2.5, true);
+print(tuh.0);              // 1
+print(tuh.1);              // hi
+print(tuh.2);              // 2.5
+print(tuh.3);              // true
+let tuo = (42,);
+print(tuo.0);              // 42
+let tuts = [ (1, 2), (3, 4) ];
+print(tuts[0].0);          // 1
+print(tuts[1].1);          // 4
+let tuprec = { u: 8, v: 9 };
+print(tuprec.u);           // 8 (无注解 map 字面量保持匿名, 不再被形状提升)
+
 warmup();
 main();
