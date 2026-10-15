@@ -31,7 +31,16 @@ jobs:
             base-devel
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-libgnurx
+
+      # libgnurx provides the POSIX regex builtins (str_match: regcomp/
+      # regexec/regfree live in -lregex). It is installed as a separate step
+      # rather than inside setup-msys2's `install` list: mixing a package group
+      # (mingw-w64-ucrt-x86_64-toolchain) and a single package in one pacman
+      # transaction can resolve against a stale ucrt64 repo database and fail
+      # with "target not found: mingw-w64-ucrt-x86_64-libgnurx". Refreshing the
+      # databases first (-Sy) here guarantees the package resolves.
+      - name: Install libgnurx (POSIX regex for str_match)
+        run: pacman -Sy --needed --noconfirm mingw-w64-ucrt-x86_64-libgnurx
 
       - name: Build
         run: make
