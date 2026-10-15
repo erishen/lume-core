@@ -516,8 +516,10 @@ static void lf_rename_calls(Node *n, const char *from, const char *to)
         return;
     case N_CALL: {
         Node *ce = n->as.call.callee;
-        if (ce && ce->type == N_VAR && strcmp(ce->as.var.name, from) == 0)
+        if (ce && ce->type == N_VAR && strcmp(ce->as.var.name, from) == 0) {
+            free(ce->as.var.name);   /* drop the source name before stamping cname */
             ce->as.var.name = xstrdup(to);
+        }
         lf_rename_calls(ce, from, to);
         for (int i = 0; i < n->as.call.argc; i++)
             lf_rename_calls(n->as.call.args[i], from, to);

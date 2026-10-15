@@ -733,6 +733,10 @@ static void node_free_kids(Node *n) {
     }
     case N_LET:  node_free(n->as.let.init); break;
     case N_LET_PAT: node_free(n->as.letpat.init); break;
+    case N_LET_EXPR:
+        node_free(n->as.letx.init);
+        node_free(n->as.letx.body);
+        break;
     case N_IF:
         node_free(n->as.ifs.cond);
         node_free(n->as.ifs.then);
@@ -836,6 +840,7 @@ static void node_free_own(Node *n) {
         break;
     }
     case N_LET:           free(n->as.let.name); break;
+    case N_LET_EXPR:      free(n->as.letx.name); break;
     case N_LET_PAT:
         free_name_array(n->as.letpat.names, n->as.letpat.count);
         free_name_array(n->as.letpat.fields, n->as.letpat.count);
@@ -854,6 +859,7 @@ static void node_free_own(Node *n) {
         break;
     case N_FUNC_DECL:
         free(n->as.func.name);
+        free(n->as.func.cname);        /* synthetic local-fn name (codegen_sig.c) */
         free_name_array(n->as.func.names, n->as.func.arity);
         free(n->as.func.param_types);  /* Type* elements: type_release_all() */
         break;
