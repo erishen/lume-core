@@ -139,6 +139,7 @@ Val emit_struct_to_map(CG *g, const char *sv, Type *st)
                             "i8* %s, i8* %s, i8* %s", m.v, key, inner.v);
             free(inner.v); free(key);
             if (!r.v) { free(m.v); return r; }
+            free(r.v);   /* throwaway result of the put; the map is mutated in place */
             continue;
         }
 
@@ -172,6 +173,7 @@ Val emit_struct_to_map(CG *g, const char *sv, Type *st)
                         "i8* %s, i8* %s, %s", m.v, key, farg);
         free(fv); free(key);
         if (!r.v) { free(m.v); return r; }
+        free(r.v);   /* throwaway result of the put; the map is mutated in place */
     }
     return m;
 }

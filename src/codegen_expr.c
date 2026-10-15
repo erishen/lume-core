@@ -1130,7 +1130,7 @@ static Val cg_let_expr(CG *g, Node *n)
     free(v.v);
 
     Val bv = cg_expr(g, n->as.letx.body);
-    g->locals.n = saved_n;   /* the binding dies with the body */
+    asg_truncate(&g->locals, saved_n);   /* the binding dies with the body */
     return bv;
 }
 

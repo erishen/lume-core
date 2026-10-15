@@ -59,6 +59,26 @@ void asgs_free(Asgs *a)
     memset(a, 0, sizeof *a);
 }
 
+/* Drop the top of an Asgs table back to `n` entries, freeing the name/slot
+ * strings of every entry the truncation discards. The native backends scope
+ * local bindings — match-arm binds, if-let binds, let-expression bindings — by
+ * pushing onto g->locals and resetting g->locals.n to a saved value afterwards.
+ * The bare `n = saved` reset only shrinks the count; the dropped Asg entries'
+ * xstrdup'd name/slot strings stay allocated, which LeakSanitizer reports as
+ * Direct leaks from asg_push. Freeing them here keeps the reset leak-free
+ * while preserving the array's capacity for reuse. A truncation never frees
+ * entries below `n`, so nested scopes (each of which captures its own saved_n
+ * and truncates to it) free disjoint ranges and cannot double-free. */
+void asg_truncate(Asgs *a, int n)
+{
+    if (n < 0) n = 0;
+    for (int i = n; i < a->n; i++) {
+        free(a->v[i].name);
+        free(a->v[i].slot);
+    }
+    a->n = n;
+}
+
 /* `slot` is the LLVM name holding the variable's address; passing NULL asks
  * for the ordinary `%lv_<name>` local slot. */
 

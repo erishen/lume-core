@@ -31,6 +31,16 @@ static void arm_scope_clear(CG *g)
     g->arm_scope = (LTys){0};
 }
 
+/* LLVM twin of codegen_scan.c's arm_scope_truncate: resetting the arm-bind
+ * scope between match arms must free the discarded entries' names, or they
+ * leak (the end-of-match arm_scope_clear only sees the truncated table). */
+static void arm_scope_truncate(CG *g, int n)
+{
+    if (n < 0) n = 0;
+    for (int i = n; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
+    g->arm_scope.n = n;
+}
+
 /* The type of a `for (x in xs)` loop variable: a list yields its element type,
  * a map yields strings (it iterates its keys), anything else is an error --
  * a value is just an i8* here, so which reader a for-in has to call is a

@@ -56,6 +56,20 @@ static void arm_scope_clear(CG *g)
     g->arm_scope = (LTys){0};
 }
 
+/* Reset the arm-bind scope back to `n` entries, freeing the names the reset
+ * discards. The bare count reset (what the N_MATCH inference loop used to do
+ * between arms) leaves every discarded entry's xstrdup'd name allocated, and
+ * arm_scope_clear at the end only sees the already-truncated table, so those
+ * strings leak — LeakSanitizer reports them from arm_scope_push. Same shape
+ * as the emitters' asg_truncate: nested matches truncate to their own saved
+ * value, so the freed ranges are disjoint. */
+static void arm_scope_truncate(CG *g, int n)
+{
+    if (n < 0) n = 0;
+    for (int i = n; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
+    g->arm_scope.n = n;
+}
+
 /* The AST records an explicit `: T` annotation on `let` nodes; a type inferred
  * from the initializer is never stored on the node. Without this the entry
  * block would have nothing to `alloca` — and the alloca pass bails out, which
@@ -333,7 +347,7 @@ Type *infer_node_type(CG *g, Node *n)
         Type *result = NULL;
         for (int i = 0; i < n->as.matchn.armc; i++) {
             MatchArm *arm = &n->as.matchn.arms[i];
-            g->arm_scope.n = saved;
+            arm_scope_truncate(g, saved);   /* drop the previous arm's binds */
             /* the arm's single binding set: the checker guarantees every
              * alternative binds the same names with the same types, so the
              * first pattern's stamps describe them all */
@@ -357,7 +371,7 @@ Type *infer_node_type(CG *g, Node *n)
             result = NULL;
             break;
         }
-        g->arm_scope.n = saved;
+        arm_scope_truncate(g, saved);
         if (saved == 0) arm_scope_clear(g);
         return result ? result : any_type();
     }

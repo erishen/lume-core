@@ -4,6 +4,27 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — LeakSanitizer clean under `make asan` (native backends)
+
+- Scope exits in both native emitters reset a locals table by shrinking its
+  count only, which stranded the discarded entries' `xstrdup`'d strings
+  (match-arm binds, if-let binds, let-expression bindings). The emitters now
+  truncate through `asg_truncate` (text: frees name + slot; llvm: frees name,
+  the slot being an LLVM-owned `LLVMValueRef`), mirroring `asgs_free`.
+- The scan-phase match inference had the same shape of bug: its arm-bind scope
+  was reset between arms by count, and the end-of-match `arm_scope_clear` only
+  saw the already-truncated table — so every match binding's name leaked.
+  It now truncates through `arm_scope_truncate` (both backends).
+- `emit_struct_to_map` leaked the throwaway result of each map-put runtime
+  call; it is now freed (the map is mutated in place).
+- Verified in a Linux container (LLVM 18, matching CI) with
+  `make asan`: every leg — examples `--check`, lang-basics, native-fact both
+  backends, `native_backends.sh` (interp/text/llvm), smoke — reports zero
+  leaked bytes. Follows `ecd7afc`, which fixed the same class of leak on the
+  interpreter path (let-expression nodes, local-function synthetic names).
+
 ## [0.7.0] - 2026-10-14
 
 ### Added — let expressions: `let x = e1 in e2` (SPEC §4.15)

@@ -84,6 +84,17 @@ static void asgs_free(Asgs *a)
     memset(a, 0, sizeof *a);
 }
 
+/* LLVM twin of the text backend's asg_truncate (codegen.c): scope exits that
+ * reset g->locals.n to a saved value must free the discarded entries' names
+ * too, or LeakSanitizer reports them as leaks from asg_push. slot is an
+ * LLVMValueRef owned by LLVM's context, never freed here. */
+static void asg_truncate(Asgs *a, int n)
+{
+    if (n < 0) n = 0;
+    for (int i = n; i < a->n; i++) free(a->v[i].name);
+    a->n = n;
+}
+
 /* slot == NULL asks for a fresh local slot. */
 static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
                      size_t line)

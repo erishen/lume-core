@@ -149,6 +149,7 @@ static void *xmalloc(size_t n);
 static void *xrealloc(void *p, size_t n);
 static char *xstrdup(const char *s);
 static void asgs_free(Asgs *a);
+static void asg_truncate(Asgs *a, int n);
 static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
                      size_t line);
 static Asg *asg_find(Asgs *a, const char *name, size_t use_line);

@@ -170,6 +170,7 @@ Asg *gvar_find(Asgs *a, const char *name);
 void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
               size_t line);
 void asgs_free(Asgs *a);
+void asg_truncate(Asgs *a, int n);
 const char *bad(CG *g, Node *n, const char *what);
 Val cg_assign_expr(CG *g, Node *n);
 Val cg_assign_mem(CG *g, Node *n);

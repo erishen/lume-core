@@ -197,7 +197,7 @@ Val cg_match(CG *g, Node *n)
         bv = coerce(g, rty, bv, arm->line);
         EMIT(g, "  store %s %s, %s* %s\n", st, bv.v, st, res);
         free(bv.v);
-        g->locals.n = saved_n; /* truncate this arm's binds */
+        asg_truncate(&g->locals, saved_n); /* truncate this arm's binds */
         EMIT(g, "  br label %%L%d\n", lj);
         if (last_arm && arm->guard) {
             /* a guarded last arm falling through is a forged map */
@@ -256,7 +256,7 @@ void cg_if_let(CG *g, Node *n)
                  p0->vfield_types ? p0->vfield_types[kb] : NULL,
                  slots[kb], n->line);
     cg_stmt(g, n->as.iflet.then);
-    g->locals.n = saved_n;
+    asg_truncate(&g->locals, saved_n);
     EMIT(g, "  br label %%L%d\n", lend);
 
     EMIT(g, "L%d:\n", lel);

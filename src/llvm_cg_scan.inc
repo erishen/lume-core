@@ -308,7 +308,7 @@ static Type *infer_node_type(CG *g, Node *n)
         Type *result = NULL;
         for (int i = 0; i < n->as.matchn.armc; i++) {
             MatchArm *arm = &n->as.matchn.arms[i];
-            g->arm_scope.n = saved;
+            arm_scope_truncate(g, saved);   /* drop the previous arm's binds */
             /* the arm's single binding set: the checker guarantees every
              * alternative binds the same names with the same types */
             MatchPat *p0 = &arm->pats[0];
@@ -329,7 +329,7 @@ static Type *infer_node_type(CG *g, Node *n)
             result = NULL;
             break;
         }
-        g->arm_scope.n = saved;
+        arm_scope_truncate(g, saved);
         if (saved == 0) arm_scope_clear(g);
         return result ? result : any_type();
     }

@@ -618,7 +618,7 @@ static Val cg_let_expr(CG *g, Node *n)
     LLVMBuildStore(g->ab, v.v, slot);
 
     Val bv = cg_expr(g, n->as.letx.body);
-    g->locals.n = saved_n;   /* the binding dies with the body */
+    asg_truncate(&g->locals, saved_n);   /* the binding dies with the body */
     return bv;
 }
 
@@ -969,7 +969,7 @@ static Val cg_match(CG *g, Node *n)
         if (!bv.v) ERRV(g, "line %zu: bad match arm body", arm->line);
         bv = coerce(g, rty, bv, arm->line);
         LLVMBuildStore(g->ab, bv.v, res);
-        g->locals.n = saved_n; /* truncate this arm's binds */
+        asg_truncate(&g->locals, saved_n); /* truncate this arm's binds */
         if (!DONE(g->cur)) LLVMBuildBr(g->ab, lj);
         if (last_arm && arm->guard) {
             /* a guarded last arm falling through is a forged map */
@@ -1079,7 +1079,7 @@ static void cg_if_let(CG *g, Node *n)
                  p0->vfield_types ? p0->vfield_types[kb] : NULL,
                  bslots[kb], n->line);
     cg_stmt(g, n->as.iflet.then);
-    g->locals.n = saved_n;
+    asg_truncate(&g->locals, saved_n);
     if (!DONE(g->cur)) LLVMBuildBr(g->ab, lend);
 
     g->cur = lel; AT(g);
