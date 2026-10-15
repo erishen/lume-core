@@ -653,7 +653,7 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
         LLVMDisposeBuilder(cg.ab);
         LLVMDisposeModule(cg.mod);
         LLVMContextDispose(ctx);
-        free(cg.sigs.v); free(cg.structs.v); free(cg.brk); free(cg.cnt);
+        sigs_free(&cg.sigs); sdefs_free(&cg.structs); free(cg.brk); free(cg.cnt);
         asgs_free(&cg.gvars);
         free(msg);
         return NULL;
