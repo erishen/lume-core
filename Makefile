@@ -72,6 +72,10 @@ ifeq ($(UNAME_S),Linux)
     LDFLAGS_EXTRA += -lcrypt -lm
 else ifeq ($(UNAME_S),Darwin)
     CFLAGS_EXTRA += -D_DARWIN_C_SOURCE
+else ifeq ($(IS_WINDOWS),1)
+    # MinGW/mingw-w64 needs libgnurx for the POSIX regex builtins (str_match):
+    # regcomp/regexec/regfree live in -lregex, which is not linked by default.
+    LDFLAGS_EXTRA += -lregex
 endif
 # BSD stat takes the format as -f%z, GNU stat as -c%s. Hardcoding one of them
 # (native-bench used to) makes that target fail on the other platform.
