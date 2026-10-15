@@ -73,9 +73,16 @@ ifeq ($(UNAME_S),Linux)
 else ifeq ($(UNAME_S),Darwin)
     CFLAGS_EXTRA += -D_DARWIN_C_SOURCE
 else ifeq ($(IS_WINDOWS),1)
-    # MinGW/mingw-w64 needs libgnurx for the POSIX regex builtins (str_match):
-    # regcomp/regexec/regfree live in -lregex, which is not linked by default.
-    LDFLAGS_EXTRA += -lregex
+    # MinGW/mingw-w64 has no POSIX regex in its C runtime (str_match's
+    # regcomp/regexec/regfree). This used to come from the libgnurx package
+    # (-lregex), but that package is no longer resolvable from the MSYS2
+    # repositories, and vendoring its LGPL sources into this MIT project is
+    # not license-compatible. Instead a self-contained POSIX regex
+    # implementation (musl libc's, itself trimmed TRE, BSD-style licensed) is
+    # vendored under src/compat/regex and compiled into the binary; the
+    # include path makes <regex.h> resolve to the vendored header there
+    # instead of any system one.
+    CFLAGS_EXTRA += -Isrc/compat/regex
 endif
 # BSD stat takes the format as -f%z, GNU stat as -c%s. Hardcoding one of them
 # (native-bench used to) makes that target fail on the other platform.
@@ -215,6 +222,10 @@ ifeq ($(IS_WINDOWS),1)
     LUME_HAS_HTTP := 0
     # bridge_serve.c / bridge_native.c link against winsock (winsock2.h).
     LDFLAGS_EXTRA += -lws2_32
+    # POSIX regex for str_match/regex, vendored (see the IS_WINDOWS CFLAGS
+    # branch above): compiled into the binary instead of linking -lregex.
+    SRCS += src/compat/regex/regcomp.c src/compat/regex/regexec.c \
+            src/compat/regex/regerror.c src/compat/regex/tre-mem.c
 endif
 # Propagate the http flag to every TU so builtins.c emits the native_http_*
 # stubs exactly when builtins_http.c is excluded (Windows) and not otherwise.
@@ -259,12 +270,19 @@ bin: ;
 endif
 
 build/%.o: src/%.c src/lume.h $(INT_HDRS) | build $(AH_LIB)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # llvm_codegen.c 文本包含 llvm_cg_{expr,lit,call,stmt,scan}.inc(不是独立 TU,
 # 静态符号不变式因此不受影响)。.inc 不是 *_internal.h,INT_HDRS 通配抓不到,
 # 显式挂依赖: 改任一 .inc 必须重建 llvm_codegen.o, 否则又是"绿了没生效"。
 build/llvm_codegen.o: $(wildcard src/llvm_cg_*.inc)
+
+# The vendored regex sources share tre.h + regex.h; INT_HDRS (src/*_internal.h)
+# does not reach into src/compat/regex, so wire the dependency explicitly —
+# otherwise editing tre.h (e.g. the `hidden` compatibility shim) leaves stale
+# objects behind, the "green but not in effect" failure mode again.
+build/compat/regex/%.o: src/compat/regex/tre.h src/compat/regex/regex.h
 
 # HAVE_LIBLLVM is a compile-time macro, so it is baked into main.o, not only
 # into llvm_codegen.o. Rebuilding only the libLLVM translation units after

@@ -6,6 +6,30 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — Windows build no longer needs the libgnurx package
+
+- The MinGW/Windows build linked `-lregex` for the POSIX regex builtins
+  (str_match/regex), provided by the MSYS2 package
+  `mingw-w64-ucrt-x86_64-libgnurx`. That package is no longer resolvable
+  from the MSYS2 repositories (the Windows CI started failing with
+  "target not found"), and its LGPL license would not be compatible with
+  vendoring into this MIT project.
+- The build now vendors a self-contained POSIX regex implementation —
+  musl libc's (itself trimmed TRE, BSD-style licensed) — under
+  `src/compat/regex/` and compiles it into the binary on Windows. The
+  include path makes `<regex.h>` resolve to the vendored header, so no
+  external package and no link flag are needed. Three portability edits
+  were made to the vendored code, each annotated in place: a
+  self-contained `regex.h` (musl's includes `bits/alltypes.h`), a `hidden`
+  visibility shim (musl internal macro), and `ALIGN()` casting through
+  `uintptr_t` instead of `long` (32-bit `long` on Windows/LLP64 would
+  misalign allocations).
+- Verified two ways: the vendored implementation matches the system regex
+  behavior on a 19-case probe (patterns, capture groups, error codes), and
+  a full mingw-w64 cross-build produces a PE binary with
+  regcomp/regexec/regfree/regerror defined inside it and no `-lregex` in
+  the link line. The Windows CI workflow drops the libgnurx install step.
+
 ### Fixed — LeakSanitizer clean under `make asan` (native backends)
 
 - Scope exits in both native emitters reset a locals table by shrinking its
