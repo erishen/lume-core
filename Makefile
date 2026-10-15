@@ -1033,14 +1033,20 @@ http-noproxy-test: all
 	@PORT=18891; \
 	 python3 tests/http_noproxy_srv.py $$PORT > /tmp/lume-http-noproxy-srv.log 2>&1 & \
 	 SRV=$$!; \
-	 sleep 1; \
+	 if ! python3 tests/wait_port.py $$PORT 15; then \
+	   echo "==> noproxy server 15s 未就绪(端口被占/python3 故障?)"; \
+	   cat /tmp/lume-http-noproxy-srv.log; \
+	   kill $$SRV 2>/dev/null; exit 1; fi; \
 	 HTTP_PROXY=http://127.0.0.1:9 LUME_HTTP_PROXY= NO_PROXY=127.0.0.1 \
 	   ./$(TARGET) tests/builtins-http-noproxy.lume > /tmp/lume-http-noproxy.out 2>&1; \
 	 rc=$$?; \
 	 kill $$SRV 2>/dev/null; \
 	 cat /tmp/lume-http-noproxy.out; \
 	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-noproxy.out; then \
-	   echo "==> http no_proxy 单测失败 (rc=$$rc)"; exit 1; fi; \
+	   echo "==> http no_proxy 单测失败 (rc=$$rc)"; \
+	   echo "==> server log:"; cat /tmp/lume-http-noproxy-srv.log; \
+	   echo "==> proxy 相关环境变量:"; env | grep -i proxy || echo "(none)"; \
+	   exit 1; fi; \
 	 echo "==> http no_proxy 单测通过"
 
 # map 下标标量读: 合规路径(get()/标注/可解析字面量)三后端一致; 未标注的
