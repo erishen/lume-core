@@ -252,9 +252,9 @@ const char *ty_str(Type *t) {
         if (t->elem && t->elem->kind != TY_ANY) {
             char eb[64];
             snprintf(eb, sizeof eb, "%s", ty_str(t->elem));
-            snprintf(buf, sizeof buf, "%s[]", eb);
+            snprintf(buf, sizeof bufs[0], "%s[]", eb);
         } else {
-            snprintf(buf, sizeof buf, "list");
+            snprintf(buf, sizeof bufs[0], "list");
         }
         return buf;
     }
@@ -262,7 +262,7 @@ const char *ty_str(Type *t) {
         return t->name ? t->name : "map";
     if (t->kind == TY_FUNC)
         return "func";
-    snprintf(buf, sizeof(buf), "<%s>", t->name ? t->name : "?");
+    snprintf(buf, sizeof bufs[0], "<%s>", t->name ? t->name : "?");
     return buf;
 }
 

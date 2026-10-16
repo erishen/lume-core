@@ -186,6 +186,33 @@ Type *parse_type(Parser *p) {
         case TOK_KW_STRING: advance(p); ty = type_prim(TY_STRING); break;
         case TOK_BOOL:   advance(p); ty = type_prim(TY_BOOL); break;
         case TOK_RESULT: advance(p); ty = type_result(); break;
+        case TOK_KW_FN: {
+            /* `fn (t1, t2) -> ret` — a closure-variable type annotation
+             * (SPEC §4.8). `let f: fn(int) -> int = (x) => x * 2;` — the
+             * annotation spells the lambda's param/ret types so the checker
+             * can verify the literal against them and native backends have a
+             * spelled type even before inference pins one. */
+            advance(p);
+            if (!expect(p, TOK_LPAREN)) return NULL;
+            Type **params = NULL;
+            int arity = 0;
+            if (!check(p, TOK_RPAREN)) {
+                do {
+                    Type *pt = parse_type(p);
+                    if (!pt) { free(params); return NULL; }
+                    params = realloc(params, sizeof(Type *) * ((size_t)arity + 1));
+                    params[arity++] = pt;
+                } while (match(p, TOK_COMMA));
+            }
+            if (!expect(p, TOK_RPAREN)) { free(params); return NULL; }
+            Type *ret = NULL;
+            if (match(p, TOK_ARROW)) {
+                ret = parse_type(p);
+                if (!ret) { free(params); return NULL; }
+            }
+            ty = type_func(arity, params, ret);
+            break;
+        }
         case TOK_IDENT: {
             advance(p);
             /* ident_name() allocates the name, type_struct() copies it into
@@ -869,6 +896,14 @@ static void node_free_own(Node *n) {
         /* The mangled name the signature pass stamped on (NULL for a route
          * handler, which never goes through that pass). */
         free(n->as.funclit.cname);
+        /* Captured names are xstrdup'd by the capture pass; the types are
+         * borrowed from the enclosing scope and not owned here. */
+        if (n->as.funclit.cap_names) {
+            for (int i = 0; i < n->as.funclit.cap_count; i++)
+                free(n->as.funclit.cap_names[i]);
+            free(n->as.funclit.cap_names);
+        }
+        free(n->as.funclit.cap_types);
         break;
     case N_TYPE_DECL:
         free(n->as.type_decl.name);

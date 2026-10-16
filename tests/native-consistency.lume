@@ -472,6 +472,66 @@ print(reduce((a, x) => a + x, [1, 2], 10));    // 13
 let seven = () => 7;
 print(seven());                                // 7
 
+// ---- phase-2 free-variable capture (SPEC §4.8 / §8.1 #10) -----------------
+// A lambda inside a function body captures outer locals: the native backends
+// build a capture array of slot addresses, so a later write to the outer
+// variable is seen by the closure (the interpreter's shared env chain). All
+// three backends must print byte-identically. Covers parameter+local capture,
+// shared-assignment, string capture, HOF lambda capture, list capture and the
+// nested-HOF shape (inner lambda capturing an outer lambda's parameter).
+func cap_mk(k: int): int {
+    let n = k * 2;
+    let g = () => n + 1;
+    return g();
+}
+print(cap_mk(4));                              // 9
+func cap_share(): int {
+    let v = 5;
+    let f = () => v;
+    v = 10;
+    return f();
+}
+print(cap_share());                            // 10
+func cap_str(): string {
+    let s = "hi";
+    let f = () => s;
+    return f();
+}
+print(cap_str());                              // hi
+func cap_hof(): int {
+    let k = 3;
+    return reduce((a, x) => a + x * k, [1, 2, 3], 0);
+}
+print(cap_hof());                              // 18
+func cap_nested_list(): int {
+    let xs = [1, 2, 3];
+    let f = (p) => xs[0] + p;
+    return f(10);
+}
+print(cap_nested_list());                      // 11
+print(map((xs) => reduce((a, b) => a + b, xs, 0), [[1, 2], [3, 4]]));
+                                               // [3,7]
+
+// ---- fn-annotated closure variables (SPEC §3.1 / §4.8) --------------------
+// `let f: fn(int) => int = (x) => x * 2;` — the annotation spells the lambda's
+// parameter types; all three backends print byte-identically. Covers the basic
+// annotated closure, multi-param annotation, annotation + outer-local capture,
+// and an annotated closure handed to a HOF. The mismatch case (fn(int) => int
+// paired with a string-annotated parameter) is rejected identically by the
+// checker on all three backends — no output row for it.
+let fn8_a: fn(int) => int = (x) => x * 2;
+print(fn8_a(3));                                  // 6
+let fn8_b: fn(int, int) => int = (a, b) => a + b;
+print(fn8_b(2, 3));                               // 5
+func fn8_c(): int {
+    let base = 10;
+    let f: fn(int) => int = (x) => x + base;
+    return f(5);
+}
+print(fn8_c());                                   // 15
+let fn8_d: fn(int) => int = (x) => x * 2;
+print(map(fn8_d, [1, 2, 3]));                     // [2,4,6]
+
 // A bool-returning filter predicate (truthy test reads the register as-is)
 // and float element/accumulator shapes (at/push dispatch on the element).
 print(filter((x) => x % 2 == 0, [1, 2, 3, 4]));         // [2,4]

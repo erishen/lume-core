@@ -1,0 +1,13 @@
+// examples/regex-smoke.lume — P3 (TODO): exercise the vendored POSIX regex
+// (src/compat/regex) on Windows for real. This script is intentionally
+// interpreter-only: str_match/regex are interpreter builtins (SPEC §6.2,
+// intentional boundary — the native backends have no emission path for the
+// match-list shape). `make check` parses + type-checks it; the Windows CI
+// regex-smoke leg runs it and asserts the outputs below.
+let ms = str_match("order ([0-9]+)", "order 123, order 456");
+print(len(ms));                    // 2
+print(get(ms[0], "text"));         // order 123
+print(get(ms[0], "index"));        // 0
+print(get(ms[0], "groups")[0]);    // 123
+let none = str_match("zzz", "abc");
+print(len(none));                  // 0

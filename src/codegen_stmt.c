@@ -49,6 +49,25 @@ const char *list_at_fn(Type *ty);
  * has no N_ASSIGN_MEMBER case of its own, so the store has to be spelled from
  * whichever side asks for it. */
 
+/* Phase-2 escape guard (§8.1 #10): a return of a capturing closure would
+ * leave the cap array pointing at this frame's dead allocas. Direct literals
+ * and closure variables are caught; deeper smuggling is a documented gap. */
+
+static int returning_capturing_closure(CG *g, Node *e)
+{
+    if (!e) return 0;
+    if (e->type == N_FUNC_LIT) return e->as.funclit.cap_count > 0;
+    if (e->type == N_VAR) {
+        Asg *a = asg_find(&g->locals, e->as.var.name, e->line);
+        if (!a) a = gvar_find(&g->gvars, e->as.var.name);
+        if (a && a->ty && a->ty->kind == TY_FUNC && a->ty->func &&
+            a->ty->func->type == N_FUNC_LIT &&
+            a->ty->func->as.funclit.cap_count > 0)
+            return 1;
+    }
+    return 0;
+}
+
 Val cg_assign_mem(CG *g, Node *n)
 {
     /* The node carries no type of its own — the parser only keeps
@@ -128,8 +147,11 @@ const char *list_at_fn(Type *ty)
     case TY_BOOL:   return "lume_list_at_i";
     /* An enum value is the same opaque i8* a nested container is: at_obj
      * hands it back untouched, and the loop variable keeps its enum type
-     * so print/match dispatch on it stay correct. */
-    case TY_ENUM:   return "lume_list_at_obj";
+     * so print/match dispatch on it stay correct. A nested list element is
+     * the same opaque i8* — `map((xs) => ..., [[1,2],[3,4]])` reads each
+     * inner list as an object. */
+    case TY_ENUM:
+    case TY_LIST:   return "lume_list_at_obj";
     default:        return NULL;
     }
 }
@@ -148,6 +170,9 @@ Type *elem_rty(Type *ty)
      * slot the enum's own type keeps llvm_type_of at i8* while the variable
      * stays enum-typed for print/match. */
     case TY_ENUM:   return type_enum(ty->name);
+    /* Nested list element: at_obj returns the inner list object, which the
+     * loop variable keeps typed as that inner list. */
+    case TY_LIST:   return type_list(ty->elem);
     default:        return type_prim(TY_INT);
     }
 }
@@ -400,6 +425,16 @@ void cg_stmt(CG *g, Node *n)
         if (g->in_handler) { cg_handler_ret(g, n); break; }
         {
         if (!n->as.ret.expr) { EMIT(g, "  ret void\n"); break; }
+        /* Phase-2 escape guard: a closure that captured this function's
+         * locals must not leave the frame — the cap array is a stack alloca
+         * that dies with it, while the interpreter keeps the env chain alive
+         * (SPEC §8.1 #10, one-phase boundary). Only a direct return of the
+         * lambda literal or of a closure variable is caught here; a closure
+         * smuggled out through a list/field/call result is out of scope. */
+        if (g->cur && returning_capturing_closure(g, n->as.ret.expr))
+            ERRX(g, "line %zu: returning a closure that captures this "
+                    "function's locals is not supported yet (the captured "
+                    "slots die with the frame)", n->line);
         /* `return { .. }` needs the function's declared return type. */
         Type *prev = g->expect;
         g->expect = g->cur ? g->cur->ret : NULL;
@@ -509,7 +544,7 @@ void cg_stmt(CG *g, Node *n)
         break;
 
     default:
-        ERRX(g, "%s", bad(g, n, "this construct"));
+        ERRX(g, "%s", bad(n, "this construct"));
     }
 }
 
@@ -684,7 +719,7 @@ static void cg_handler_ret(CG *g, Node *n)
 
 static void cg_def(CG *g, const char *sym, const char *title,
                    char **names, Type **params, int arity, Type *ret,
-                   Node *body, int has_cap, size_t line)
+                   Node *body, int has_cap, Node *capfn, size_t line)
 {
     Sig sig;
     memset(&sig, 0, sizeof sig);
@@ -729,6 +764,20 @@ static void cg_def(CG *g, const char *sym, const char *title,
         }
     }
     if (!preset) scan_block(g, body);
+
+    /* Phase-2 captures: each captured name gets a `%cap<i>` slot. The creation
+     * site (cg_funclit) stored the address of the outer variable's slot into
+     * the cap array; this slot is how the body's own N_VAR / N_ASSIGN reads
+     * and writes reach it. The alloca pass skips the %cap prefix, so no stack
+     * cell is needed — the slot IS the array element. */
+    if (capfn) {
+        for (int i = 0; i < capfn->as.funclit.cap_count; i++) {
+            char capslot[48];
+            snprintf(capslot, sizeof capslot, "%%cap%d", i);
+            asg_push(&g->locals, capfn->as.funclit.cap_names[i],
+                     capfn->as.funclit.cap_types[i], capslot, 0);
+        }
+    }
 
     const char *rty = llvm_type_of(ret);
 
@@ -822,15 +871,15 @@ void cg_function(CG *g, Node *fn)
     snprintf(sym, sizeof sym, "L_%s", fname);
     cg_def(g, sym, fname, fn->as.func.names,
            fn->as.func.param_types, fn->as.func.arity, fn->as.func.ret,
-           fn->as.func.body, 0, fn->line);
+           fn->as.func.body, 0, NULL, fn->line);
 }
 
 /* A closure's `define`: the lambda node the signature pass named, emitted with
  * the leading capture parameter its call sites always pass. The body runs
- * through the same cg_def as a named function — the capture context is i8*
- * null in this phase (no free-variable capture yet), so nothing in the body
- * can reach it, but the parameter is part of the calling convention the call
- * sites and the fn-pointer bitcasts are spelled against. */
+ * through the same cg_def as a named function; the capture context is the cap
+ * array the creation site built (phase 2 free-variable capture), and the
+ * captured names are registered as `%cap<i>` slots so the body reads and
+ * writes them through the array. */
 
 void cg_closure(CG *g, Node *fn)
 {
@@ -840,5 +889,5 @@ void cg_closure(CG *g, Node *fn)
     cg_def(g, fn->as.funclit.cname, fn->as.funclit.cname,
            fn->as.funclit.names, fn->as.funclit.param_types,
            fn->as.funclit.arity, fn->as.funclit.ret,
-           fn->as.funclit.body, 1, fn->line);
+           fn->as.funclit.body, 1, fn, fn->line);
 }

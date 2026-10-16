@@ -125,7 +125,7 @@ MODULE_APP := examples/modules/app.lume
 # here too: they are the two scripts that exercise the --compile-* emitters,
 # and without them a type error in a native example (a struct field, a member
 # assignment) only showed up when someone hand-ran `make native-bench`.
-EXAMPLES := $(HELLO) examples/lang-basics.lume $(MODULE_APP) examples/native-fact.lume examples/native-bench.lume examples/http-get.lume
+EXAMPLES := $(HELLO) examples/lang-basics.lume $(MODULE_APP) examples/native-fact.lume examples/native-bench.lume examples/http-get.lume examples/regex-smoke.lume
 # make native / make native-llvm 的靶子: 纯计算脚本(不含 server/route/tool),
 # 原生后端覆盖得到。make native-bench 换成长循环的那个(显优化差别)。
 NATIVE_EX := examples/native-fact.lume

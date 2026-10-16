@@ -56,11 +56,19 @@ native backends have zero Windows coverage, so the vendored regex's
 wchar assumptions and the mingw link path are untested on the real
 platform.
 
-- [ ] Add a smoke leg to `windows.yml`: interpreter + `--compile-text` +
+- [x] Add a smoke leg to `windows.yml`: interpreter + `--compile-text` +
   `--compile-llvm` on a Run-hello-level script (the MSYS2 clang
-  dependency already exists in the toolchain group).
-- [ ] Include one `str_match`/regex positive case to exercise the
-  vendored `src/compat/regex` on Windows for real.
+  dependency already exists in the toolchain group). — The `--compile-text`
+  (`make native-text`) and default-backend (`make native`) legs were already
+  in place from the Windows native port; `check` + hello cover the
+  interpreter side.
+- [x] Include one `str_match`/regex positive case to exercise the
+  vendored `src/compat/regex` on Windows for real. — `examples/regex-smoke.lume`
+  (2026-10-16) + a Windows CI interpreter leg. Note: `str_match`/`regex` are
+  interpreter-only builtins (SPEC §6.2 intentional boundary — the match-list
+  shape has no native emission path), so the leg exercises the vendored regex
+  through `native_str_match` at runtime; the mingw link path is covered because
+  the regex is compiled into `lume-core.exe` itself.
 - [ ] If LLVM emission proves heavy on the runner, land the interpreter
   + text legs first and track the llvm leg separately.
 
@@ -86,5 +94,9 @@ These are deliberate design decisions; re-proposing them is noise
 - Arrow lambdas accept `: T` on parameters but have no return-type
   annotation.
 - `json(str)` parse direction is interpreter-only until tagged-any.
+- `str_match`/`regex` are interpreter-only: the match-list element is an
+  anonymous `{text,index,groups}` map with no native emission path (SPEC
+  §6.2). Windows CI exercises the vendored regex through the interpreter
+  (`examples/regex-smoke.lume`).
 - Third-party package managers are not build dependencies: vendor small
   deps instead (musl regex precedent after libgnurx vanished from MSYS2).

@@ -165,6 +165,25 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
             return type_prim(TY_INT);
 
+        /* try(fn) — { ok, err } where ok is the fn's return type and err is
+         * null. Carrying the members here is what lets `r.ok` / `r.err` pick
+         * the right getter (member_field_type reads this shape), exactly like
+         * a map literal does. */
+        if (strcmp(name, "try") == 0 && n->as.call.argc == 1) {
+            Node *fn = n->as.call.args[0];
+            Type *ft = NULL;
+            if (fn->type == N_FUNC_LIT)
+                ft = fn->as.funclit.ret;
+            else if (fn->type == N_VAR) {
+                Type *ct = infer_node_type(g, fn);
+                if (ct && ct->kind == TY_FUNC) ft = ct->ret;
+            }
+            Type *at = type_anon_struct();
+            type_add_member(at, "ok", ft ? ft : any_type());
+            type_add_member(at, "err", type_prim(TY_NULL));
+            return at;
+        }
+
         /* range(...) builds a list of numbers: all-int arguments iterate as
          * ints, one float argument makes the whole range float (the helper's
          * whole-value rule keeps every element readable either way). An arg
@@ -433,6 +452,14 @@ static void scan_stmt(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                  n->line, n->as.let.name);
+        /* `let f: fn(int) => int = (x) => x * 2;` (SPEC §4.8): the annotated
+         * TY_FUNC carries no back-pointer of its own, but `f(3)` recovers the
+         * lambda through Type.func — thread the literal through so the call
+         * emitter can pin the parameter types. Same wiring as
+         * infer_node_type's N_FUNC_LIT case. */
+        if (ty->kind == TY_FUNC && !ty->func && n->as.let.init &&
+            n->as.let.init->type == N_FUNC_LIT)
+            ty->func = n->as.let.init;
         if (g->scanning_top) {
             /* A top-level binding is module storage: the same @lv_ global is
              * registered as a gvar (what function bodies resolve through)

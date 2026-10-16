@@ -227,13 +227,21 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                                    sizeof(Type *));
             Type *hint = c->param_hint;
             c->param_hint = NULL; /* one-shot */
+            /* A `fn (...) => ...` annotation on the binding (`let f: fn(int)
+             * => int = (x) => x * 2;`, SPEC §4.8) spells the lambda's
+             * parameter types: use them for every unannotated parameter, not
+             * just the map/filter/reduce one-shot hint. */
+            Type *exp_fn = (expected && expected->kind == TY_FUNC) ? expected : NULL;
             for (int i = 0; i < n->as.funclit.arity; i++)
-                params[i] = (hint && i == 0 && !n->as.funclit.param_types[i])
-                                ? hint
-                                : (n->as.funclit.param_types[i]
-                                       ? resolve(c, n->as.funclit.param_types[i],
-                                                 n->line)
-                                       : any_type());
+                params[i] = (!n->as.funclit.param_types[i] && exp_fn &&
+                             i < exp_fn->count)
+                                ? resolve(c, exp_fn->types[i], n->line)
+                                : (hint && i == 0 && !n->as.funclit.param_types[i])
+                                      ? hint
+                                      : (n->as.funclit.param_types[i]
+                                             ? resolve(c, n->as.funclit.param_types[i],
+                                                       n->line)
+                                             : any_type());
             Type *ret = n->as.funclit.ret ? resolve(c, n->as.funclit.ret,
                                                     n->line) : any_type();
             Type *ft = type_func(n->as.funclit.arity, params, ret);

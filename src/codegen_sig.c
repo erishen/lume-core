@@ -91,9 +91,15 @@ static void fn_collect_walk(Node *n, NodeVec *out);
 
 static void lt_push(LTys *t, const char *name, Type *ty)
 {
-    if (!name || !ty) return;
+    if (!name) return;
     for (int i = 0; i < t->n; i++)              /* a later binding wins */
-        if (strcmp(t->v[i].name, name) == 0) { t->v[i].ty = ty; return; }
+        if (strcmp(t->v[i].name, name) == 0) {
+            /* A NULL type is a placeholder (an untyped lambda parameter that
+             * must still shadow a same-named global); never let it clobber a
+             * type that is already known. */
+            if (ty) t->v[i].ty = ty;
+            return;
+        }
     if (t->n == t->cap) {
         t->cap = t->cap ? t->cap * 2 : 8;
         t->v = (LTyp *)xrealloc(t->v, (size_t)t->cap * sizeof *t->v);
@@ -101,6 +107,26 @@ static void lt_push(LTys *t, const char *name, Type *ty)
     t->v[t->n].name = xstrdup(name);
     t->v[t->n].ty   = ty;
     t->n++;
+}
+
+/* Drop every binding of `name`. Used so an untyped lambda parameter still
+ * shadows a same-named top-level global during inference: without this the
+ * body's type scan would inherit the global's type for the parameter and
+ * freeze the lambda's return at it before the parameter is ever hinted
+ * (`let a: float = 1.5;` then `(a, x) => a + x * k` inside a function). */
+static void lt_remove(LTys *t, const char *name)
+{
+    if (!name) return;
+    int w = 0;
+    for (int i = 0; i < t->n; i++) {
+        if (strcmp(t->v[i].name, name) == 0) {
+            free(t->v[i].name);
+        } else {
+            if (w != i) t->v[w] = t->v[i];
+            w++;
+        }
+    }
+    t->n = w;
 }
 
 static void lt_free(LTys *t)
@@ -160,6 +186,216 @@ static void collect_known(CG *g, Node *n, LTys *t)
         collect_known(g, n->as.fors.incr, t);
         collect_known(g, n->as.fors.body, t);
         collect_known(g, n->as.fors.iterable, t);
+    }
+}
+
+/* ---------- phase-2 free-variable capture ----------
+ *
+ * A lambda's body may read locals of its enclosing function (SPEC §4.7's
+ * closure semantics). The interpreter shares one env chain, so a later write
+ * to the captured variable is visible inside the closure; the native backend
+ * reproduces that by storing the *address* of the outer slot into a capture
+ * array on the closure record, and reading the variable back through it.
+ *
+ * This pass finds, for every named lambda, the outer locals its body reads
+ * (name + type) and stores them on funclit.cap_*. It reruns each fixed-point
+ * round of signature inference, so a capture type tracks the same iteration
+ * that resolves the enclosing function's own returns. */
+
+static void cap_reset(Node *lam)
+{
+    for (int i = 0; i < lam->as.funclit.cap_count; i++)
+        free(lam->as.funclit.cap_names[i]);
+    free(lam->as.funclit.cap_names);
+    free(lam->as.funclit.cap_types);
+    lam->as.funclit.cap_names = NULL;
+    lam->as.funclit.cap_types = NULL;
+    lam->as.funclit.cap_count = 0;
+}
+
+static void cap_add(Node *lam, const char *name, Type *ty)
+{
+    for (int i = 0; i < lam->as.funclit.cap_count; i++)
+        if (strcmp(lam->as.funclit.cap_names[i], name) == 0) return;
+    int n = lam->as.funclit.cap_count;
+    lam->as.funclit.cap_names =
+        (char **)xrealloc(lam->as.funclit.cap_names, (size_t)(n + 1) * sizeof(char *));
+    lam->as.funclit.cap_types =
+        (Type **)xrealloc(lam->as.funclit.cap_types, (size_t)(n + 1) * sizeof(Type *));
+    lam->as.funclit.cap_names[n] = xstrdup(name);
+    lam->as.funclit.cap_types[n] = ty;
+    lam->as.funclit.cap_count = n + 1;
+}
+
+/* Walk one tree with the current lambda's own bindings (`self`: parameters
+ * plus body locals) and the lexical outer bindings (`env`: globals + the
+ * enclosing function's parameters and locals + outer lambda bindings). A free
+ * N_VAR -- not a lambda-local, not a top-level global -- is a capture. */
+static void cap_walk(CG *g, Node *n, LTys *self, LTys *env, Node *lam)
+{
+    if (!n) return;
+    switch (n->type) {
+    case N_VAR:
+        if (!lam) return;
+        /* Own param/local: a name match shadows regardless of whether the
+         * parameter has a type yet (untyped params are pushed as NULL
+         * placeholders so a same-named global is never captured). */
+        for (int i = 0; i < self->n; i++)
+            if (strcmp(self->v[i].name, n->as.var.name) == 0) return;
+        /* Lexical outer bindings first: an enclosing function's local named
+         * the same as a top-level global shadows it (`func f(){ let n = ...;
+         * let g = () => n; }` with a top-level `let n` must capture the LOCAL,
+         * not mistake n for the global and skip the capture). */
+        {
+            Type *ty = lt_find(env, n->as.var.name);
+            if (ty) { cap_add(lam, n->as.var.name, ty); return; }
+        }
+        if (lt_find(&g->globals, n->as.var.name)) return;   /* top-level global */
+        return;
+    case N_FUNC_LIT: {
+        if (!n->as.funclit.cname) return;   /* FFI-only literal: not compiled here */
+        cap_reset(n);
+        LTys cself = {0}, cenv = {0};
+        for (int i = 0; i < n->as.funclit.arity; i++)
+            if (n->as.funclit.names[i])
+                lt_push(&cself, n->as.funclit.names[i],
+                        i < n->as.funclit.arity ? n->as.funclit.param_types[i] : NULL);
+        /* The child sees everything this walk sees (self ∪ env), so a lambda
+         * nested inside a lambda can capture the outer lambda's own bindings
+         * too. The body locals are collected against that full scope. */
+        lt_copy(&cenv, env);
+        for (int i = 0; i < self->n; i++)
+            lt_push(&cenv, self->v[i].name, self->v[i].ty);
+        g->scope = cenv;
+        collect_known(g, n->as.funclit.body, &cself);
+        cap_walk(g, n->as.funclit.body, &cself, &cenv, n);
+        lt_free(&cenv);
+        lt_free(&cself);
+        g->scope = (LTys){0};
+        return;
+    }
+    case N_PROGRAM: case N_BLOCK:
+        for (int i = 0; i < n->as.block.count; i++)
+            cap_walk(g, n->as.block.stmts[i], self, env, lam);
+        return;
+    case N_FUNC_DECL:
+        cap_walk(g, n->as.func.body, self, env, lam);
+        return;
+    case N_LET:        cap_walk(g, n->as.let.init, self, env, lam); return;
+    case N_LET_PAT:    cap_walk(g, n->as.letpat.init, self, env, lam); return;
+    case N_LET_EXPR:
+        cap_walk(g, n->as.letx.init, self, env, lam);
+        cap_walk(g, n->as.letx.body, self, env, lam);
+        return;
+    case N_IF:
+        cap_walk(g, n->as.ifs.cond, self, env, lam);
+        cap_walk(g, n->as.ifs.then, self, env, lam);
+        cap_walk(g, n->as.ifs.els,  self, env, lam);
+        return;
+    case N_IF_LET:
+        cap_walk(g, n->as.iflet.then, self, env, lam);
+        cap_walk(g, n->as.iflet.els,  self, env, lam);
+        return;
+    case N_WHILE:
+        cap_walk(g, n->as.whiles.cond, self, env, lam);
+        cap_walk(g, n->as.whiles.body, self, env, lam);
+        return;
+    case N_FOR:
+        cap_walk(g, n->as.fors.init,     self, env, lam);
+        cap_walk(g, n->as.fors.cond,     self, env, lam);
+        cap_walk(g, n->as.fors.incr,     self, env, lam);
+        cap_walk(g, n->as.fors.iterable, self, env, lam);
+        cap_walk(g, n->as.fors.body,     self, env, lam);
+        return;
+    case N_RETURN:     cap_walk(g, n->as.ret.expr, self, env, lam); return;
+    case N_EXPR_STMT:  cap_walk(g, n->as.expr_stmt.expr, self, env, lam); return;
+    case N_ASSIGN:
+        cap_walk(g, n->as.assign.value, self, env, lam);
+        return;
+    case N_ASSIGN_MEMBER:
+        cap_walk(g, n->as.assign_mem.obj,   self, env, lam);
+        cap_walk(g, n->as.assign_mem.value, self, env, lam);
+        return;
+    case N_CALL:
+        cap_walk(g, n->as.call.callee, self, env, lam);
+        for (int i = 0; i < n->as.call.argc; i++)
+            cap_walk(g, n->as.call.args[i], self, env, lam);
+        return;
+    case N_MEMBER:     cap_walk(g, n->as.member.obj, self, env, lam); return;
+    case N_INDEX:
+        cap_walk(g, n->as.index.obj,   self, env, lam);
+        cap_walk(g, n->as.index.index, self, env, lam);
+        return;
+    case N_UNARY:      cap_walk(g, n->as.unary.operand, self, env, lam); return;
+    case N_BINARY:
+        cap_walk(g, n->as.binary.left,  self, env, lam);
+        cap_walk(g, n->as.binary.right, self, env, lam);
+        return;
+    case N_TERNARY:
+        cap_walk(g, n->as.ternary.cond, self, env, lam);
+        cap_walk(g, n->as.ternary.then, self, env, lam);
+        cap_walk(g, n->as.ternary.els,  self, env, lam);
+        return;
+    case N_MATCH:
+        cap_walk(g, n->as.matchn.scrutinee, self, env, lam);
+        for (int i = 0; i < n->as.matchn.armc; i++) {
+            cap_walk(g, n->as.matchn.arms[i].guard, self, env, lam);
+            cap_walk(g, n->as.matchn.arms[i].body,  self, env, lam);
+        }
+        return;
+    case N_CTOR:
+        for (int i = 0; i < n->as.ctor.argc; i++)
+            cap_walk(g, n->as.ctor.args[i], self, env, lam);
+        return;
+    case N_LIST_LIT:
+        for (int i = 0; i < n->as.list.count; i++)
+            cap_walk(g, n->as.list.items[i], self, env, lam);
+        return;
+    case N_MAP_LIT:
+        for (int i = 0; i < n->as.map.count; i++)
+            cap_walk(g, n->as.map.vals[i], self, env, lam);
+        return;
+    case N_STRUCT_UPDATE:
+        cap_walk(g, n->as.supd.base, self, env, lam);
+        for (int i = 0; i < n->as.supd.count; i++)
+            cap_walk(g, n->as.supd.vals[i], self, env, lam);
+        return;
+    default: return;
+    }
+}
+
+/* Run the capture walk over one function: its parameters and body locals are
+ * `self` (not captured), everything lexical-outer is the capture source. */
+static void capture_func(CG *g, Node *fn)
+{
+    LTys self = {0}, env = {0}, full = {0};
+    for (int i = 0; i < fn->as.func.arity; i++)
+        if (fn->as.func.names[i])
+            lt_push(&self, fn->as.func.names[i],
+                    i < fn->as.func.arity ? fn->as.func.param_types[i] : NULL);
+    lt_copy(&env, &g->globals);
+    lt_copy(&full, &g->globals);
+    for (int i = 0; i < self.n; i++)
+        lt_push(&full, self.v[i].name, self.v[i].ty);
+    g->scope = full;
+    collect_known(g, fn->as.func.body, &self);
+    lt_free(&full);
+    cap_walk(g, fn->as.func.body, &self, &env, NULL);
+    lt_free(&env);
+    lt_free(&self);
+    g->scope = (LTys){0};
+}
+
+/* Refresh every lambda's capture table. Idempotent: it clears and refills, so
+ * running it again after inference advanced the enclosing types is safe. */
+static void capture_pass(CG *g)
+{
+    Node *prog = g->prog;
+    if (!prog || prog->type != N_PROGRAM) return;
+    for (int i = 0; i < prog->as.program.count; i++) {
+        Node *n = prog->as.program.stmts[i];
+        if (n && n->type == N_FUNC_DECL)
+            capture_func(g, n);
     }
 }
 
@@ -779,8 +1015,10 @@ static void type_desc(Type *t, char *buf, size_t n)
     case TY_FLOAT:  snprintf(buf, n, "float"); break;
     case TY_STRING: snprintf(buf, n, "string"); break;
     case TY_BOOL:   snprintf(buf, n, "bool"); break;
-    case TY_LIST:   { char e[32]; type_desc(t->elem, e, sizeof e);
-                      snprintf(buf, n, "%s[]", e); break; }
+    case TY_LIST:   { type_desc(t->elem, buf, n);
+                      size_t len = strlen(buf);
+                      if (len + 2 < n) { buf[len] = '['; buf[len + 1] = ']'; buf[len + 2] = '\0'; }
+                      break; }
     case TY_STRUCT: snprintf(buf, n, "%s", t->name ? t->name : "struct"); break;
     case TY_ENUM:   snprintf(buf, n, "%s", t->name ? t->name : "enum"); break;
     default:        snprintf(buf, n, "?"); break;
@@ -866,14 +1104,22 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
                                 ? infer_arg_type(g, n->as.call.args[2], t) : NULL;
                             Type *list_t = argc >= 2
                                 ? infer_arg_type(g, n->as.call.args[1], t) : NULL;
+                            /* An empty/any list never calls the lambda (len ==
+                             * 0), so int is a safe spellable element type. */
+                            Type *et = (list_t && list_t->kind == TY_LIST)
+                                ? (list_t->elem && list_t->elem->kind != TY_ANY
+                                   ? list_t->elem : type_prim(TY_INT))
+                                : NULL;
                             if (init_t && !ls->params[0]) { ls->params[0] = init_t; changed++; }
-                            if (list_t && list_t->kind == TY_LIST && list_t->elem &&
-                                !ls->params[1]) { ls->params[1] = list_t->elem; changed++; }
+                            if (et && !ls->params[1]) { ls->params[1] = et; changed++; }
                         } else {
                             Type *list_t = argc >= 2
                                 ? infer_arg_type(g, n->as.call.args[1], t) : NULL;
-                            if (list_t && list_t->kind == TY_LIST && list_t->elem &&
-                                !ls->params[0]) { ls->params[0] = list_t->elem; changed++; }
+                            Type *et = (list_t && list_t->kind == TY_LIST)
+                                ? (list_t->elem && list_t->elem->kind != TY_ANY
+                                   ? list_t->elem : type_prim(TY_INT))
+                                : NULL;
+                            if (et && !ls->params[0]) { ls->params[0] = et; changed++; }
                         }
                     }
                 }
@@ -957,17 +1203,71 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
         /* A closure variable keeps the first lambda it was bound to as its
          * type's back pointer; every call through the variable lowers
          * against THAT signature while the runtime box holds whatever was
-         * assigned last. If the new lambda's shape differs, the call is
-         * silently wrong, so reassignment is refused on the native paths
-         * (the interpreter, which is dynamically typed, still accepts it). */
+         * assigned last. Reassigning with a lambda of the SAME shape is
+         * safe — both spell the same signature, so the lowering cannot go
+         * wrong — and is now supported. A shape change is still refused:
+         * the call would lower against the old signature while the box
+         * holds the new lambda, silently wrong. (The interpreter, being
+         * dynamically typed, accepts both.)
+         *
+         * The second lambda has no call site of its own (every call through
+         * the variable pins the FIRST lambda), so its parameter types are
+         * unknown until this branch propagates the old signature into it —
+         * which is exactly what makes its body inferable and the two
+         * signatures comparable. A parameter that is still NULL on either
+         * side skips the comparison (undecided) and the fixed point walks
+         * this statement again. */
         {
             Type *vt = lt_find(t, n->as.assign.name);
             if (vt && vt->kind == TY_FUNC && n->as.assign.value &&
                 n->as.assign.value->type == N_FUNC_LIT) {
-                ERR_SET(g, "line %zu: reassigning a closure variable is not "
-                           "supported on the native backends — the variable "
-                           "keeps the first lambda's signature", n->line);
-                return changed;
+                Node *old = vt->func;
+                Node *new_ = n->as.assign.value;
+                if (old && old->type == N_FUNC_LIT &&
+                    old->as.funclit.arity == new_->as.funclit.arity) {
+                    /* Propagate the old lambda's parameter types into the new
+                     * one (funclit slots AND its Sig) so its body can infer a
+                     * return type and the comparison below is decidable. */
+                    Sig *ns = sig_find(&g->sigs, new_->as.funclit.cname);
+                    for (int k = 0; k < old->as.funclit.arity; k++) {
+                        if (!new_->as.funclit.param_types[k] &&
+                            old->as.funclit.param_types[k]) {
+                            new_->as.funclit.param_types[k] =
+                                old->as.funclit.param_types[k];
+                            if (ns) ns->params[k] =
+                                old->as.funclit.param_types[k];
+                            changed++;
+                        }
+                    }
+                }
+                int same = 1, undecided = 0;
+                if (!old || old->type != N_FUNC_LIT ||
+                    old->as.funclit.arity != new_->as.funclit.arity) {
+                    same = 0;       /* shape differs, or first binding unknown */
+                } else {
+                    for (int k = 0; k < old->as.funclit.arity && same; k++) {
+                        Type *a = old->as.funclit.param_types[k];
+                        Type *b = new_->as.funclit.param_types[k];
+                        if (!a || !b) { undecided = 1; same = 0; break; }
+                        if (!types_eq(a, b)) same = 0;
+                    }
+                    if (same) {
+                        if (!old->as.funclit.ret || !new_->as.funclit.ret) {
+                            undecided = 1;
+                            same = 0;
+                        } else if (!types_eq(old->as.funclit.ret,
+                                             new_->as.funclit.ret)) {
+                            same = 0;
+                        }
+                    }
+                }
+                if (!undecided && !same) {
+                    ERR_SET(g, "line %zu: reassigning a closure variable is not "
+                               "supported on the native backends when the new "
+                               "lambda has a different signature — the variable "
+                               "keeps the first lambda's signature", n->line);
+                    return changed;
+                }
             }
         }
         changed += walk_sigs(g, n->as.assign.value, t, s);
@@ -995,7 +1295,27 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
             changed += walk_sigs(g, n->as.ctor.args[i], t, s);
         return changed;
     case N_MEMBER:      return walk_sigs(g, n->as.member.obj, t, s);
-    case N_LET:         return walk_sigs(g, n->as.let.init, t, s);
+    case N_LET: {
+        /* `let f: fn(int) => int = (x) => x * 2;` (SPEC §4.8): the fn
+         * annotation spells the lambda's parameter types. Pin them into the
+         * lambda's signature so an unannotated `(x)` parameter is typed even
+         * before any call site shapes it. */
+        if (n->as.let.annot && n->as.let.annot->kind == TY_FUNC &&
+            n->as.let.init && n->as.let.init->type == N_FUNC_LIT) {
+            Node *lit = n->as.let.init;
+            ensure_lambda_registered(g, lit);
+            Sig *ls = sig_find(&g->sigs, lit->as.funclit.cname);
+            Type *ft = n->as.let.annot;
+            if (ls) {
+                for (int i = 0; i < ls->arity && i < ft->count; i++)
+                    if (!ls->params[i] && ft->types[i]) {
+                        ls->params[i] = ft->types[i];
+                        changed++;
+                    }
+            }
+        }
+        return changed + walk_sigs(g, n->as.let.init, t, s);
+    }
     case N_LET_PAT:     return walk_sigs(g, n->as.letpat.init, t, s);
     case N_LIST_LIT:
         for (int i = 0; i < n->as.list.count; i++)
@@ -1018,6 +1338,51 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
         changed += walk_sigs(g, n->as.fors.incr, t, s);
         changed += walk_sigs(g, n->as.fors.iterable, t, s);
         return changed + walk_sigs(g, n->as.fors.body, t, s);
+    case N_FUNC_LIT: {
+        /* Walk into a nested lambda so its own HOF calls (`map((xs) =>
+         * reduce(...), ...)`) get their parameter hints and its body's
+         * returns fill ITS signature, not the enclosing function's. The
+         * scope is the lambda's: params, phase-2 captures, then body locals. */
+        if (!n->as.funclit.cname) return 0;
+        Sig *ls = sig_find(&g->sigs, n->as.funclit.cname);
+        /* Only walk the body once its parameters are pinned: a body whose
+         * return depends on a not-yet-hinted parameter would set the error
+         * slot in the N_RETURN walk — ERR_SET is one-shot, the fixed point
+         * never retries it. Named functions dodge this because their bodies
+         * are only walked by infer_one_sig, after the top-level pass has
+         * already hinted the parameters. A lambda written inline as a HOF
+         * argument is hinted by its enclosing N_CALL branch before this
+         * recursion, so it is ready here. */
+        if (ls) {
+            int ready = 1;
+            for (int i = 0; i < ls->arity; i++)
+                if (!ls->params[i]) { ready = 0; break; }
+            if (!ready) return 0;
+        }
+        LTys lt2 = {0};
+        lt_copy(&lt2, t);
+        /* Parameter types come from the lambda's Sig first: the AST's own
+         * param_types are only written back at the end of the fixed point,
+         * so mid-walk a just-hinted parameter is still NULL on the node. */
+        for (int i = 0; i < n->as.funclit.arity; i++) {
+            Type *pt = (ls && ls->params[i]) ? ls->params[i]
+                : (i < n->as.funclit.arity ? n->as.funclit.param_types[i] : NULL);
+            if (n->as.funclit.names[i]) {
+                lt_remove(&lt2, n->as.funclit.names[i]);
+                if (pt) lt_push(&lt2, n->as.funclit.names[i], pt);
+            }
+        }
+        for (int i = 0; i < n->as.funclit.cap_count; i++)
+            if (n->as.funclit.cap_names[i] && n->as.funclit.cap_types[i])
+                lt_push(&lt2, n->as.funclit.cap_names[i],
+                        n->as.funclit.cap_types[i]);
+        collect_known(g, n->as.funclit.body, &lt2);
+        g->scope = lt2;
+        int ch = walk_sigs(g, n->as.funclit.body, &lt2, ls ? ls : s);
+        g->scope = *t;          /* restore the enclosing scope, not empty */
+        lt_free(&lt2);
+        return ch;
+    }
     case N_BLOCK: case N_PROGRAM:
         for (int i = 0; i < n->as.block.count; i++)
             changed += walk_sigs(g, n->as.block.stmts[i], t, s);
@@ -1040,9 +1405,27 @@ static void infer_one_sig(CG *g, Sig *s)
      * collected last for the same reason. */
     lt_copy(&t, &g->globals);
 
-    for (int i = 0; i < s->arity; i++)
-        if (s->params[i] && s->pnames && s->pnames[i])
+    for (int i = 0; i < s->arity; i++) {
+        if (s->pnames && s->pnames[i]) {
+            /* A parameter shadows a same-named global even before its type is
+             * pinned: leaving the global's type visible would let the body
+             * inherit it and freeze the wrong return type (see lt_remove). A
+             * NULL type still occupies the name so the body never falls back
+             * to the global. */
+            lt_remove(&t, s->pnames[i]);
             lt_push(&t, s->pnames[i], s->params[i]);
+        }
+    }
+    /* Phase-2 captures: a lambda body may read outer locals, typed by the
+     * capture pass (which reruns each fixed-point round). Push them before
+     * the body's own locals, which shadow on a same-name collision. */
+    if (s->is_lambda && s->node) {
+        Node *fn = s->node;
+        for (int i = 0; i < fn->as.funclit.cap_count; i++)
+            if (fn->as.funclit.cap_names[i] && fn->as.funclit.cap_types[i])
+                lt_push(&t, fn->as.funclit.cap_names[i],
+                        fn->as.funclit.cap_types[i]);
+    }
     collect_known(g, s->body, &t);
     g->scope = t;                 /* readable by infer_node_type */
     walk_sigs(g, s->body, &t, s);
@@ -1062,27 +1445,37 @@ static void infer_one_sig(CG *g, Sig *s)
 
 static void infer_sigs(CG *g)
 {
-    /* Top-level statements are walked too: an entry-point call like
-     * `half(5)` sits outside every function body, but it is exactly the shape
-     * that pins a parameter's type. */
-    if (g->prog && g->prog->type == N_PROGRAM) {
-        LTys t = {0};
-        /* Seed the top-level scope with the types of top-level `let`s — a
-         * closure bound at top level (`let f = (x) => ...; f(3)`) has to be
-         * visible so its call site can find the lambda's TY_FUNC type. */
-        collect_known(g, g->prog, &t);
-        for (int i = 0; i < g->prog->as.program.count; i++) {
-            Node *st = g->prog->as.program.stmts[i];
-            if (st && st->type == N_EXPR_STMT) st = st->as.expr_stmt.expr;
-            g->scope = t;
-            walk_sigs(g, st, &t, NULL);
-        }
-        g->scope = (LTys){0};
-        lt_free(&t);
-    }
-
     for (int round = 0; round <= g->sigs.n + 1; round++) {
         int changed = 0;
+        /* Phase-2 captures refresh every round: a capture type depends on the
+         * enclosing function's locals, which this same fixed point is still
+         * resolving, so the lambda's captured view must track it. */
+        capture_pass(g);
+
+        /* Top-level statements are walked too, every round: an entry-point
+         * call like `half(5)` sits outside every function body, but it is
+         * exactly the shape that pins a parameter's type. Re-walking each
+         * round also lets a top-level closure reassignment propagate the old
+         * lambda's signature into the new one the moment the old one is
+         * final (the N_ASSIGN branch), after which the new lambda's body
+         * infers a return type on a later round — the same fixed-point game
+         * a function body plays. */
+        if (g->prog && g->prog->type == N_PROGRAM) {
+            LTys t = {0};
+            /* Seed the top-level scope with the types of top-level `let`s — a
+             * closure bound at top level (`let f = (x) => ...; f(3)`) has to be
+             * visible so its call site can find the lambda's TY_FUNC type. */
+            collect_known(g, g->prog, &t);
+            for (int i = 0; i < g->prog->as.program.count; i++) {
+                Node *st = g->prog->as.program.stmts[i];
+                if (st && st->type == N_EXPR_STMT) st = st->as.expr_stmt.expr;
+                g->scope = t;
+                changed += walk_sigs(g, st, &t, NULL);
+            }
+            g->scope = (LTys){0};
+            lt_free(&t);
+        }
+
         for (int i = 0; i < g->sigs.n; i++) {
             int before = 0;
             Sig *s = &g->sigs.v[i];

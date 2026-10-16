@@ -25,17 +25,17 @@ static int emit(const char *s)
 }
 
 /* Defined below but called from lume_print_str's null guard. */
-long lume_print_null(void);
+int64_t lume_print_null(void);
 
-long lume_print_i64(long v)
+int64_t lume_print_i64(int64_t v)
 {
     char buf[40];
-    int n = snprintf(buf, sizeof buf, "%ld\n", v);
+    int n = snprintf(buf, sizeof buf, "%lld\n", v);
     emit(buf);
     return n;
 }
 
-long lume_print_double(double v)
+int64_t lume_print_double(double v)
 {
     char buf[64];
     /* %g, not %f: the interpreter prints floats the same way (`print(1.0)`
@@ -47,12 +47,12 @@ long lume_print_double(double v)
     return n;
 }
 
-long lume_print_bool(long v)
+int64_t lume_print_bool(int64_t v)
 {
     return emit(v ? "true\n" : "false\n");
 }
 
-long lume_print_str(const char *s)
+int64_t lume_print_str(const char *s)
 {
     /* Same line-ending contract as the other helpers: every print() ends the
      * line, so mixed int/string output stays readable.
@@ -73,7 +73,7 @@ long lume_print_str(const char *s)
 
 /* `null` has no value to pass — it prints the bare word and takes no
  * argument, so `print(null)` matches the interpreter's "null" exactly. */
-long lume_print_null(void)
+int64_t lume_print_null(void)
 {
     return emit("null\n");
 }
@@ -104,10 +104,10 @@ static char *dup_str(const char *s)
     return p;
 }
 
-char *lume_bi_str_i64(long v)
+char *lume_bi_str_i64(int64_t v)
 {
     char buf[32];
-    snprintf(buf, sizeof buf, "%ld", v);
+    snprintf(buf, sizeof buf, "%lld", v);
     return dup_str(buf);
 }
 
@@ -118,7 +118,7 @@ char *lume_bi_str_double(double v)
     return dup_str(buf);
 }
 
-char *lume_bi_str_bool(long v) { return dup_str(v ? "true" : "false"); }
+char *lume_bi_str_bool(int64_t v) { return dup_str(v ? "true" : "false"); }
 
 char *lume_bi_cat(const char *a, const char *b)
 {
@@ -132,9 +132,9 @@ char *lume_bi_cat(const char *a, const char *b)
     return p;
 }
 
-long lume_bi_abs(long v)     { return v < 0 ? -v : v; }
-long lume_bi_min(long a, long b) { return a < b ? a : b; }
-long lume_bi_max(long a, long b) { return a > b ? a : b; }
+int64_t lume_bi_abs(int64_t v)     { return v < 0 ? -v : v; }
+int64_t lume_bi_min(int64_t a, int64_t b) { return a < b ? a : b; }
+int64_t lume_bi_max(int64_t a, int64_t b) { return a > b ? a : b; }
 double lume_bi_minf(double a, double b) { return a < b ? a : b; }
 double lume_bi_maxf(double a, double b) { return a > b ? a : b; }
 
@@ -144,9 +144,9 @@ double lume_bi_floor(double v) { return floor(v); }
 double lume_bi_ceil(double v)  { return ceil(v); }
 double lume_bi_round(double v) { return round(v); }
 
-long   lume_bi_int(double v)  { return (long)v; }
-double lume_bi_float(long v)  { return (double)v; }
-long lume_bi_len_s(const char *s) { return s ? (long)strlen(s) : 0; }
+int64_t   lume_bi_int(double v)  { return (int64_t)v; }
+double lume_bi_float(int64_t v)  { return (double)v; }
+int64_t lume_bi_len_s(const char *s) { return s ? (int64_t)strlen(s) : 0; }
 
 /* ------------------------------------------------------------------ *
  * List and map objects.
@@ -179,7 +179,7 @@ long lume_bi_len_s(const char *s) { return s ? (long)strlen(s) : 0; }
  * rendered container bools as 1/0). `num` is 0 or 1. */
 #define LUME_SLOT_BOOL   4
 
-typedef struct { long num; const char *str; int tag; } LumeSlot;
+typedef struct { int64_t num; const char *str; int tag; } LumeSlot;
 
 /* Which container kind an LUME_SLOT_OBJ pointer refers to. A bare i8* does
  * not say, and the printer has to know to walk it as a list or as a map, so
@@ -187,8 +187,8 @@ typedef struct { long num; const char *str; int tag; } LumeSlot;
 #define LUME_CTR_LIST    0x4c49   /* 'LI' */
 #define LUME_CTR_MAP     0x4d41   /* 'MA' */
 
-typedef struct { long len, cap; int kind; LumeSlot *items; }    LumeList;
-typedef struct { long len, cap; int kind; char **keys; LumeSlot *vals; } LumeMap;
+typedef struct { int64_t len, cap; int kind; LumeSlot *items; }    LumeList;
+typedef struct { int64_t len, cap; int kind; char **keys; LumeSlot *vals; } LumeMap;
 
 /* A first-class function value for the native backends. `fn` is the raw
  * function pointer (a bitcast i8* in IR); `cap` is reserved for capture and
@@ -220,7 +220,7 @@ LumeClosure *lume_closure_make(void *fn, void *cap)
 
 static void list_grow(LumeList *l)
 {
-    long cap = l->cap ? l->cap * 2 : 8;
+    int64_t cap = l->cap ? l->cap * 2 : 8;
     LumeSlot *it = realloc(l->items, (size_t)cap * sizeof *it);
     if (!it) { fputs("lume(native): out of memory\n", stderr); exit(70); }
     memset(it + (size_t)l->cap, 0, (size_t)(cap - l->cap) * sizeof *it);
@@ -235,11 +235,11 @@ LumeList *lume_list_new(void)
     return l;
 }
 
-long lume_list_len(const LumeList *l) { return l ? l->len : 0; }
+int64_t lume_list_len(const LumeList *l) { return l ? l->len : 0; }
 
 /* One push per element type: the caller picked the flavour from the static
  * type, so the slot can be filled without a tag round-trip. */
-long lume_list_push_i(LumeList *l, long v)
+int64_t lume_list_push_i(LumeList *l, int64_t v)
 {
     if (!l) return 0;
     if (l->len >= l->cap) list_grow(l);
@@ -250,7 +250,7 @@ long lume_list_push_i(LumeList *l, long v)
 
 /* Push a bool with its own tag so print()/str() render `true`/`false` the way
  * the interpreter does (an INT-tagged 1 rendered as `1`). */
-long lume_list_push_b(LumeList *l, long v)
+int64_t lume_list_push_b(LumeList *l, int64_t v)
 {
     if (!l) return 0;
     if (l->len >= l->cap) list_grow(l);
@@ -259,18 +259,18 @@ long lume_list_push_b(LumeList *l, long v)
     return ++l->len;
 }
 
-long lume_list_push_f(LumeList *l, double v)
+int64_t lume_list_push_f(LumeList *l, double v)
 {
     if (!l) return 0;
     if (l->len >= l->cap) list_grow(l);
-    long bits;
+    int64_t bits;
     memcpy(&bits, &v, sizeof bits);
     l->items[l->len].num = bits;
     l->items[l->len].tag = LUME_SLOT_FLOAT;
     return ++l->len;
 }
 
-long lume_list_push_s(LumeList *l, const char *v)
+int64_t lume_list_push_s(LumeList *l, const char *v)
 {
     if (!l) return 0;
     if (l->len >= l->cap) list_grow(l);
@@ -282,14 +282,42 @@ long lume_list_push_s(LumeList *l, const char *v)
 /* Push a nested container. `v` is the lume_list_new() / lume_map_new()
  * pointer, and its own `kind` is what tells a reader how to walk it later, so
  * one function serves both container kinds. */
-long lume_list_push_obj(LumeList *l, void *v)
+int64_t lume_list_push_obj(LumeList *l, void *v)
 {
     if (!l) return 0;
     if (l->len >= l->cap) list_grow(l);
-    l->items[l->len].num = (long)(intptr_t)v;
+    l->items[l->len].num = (int64_t)(intptr_t)v;
     l->items[l->len].str = NULL;
     l->items[l->len].tag = LUME_SLOT_OBJ;
     return ++l->len;
+}
+
+/* ---- argv() (SPEC 5): the script's trailing CLI arguments ----
+ * The generated entry point calls lume_cli_init once, before any top-level
+ * statement runs; lume_bi_argv then hands the stashed list back. Interpreter
+ * parity: the list holds strings and is empty when the program received no
+ * arguments. The argv[] array the C runtime hands main() lives for the whole
+ * process, so push_s can store the pointers without copying. */
+static LumeList *lume_argv_cache;
+static int lume_argv_ready;
+
+void lume_cli_init(int argc, char **argv)
+{
+    lume_argv_cache = lume_list_new();
+    lume_argv_ready = 1;
+    for (int i = 1; i < argc; i++) {
+        if (!argv[i]) break;
+        lume_list_push_s(lume_argv_cache, argv[i]);
+    }
+}
+
+void *lume_bi_argv(void)
+{
+    if (!lume_argv_ready) {          /* embedded path that never ran the entry */
+        lume_argv_cache = lume_list_new();
+        lume_argv_ready = 1;
+    }
+    return lume_argv_cache;
 }
 
 /* Render one slot the way the interpreter would print it. The interpreter's
@@ -317,7 +345,7 @@ static int container_body(const void *p)
     if (as_list->kind != LUME_CTR_LIST) {
         const LumeMap *m = (const LumeMap *)p;
         int n = 0;
-        for (long i = 0; i < m->len; i++) {
+        for (int64_t i = 0; i < m->len; i++) {
             if (i) n += emit(",");
             n += emit("\"");
             n += emit(m->keys[i]);
@@ -327,7 +355,7 @@ static int container_body(const void *p)
         return n;
     }
     int n = 0;
-    for (long i = 0; i < as_list->len; i++) {
+    for (int64_t i = 0; i < as_list->len; i++) {
         if (i) n += emit(",");
         n += slot_emit(as_list->items[i]);
     }
@@ -394,7 +422,7 @@ static int slot_emit(LumeSlot s)
     }
     case LUME_SLOT_BOOL:
         return emit(s.num ? "true" : "false");
-    default:              snprintf(buf, sizeof buf, "%ld", s.num); return emit(buf);
+    default:              snprintf(buf, sizeof buf, "%lld", s.num); return emit(buf);
     }
 }
 
@@ -453,7 +481,7 @@ static void slot_to_json(JsonBuf *b, LumeSlot s)
         const LumeList *shape = (const LumeList *)p;
         if (shape->kind == LUME_CTR_LIST) {
             jb_putc(b, '[');
-            for (long i = 0; i < shape->len; i++) {
+            for (int64_t i = 0; i < shape->len; i++) {
                 if (i) jb_putc(b, ',');
                 slot_to_json(b, shape->items[i]);
             }
@@ -461,7 +489,7 @@ static void slot_to_json(JsonBuf *b, LumeSlot s)
         } else {
             const LumeMap *m = (const LumeMap *)p;
             jb_putc(b, '{');
-            for (long i = 0; i < m->len; i++) {
+            for (int64_t i = 0; i < m->len; i++) {
                 if (i) jb_putc(b, ',');
                 jb_putc(b, '"');
                 jb_escape(b, m->keys[i]);
@@ -490,7 +518,7 @@ static void slot_to_json(JsonBuf *b, LumeSlot s)
         return;
     default: {
         char tmp[32];
-        snprintf(tmp, sizeof tmp, "%ld", s.num);
+        snprintf(tmp, sizeof tmp, "%lld", s.num);
         jb_puts(b, tmp);
         return;
     }
@@ -506,7 +534,7 @@ char *lume_rt_to_json_obj(const void *obj)
     LumeSlot s;
     memset(&s, 0, sizeof s);
     s.tag = LUME_SLOT_OBJ;
-    s.num = (long)(intptr_t)obj;
+    s.num = (int64_t)(intptr_t)obj;
     slot_to_json(&b, s);
     jb_putc(&b, '\0');
     return b.p;
@@ -528,13 +556,13 @@ char *lume_rt_quote_str(const char *s)
 /* Element access for the three statically known element types — the call
  * site picks the flavour, and a string slot read through the int helper
  * reads 0 rather than a dangling pointer. */
-long lume_list_at_i(const LumeList *l, long i)
+int64_t lume_list_at_i(const LumeList *l, int64_t i)
 {
     if (!l || i < 0 || i >= l->len) return 0;
     return l->items[i].tag == LUME_SLOT_STR ? 0 : l->items[i].num;
 }
 
-double lume_list_at_f(const LumeList *l, long i)
+double lume_list_at_f(const LumeList *l, int64_t i)
 {
     double d = 0;
     if (!l || i < 0 || i >= l->len) return d;
@@ -547,7 +575,7 @@ double lume_list_at_f(const LumeList *l, long i)
     return d;
 }
 
-const char *lume_list_at_s(const LumeList *l, long i)
+const char *lume_list_at_s(const LumeList *l, int64_t i)
 {
     if (!l || i < 0 || i >= l->len) return "";
     return l->items[i].tag == LUME_SLOT_STR ? l->items[i].str : "";
@@ -556,7 +584,7 @@ const char *lume_list_at_s(const LumeList *l, long i)
 /* Read a nested container back out of a list -- the counterpart of
  * lume_map_get_obj, and the reason `for (let row in [[1],[2]])` has a way to
  * see the inner lists. Null for an out-of-range index or a scalar element. */
-void *lume_list_at_obj(const LumeList *l, long i)
+void *lume_list_at_obj(const LumeList *l, int64_t i)
 {
     if (!l || i < 0 || i >= l->len || l->items[i].tag != LUME_SLOT_OBJ) return NULL;
     return (void *)(intptr_t)l->items[i].num;
@@ -569,7 +597,7 @@ void *lume_list_at_obj(const LumeList *l, long i)
  * use that accessor. Returns NULL for an out-of-range index. The returned
  * pointer is into the list's own items array and stays valid while the list
  * lives (the whole iteration). */
-void *lume_list_at_slot(const LumeList *l, long i)
+void *lume_list_at_slot(const LumeList *l, int64_t i)
 {
     if (!l || i < 0 || i >= l->len) return NULL;
     return (void *)&l->items[i];
@@ -581,14 +609,14 @@ void *lume_list_at_slot(const LumeList *l, long i)
  * slot_emit(), which renders one LumeSlot by its tag (scalars, escaped
  * strings, and nested containers alike), so native and interpreter agree
  * byte-for-byte. */
-long lume_print_slot(const LumeSlot *s)
+int64_t lume_print_slot(const LumeSlot *s)
 {
     if (!s) return emit("null\n");
     int n = slot_emit(*s);
     return n + emit("\n");
 }
 
-long lume_list_print(const LumeList *l)
+int64_t lume_list_print(const LumeList *l)
 {
     /* A null list value (a null element read back, or `let l: list = null`)
      * prints the bare word the interpreter prints for null -- not "[]", which
@@ -608,7 +636,7 @@ long lume_list_print(const LumeList *l)
 
 static void map_grow(LumeMap *m)
 {
-    long cap = m->cap ? m->cap * 2 : 8;
+    int64_t cap = m->cap ? m->cap * 2 : 8;
     char **ks = realloc(m->keys, (size_t)cap * sizeof *ks);
     if (!ks) { fputs("lume(native): out of memory\n", stderr); exit(70); }
     memset(ks + (size_t)m->cap, 0, (size_t)(cap - m->cap) * sizeof *ks);
@@ -620,10 +648,10 @@ static void map_grow(LumeMap *m)
     m->cap  = cap;
 }
 
-static long map_find(const LumeMap *m, const char *k)
+static int64_t map_find(const LumeMap *m, const char *k)
 {
     if (!m || !k) return -1;
-    for (long i = 0; i < m->len; i++)
+    for (int64_t i = 0; i < m->len; i++)
         if (m->keys[i] && strcmp(m->keys[i], k) == 0) return i;
     return -1;
 }
@@ -649,7 +677,7 @@ LumeMap *lume_map_clone(const LumeMap *src)
     if (m->cap) {
         m->keys = malloc((size_t)m->cap * sizeof *m->keys);
         m->vals = malloc((size_t)m->cap * sizeof *m->vals);
-        for (long i = 0; i < src->len; i++) {
+        for (int64_t i = 0; i < src->len; i++) {
             m->keys[i] = dup_str(src->keys[i]);
             m->vals[i] = src->vals[i];
         }
@@ -685,16 +713,51 @@ static int g_index_failed = 0;
  *   1 = the value is a scalar the pointer accessor cannot return */
 static int g_index_fail_kind = 0;
 
+/* try(fn) support (SPEC 6.3). A compiled program normally has no error channel
+ * back to a caller -- a failed index read prints and exits, exactly like every
+ * other fatal runtime condition. Inside try() the runtime records the first
+ * recoverable error in a slot instead, and the IR reads it back after the call
+ * to build the { ok, err } map the interpreter produces. Outside try() the
+ * behaviour is unchanged (lume_error_set still prints and exits). */
+static char g_native_err[512];
+static int  g_in_try = 0;
+
+void lume_error_begin(void) { g_in_try = 1; g_native_err[0] = '\0'; }
+const char *lume_error_end(void) { g_in_try = 0; return g_native_err[0] ? g_native_err : NULL; }
+void lume_error_set(const char *msg)
+{
+    if (g_in_try) {
+        if (!msg) { g_native_err[0] = '\0'; return; }
+        size_t n = strlen(msg);
+        if (n > sizeof g_native_err - 1) n = sizeof g_native_err - 1;
+        memcpy(g_native_err, msg, n);
+        g_native_err[n] = '\0';
+    } else {
+        fprintf(stderr, "lume(native): %s\n", msg ? msg : "runtime error");
+        exit(1);
+    }
+}
+
 int lume_index_failed(void) { return g_index_failed; }
 
-/* Report a failed index read and stop. A compiled program has no error channel
- * back to a caller -- there is no VM to set an error on -- so it prints to
- * stderr and exits non-zero, which is what every other fatal runtime condition
- * in the native path does. The interpreter has its own message for the same
- * case and its own exit path; only the wording and the exit code have to match,
- * and both do (SPEC 6.2). */
+/* Report a failed index read. Inside try() this records the message and
+ * returns -- the IR that called it falls through to the value the strict
+ * accessor already returned (0 / NULL) and the try wrapper builds { ok: null,
+ * err: msg }. Outside try() it prints and exits, which is what every other
+ * fatal runtime condition in the native path does. The interpreter has its own
+ * message for the same case and its own exit path; only the wording and the
+ * exit code have to match, and both do (SPEC 6.2). */
 void lume_index_error(const char *what)
 {
+    if (g_in_try) {
+        if (g_index_fail_kind == 1)
+            lume_error_set("map value at this key is a scalar; "
+                           "use get(m, k, d) to read it -- typed binding via "
+                           "m[\"k\"] only works for string / container values");
+        else
+            lume_error_set(what ? what : "index read failed");
+        return;
+    }
     if (g_index_fail_kind == 1)
         fputs("lume(native): map value at this key is a scalar; "
               "use get(m, k, d) to read it -- typed binding via m[\"k\"] only "
@@ -705,7 +768,7 @@ void lume_index_error(const char *what)
     exit(1);
 }
 
-long lume_list_at_strict(const LumeList *l, long i)
+int64_t lume_list_at_strict(const LumeList *l, int64_t i)
 {
     g_index_failed = 0;
     if (!l) { g_index_failed = 1; return 0; }
@@ -714,7 +777,7 @@ long lume_list_at_strict(const LumeList *l, long i)
     return l->items[i].tag == LUME_SLOT_STR ? 0 : l->items[i].num;
 }
 
-double lume_list_at_strict_f(const LumeList *l, long i)
+double lume_list_at_strict_f(const LumeList *l, int64_t i)
 {
     g_index_failed = 0;
     if (!l) { g_index_failed = 1; return 0; }
@@ -731,7 +794,7 @@ double lume_list_at_strict_f(const LumeList *l, long i)
  * an object slot yields the container; any other slot is a type mismatch and
  * fails. That is what lets `m["k"]` work without the emitter knowing what the
  * map holds, which it cannot know. */
-void *lume_list_at_strict_ptr(const LumeList *l, long i)
+void *lume_list_at_strict_ptr(const LumeList *l, int64_t i)
 {
     g_index_failed = 0;
     if (!l) { g_index_failed = 1; return NULL; }
@@ -745,7 +808,7 @@ void *lume_list_at_strict_ptr(const LumeList *l, long i)
 }
 
 /* A string element has no sentinel, so `ok` reports whether one was there. */
-const char *lume_list_at_strict_str(const LumeList *l, long i, int *ok)
+const char *lume_list_at_strict_str(const LumeList *l, int64_t i, int *ok)
 {
     *ok = 0;
     if (!l) return NULL;
@@ -756,10 +819,10 @@ const char *lume_list_at_strict_str(const LumeList *l, long i, int *ok)
     return l->items[i].str;
 }
 
-long lume_map_at_strict_i(const LumeMap *m, const char *k)
+int64_t lume_map_at_strict_i(const LumeMap *m, const char *k)
 {
     g_index_failed = 0;
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0 || m->vals[i].tag == LUME_SLOT_STR) { g_index_failed = 1; return 0; }
     return m->vals[i].num;
 }
@@ -767,7 +830,7 @@ long lume_map_at_strict_i(const LumeMap *m, const char *k)
 double lume_map_at_strict_f(const LumeMap *m, const char *k)
 {
     g_index_failed = 0;
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0 || m->vals[i].tag == LUME_SLOT_STR) { g_index_failed = 1; return 0; }
     double d = 0;
     memcpy(&d, &m->vals[i].num, sizeof d);
@@ -781,7 +844,7 @@ void *lume_map_at_strict_ptr(const LumeMap *m, const char *k)
 {
     g_index_failed = 0;
     g_index_fail_kind = 0;
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0) { g_index_failed = 1; return NULL; }
     LumeSlot sv = m->vals[i];
     if (sv.tag == LUME_SLOT_STR) return (void *)(intptr_t)sv.str;
@@ -798,7 +861,7 @@ void *lume_map_at_strict_ptr(const LumeMap *m, const char *k)
 const char *lume_map_at_strict_str(const LumeMap *m, const char *k, int *ok)
 {
     *ok = 0;
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0 || m->vals[i].tag != LUME_SLOT_STR) return NULL;
     *ok = 1;
     return m->vals[i].str;
@@ -835,7 +898,7 @@ int lume_is_list(void *c)
  * spelled as a pointer is rejected by clang), and a char* for a map key. Both are
  * always passed; the unused one is ignored, which is cheaper than two entry
  * points per shape. */
-long lume_index_int(void *c, long idx, const char *key)
+int64_t lume_index_int(void *c, int64_t idx, const char *key)
 {
     g_index_failed = 0;
     if (!c) { g_index_failed = 1; return 0; }
@@ -844,7 +907,7 @@ long lume_index_int(void *c, long idx, const char *key)
     return lume_map_at_strict_i((const LumeMap *)c, key);
 }
 
-double lume_index_float(void *c, long idx, const char *key)
+double lume_index_float(void *c, int64_t idx, const char *key)
 {
     g_index_failed = 0;
     if (!c) { g_index_failed = 1; return 0; }
@@ -856,7 +919,7 @@ double lume_index_float(void *c, long idx, const char *key)
 /* The i8* result case: a string element and a nested container are the same
  * pointer in IR, so this dispatches on the slot tag and hands back whichever it
  * is. */
-void *lume_index_ptr(void *c, long idx, const char *key)
+void *lume_index_ptr(void *c, int64_t idx, const char *key)
 {
     g_index_failed = 0;
     if (!c) { g_index_failed = 1; return NULL; }
@@ -866,12 +929,12 @@ void *lume_index_ptr(void *c, long idx, const char *key)
 }
 
 
-long lume_map_len(const LumeMap *m) { return m ? m->len : 0; }
+int64_t lume_map_len(const LumeMap *m) { return m ? m->len : 0; }
 
-static long map_put(LumeMap *m, const char *k, long num, const char *str, int tag)
+static int64_t map_put(LumeMap *m, const char *k, int64_t num, const char *str, int tag)
 {
     if (!m) return 0;
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0) {
         if (m->len >= m->cap) map_grow(m);
         i = m->len++;
@@ -886,29 +949,29 @@ static long map_put(LumeMap *m, const char *k, long num, const char *str, int ta
     return m->len;
 }
 
-long lume_map_put_i(LumeMap *m, const char *k, long v) { return map_put(m, k, v, NULL, LUME_SLOT_INT); }
-long lume_map_put_b(LumeMap *m, const char *k, long v) { return map_put(m, k, v ? 1 : 0, NULL, LUME_SLOT_BOOL); }
-long lume_map_put_f(LumeMap *m, const char *k, double v)
+int64_t lume_map_put_i(LumeMap *m, const char *k, int64_t v) { return map_put(m, k, v, NULL, LUME_SLOT_INT); }
+int64_t lume_map_put_b(LumeMap *m, const char *k, int64_t v) { return map_put(m, k, v ? 1 : 0, NULL, LUME_SLOT_BOOL); }
+int64_t lume_map_put_f(LumeMap *m, const char *k, double v)
 {
-    long bits;
+    int64_t bits;
     memcpy(&bits, &v, sizeof bits);
     return map_put(m, k, bits, NULL, LUME_SLOT_FLOAT);
 }
-long lume_map_put_s(LumeMap *m, const char *k, const char *v) { return map_put(m, k, 0, v, LUME_SLOT_STR); }
+int64_t lume_map_put_s(LumeMap *m, const char *k, const char *v) { return map_put(m, k, 0, v, LUME_SLOT_STR); }
 
 /* Store a nested container as a value -- the map half of lume_list_push_obj.
  * `map_put` is the shared writer; all it needs is the object tag and the
  * pointer in the num field. */
-long lume_map_put_obj(LumeMap *m, const char *k, void *v)
+int64_t lume_map_put_obj(LumeMap *m, const char *k, void *v)
 {
-    return map_put(m, k, (long)(intptr_t)v, NULL, LUME_SLOT_OBJ);
+    return map_put(m, k, (int64_t)(intptr_t)v, NULL, LUME_SLOT_OBJ);
 }
 
 
 /* get() with the interpreter's default: an absent key yields `dflt`. */
-long lume_map_get_i(const LumeMap *m, const char *k, long dflt)
+int64_t lume_map_get_i(const LumeMap *m, const char *k, int64_t dflt)
 {
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0) return dflt;
     return m->vals[i].tag == LUME_SLOT_STR ? 0 : m->vals[i].num;
 }
@@ -926,9 +989,23 @@ long lume_map_get_i(const LumeMap *m, const char *k, long dflt)
 void *lume_map_get_obj(const LumeMap *m, const char *k, void *dflt)
 {
     (void)dflt;
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0 || m->vals[i].tag != LUME_SLOT_OBJ) return NULL;
     return (void *)(intptr_t)m->vals[i].num;
+}
+
+/* try()'s err slot: a string when a recoverable error fired, a null obj slot
+ * when it did not. Neither slot flavour alone can serve both states, so this
+ * reads either: the string itself or the obj payload (NULL for null). Scalars
+ * cannot appear in the slot the type checker gives it. */
+void *lume_map_get_any(const LumeMap *m, const char *k, void *dflt)
+{
+    int64_t i = map_find(m, k);
+    if (i < 0) return dflt;
+    LumeSlot s = m->vals[i];
+    if (s.tag == LUME_SLOT_STR) return (void *)s.str;
+    if (s.tag == LUME_SLOT_OBJ) return (void *)(intptr_t)s.num;
+    return NULL;
 }
 
 /* Does this Result hold an error? `?` branches on it right after the call and
@@ -936,7 +1013,7 @@ void *lume_map_get_obj(const LumeMap *m, const char *k, void *dflt)
  * (interp.c's propagate branch looks for "err" first and only then reads "ok").
  * A Result with neither key -- a callee typed any -- counts as no error, so a
  * loose call keeps working rather than propagating something that is not there. */
-long lume_map_has(const LumeMap *m, const char *k)
+int64_t lume_map_has(const LumeMap *m, const char *k)
 {
     return map_find(m, k) >= 0;
 }
@@ -945,7 +1022,7 @@ long lume_map_has(const LumeMap *m, const char *k)
  * values_equal (strcmp on the bytes), but the emitters spell `==` as an
  * icmp on the two i8* pointers, which only ever agrees by pointer-luck.
  * match's tag dispatch needs the real thing, so it calls this. */
-long lume_str_eq(const char *a, const char *b)
+int64_t lume_str_eq(const char *a, const char *b)
 {
     if (a == b) return 1;
     if (!a || !b) return 0;
@@ -956,7 +1033,7 @@ long lume_str_eq(const char *a, const char *b)
  * The emitters spell container `==` as a call to lume_value_eq. Before this
  * it was an icmp on the two i8* pointers, which answers false for two maps
  * that hold the same keys — `[1,2] == [1,2]` was false on every backend.
- * LumeList and LumeMap both start with `long len, cap;` and keep their kind
+ * LumeList and LumeMap both start with `int64_t len, cap;` and keep their kind
  * tag at the same offset, so one probe tells them apart. */
 
 /* The `kind` field sits after two longs in both container headers. Reading
@@ -967,7 +1044,7 @@ long lume_str_eq(const char *a, const char *b)
 static int ctr_kind(const void *p)
 {
     if (!p) return -1;
-    return *(const int *)((const char *)p + 2 * sizeof(long));
+    return *(const int *)((const char *)p + 2 * sizeof(int64_t));
 }
 
 static int is_ctr_kind(int k)
@@ -975,9 +1052,9 @@ static int is_ctr_kind(int k)
     return k == LUME_CTR_LIST || k == LUME_CTR_MAP;
 }
 
-long lume_value_eq(void *a, void *b);   /* defined below; slot_eq recurses */
+int64_t lume_value_eq(void *a, void *b);   /* defined below; slot_eq recurses */
 
-static long slot_eq(const LumeSlot *x, const LumeSlot *y)
+static int64_t slot_eq(const LumeSlot *x, const LumeSlot *y)
 {
     if (x->tag != y->tag) return 0;
     switch (x->tag) {
@@ -1001,7 +1078,7 @@ static long slot_eq(const LumeSlot *x, const LumeSlot *y)
     return 0;
 }
 
-long lume_value_eq(void *a, void *b)
+int64_t lume_value_eq(void *a, void *b)
 {
     if (a == b) return 1;            /* same object (also covers null == null) */
     if (!a || !b) return 0;          /* one side null: not equal */
@@ -1010,7 +1087,7 @@ long lume_value_eq(void *a, void *b)
     if (ka == LUME_CTR_LIST) {
         const LumeList *x = (const LumeList *)a, *y = (const LumeList *)b;
         if (x->len != y->len) return 0;
-        for (long i = 0; i < x->len; i++)
+        for (int64_t i = 0; i < x->len; i++)
             if (!slot_eq(&x->items[i], &y->items[i])) return 0;
         return 1;
     }
@@ -1019,8 +1096,8 @@ long lume_value_eq(void *a, void *b)
     /* Order-independent, the way map membership works: equal lengths plus
      * every key of one side present in the other pins both key sets. An
      * enum's "$" tag is just another key, so tag and payload both count. */
-    for (long i = 0; i < x->len; i++) {
-        long j = map_find(y, x->keys[i]);
+    for (int64_t i = 0; i < x->len; i++) {
+        int64_t j = map_find(y, x->keys[i]);
         if (j < 0) return 0;
         if (!slot_eq(&x->vals[i], &y->vals[j])) return 0;
     }
@@ -1033,7 +1110,7 @@ long lume_value_eq(void *a, void *b)
  * equal, and otherwise both sides are treated as strings — which is what an
  * any holding a string needs, and what the interpreter's values_equal does
  * for the same pair. */
-long lume_any_eq(void *a, void *b)
+int64_t lume_any_eq(void *a, void *b)
 {
     if (a == b) return 1;
     if (!a || !b) return 0;
@@ -1046,19 +1123,19 @@ long lume_any_eq(void *a, void *b)
 
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)
 {
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     double d = dflt;
     if (i >= 0 && m->vals[i].tag != LUME_SLOT_STR) memcpy(&d, &m->vals[i].num, sizeof d);
     return d;
 }
 const char *lume_map_get_s(const LumeMap *m, const char *k, const char *dflt)
 {
-    long i = map_find(m, k);
+    int64_t i = map_find(m, k);
     if (i < 0) return dflt;
     return m->vals[i].tag == LUME_SLOT_STR ? m->vals[i].str : "";
 }
 
-const char *lume_map_key_at(const LumeMap *m, long i)
+const char *lume_map_key_at(const LumeMap *m, int64_t i)
 {
     if (!m || i < 0 || i >= m->len) return "";
     return m->keys[i];
@@ -1070,7 +1147,7 @@ LumeList *lume_map_keys(const LumeMap *m)
 {
     LumeList *l = lume_list_new();
     if (!m) return l;
-    for (long i = 0; i < m->len; i++) lume_list_push_s(l, m->keys[i]);
+    for (int64_t i = 0; i < m->len; i++) lume_list_push_s(l, m->keys[i]);
     return l;
 }
 
@@ -1097,7 +1174,7 @@ LumeList *lume_range(double a, double b, double step)
     return l;
 }
 
-long lume_map_print(const LumeMap *m)
+int64_t lume_map_print(const LumeMap *m)
 {
     /* Same null-value rule as lume_list_print: a null map value prints
      * "null", while a real empty map (a live lume_map_new pointer) still

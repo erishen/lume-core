@@ -147,7 +147,7 @@ typedef struct {
 
     int    capture_main;           /* emitting the synthetic top-level body:
                                     * remember what `main()` returned */
-    char   exit_tmp[32];
+    char   exit_tmp[48];
 
     /* Native server: set while compiling a route handler body. `hreq` names
      * the handler's request parameter; member access on it (req.path,
@@ -171,7 +171,7 @@ void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
               size_t line);
 void asgs_free(Asgs *a);
 void asg_truncate(Asgs *a, int n);
-const char *bad(CG *g, Node *n, const char *what);
+const char *bad(Node *n, const char *what);
 Val cg_assign_expr(CG *g, Node *n);
 Val cg_assign_mem(CG *g, Node *n);
 Val cg_expr(CG *g, Node *n);

@@ -7,7 +7,7 @@ static const char *const TOKEN_NAMES[] = {
     "if", "else", "while", "for", "in", "break", "continue", "let",
     "import", "export", "as",
     "true", "false", "null", "and", "or", "not",
-    "type", "int", "float", "string", "bool", "Result",
+    "type", "int", "float", "string", "bool", "Result", "fn",
     "get", "head", "post", "put", "patch", "delete", "options", "verbs",
     "enum", "match", "|",
     "(", ")", "{", "}", "[", "]",

@@ -191,12 +191,20 @@ static const char *node_type_name(NodeType t)
     return "node";
 }
 
-const char *bad(CG *g, Node *n, const char *what)
+const char *bad(Node *n, const char *what)
 {
-    snprintf(g->err, sizeof g->err,
+    /* Short-lived description of an unsupported construct. Must NOT write
+     * into g->err: both callers pass the result straight to ERRV/ERRX, whose
+     * ERR_SET would then snprintf over a source and destination that overlap
+     * (-Wrestrict). A small ring keeps the string alive for that one
+     * expression; ty_str in typecheck.c uses the same pattern. */
+    static char bufs[4][160];
+    static unsigned next;
+    char *buf = bufs[next++ % 4];
+    snprintf(buf, sizeof bufs[0],
              "line %zu: %s (%s) is not supported by the native backend yet",
              n ? n->line : 0, node_type_name(n->type), what);
-    return g->err;
+    return buf;
 }
 
 static Val cg_literal(CG *g, Node *n)
@@ -262,6 +270,34 @@ static Val cg_var(CG *g, Node *n)
 
     const char *lt = llvm_type_of(a->ty);
     if (!lt) ERRV(g, "line %zu: variable '%s' has no codegen type", n->line, n->as.var.name);
+
+    /* A captured variable (`%cap<i>` slot): the closure's cap array holds the
+     * address of the outer variable's slot, so a read goes through it — two
+     * pointer loads, then the value. This is what makes a later write to the
+     * outer variable visible inside the closure (interpreter's shared env). */
+    if (strncmp(a->slot, "%cap", 4) == 0) {
+        int idx = atoi(a->slot + 4);
+        char *capp = emit_instrf(g, type_prim(TY_NULL),
+                                 "bitcast i8* %%cap to i8**");
+        char *sp = emit_instrf(g, type_prim(TY_NULL),
+                               "getelementptr i8*, i8** %s, i64 %d", capp, idx);
+        free(capp);
+        if (!sp) ERRV(g, "line %zu: cannot address captured '%s'",
+                      n->line, n->as.var.name);
+        char *pp = emit_instrf(g, type_prim(TY_NULL), "load i8*, i8** %s", sp);
+        free(sp);
+        if (!pp) ERRV(g, "line %zu: cannot load captured '%s'",
+                      n->line, n->as.var.name);
+        char *pc = emit_instrf(g, type_prim(TY_NULL), "bitcast i8* %s to %s*",
+                               pp, lt);
+        free(pp);
+        if (!pc) ERRV(g, "line %zu: cannot load captured '%s'",
+                      n->line, n->as.var.name);
+        char *r = emit_instrf(g, a->ty, "load %s, %s* %s", lt, lt, pc);
+        free(pc);
+        if (!r) ERRV(g, "line %zu: cannot load '%s'", n->line, n->as.var.name);
+        return val_take(a->ty, r);
+    }
 
     /* A *named* struct is always *referenced*: the slot is its address, and
      * loading it would hand a callee an aggregate where it expects a pointer.
@@ -869,7 +905,10 @@ static Val cg_index(CG *g, Node *n)
                           : cg_string_val(g, "index out of range", 19);
     EMIT(g, "  call void @lume_index_error(i8* %s)\n", what);
     free(what);
-    EMIT(g, "  unreachable\n");
+    /* lume_index_error exits outside try(); inside try() it records the
+     * message and returns, so the read's default value (0 / NULL) becomes the
+     * try'd result and the wrapper builds { ok: null, err: msg }. */
+    EMIT(g, "  br label %%L%d\n", lok);
     EMIT(g, "L%d:\n", lok);
     return r;
 }
@@ -906,8 +945,9 @@ static Val cg_member(CG *g, Node *n)
         return r;
     }
 
-    return cg_member_load(g, obj, n->as.member.name, n->as.member.type,
-                          n->line);
+    Type *vt = member_field_type(g, n);
+    if (!vt) vt = n->as.member.type;   /* checker-recorded fallback */
+    return cg_member_load(g, obj, n->as.member.name, vt, n->line);
 }
 
 /* Load one field out of an already-evaluated base: the runtime-map path
@@ -1080,6 +1120,31 @@ Val cg_assign_expr(CG *g, Node *n)
     if (!lt) { free(v.v); ERRV(g, "line %zu: variable '%s' has no codegen type",
                                n->line, n->as.assign.name); }
 
+    /* A captured variable writes through the cap array to the outer slot, so
+     * the enclosing function sees the new value (shared env, §4.7). */
+    if (strncmp(a->slot, "%cap", 4) == 0) {
+        int idx = atoi(a->slot + 4);
+        char *capp = emit_instrf(g, type_prim(TY_NULL),
+                                 "bitcast i8* %%cap to i8**");
+        char *sp = emit_instrf(g, type_prim(TY_NULL),
+                               "getelementptr i8*, i8** %s, i64 %d", capp, idx);
+        free(capp);
+        if (!sp) { free(v.v); ERRV(g, "line %zu: cannot address captured '%s'",
+                                   n->line, n->as.assign.name); }
+        char *pp = emit_instrf(g, type_prim(TY_NULL), "load i8*, i8** %s", sp);
+        free(sp);
+        if (!pp) { free(v.v); ERRV(g, "line %zu: cannot write captured '%s'",
+                                   n->line, n->as.assign.name); }
+        char *pc = emit_instrf(g, type_prim(TY_NULL), "bitcast i8* %s to %s*",
+                               pp, lt);
+        free(pp);
+        if (!pc) { free(v.v); ERRV(g, "line %zu: cannot write captured '%s'",
+                                    n->line, n->as.assign.name); }
+        EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, pc);
+        free(pc);
+        return v;
+    }
+
     EMIT(g, "  store %s %s, %s* %s\n", lt, v.v, lt, a->slot);
     return v;
 }
@@ -1159,7 +1224,7 @@ Val cg_expr(CG *g, Node *n)
     case N_MEMBER:  return cg_member(g, n);
     case N_INDEX:   return cg_index(g, n);
     case N_CALL:    return cg_call(g, n);
-    default:        ERRV(g, "%s", bad(g, n, "this expression"));
+    default:        ERRV(g, "%s", bad(n, "this expression"));
     }
 }
 

@@ -58,6 +58,7 @@ typedef enum {
     TOK_IMPORT, TOK_EXPORT, TOK_AS,
     TOK_TRUE, TOK_FALSE, TOK_NULL, TOK_AND, TOK_OR, TOK_NOT,
     TOK_TYPE, TOK_INT, TOK_FLOAT, TOK_KW_STRING, TOK_BOOL, TOK_RESULT,
+    TOK_KW_FN,
     TOK_GET, TOK_HEAD, TOK_POST, TOK_PUT, TOK_PATCH, TOK_DELETE, TOK_OPTIONS,
     TOK_VERBS,
     TOK_ENUM, TOK_MATCH, TOK_PIPE,
@@ -697,6 +698,13 @@ typedef struct Node {
                  char *cname; /* synthetic mangled name for the closure's
                                * emitted `define`, assigned by the signature
                                * pass; NULL until then */
+                 /* Phase-2 free-variable capture: the outer locals (of the
+                  * enclosing function) the body reads, name + type each.
+                  * Filled by the capture pass in codegen_sig.c; NULL/0 when
+                  * the lambda captures nothing. Not owned: names are
+                  * xstrdup'd by the pass and freed with the node; the Type
+                  * pointers are borrowed from the outer scope. */
+                 char **cap_names; Type **cap_types; int cap_count;
                } funclit;
         struct { struct Node *callee; struct Node **args; int argc;
                  bool propagate; } call; /* propagate: trailing `?` */

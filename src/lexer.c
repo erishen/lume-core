@@ -130,6 +130,7 @@ static const struct {
     {"and",    TOK_AND},    {"or",     TOK_OR},    {"not",    TOK_NOT},
     {"type",   TOK_TYPE},   {"int",    TOK_INT},   {"float",  TOK_FLOAT},
     {"string", TOK_KW_STRING}, {"bool",   TOK_BOOL},  {"Result", TOK_RESULT},
+    {"fn",     TOK_KW_FN},
     {"get", TOK_GET}, {"head", TOK_HEAD}, {"post", TOK_POST},
     {"put", TOK_PUT}, {"patch", TOK_PATCH}, {"delete", TOK_DELETE},
     {"options", TOK_OPTIONS},

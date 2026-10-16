@@ -55,6 +55,16 @@ jobs:
       - name: Run hello
         run: ./bin/lume-core examples/hello.lume
 
+      # P3 (TODO): exercise the vendored POSIX regex (src/compat/regex, musl)
+      # on Windows for real. str_match/regex are interpreter builtins (SPEC
+      # §6.2 intentional boundary), so this is an interpreter leg: it links
+      # the vendored regex into lume-core.exe at build time and executes
+      # regcomp/regexec through native_str_match at runtime. The expected
+      # outputs are spelled in the script's comments; a nonzero exit or an
+      # assert-style mismatch shows up here.
+      - name: Regex smoke (interpreter, vendored POSIX regex)
+        run: ./bin/lume-core examples/regex-smoke.lume
+
       # The full regression suite (`make test`) is POSIX-only: it exercises
       # HTTP/TLS builtins (http_get/http_post/...) that are deliberately
       # excluded from the Windows port (LUME_HAS_HTTP=0) and uses POSIX

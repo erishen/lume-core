@@ -659,7 +659,11 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
      * reads main()'s value off the same top-level call, so forwarding it from
      * here keeps the two paths reporting the same exit code. */
     EMIT(&cg, "\n; --- C entry point ---\n");
-    EMIT(&cg, "define i32 @main() {\nentry:\n");
+    /* argv() support: the entry receives the process arguments and stashes
+     * them (lume_cli_init in src/rt.c) before any top-level statement runs. */
+    EMIT(&cg, "declare void @lume_cli_init(i32, i8**)\n");
+    EMIT(&cg, "define i32 @main(i32 %%argc, i8** %%argv) {\nentry:\n");
+    EMIT(&cg, "  call void @lume_cli_init(i32 %%argc, i8** %%argv)\n");
     if (top_fn) {
         if (tops_main) {
             /* L_top carries an i64, like every other lume int: the status is

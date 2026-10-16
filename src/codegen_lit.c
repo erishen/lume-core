@@ -54,9 +54,13 @@ Type *member_field_type(CG *g, Node *n)
             int idx = struct_field_idx(g, t->name, n->as.member.name);
             if (idx >= 0) return struct_field_type(g, t->name, idx);
         } else {
-            /* A runtime map: the type checker required the key to be a
-             * declared field, so the result type is exactly the field's
-             * value type it recorded on the member node. */
+            /* A runtime map: prefer the member shape infer_node_type put on
+             * the map-literal / try() result type, so `try(f).err` and
+             * `{ a: 1 }.a` are readable without the checker having seen the
+             * call; otherwise fall back to the type the checker recorded. */
+            for (int i = 0; i < t->count; i++)
+                if (strcmp(t->names[i], n->as.member.name) == 0)
+                    return t->types[i];
             return n->as.member.type;
         }
     }
@@ -194,10 +198,11 @@ const char *map_get_fn(Type *ty)
     case TY_STRUCT:
     case TY_RESULT:
     case TY_ENUM:   return "lume_map_get_obj";
-    /* A null default (`get(m, k, null)`) reads through the obj getter: the
-     * value comes back as a plain i8*, null for both a null slot and — as
-     * with every obj read — an absent key. */
-    case TY_NULL:   return "lume_map_get_obj";
+    /* A null default (`get(m, k, null)`) reads through the any getter: it
+     * returns the obj payload (NULL for a null slot, absent key) and also a
+     * string when the slot is one -- which is what try()'s err slot needs
+     * (string on failure, null obj on success). */
+    case TY_NULL:   return "lume_map_get_any";
     default:        return NULL;
     }
 }
@@ -277,6 +282,15 @@ Type *infer_list_elem(CG *g, Node *lit)
              * has no static field type to dispatch a getter with. */
             t = infer_node_type(g, e);
         }
+        else if (e->type == N_LIST_LIT) {
+            /* A nested list element: `[[1,2],[3,4]]` is list-of-list, so the
+             * element type is the inner list's element type wrapped in a
+             * list. Without this a nested literal decays to list<any> (elem
+             * NULL) and a map/filter over it falls back to int — which then
+             * starves a nested reduce's element parameter of its type. */
+            Type *inner = infer_list_elem(g, e);
+            t = inner ? type_list(inner) : NULL;
+        }
         /* Anything else (a call, another list, ...) is a kind this emitter
          * cannot read statically. */
         if (!t) return NULL;
@@ -318,6 +332,10 @@ Val cg_list_lit(CG *g, Node *n)
         if (!r.v) { free(l.v); ERRV(g, "line %zu: cannot append to a list", n->line); }
         free(r.v);
     }
+    /* Carry the literal's element type: index reads and HOFs pick their
+     * accessor from it. A mixed or empty literal has none, and the callers
+     * treat a NULL element as "object accessor". */
+    l.ty = type_list(infer_list_elem(g, n));
     return l;
 }
 

@@ -552,7 +552,14 @@ int main(int argc, char **argv) {
         if (out_path) {
             snprintf(bin, sizeof bin, "%s", out_path);
         } else {
+            /* Path separator may be '/' (POSIX) or '\' (Windows, where the
+             * user's script path arrives backslash-separated). A single
+             * strrchr for '/' left `examples\native-fact.lume` unresolved and
+             * the whole directory prefix became the output name — the same
+             * class of bug path_dirname() in loader.c guards against. */
             const char *tail = strrchr(script, '/');
+            const char *bs  = strrchr(script, '\\');
+            if (bs > tail) tail = bs;
             tail = (tail ? tail + 1 : script);
             size_t tl = strlen(tail);
             if (tl >= 5 && strcmp(tail + tl - 5, ".lume") == 0)

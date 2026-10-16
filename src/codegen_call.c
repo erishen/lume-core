@@ -39,6 +39,7 @@ static const Bi BUILTINS[] = {
     { "ceil",  NULL,           NULL,     NULL,     0,  "lume_bi_ceil", "double",     "double", 1 },
     { "round", NULL,           NULL,     NULL,     0,  "lume_bi_round","double",     "double", 1 },
     { "now",   "lume_bi_now",  NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
+    { "argv",  "lume_bi_argv", NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
 };
 
 static const Bi *builtin_find(const char *name);
@@ -73,6 +74,54 @@ Val cg_funclit(CG *g, Node *n)
     Type *ft = type_func(n->as.funclit.arity, n->as.funclit.param_types,
                          n->as.funclit.ret);
     ft->func = n;
+    /* Phase-2 free-variable capture: build the capture array — one i8* per
+     * captured name, holding the address of the outer variable's slot — and
+     * hand it to lume_closure_make as the record's second word. The closure's
+     * own define reads those addresses back through its `%cap` parameter, so
+     * a later write to the outer variable is visible inside (shared env,
+     * SPEC §4.7). A no-capture closure keeps passing null. */
+    if (n->as.funclit.cap_count > 0) {
+        char arrsym[48];
+        snprintf(arrsym, sizeof arrsym, "%%caparr%d", g->tid++);
+        EMIT(g, "  %s = alloca [%d x i8*]\n", arrsym,
+             n->as.funclit.cap_count);
+        for (int i = 0; i < n->as.funclit.cap_count; i++) {
+            const char *nm = n->as.funclit.cap_names[i];
+            Asg *a = asg_find(&g->locals, nm, n->line);
+            if (!a) ERRV(g, "line %zu: captured variable '%s' has no codegen "
+                            "slot", n->line, nm);
+            const char *lt = llvm_type_of(a->ty);
+            if (!lt) ERRV(g, "line %zu: captured variable '%s' has no codegen "
+                             "type", n->line, nm);
+            if (strncmp(a->slot, "%cap", 4) == 0)
+                ERRV(g, "line %zu: capturing a variable already captured by "
+                        "the enclosing closure is not supported", n->line);
+            char el[48];
+            snprintf(el, sizeof el, "%%capel%d", g->tid++);
+            EMIT(g, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, "
+                    "i32 0, i32 %d\n",
+                 el, n->as.funclit.cap_count, n->as.funclit.cap_count,
+                 arrsym, i);
+            /* The slot is the alloca itself, so its address is the slot; a
+             * captured string/container slot is a pointer slot, and storing
+             * THAT address shares the outer cell too. The bitcast is a real
+             * instruction, not a constant expression — %lv_* is an SSA value,
+             * which LLVM rejects inside a constant. */
+            char *bc = emit_instrf(g, type_prim(TY_NULL),
+                                   "bitcast %s* %s to i8*", lt, a->slot);
+            if (!bc) ERRV(g, "line %zu: cannot capture '%s'", n->line, nm);
+            EMIT(g, "  store i8* %s, i8** %s\n", bc, el);
+            free(bc);
+        }
+        char *arr = emit_instrf(g, type_prim(TY_NULL),
+            "bitcast [%d x i8*]* %s to i8*", n->as.funclit.cap_count, arrsym);
+        char *r = emit_instrf(g, ft,
+            "call i8* @lume_closure_make(i8* bitcast (%s @%s to i8*), i8* %s)",
+            ftype, cname, arr);
+        free(arr);
+        if (!r) ERRV(g, "line %zu: cannot build this closure", n->line);
+        return val_take(ft, r);
+    }
     char *r = emit_instrf(g, ft,
         "call i8* @lume_closure_make(i8* bitcast (%s @%s to i8*), i8* null)",
         ftype, cname);
@@ -311,11 +360,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i64 @lume_map_put_f(i8*, i8*, double)\n");
     EMIT(g, "declare i64 @lume_map_put_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_put_obj(i8*, i8*, i8*)\n");
-    EMIT(g, "declare i8* @lume_map_clone(i8*)\n");
-    EMIT(g, "declare i64 @lume_map_get_i(i8*, i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_map_clone(i8*)\n");    EMIT(g, "declare i64 @lume_map_get_i(i8*, i8*, i64)\n");
     EMIT(g, "declare double @lume_map_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_map_get_any(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_has(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_str_eq(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_value_eq(i8*, i8*)\n");   /* structural, SPEC 1.8 */
@@ -336,6 +385,11 @@ void emit_builtin_declares(CG *g)
      * site unwraps. The record layout lives in src/rt.c (LumeClosure). */
     EMIT(g, "; closures (src/rt.c)\n");
     EMIT(g, "declare i8* @lume_closure_make(i8*, i8*)\n");
+
+    /* try(fn) (SPEC 6.3): the runtime records the first recoverable error
+     * inside try() instead of exiting, and hands it back to the wrapper. */
+    EMIT(g, "declare void @lume_error_begin()\n");
+    EMIT(g, "declare i8* @lume_error_end()\n");
 
     /* Native server runtime (src/bridge_native.c): the FFI surface that
      * server{}/route handlers/run() lower onto. SrvReq's layout is a
@@ -369,6 +423,18 @@ static Val cg_builtin(CG *g, Node *n)
         return val_take(type_prim(TY_STRING),
                         emit_instrf(g, type_prim(TY_STRING),
                                     "call i8* @lume_bi_now()"));
+    }
+
+    /* argv(): the script's trailing CLI arguments as a string list. Also zero
+     * arguments, so the table path — which requires argc >= 1 — cannot serve
+     * it; the list the runtime hands back is stashed by lume_cli_init in the
+     * generated entry point. */
+    if (strcmp(bname, "argv") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: argv() takes no arguments", n->line);
+        return val_take(list_type(),
+                        emit_instrf(g, list_type(),
+                                    "call i8* @lume_bi_argv()"));
     }
 
     if (b) {
@@ -761,6 +827,84 @@ static Val cg_builtin(CG *g, Node *n)
                                 accslot);
         if (!res) ERRV(g, "line %zu: cannot read the accumulator", n->line);
         return val_take(acc0.ty, res);
+    }
+
+    /* try(fn) — SPEC 6.3: call fn with no arguments and wrap the outcome in
+     * { ok, err }, exactly as the interpreter prints. Inside try the runtime
+     * records the first recoverable error (a failed index read, SPEC 6.2)
+     * instead of exiting; ok then holds a null obj slot and err the message,
+     * otherwise ok holds the result and err a null obj slot. The map_put
+     * writer overwrites the tag, so the ok slot can be int/float/string on
+     * success and obj-null on failure. */
+    if (strcmp(bname, "try") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: try() expects (fn)", n->line);
+        Node *lam = hof_lambda(g, n->as.call.args[0]);
+        if (!lam)
+            ERRV(g, "line %zu: try() needs a lambda or a closure variable "
+                    "(a named function is not a value on the native backend)",
+                n->line);
+        Val fnv = cg_expr(g, n->as.call.args[0]);
+        if (!fnv.v) ERRV(g, "line %zu: try() needs a function", n->line);
+
+        EMIT(g, "  call void @lume_error_begin()\n");
+        char *res = cg_clo_invoke(g, lam, fnv.v, NULL, 0);
+        free(fnv.v);
+        if (!res) ERRV(g, "line %zu: try() could not call the function", n->line);
+        char *emsg = emit_instrf(g, type_prim(TY_STRING),
+                                 "call i8* @lume_error_end()");
+        if (!emsg) { free(res); ERRV(g, "line %zu: try() failed", n->line); }
+
+        Val m = rt_call(g, type_anon_struct(), "lume_map_new", "");
+        if (!m.v) { free(res); free(emsg);
+            ERRV(g, "line %zu: try() failed to allocate", n->line); }
+        char *kok = cg_string_val(g, "ok", 2);
+        char *kerr = cg_string_val(g, "err", 3);
+
+        char test[48];
+        snprintf(test, sizeof test, "%%t%d", g->tid++);
+        EMIT(g, "  %s = icmp ne i8* %s, null\n", test, emsg);
+        int ler = g->lid++, lok = g->lid++, le = g->lid++;
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, ler, lok);
+
+        EMIT(g, "L%d:\n", ler);                 /* error fired */
+        {
+            /* ok becomes a null obj slot ("null"), err a string slot: the
+             * json printer renders obj-null as null and a string as a quoted
+             * message, exactly like the interpreter's { ok: null, err: msg }. */
+            Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj",
+                            "i8* %s, i8* %s, i8* null", m.v, kok);
+            free(r.v);
+            r = rt_call(g, type_prim(TY_INT), "lume_map_put_s",
+                        "i8* %s, i8* %s, i8* %s", m.v, kerr, emsg);
+            free(r.v);
+        }
+        EMIT(g, "  br label %%L%d\n", le);
+
+        EMIT(g, "L%d:\n", lok);                 /* no error */
+        {
+            Type *ret = lam->as.funclit.ret;
+            if (ret && ret->kind != TY_NULL) {
+                const char *pfn = map_put_fn(ret);
+                if (!pfn) { free(res); free(emsg); free(kok); free(kerr);
+                    ERRV(g, "line %zu: try() result has no codegen type", n->line); }
+                Val r = rt_call(g, type_prim(TY_INT), pfn, "i8* %s, i8* %s, %s %s",
+                                m.v, kok, rt_arg_type(ret), res);
+                free(r.v);
+            } else {
+                Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj",
+                                "i8* %s, i8* %s, i8* null", m.v, kok);
+                free(r.v);
+            }
+            Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj",
+                            "i8* %s, i8* %s, i8* null", m.v, kerr);
+            free(r.v);
+        }
+        EMIT(g, "  br label %%L%d\n", le);
+        EMIT(g, "L%d:\n", le);
+
+        free(res); free(emsg); free(kok); free(kerr);
+        return m;
     }
 
     /* len() — a list answers with its length, a string with its byte length.
