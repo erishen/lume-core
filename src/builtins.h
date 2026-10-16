@@ -30,6 +30,12 @@ Value b_split(VM *vm, int argc, Value *args);
 Value b_join(VM *vm, int argc, Value *args);
 Value b_substr(VM *vm, int argc, Value *args);
 Value b_crypt_sha512(VM *vm, int argc, Value *args);
+/* Hash builtins (builtins_crypt.c; SHA-256 vendored in compat/sha256/). */
+Value b_sha256(VM *vm, int argc, Value *args);
+Value b_hmac_sha256(VM *vm, int argc, Value *args);
+/* Base64 (builtins_crypt.c; RFC 4648, 2026-10-16, PayPal OAuth2 Basic). */
+Value b_base64_encode(VM *vm, int argc, Value *args);
+Value b_base64_decode(VM *vm, int argc, Value *args);
 Value b_len(VM *vm, int argc, Value *args);
 Value b_keys(VM *vm, int argc, Value *args);
 Value b_get(VM *vm, int argc, Value *args);

@@ -293,9 +293,10 @@ SQLite 直接链进服务器：`agent-httpd` 直接链 libsqlite3
   值注入是不可能的（值里的引号、`;`、`--`、DDL 关键字都是惰性的）。凡是不是
   编译期常量的值，都优先走绑定而不是字符串拼。
 - `sql_write` —— **可选、默认关**：单条写语句 —— `INSERT` / `UPDATE` /
-  `DELETE`（UPDATE/DELETE 必须带 WHERE 条件）或新表的 `CREATE TABLE`。
-  `DROP` / `ALTER` / `TRUNCATE` / `VACUUM` / `ATTACH` / `PRAGMA` / `GRANT` /
-  `REVOKE`，以及任何提到 `portfolio` 镜像表的语句，一律拒。它编进了服务器但
+  `DELETE`（UPDATE/DELETE 必须带 WHERE 条件）、新表的 `CREATE TABLE`，或严格
+  形状的加列迁移 `ALTER TABLE ... ADD COLUMN`（其余 ALTER 形态一律拒）。
+  `DROP` / `TRUNCATE` / `VACUUM` / `ATTACH` / `PRAGMA` / `GRANT` / `REVOKE`，
+  以及任何提到 `portfolio` 镜像表的语句，一律拒。它编进了服务器但
   **不在默认白名单里**；把 `sql_write` 加进 `HARNESS_TOOLS_ALLOW`
   （Makefile 的 `INVEST_TOOLS`、compose/k8s）才让模型建分析表。账本本身在
   `.data/portfolio.json`，仍是权威。

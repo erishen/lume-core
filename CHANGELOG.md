@@ -6,6 +6,72 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — `sha256()` / `hmac_sha256()` message-digest builtins
+
+- Two general-purpose digest builtins on the interpreter path:
+  `sha256(s)` returns the SHA-256 of a string as 64 lowercase hex chars;
+  `hmac_sha256(key, msg)` returns HMAC-SHA256 the same way. Strings are
+  hashed by explicit length, so embedded NUL bytes are safe.
+- Motivation: payment integration (request signing, callback verification)
+  needed a message digest; the tree previously had only `crypt_sha512`
+  (one-way password hashing via system `crypt(3)`), which cannot sign.
+- The SHA-256 implementation is vendored under `src/compat/sha256/`
+  (public domain, no external dependency — the tree stays OpenSSL-free
+  for this, cf. `src/compat/regex`). HMAC is the standard RFC 2104
+  construction over it (64-byte block; keys longer than the block are
+  pre-hashed).
+- Same scope as `crypt_sha512` / `sql_*` / `http_*`: interpreter-path
+  builtins. The compiled native backends (text IR / libLLVM) do not lower
+  these calls — `--compile` reports "call to unknown function", exactly as
+  it already does for `crypt_sha512`. Server/DSL scripts run interpreted,
+  so this does not affect them.
+- `tests/test-crypto.lume` (wired as `make crypto-test`, included in
+  `make check` and `make test`) covers FIPS 180-4 / RFC 4231 known
+  vectors, the multi-block streaming path, the long-key (>64B) HMAC
+  branch, empty key/message edge cases, output shape, and four rejection
+  cases (non-string args, wrong arity).
+
+### Added — `base64_encode()` / `base64_decode()` builtins
+
+- RFC 4648 base64 on the interpreter path: `base64_encode(s)` and
+  `base64_decode(s)`. Binary-safe in both directions — embedded NUL and
+  non-UTF-8 bytes survive roundtrips; encode pads with `=` to a multiple
+  of 4.
+- `base64_decode` validates strictly: length must be a multiple of 4,
+  characters outside the alphabet are rejected, and padding is only
+  accepted at the end (at most two `=`, never mid-string); failures raise
+  a catchable VM error (usable under `try()`).
+- Motivation: PayPal integration needs HTTP Basic credentials
+  (`base64(client_id:client_secret)`). Same interpreter-path scope as
+  `sha256` / `hmac_sha256` — the compiled native backends do not lower
+  these calls.
+- Covered by `tests/test-crypto.lume` (RFC 4648 known vectors, NUL-byte
+  and multibyte roundtrips, three rejection cases).
+
+### Added — `sql_write` accepts additive `ALTER TABLE ... ADD COLUMN`
+
+- `sql_write`'s guardrail allowed INSERT / UPDATE (WHERE) / DELETE (WHERE)
+  and CREATE TABLE only. Apps that evolve their schema against an existing
+  database had no way to add a column: `ALTER TABLE` was rejected
+  wholesale, so a "regenerate against an old database" flow died on
+  `no such column`.
+- The one ALTER form now allowed is strictly shaped:
+  `ALTER TABLE <ident> ADD [COLUMN] <ident> <typedef>` — bare or
+  double-quoted identifiers, and a typedef restricted to identifiers,
+  numbers, spaces, parens and commas (TEXT / INTEGER / REAL /
+  VARCHAR(120) / DECIMAL(10,2)). Every other ALTER (DROP/RENAME COLUMN,
+  ALTER COLUMN, table constraints) is still rejected, as are string
+  literals in the typedef and multi-statement tricks. SQLite
+  independently refuses the shapes that would be unsafe here (ADD COLUMN
+  takes no PRIMARY KEY/UNIQUE and no CURRENT_TIMESTAMP default).
+- Read-side probing for such migrations rides the existing SELECT-only
+  channel: `SELECT name FROM pragma_table_info('<tbl>')` (table-valued
+  pragma function) returns the live column list over a read-only
+  connection. `PRAGMA table_info(...)` as a statement stays rejected.
+- `tests/sqlite.lume` covers the new path (probe, add, old rows read
+  NULL, writes to the new column, table still usable afterwards) plus
+  five rejection cases.
+
 ### Fixed — Windows build no longer needs the libgnurx package
 
 - The MinGW/Windows build linked `-lregex` for the POSIX regex builtins

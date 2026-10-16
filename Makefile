@@ -152,7 +152,8 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/interp.c src/builtins.c src/builtins_fs.c src/os_win32.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
             src/token.c src/bridge_stub.c src/bridge_serve.c src/bridge_mcp.c src/bridge_lsp.c src/bridge_native.c src/builtins_http.c \
-            src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/codegen_lit.c src/codegen_call.c src/codegen_match.c src/codegen_print.c src/irbuf.c src/backend.c
+            src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/codegen_lit.c src/codegen_call.c src/codegen_match.c src/codegen_print.c src/irbuf.c src/backend.c \
+            src/compat/sha256/sha256.c
 # --- 第二个原生后端:libLLVM C API(可选) ---------------------------------
 # 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume-core 保持 ~2MB。
 # codegen.c 只是入口,发射器按区段拆在 codegen_{types,expr,scan,sig,stmt}.c,
@@ -284,6 +285,10 @@ build/llvm_codegen.o: $(wildcard src/llvm_cg_*.inc)
 # objects behind, the "green but not in effect" failure mode again.
 build/compat/regex/%.o: src/compat/regex/tre.h src/compat/regex/regex.h
 
+# Same wiring for the vendored SHA-256 (sha256.h shared by the one .c here);
+# INT_HDRS cannot see it, so editing the header would leave a stale object.
+build/compat/sha256/%.o: src/compat/sha256/sha256.h
+
 # HAVE_LIBLLVM is a compile-time macro, so it is baked into main.o, not only
 # into llvm_codegen.o. Rebuilding only the libLLVM translation units after
 # llvm-config showed up (or after a version bump) links a half-fresh binary:
@@ -296,7 +301,7 @@ $(OBJS): $(LLVM_CONFIG_PATH)
 $(TARGET): $(OBJS) $(AH_LIB) | bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
-check: all crypt-test builtins-test
+check: all crypt-test crypto-test builtins-test
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -497,7 +502,7 @@ letexpr-test: all
 	done; \
 	echo "==> letexpr 单测通过"
 
-test: all backend-parity tests/smoke-bin crypt-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -762,7 +767,7 @@ endif
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
-         native-llvm native-bench native-consistency crypt-test backend-parity pack packcheck \
+         native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
          treecheck letpat-test
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
@@ -771,6 +776,14 @@ crypt-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-crypt-test.out; then \
 		echo "==> crypt 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> crypt 单测全部通过"
+
+# sha256 / hmac_sha256 内建单测（已知向量 + 负例；纯 C 实现，全平台一致）。
+crypto-test: all
+	@./$(TARGET) tests/test-crypto.lume > /tmp/lume-crypto-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-crypto-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-crypto-test.out; then \
+		echo "==> crypto 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> crypto 单测全部通过"
 
 # sort() / str_match() / regex() 通用内建回归(解释器路径, 与 json() 一致)。
 builtins-test: all

@@ -411,6 +411,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "upper", "lower", "capitalize", "trim", "contains", "split", "join",
     "substr", /* string tools (2026-10-08, P4a codegen) */
     "crypt_sha512", /* sha512 crypt hash (2026-09-29) */
+    "sha256", "hmac_sha256", /* message digests, hex out (2026-10-15, payment signing) */
+    "base64_encode", "base64_decode", /* RFC 4648, binary-safe (2026-10-16, PayPal OAuth2 Basic) */
     /* math builtins (2026-09-28, builtins_math.c) */
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
     "min", "max", "pi", "e",

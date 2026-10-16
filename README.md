@@ -460,10 +460,12 @@ static container image works too:
   inert). Prefer this over string interpolation whenever a value is not a
   compile-time constant.
 - `sql_write` — *opt-in, off by default*: a single write statement —
-  `INSERT` / `UPDATE` / `DELETE` (UPDATE/DELETE must carry a WHERE clause) or
-  `CREATE TABLE` for a new table. `DROP` / `ALTER` / `TRUNCATE` / `VACUUM` /
-  `ATTACH` / `PRAGMA` / `GRANT` / `REVOKE` and any statement mentioning the
-  `portfolio` mirror table are rejected. It is compiled into the server but
+  `INSERT` / `UPDATE` / `DELETE` (UPDATE/DELETE must carry a WHERE clause),
+  `CREATE TABLE` for a new table, or a strictly-shaped additive
+  `ALTER TABLE ... ADD COLUMN` (every other ALTER form is rejected).
+  `DROP` / `TRUNCATE` / `VACUUM` / `ATTACH` / `PRAGMA` / `GRANT` /
+  `REVOKE` and any statement mentioning the `portfolio` mirror table
+  are rejected. It is compiled into the server but
   **not** in the default whitelist; add `sql_write` to `HARNESS_TOOLS_ALLOW`
   (Makefile `INVEST_TOOLS`, compose/k8s) to let the model create analysis
   tables. The ledger itself stays authoritative in `.data/portfolio.json`.
