@@ -399,6 +399,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_slot_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_slot_get_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_slot_get_obj(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_slot_get_any(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_slot_len(i8*)\n");
     EMIT(g, "declare i8* @lume_slot_at(i8*, i64)\n");
 
@@ -1056,30 +1057,38 @@ static Val cg_builtin(CG *g, Node *n)
              * tag only exists at runtime, so the read must unpack the slot
              * before the lookup (lume_slot_get_* in src/rt.c). There is no
              * static shape to consult, so the flavour follows the default's
-             * static type -- an absent default is refused, because no static
-             * type says what to read. */
-            const char *sfn; Type *srty;
-            if (!d.ty || !get_flavour(d.ty, &sfn, &srty))
-                ERRV(g, "line %zu: get() on an any value needs a default of a concrete type",
-                     n->line);
-            if (strcmp(sfn, "lume_map_get_i") == 0)
-                fn = "lume_slot_get_i";
-            else if (strcmp(sfn, "lume_map_get_f") == 0)
-                fn = "lume_slot_get_f";
-            else if (strcmp(sfn, "lume_map_get_s") == 0)
-                fn = "lume_slot_get_s";
-            else if (strcmp(sfn, "lume_map_get_obj") == 0)
-                fn = "lume_slot_get_obj";
-            else
-                ERRV(g, "line %zu: get() cannot read a %s off an any value",
-                     n->line, ty_str(d.ty));
-            /* The result keeps the default's own type where codegen has one:
-             * a [] default reads a json array back as a list, a {} default an
-             * anonymous map, a string default a string. BOOL keeps the
-             * get_flavour mapping (an int read), matching get() on a typed
-             * map, so `get(j, "ok", false)` prints "1" the same way
-             * `get(m, "ok", false)` does on a literal map. */
-            rty = d.ty && d.ty->kind != TY_BOOL ? d.ty : srty;
+             * static type; without a concrete default the raw slot is read
+             * (kept in step with the llvm emitter's copy). */
+            if (d.v && d.ty && d.ty->kind != TY_ANY) {
+                const char *sfn; Type *srty;
+                if (!get_flavour(d.ty, &sfn, &srty))
+                    ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                         n->line, ty_str(d.ty));
+                if (strcmp(sfn, "lume_map_get_i") == 0)
+                    fn = "lume_slot_get_i";
+                else if (strcmp(sfn, "lume_map_get_f") == 0)
+                    fn = "lume_slot_get_f";
+                else if (strcmp(sfn, "lume_map_get_s") == 0)
+                    fn = "lume_slot_get_s";
+                else if (strcmp(sfn, "lume_map_get_obj") == 0)
+                    fn = "lume_slot_get_obj";
+                else
+                    ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                         n->line, ty_str(d.ty));
+                /* The result keeps the default's own type where codegen has one:
+                 * a [] default reads a json array back as a list, a {} default an
+                 * anonymous map, a string default a string. BOOL keeps the
+                 * get_flavour mapping (an int read), matching get() on a typed
+                 * map, so `get(j, "ok", false)` prints "1" the same way
+                 * `get(m, "ok", false)` does on a literal map. */
+                rty = d.ty && d.ty->kind != TY_BOOL ? d.ty : srty;
+            } else {
+                /* No default (or an any default): read the cell back boxed
+                 * as its own tag — the interpreter's dynamic read. Kept in
+                 * step with the llvm emitter's copy. */
+                fn = "lume_slot_get_any";
+                rty = type_prim(TY_ANY);
+            }
         } else {
             shape = map_key_shape(g, &m, n->as.call.args[1]);
             if (shape && shape->kind != TY_ANY) {

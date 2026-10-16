@@ -165,19 +165,6 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
             return type_prim(TY_INT);
 
-        /* json() parses a string into a tagged-any value: the result shape
-         * exists only at runtime, so the binding is `any` and travels as a
-         * boxed LumeSlot* (llvm_type_of TY_ANY -> i8*). */
-        if (strcmp(name, "json") == 0 && n->as.call.argc == 1)
-            return any_type();
-
-        /* get(m, k[, d]) — the result type follows the default (the emitter
-         * picks the read flavour from it too); an absent default has no
-         * static shape and yields `any`. */
-        if (strcmp(name, "get") == 0 && n->as.call.argc >= 2)
-            return n->as.call.argc == 3 ? infer_node_type(g, n->as.call.args[2])
-                                        : any_type();
-
         /* try(fn) — { ok, err } where ok is the fn's return type and err is
          * null. Carrying the members here is what lets `r.ok` / `r.err` pick
          * the right getter (member_field_type reads this shape), exactly like
@@ -215,13 +202,14 @@ Type *infer_node_type(CG *g, Node *n)
         }
 
         /* json()/stringify() serialize to a JSON string. json(str) means
-         * parse, whose result type is dynamic — NULL here keeps the slot
-         * opaque and lets the emit-time diagnostic do the explaining. */
+         * parse: the result is a tagged-any tree (a boxed LumeSlot*, see
+         * src/rt.c), readable through get/len/str/for-in. Kept in step
+         * with llvm_cg_scan.inc's copy. */
         if ((strcmp(name, "stringify") == 0 || strcmp(name, "json") == 0) &&
             n->as.call.argc == 1) {
             Type *at = infer_node_type(g, n->as.call.args[0]);
             if (strcmp(name, "json") == 0 && at && at->kind == TY_STRING)
-                return NULL;
+                return any_type();
             return type_prim(TY_STRING);
         }
 
@@ -231,9 +219,17 @@ Type *infer_node_type(CG *g, Node *n)
          * literal, or that the shape does not declare, falls through to
          * NULL — the explicit-annotation path then applies. */
         if (strcmp(name, "get") == 0 && n->as.call.argc >= 2) {
+            Type *mt = infer_node_type(g, n->as.call.args[0]);
+            /* A tagged-any receiver (a json() parse) has no static shape:
+             * the result follows the default, or is `any` without one.
+             * Kept in step with llvm_cg_scan.inc. */
+            if (mt && mt->kind == TY_ANY) {
+                if (n->as.call.argc == 3)
+                    return infer_node_type(g, n->as.call.args[2]);
+                return any_type();
+            }
             Node *kn = n->as.call.args[1];
             if (kn->type == N_LITERAL && kn->as.lit.kind == LIT_STR) {
-                Type *mt = infer_node_type(g, n->as.call.args[0]);
                 if (mt && mt->kind == TY_STRUCT) {
                     /* A string literal's text keeps its quotes; keys do not. */
                     const char *kt = kn->as.lit.text;

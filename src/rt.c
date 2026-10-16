@@ -1490,6 +1490,26 @@ void *lume_slot_get_obj(const LumeSlot *s, const char *k, void *d)
     return lume_map_get_obj(m, k, d);
 }
 
+/* get(m, k) with no default on an any value: the key reads back as its own
+ * boxed slot, whatever the cell holds — the interpreter's dynamic read.
+ * An absent key (or a non-map receiver) reads as the null slot, the boxed
+ * shape the literal null already travels in. The third parameter exists so
+ * every getter shares one three-operand call shape in the emitters; it is
+ * ignored here. */
+LumeSlot *lume_slot_get_any(const LumeSlot *s, const char *k, LumeSlot *dflt)
+{
+    (void)dflt;
+    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+    memset(box, 0, sizeof *box);
+    box->tag = LUME_SLOT_OBJ;
+    if (!s || s->tag != LUME_SLOT_OBJ) return box;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return box;
+    int64_t i = map_find(m, k);
+    if (i >= 0) *box = m->vals[i];
+    return box;
+}
+
 /* len() on an any value: a container slot answers with its length, a
  * scalar or a null slot with 0 (the interpreter's len(map)/len(list)
  * only sees containers; asking anything else reads 0 there too). */

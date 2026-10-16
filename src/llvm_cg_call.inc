@@ -506,8 +506,10 @@ static Val cg_builtin(CG *g, Node *n)
                          n->line, ty_str(d.ty));
                 rty = d.ty->kind != TY_BOOL ? d.ty : srty;
             } else {
-                /* No default (or an any default): read the raw slot. */
-                fn = "lume_slot_get_obj";
+                /* No default (or an any default): read the cell back boxed
+                 * as its own tag — the interpreter's dynamic read. Kept in
+                 * step with the text emitter's copy. */
+                fn = "lume_slot_get_any";
                 rty = type_prim(TY_ANY);
             }
         } else {

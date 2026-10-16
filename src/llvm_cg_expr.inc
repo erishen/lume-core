@@ -1158,8 +1158,11 @@ static const char *list_at_fn(Type *ty)
     case TY_BOOL:   return "lume_list_at_i";
     /* Same branch as codegen_stmt.c's shared copy: an enum value is the
      * opaque i8* at_obj hands back, and the loop variable keeps its enum
-     * type so print/match dispatch stay correct. */
-    case TY_ENUM:   return "lume_list_at_obj";
+     * type so print/match dispatch stay correct. A nested list element is
+     * the same opaque i8* — `map((xs) => ..., [[1,2],[3,4]])` reads each
+     * inner list as an object. */
+    case TY_ENUM:
+    case TY_LIST:   return "lume_list_at_obj";
     default:        return NULL;
     }
 }

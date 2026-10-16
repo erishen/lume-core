@@ -171,9 +171,17 @@ static Type *infer_node_type(CG *g, Node *n)
          * NULL -- the explicit-annotation path then applies. Kept in step
          * with codegen_scan.c's copy. */
         if (strcmp(name, "get") == 0 && n->as.call.argc >= 2) {
+            Type *mt = infer_node_type(g, n->as.call.args[0]);
+            /* A tagged-any receiver (a json() parse) has no static shape:
+             * the result follows the default, or is `any` without one.
+             * Kept in step with codegen_scan.c. */
+            if (mt && mt->kind == TY_ANY) {
+                if (n->as.call.argc == 3)
+                    return infer_node_type(g, n->as.call.args[2]);
+                return any_type();
+            }
             Node *kn = n->as.call.args[1];
             if (kn->type == N_LITERAL && kn->as.lit.kind == LIT_STR) {
-                Type *mt = infer_node_type(g, n->as.call.args[0]);
                 if (mt && mt->kind == TY_STRUCT) {
                     /* A string literal's text keeps its quotes; keys do not. */
                     const char *kt = kn->as.lit.text;
@@ -200,13 +208,10 @@ static Type *infer_node_type(CG *g, Node *n)
                     }
                 }
             }
-            /* A tagged-any receiver (a json() parse) has no static shape:
-             * the result follows the default, or is `any` without one. A
-             * typed map whose shape does not name the key does the same.
-             * Kept in step with codegen_scan.c. */
-            if (n->as.call.argc == 3)
-                return infer_node_type(g, n->as.call.args[2]);
-            return mt && mt->kind == TY_ANY ? any_type() : NULL;
+            /* A key that is not a literal, or that the shape does not
+             * declare, falls through to NULL -- the explicit-annotation
+             * path then applies (same tail as codegen_scan.c). */
+            return NULL;
         }
 
         Sig *s = sig_find(&g->sigs, name);
@@ -366,6 +371,15 @@ static void scan_stmt(CG *g, Node *n)
         if (!ty)
             ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                  n->line, n->as.let.name);
+        /* `let f: fn(int) => int = (x) => x * 2;` (SPEC §4.8): the annotated
+         * TY_FUNC carries no back-pointer of its own, but `f(3)` recovers the
+         * lambda through Type.func — thread the literal through so the call
+         * emitter can pin the parameter types. Mirrors codegen_scan.c's
+         * N_LET; without it the llvm backend refuses what the text backend
+         * accepts. */
+        if (ty->kind == TY_FUNC && !ty->func && n->as.let.init &&
+            n->as.let.init->type == N_FUNC_LIT)
+            ty->func = n->as.let.init;
         if (g->scanning_top) {
             /* Module storage, registered twice (mirrors codegen_scan.c):
              * gvars for what function bodies resolve through, L_top's own
