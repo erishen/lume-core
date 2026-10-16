@@ -1,0 +1,2 @@
+a={"ok":3,"err":null}
+b={"ok":null,"err":"json parse error (at offset 1)"}

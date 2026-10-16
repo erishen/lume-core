@@ -1,0 +1,4 @@
+let a = try(() => 1 + 2);
+print("a=" + str(a));
+let b = try(() => json("{bad"));
+print("b=" + str(b));

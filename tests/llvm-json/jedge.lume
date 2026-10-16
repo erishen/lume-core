@@ -1,0 +1,8 @@
+// json edge: try(lambda) failure, index, dflt-less get
+let ok = try(() => json("{bad json"));
+print("try_bad=" + str(ok));
+let j = json("{\"name\":\"lume\",\"n\":42,\"tags\":[1,2]}");
+print("idx_name=" + str(j["name"]));
+print("idx_n=" + str(j["n"]));
+print("get_no_dflt=" + str(get(j, "name")));
+print("get_missing_no_dflt=" + str(get(j, "zzz")));

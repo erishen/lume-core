@@ -707,10 +707,16 @@ static void json_parse_value(VM *vm, const char *src, const char **endp,
     st.err[0] = '\0';
     json_value(vm, &st);
     if (st.err[0]) {
+        /* One shared message shape across backends: the native emitters
+         * (rt.c lume_json_parse) report "json parse error (at offset N)"
+         * without the specific cause; the interpreter mirrors that exactly
+         * so try(() => json(...)) captures an identical string everywhere.
+         * The specific cause ("expected object key", "unexpected character")
+         * stays in st.err for diagnostics only. */
         if (errbuf && errbuf_size)
-            snprintf(errbuf, errbuf_size, "%s (at offset %td)", st.err, st.p - src);
+            snprintf(errbuf, errbuf_size, "json parse error (at offset %td)", st.p - src);
         vm_pop(vm); /* discard partial */
-        vm_set_error(vm, "json parse error");
+        vm_set_error(vm, "%s", errbuf && errbuf[0] ? errbuf : "json parse error");
         if (endp) *endp = st.p;
         return;
     }

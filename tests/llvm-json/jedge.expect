@@ -1,0 +1,5 @@
+try_bad={"ok":null,"err":"json parse error (at offset 1)"}
+idx_name=lume
+idx_n=42
+get_no_dflt=lume
+get_missing_no_dflt=null

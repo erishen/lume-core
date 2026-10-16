@@ -1,0 +1,6 @@
+let j = json("{\"a\":[1,2,{\"b\":3}],\"c\":\"x\"}");
+print("len=" + str(len(j)));
+print(str(j));
+let l = json("[1,\"two\",3.5,true,null]");
+print("llen=" + str(len(l)));
+print(str(l));
