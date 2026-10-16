@@ -703,6 +703,7 @@ build-asan/tests:
 	mkdir -p build-asan/tests
 
 build-asan/%.o: src/%.c src/lume.h $(INT_HDRS) | build-asan $(AH_LIB)
+	@mkdir -p $(dir $@)   # 子目录型源 (compat/sha256, compat/regex) 的目录规则同 build/%.o
 	$(CC) $(CFLAGS) $(ASAN_CFLAGS) -c $< -o $@
 
 $(ASAN_TARGET): $(ASAN_OBJS) $(AH_LIB) | build-asan bin

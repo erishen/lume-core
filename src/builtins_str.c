@@ -124,8 +124,14 @@ static void native_split(VM *vm, int argc, Value *args, Value *out) {
     if (!arg_string(vm, args[1], &sep)) return;
     size_t slen = strlen(s), flen = strlen(sep);
     Obj *list = AS_OBJ(make_list(vm));
+    /* Root the list for the whole fill: every make_string below can cross
+     * gc_threshold and collect, and an unrooted list was swept mid-loop
+     * (list_push then read freed count/cap — heap-use-after-free, ASan-
+     * confirmed via nsgm's template renderer on large CJK templates). */
+    vm_push(vm, val_obj(list));
     if (flen == 0) {
         list_push(vm, list, make_string_cstr(vm, s));
+        vm_pop(vm);
         *out = val_obj(list);
         return;
     }
@@ -136,6 +142,7 @@ static void native_split(VM *vm, int argc, Value *args, Value *out) {
         list_push(vm, list, make_string(vm, p, (size_t)(hit - p)));
         p = hit + flen;
     }
+    vm_pop(vm);
     *out = val_obj(list);
 }
 
