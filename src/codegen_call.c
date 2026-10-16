@@ -196,8 +196,19 @@ static Val cg_clo_call(CG *g, Node *n, Node *lambda)
                 ? lambda->as.funclit.param_types[i] : NULL;
             args[i] = cg_expr(g, n->as.call.args[i]);
             g->expect = prev;
-            if (args[i].ty && args[i].ty->kind == TY_STRUCT)
+            if (args[i].ty && args[i].ty->kind == TY_STRUCT) {
+                /* Same representation guard as the named-call path: an
+                 * untyped map value must not be passed to a named struct
+                 * parameter of a closure either. */
+                Type *pt0 = lambda->as.funclit.param_types
+                    ? lambda->as.funclit.param_types[i] : NULL;
+                if (!args[i].ty->name && pt0 && pt0->kind == TY_STRUCT && pt0->name)
+                    ERRV(g, "line %zu: this closure expects a '%s' struct, but "
+                            "argument %d is an untyped map value — bind it to "
+                            "the struct type first (`let v: %s = ...`)",
+                         n->line, pt0->name, i + 1, pt0->name);
                 struct_addr(g, &args[i]);
+            }
             /* Pin the value to the parameter's spelling, the way a named
              * call's coerce does: int/float/bool conversions, and the no-op
              * everything else is. */
@@ -380,6 +391,16 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_keys(i8*)\n");
     EMIT(g, "declare i8* @lume_range(double, double, double)\n");
     EMIT(g, "declare i64 @lume_map_print(i8*)\n");
+    /* Tagged-any values (json(), for-in over a list<any>): these unpack a
+     * boxed LumeSlot* (src/rt.c) before the typed read or serialization. */
+    EMIT(g, "declare i8* @lume_json_parse(i8*, i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_slot_str(i8*)\n");
+    EMIT(g, "declare i64 @lume_slot_get_i(i8*, i8*, i64)\n");
+    EMIT(g, "declare double @lume_slot_get_f(i8*, i8*, double)\n");
+    EMIT(g, "declare i8* @lume_slot_get_s(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_slot_get_obj(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_slot_len(i8*)\n");
+    EMIT(g, "declare i8* @lume_slot_at(i8*, i64)\n");
 
     /* Closures (SPEC 4.8): the box a lambda literal builds and every call
      * site unwraps. The record layout lives in src/rt.c (LumeClosure). */
@@ -914,11 +935,14 @@ static Val cg_builtin(CG *g, Node *n)
         if (argc != 1)
             ERRV(g, "line %zu: len() takes exactly one argument", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
-        if (!a.v || !a.ty || (a.ty->kind != TY_LIST && a.ty->kind != TY_STRING))
-            ERRV(g, "line %zu: len() needs a list or a string", n->line);
-        Val r = rt_call(g, type_prim(TY_INT),
-                        a.ty->kind == TY_LIST ? "lume_list_len" : "lume_bi_len_s",
-                        "i8* %s", a.v);
+        if (!a.v || !a.ty ||
+            (a.ty->kind != TY_LIST && a.ty->kind != TY_STRING &&
+             a.ty->kind != TY_ANY))
+            ERRV(g, "line %zu: len() needs a list, a string or an any value", n->line);
+        const char *lfn = a.ty->kind == TY_LIST ? "lume_list_len"
+                        : a.ty->kind == TY_ANY  ? "lume_slot_len"
+                                                : "lume_bi_len_s";
+        Val r = rt_call(g, type_prim(TY_INT), lfn, "i8* %s", a.v);
         free(a.v);
         if (!r.v) ERRV(g, "line %zu: cannot take the length of this value", n->line);
         return r;
@@ -1026,22 +1050,54 @@ static Val cg_builtin(CG *g, Node *n)
          * that flavour, spelled below). */
         const char *fn = "lume_map_get_i";
         Type *rty = type_prim(TY_INT);
-        Type *shape = map_key_shape(g, &m, n->as.call.args[1]);
-        if (shape && shape->kind != TY_ANY) {
+        Type *shape = NULL;
+        if (m.ty && m.ty->kind == TY_ANY) {
+            /* An any-typed map operand: the value is a boxed LumeSlot* whose
+             * tag only exists at runtime, so the read must unpack the slot
+             * before the lookup (lume_slot_get_* in src/rt.c). There is no
+             * static shape to consult, so the flavour follows the default's
+             * static type -- an absent default is refused, because no static
+             * type says what to read. */
             const char *sfn; Type *srty;
-            if (!get_flavour(shape, &sfn, &srty))
-                ERRV(g, "line %zu: get() cannot read a value of type %s",
-                     n->line, ty_str(shape));
-            if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
-                !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
-                !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
-                ERRV(g, "line %zu: get() default is %s but key %s holds %s",
-                     n->line, ty_str(d.ty), n->as.call.args[1]->as.lit.text,
-                     ty_str(shape));
-            fn = sfn; rty = srty;
-        } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
-            const char *dfn; Type *drty;
-            if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+            if (!d.ty || !get_flavour(d.ty, &sfn, &srty))
+                ERRV(g, "line %zu: get() on an any value needs a default of a concrete type",
+                     n->line);
+            if (strcmp(sfn, "lume_map_get_i") == 0)
+                fn = "lume_slot_get_i";
+            else if (strcmp(sfn, "lume_map_get_f") == 0)
+                fn = "lume_slot_get_f";
+            else if (strcmp(sfn, "lume_map_get_s") == 0)
+                fn = "lume_slot_get_s";
+            else if (strcmp(sfn, "lume_map_get_obj") == 0)
+                fn = "lume_slot_get_obj";
+            else
+                ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                     n->line, ty_str(d.ty));
+            /* The result keeps the default's own type where codegen has one:
+             * a [] default reads a json array back as a list, a {} default an
+             * anonymous map, a string default a string. BOOL keeps the
+             * get_flavour mapping (an int read), matching get() on a typed
+             * map, so `get(j, "ok", false)` prints "1" the same way
+             * `get(m, "ok", false)` does on a literal map. */
+            rty = d.ty && d.ty->kind != TY_BOOL ? d.ty : srty;
+        } else {
+            shape = map_key_shape(g, &m, n->as.call.args[1]);
+            if (shape && shape->kind != TY_ANY) {
+                const char *sfn; Type *srty;
+                if (!get_flavour(shape, &sfn, &srty))
+                    ERRV(g, "line %zu: get() cannot read a value of type %s",
+                         n->line, ty_str(shape));
+                if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
+                    !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
+                    !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
+                    ERRV(g, "line %zu: get() default is %s but key %s holds %s",
+                         n->line, ty_str(d.ty), n->as.call.args[1]->as.lit.text,
+                         ty_str(shape));
+                fn = sfn; rty = srty;
+            } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
+                const char *dfn; Type *drty;
+                if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+            }
         }
 
         char dflt[96];
@@ -1089,10 +1145,25 @@ static Val cg_builtin(CG *g, Node *n)
                  * parse, whose result type is dynamic -- the statically
                  * typed emitters cannot spell it yet. */
                 if (is_str) return a;
-                if (is_json)
-                    ERRV(g, "line %zu: json() string parsing is interpreter-only;"
-                            " the native backends cannot type the dynamic result",
-                         n->line);
+                if (is_json) {
+                    /* json("...") parses into a tagged-any tree: emit a call to
+                     * lume_json_parse (src/rt.c), which hands back a boxed
+                     * LumeSlot* (TY_ANY lowers to i8*). The error buffer is a
+                     * 256-byte stack slot zeroed before the call; a parse
+                     * failure returns null and the value serializes as null
+                     * (the try() error path is a follow-up). */
+                    char eb[32], ep[32], tmp2[48];
+                    snprintf(eb, sizeof eb, "%%jeb%d", g->tid);
+                    snprintf(ep, sizeof ep, "%%jep%d", g->tid);
+                    snprintf(tmp2, sizeof tmp2, "%%c%d", g->tid++);
+                    EMIT(g, "  %s = alloca [256 x i8]\n", eb);
+                    EMIT(g, "  %s = getelementptr [256 x i8], [256 x i8]* %s, i32 0, i32 0\n", ep, eb);
+                    EMIT(g, "  store i8 0, i8* %s\n", ep);
+                    EMIT(g, "  %s = call i8* @lume_json_parse(i8* %s, i8* %s, i64 256)\n",
+                         tmp2, a.v, ep);
+                    free(a.v);
+                    return val_make(type_prim(TY_ANY), tmp2);
+                }
                 fn = "@lume_rt_quote_str"; pty = "i8*"; break;
             case TY_LIST:
                 /* Containers serialize to the same JSON the interpreter's
@@ -1114,6 +1185,11 @@ static Val cg_builtin(CG *g, Node *n)
                     fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
                 }
                 fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
+            case TY_ANY:
+                /* A tagged-any value serializes by its runtime tag (src/rt.c
+                 * lume_slot_str): containers as JSON, strings quoted, scalars
+                 * unquoted -- the interpreter's str() rules. */
+                fn = "@lume_slot_str"; pty = "i8*"; break;
             case TY_NULL:
                 /* The serializer's null entry point prints the bare word the
                  * interpreter's str(null)/stringify(null) produce. */
@@ -1291,8 +1367,23 @@ Val cg_call(CG *g, Node *n)
             /* Struct arguments travel as pointers: decay an aggregate value
              * (an insertvalue chain, or a call that returns one) into a stack
              * slot. An address is already what the callee wants. */
-            if (args[i].ty && args[i].ty->kind == TY_STRUCT)
+            if (args[i].ty && args[i].ty->kind == TY_STRUCT) {
+                /* An untyped map value (anonymous struct: an i8* heap map)
+                 * cannot be passed to a named struct parameter (a %Point
+                 * aggregate): the two representations are incompatible, and
+                 * the checker accepts the call on field-compatibility alone.
+                 * Reject here with the fix spelled out — binding the value
+                 * to the struct type makes the representations line up.
+                 * Inline literals never reach this: g->expect pins them to
+                 * the parameter type and they are built as aggregates. */
+                Type *pt = s->params ? s->params[i] : NULL;
+                if (!args[i].ty->name && pt && pt->kind == TY_STRUCT && pt->name)
+                    ERRV(g, "line %zu: '%s' expects a '%s' struct, but argument "
+                            "%d is an untyped map value — bind it to the struct "
+                            "type first (`let v: %s = ...`)", n->line, name,
+                         pt->name, i + 1, pt->name);
                 struct_addr(g, &args[i]);
+            }
             ats[i] = llvm_ptr_type_of(args[i].ty);
             if (!ats[i]) ERRV(g, "line %zu: bad argument type for '%s'", n->line, name);
         }

@@ -862,11 +862,11 @@ func report(): Result {
 | `int(x)` | 1 参 | `int` | **`int` 原样；`float` 截断；非数字字符串静默返回 `0`** |
 | `float(x)` | 1 参 | `float` | `int`→float；⚠️ **非数字字符串静默返回 `0.0`** |
 | `bool(x)` | 1 参 | `bool` | 真值性：空串/`0`/`null`/空集合为 `false` |
-| `json(x)` | 1 参 | `value` | **反序列化**：JSON 文本 → map/list/string/number/bool/null；**整数数字（无 `.`/`e`/`E`）解码为 `int`，含小数或指数的解码为 `float`**；解析失败置 VM error（可用 `try()` 接住）。⚠️ **字符串参数的解析是解释器专属**：原生后端编译期拒绝（解析结果类型动态，静态发射器无法定型）；`json()` 用于**序列化**（参数非字符串）时三后端一致 |
+| `json(x)` | 1 参 | `value` | **反序列化**：JSON 文本 → map/list/string/number/bool/null；**整数数字（无 `.`/`e`/`E`）解码为 `int`，含小数或指数的解码为 `float`**；解析失败置 VM error（可用 `try()` 接住）。**字符串参数的解析三后端一致（2026-10-16 补齐原生）**：原生端返回 tagged-any 槽（`LumeSlot*`），用 `get(x, k, dflt)`/`str`/`len`/`for-in` 按 dflt 类型读取（`[]`→list、`{}`→map、`""`→string）；`json()` 用于**序列化**（参数非字符串）时三后端一致 |
 | `stringify(x)` | 1 参 | `string` | 序列化：任意值 → JSON 文本（与 `str()` 的 map/list 路径一致；字符串加引号转义）。三后端一致，命名 struct 同样支持：原生后端按声明字段构造 map 再序列化，与解释器 JSON 一致 |
 | `now()` | 0 参 | `int` | Unix 秒 |
 | `strftime(fmt, ts)` | 2 参 | `string` | ⚠️ **参数序是 `(格式, 时间戳)`**，不是反过来 |
-| `str_match(pattern, text)` | 2 参 | `{text,index,groups}[]` | **正则抽取**：POSIX ERE 全扫描，每条 `{ text: 匹配子串, index: 0-based 偏移, groups: 捕获组[] }`；无匹配返回 `[]`；非法正则置 VM error（可 `try()` 接住）。⚠️ **解释器专属**：匹配列表元素是无名 map，原生后端没有该形状的发射路径，`--compile-text`/`--compile-llvm` 编译期拒绝（`cannot infer a type for ...`）——与 `json(str)` 同属「动态结果形状」边界（见 TODO intentional boundaries） |
+| `str_match(pattern, text)` | 2 参 | `{text,index,groups}[]` | **正则抽取**：POSIX ERE 全扫描，每条 `{ text: 匹配子串, index: 0-based 偏移, groups: 捕获组[] }`；无匹配返回 `[]`；非法正则置 VM error（可 `try()` 接住）。⚠️ **解释器专属**：匹配列表元素是无名 map，原生后端没有该形状的发射路径，`--compile-text`/`--compile-llvm` 编译期拒绝（`cannot infer a type for ...`）——与 `json(str)` 原同属「动态结果形状」边界（`json(str)` 已通过 tagged-any 槽补齐原生，见 865 行；str_match 的匿名 map 列表形状仍是该边界的残余，见 TODO intentional boundaries） |
 | `regex(pattern, text)` | 2 参 | `{text,index,groups}[]` | `str_match` 的别名（同为解释器专属） |
 
 ⚠️ **`int("abc") == 0` 且不报错**，`float("x") == 0.0` 同理。这是转换类最容易踩的坑：
@@ -897,7 +897,7 @@ string 值静默读成 `0`），`let x = get(m, "name")` 无标注也能定型�
 | `put(m, k, v)` | 3 参 | **map** | **原地**写 map，并返回写完的 map；`v` 为 `null` 三后端一致（obj 槽空载荷） |
 | `push(l, v)` | 2 参 | **list** | **原地**追加，并返回写完的 list |
 | `range(a, b)` | 1–3 参 | `int[]` | `[a, b)`，**不含 b**。`range(stop)`＝`range(0, stop)`；第三参 `step` 可负（`range(5, 0, -2)`＝`[5,3,1]`），`step` 为 0 运行期报错。**三后端统一**：原生 `lume_range`（rt 助手）跑与解释器相同的 double 运算，整值落 int 槽，`print`/`for-in`/`len`/下标/`str` 逐一致 |
-| `sort(l)` | 1 参 | **list** | **原地**排序 `l` 并返回它；仅支持**同构**列表——全数字（升序，全 int 按 i64 精确比较、含 float 走 double）或全字符串（`strcmp` 字节序）；异构或含容器/map 报错 |
+| `sort(l)` | 1 参 | **list** | **原地**排序 `l` 并返回它；仅支持**同构**列表——全数字（升序，全 int 按 i64 精确比较、含 float 走 double）或全字符串（`strcmp` 字节序）；异构或含容器/map 报错。⚠️ **解释器专属**：两个原生后端尚无 `sort` 发射路径（`--compile-text`/`--compile-llvm` 报 `call to unknown function 'sort'`）——与 `json(str)` 同属「动态结果形状」边界；2026-10-16 由 `examples/stats.lume` 的三后端验证发现，TODO P4 之后补 |
 
 **下标语法**（规范变更）：`m["k"]` 与 `l[0]` 现在**存在**了。
 

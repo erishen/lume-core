@@ -4,6 +4,23 @@
 
 > Pronounced **lu-MÉ** — `/luˈmeɪ/`, two syllables, stress on the second.
 
+A script is just a file — no server, no `run()`, no entry point ceremony. The
+same source type-checks and runs identically on all three backends (the
+interpreter, the LLVM IR text emitter, and the libLLVM C API emitter):
+
+```lume
+type Point = { x: int, y: int };
+
+func dist2(a: Point, b: Point): int {
+  let dx = a.x - b.x;
+  let dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+let p: Point = { x: 3, y: 4 };
+print(str(dist2(p, { x: 0, y: 0 })));     // 25
+print(str(map((x) => x * x, [1, 2, 3]))); // [1,4,9]
+```
 **This is the host-independent tree.** It is the language part of Lume on its
 own: front end (lexer / parser / type checker), two native emitters — a
 hand-written LLVM IR text emitter and a libLLVM C API emitter — and a
@@ -122,6 +139,7 @@ make dump        # print the IR text backend produces for examples/hello.lume
 make native      # native-bench through the default (libLLVM) backend
 make native-text # native-bench through the hand-written IR text backend
 make native-bench # compare the two backends on the same script
+make fuzz        # libFuzzer (Linux clang): seed from tests/ fixtures, 30s run
 make clean
 ```
 

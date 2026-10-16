@@ -4,6 +4,22 @@
 
 > 读音：**lu-mé**（/luˈmeɪ/，两音节，重音在后）。
 
+脚本就是一个文件——没有服务器、没有 `run()`、没有入口点仪式。同一份源码在三条后端上
+类型检查与运行结果完全一致（解释器、手写 LLVM IR 文本、libLLVM C API）：
+
+```lume
+type Point = { x: int, y: int };
+
+func dist2(a: Point, b: Point): int {
+  let dx = a.x - b.x;
+  let dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+let p: Point = { x: 3, y: 4 };
+print(str(dist2(p, { x: 0, y: 0 })));     // 25
+print(str(map((x) => x * x, [1, 2, 3]))); // [1,4,9]
+```
 **这是「脱离宿主」的那棵语言树。** 它是 Lume 的语言部分：前端（词法/语法/类型
 检查）+ 两个原生发射器（手写 LLVM IR 文本、libLLVM C API）+ 一棵树遍历解释器。
 除了 libc（以及探测到 `llvm-config` 时的 libLLVM）什么也不链——这里没有 HTTP
@@ -55,6 +71,7 @@ make dump        # 打印 examples/hello.lume 的 IR 文本后端产物
 make native      # 默认（libLLVM）后端跑 native-bench
 make native-text # 手写 IR 文本后端跑同一份靶子
 make native-bench # 两条后端同脚本对比
+make fuzz        # libFuzzer（Linux clang）：以 tests/ fixtures 作种子跑 30 秒
 make clean
 ```
 

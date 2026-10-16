@@ -165,6 +165,19 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
             return type_prim(TY_INT);
 
+        /* json() parses a string into a tagged-any value: the result shape
+         * exists only at runtime, so the binding is `any` and travels as a
+         * boxed LumeSlot* (llvm_type_of TY_ANY -> i8*). */
+        if (strcmp(name, "json") == 0 && n->as.call.argc == 1)
+            return any_type();
+
+        /* get(m, k[, d]) — the result type follows the default (the emitter
+         * picks the read flavour from it too); an absent default has no
+         * static shape and yields `any`. */
+        if (strcmp(name, "get") == 0 && n->as.call.argc >= 2)
+            return n->as.call.argc == 3 ? infer_node_type(g, n->as.call.args[2])
+                                        : any_type();
+
         /* try(fn) — { ok, err } where ok is the fn's return type and err is
          * null. Carrying the members here is what lets `r.ok` / `r.err` pick
          * the right getter (member_field_type reads this shape), exactly like

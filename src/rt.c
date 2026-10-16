@@ -14,6 +14,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1185,4 +1186,332 @@ int64_t lume_map_print(const LumeMap *m)
      * not one. Printing it as a map would dereference string bytes as slots. */
     if (m->kind != LUME_CTR_MAP) { fputs("(opaque value)\n", stdout); return 0; }
     return emit("{") + container_body(m) + emit("}\n");
+}
+/* ------------------------------------------------------------------ *
+ * JSON parsing (the reverse of slot_to_json): text -> tagged-any tree.
+ *
+ * The interpreter's json() decodes into GC Values; the native backends
+ * have no GC, so this builds the same shape out of rt objects — a
+ * LumeSlot per value, maps and lists as rt containers, string bytes
+ * copied via dup_str. Number rules match the interpreter exactly: a
+ * JSON number with no '.', 'e' or 'E' becomes an INT slot, anything
+ * else a FLOAT slot. \uXXXX escapes (including surrogate pairs) decode
+ * to UTF-8. A parse failure fills errbuf with "json parse error" plus
+ * the byte offset, so a later native try() path can surface the same
+ * text the interpreter prints.
+ * ------------------------------------------------------------------ */
+
+typedef struct { const char *p; char err[128]; } JsonSt;
+
+static void js_ws(JsonSt *st)
+{
+    while (*st->p == ' ' || *st->p == '\t' || *st->p == '\n' || *st->p == '\r')
+        st->p++;
+}
+
+/* Decode one JSON string starting at the opening quote into b. Returns
+ * a pointer just past the closing quote, or NULL on malformed input.
+ * Caller NUL-terminates via b.p[b.len] (jb_putc keeps cap > len). */
+static const char *json_read_string(const char *p, JsonBuf *b)
+{
+    if (*p != '"') return NULL;
+    p++;
+    while (*p != '"') {
+        if (!*p) return NULL;
+        if (*p == '\\') {
+            p++;
+            switch (*p) {
+                case 'n': jb_putc(b, '\n'); p++; break;
+                case 't': jb_putc(b, '\t'); p++; break;
+                case 'r': jb_putc(b, '\r'); p++; break;
+                case 'b': jb_putc(b, '\b'); p++; break;
+                case 'f': jb_putc(b, '\f'); p++; break;
+                case '/': jb_putc(b, '/');  p++; break;
+                case '\\': jb_putc(b, '\\'); p++; break;
+                case '"': jb_putc(b, '"');  p++; break;
+                case 'u': {
+                    unsigned long cp = 0;
+                    if (p[1] == 0 || p[2] == 0 || p[3] == 0 || p[4] == 0) return NULL;
+                    for (int i = 1; i <= 4; i++) {
+                        char c = p[i];
+                        cp <<= 4;
+                        if (c >= '0' && c <= '9') cp |= (unsigned)(c - '0');
+                        else if (c >= 'a' && c <= 'f') cp |= (unsigned)(c - 'a' + 10);
+                        else if (c >= 'A' && c <= 'F') cp |= (unsigned)(c - 'A' + 10);
+                        else return NULL;
+                    }
+                    p += 5;
+                    if (cp >= 0xD800 && cp <= 0xDBFF && p[0] == '\\' && p[1] == 'u') {
+                        unsigned long lo = 0;
+                        for (int i = 2; i <= 5; i++) {
+                            char c = p[i];
+                            lo <<= 4;
+                            if (c >= '0' && c <= '9') lo |= (unsigned)(c - '0');
+                            else if (c >= 'a' && c <= 'f') lo |= (unsigned)(c - 'a' + 10);
+                            else if (c >= 'A' && c <= 'F') lo |= (unsigned)(c - 'A' + 10);
+                            else return NULL;
+                        }
+                        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            p += 6;
+                        }
+                    }
+                    if (cp < 0x80) jb_putc(b, (char)cp);
+                    else if (cp < 0x800) {
+                        jb_putc(b, (char)(0xC0 | (cp >> 6)));
+                        jb_putc(b, (char)(0x80 | (cp & 0x3F)));
+                    } else if (cp < 0x10000) {
+                        jb_putc(b, (char)(0xE0 | (cp >> 12)));
+                        jb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+                        jb_putc(b, (char)(0x80 | (cp & 0x3F)));
+                    } else {
+                        jb_putc(b, (char)(0xF0 | (cp >> 18)));
+                        jb_putc(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
+                        jb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+                        jb_putc(b, (char)(0x80 | (cp & 0x3F)));
+                    }
+                    break;
+                }
+                default:
+                    return NULL;
+            }
+        } else {
+            jb_putc(b, *p);
+            p++;
+        }
+    }
+    return p + 1;
+}
+
+/* The num field of a FLOAT slot holds the double's bits (map_put_f and
+ * slot_emit both rely on this), so reading one back is a memcpy. */
+static double slot_float_of(LumeSlot s)
+{
+    double d = 0;
+    memcpy(&d, &s.num, sizeof d);
+    return d;
+}
+
+/* Parse one JSON value into a slot. On failure st->err is set and the
+ * slot is a zeroed INT — callers must check st->err before using it.
+ * Containers built on the way to a failure are intentionally not freed:
+ * the error paths are rare, and the interpreter's vm_pop only drops the
+ * stack reference, not the tree. A future lume_slot_free will own them. */
+static LumeSlot json_value(JsonSt *st)
+{
+    LumeSlot s;
+    memset(&s, 0, sizeof s);
+    js_ws(st);
+    char c = *st->p;
+
+    if (c == '{') {
+        st->p++;
+        LumeMap *m = lume_map_new();
+        js_ws(st);
+        if (*st->p == '}') { st->p++; s.tag = LUME_SLOT_OBJ; s.num = (int64_t)(intptr_t)m; return s; }
+        while (true) {
+            js_ws(st);
+            if (*st->p != '"') { snprintf(st->err, sizeof st->err, "expected object key"); break; }
+            JsonBuf k = { 0, 0, 0 };
+            const char *after = json_read_string(st->p, &k);
+            if (k.p) k.p[k.len] = '\0';
+            if (!after) { snprintf(st->err, sizeof st->err, "bad object key"); free(k.p); break; }
+            st->p = after;
+            js_ws(st);
+            if (*st->p != ':') { snprintf(st->err, sizeof st->err, "expected ':'"); free(k.p); break; }
+            st->p++;
+            LumeSlot v = json_value(st);
+            if (st->err[0]) { free(k.p); break; }
+            const char *key = k.p ? k.p : "";
+            switch (v.tag) {
+            case LUME_SLOT_INT:   lume_map_put_i(m, key, v.num); break;
+            case LUME_SLOT_FLOAT: lume_map_put_f(m, key, slot_float_of(v)); break;
+            case LUME_SLOT_STR:   lume_map_put_s(m, key, v.str ? v.str : ""); break;
+            case LUME_SLOT_BOOL:  lume_map_put_b(m, key, v.num); break;
+            case LUME_SLOT_OBJ:   lume_map_put_obj(m, key, (void *)(intptr_t)v.num); break;
+            }
+            free(k.p);
+            js_ws(st);
+            if (*st->p == ',') { st->p++; continue; }
+            if (*st->p == '}') { st->p++; break; }
+            snprintf(st->err, sizeof st->err, "expected ',' or '}' in object");
+            break;
+        }
+        if (st->err[0]) { s.tag = LUME_SLOT_INT; return s; }
+        s.tag = LUME_SLOT_OBJ; s.num = (int64_t)(intptr_t)m;
+        return s;
+    }
+
+    if (c == '[') {
+        st->p++;
+        LumeList *l = lume_list_new();
+        js_ws(st);
+        if (*st->p == ']') { st->p++; s.tag = LUME_SLOT_OBJ; s.num = (int64_t)(intptr_t)l; return s; }
+        while (true) {
+            LumeSlot v = json_value(st);
+            if (st->err[0]) break;
+            switch (v.tag) {
+            case LUME_SLOT_INT:   lume_list_push_i(l, v.num); break;
+            case LUME_SLOT_FLOAT: lume_list_push_f(l, slot_float_of(v)); break;
+            case LUME_SLOT_STR:   lume_list_push_s(l, v.str ? v.str : ""); break;
+            case LUME_SLOT_BOOL:  lume_list_push_b(l, v.num); break;
+            case LUME_SLOT_OBJ:   lume_list_push_obj(l, (void *)(intptr_t)v.num); break;
+            }
+            js_ws(st);
+            if (*st->p == ',') { st->p++; continue; }
+            if (*st->p == ']') { st->p++; break; }
+            snprintf(st->err, sizeof st->err, "expected ',' or ']' in array");
+            break;
+        }
+        if (st->err[0]) { s.tag = LUME_SLOT_INT; return s; }
+        s.tag = LUME_SLOT_OBJ; s.num = (int64_t)(intptr_t)l;
+        return s;
+    }
+
+    if (c == '"') {
+        JsonBuf b = { 0, 0, 0 };
+        const char *after = json_read_string(st->p, &b);
+        if (!after) { snprintf(st->err, sizeof st->err, "bad string"); free(b.p); return s; }
+        st->p = after;
+        if (b.p) b.p[b.len] = '\0';
+        s.tag = LUME_SLOT_STR;
+        s.str = dup_str(b.p ? b.p : "");
+        free(b.p);
+        return s;
+    }
+
+    if (c == '-' || (c >= '0' && c <= '9')) {
+        const char *q = st->p;
+        int is_int = 1;
+        if (*q == '-') q++;
+        if (*q == '-') is_int = 0;   /* "--" is malformed, not a number */
+        while (*q >= '0' && *q <= '9') q++;
+        if (*q == '.' || *q == 'e' || *q == 'E') is_int = 0;
+        char *end = NULL;
+        if (is_int) {
+            long long iv = strtoll(st->p, &end, 10);
+            if (end == st->p) { snprintf(st->err, sizeof st->err, "bad number"); return s; }
+            st->p = end;
+            s.tag = LUME_SLOT_INT; s.num = iv;
+        } else {
+            double d = strtod(st->p, &end);
+            if (end == st->p) { snprintf(st->err, sizeof st->err, "bad number"); return s; }
+            st->p = end;
+            s.tag = LUME_SLOT_FLOAT;
+            memcpy(&s.num, &d, sizeof d);
+        }
+        return s;
+    }
+
+    if (strncmp(st->p, "true", 4) == 0)  { st->p += 4; s.tag = LUME_SLOT_BOOL; s.num = 1; return s; }
+    if (strncmp(st->p, "false", 5) == 0) { st->p += 5; s.tag = LUME_SLOT_BOOL; s.num = 0; return s; }
+    if (strncmp(st->p, "null", 4) == 0)  { st->p += 4; s.tag = LUME_SLOT_OBJ; s.num = 0; return s; }
+
+    snprintf(st->err, sizeof st->err, "unexpected character");
+    return s;
+}
+
+/* Parse a full JSON document into a tagged-any tree. Returns a malloc'd
+ * root slot on success, NULL on failure with "json parse error (at
+ * offset N)" in errbuf — the same message shape the interpreter's
+ * json() surfaces. The tree is malloc'd throughout and currently lives
+ * for the whole process (a future lume_slot_free will own it, see the
+ * note at lume_list_new's error path); a long-lived host embedding the
+ * runtime should free slot trees once the ownership API lands. */
+LumeSlot *lume_json_parse(const char *src, char *errbuf, size_t errbuf_size)
+{
+    JsonSt st;
+    st.p = src ? src : "";
+    st.err[0] = '\0';
+    LumeSlot root = json_value(&st);
+    if (st.err[0]) {
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size, "json parse error (at offset %td)", st.p - src);
+        return NULL;
+    }
+    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+    *box = root;
+    return box;
+}
+
+/* str() on a tagged-any value: serialize the slot tree the way the
+ * interpreter's str() does. slot_to_json already implements every case
+ * — scalars unquoted (INT via %lld, FLOAT via %g, BOOL via
+ * true/false), strings kept with their quotes and escapes, containers
+ * as JSON, the null obj slot as the bare word null. The interpreter
+ * prints root maps and lists as compact JSON, so a boxed root slot
+ * serializes identically. Returns malloc'd; caller frees. */
+char *lume_slot_str(const LumeSlot *s)
+{
+    if (!s) return dup_str("null");
+    JsonBuf b = { 0, 0, 0 };
+    slot_to_json(&b, *s);
+    jb_putc(&b, '\0');
+    return b.p;
+}
+
+/* ------------------------------------------------------------------ *
+ * Field/element access on a tagged-any slot (the json()/for-in value).
+ * An any value is a boxed LumeSlot*, so get(j, k, d) on one has to
+ * unpack the slot before the map lookup — a non-map slot reads the
+ * default, matching get()'s absent-key semantics. Codegen picks the
+ * flavour from the default's static type, exactly like lume_map_get_*.
+ * ------------------------------------------------------------------ */
+
+int64_t lume_slot_get_i(const LumeSlot *s, const char *k, int64_t d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_get_i(m, k, d);
+}
+
+double lume_slot_get_f(const LumeSlot *s, const char *k, double d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_get_f(m, k, d);
+}
+
+const char *lume_slot_get_s(const LumeSlot *s, const char *k, const char *d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_get_s(m, k, d);
+}
+
+void *lume_slot_get_obj(const LumeSlot *s, const char *k, void *d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_get_obj(m, k, d);
+}
+
+/* len() on an any value: a container slot answers with its length, a
+ * scalar or a null slot with 0 (the interpreter's len(map)/len(list)
+ * only sees containers; asking anything else reads 0 there too). */
+int64_t lume_slot_len(const LumeSlot *s)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return 0;
+    const LumeList *c = (const LumeList *)(intptr_t)s->num;
+    if (!c) return 0;
+    return c->kind == LUME_CTR_MAP ? lume_map_len((const LumeMap *)c)
+                                   : lume_list_len(c);
+}
+
+/* Element read off an any list slot (for-in / indexing): returns a
+ * boxed LumeSlot copy so every element kind survives; NULL for a
+ * non-list slot or an out-of-range index. */
+LumeSlot *lume_slot_at(const LumeSlot *s, int64_t i)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return NULL;
+    const LumeList *l = (const LumeList *)(intptr_t)s->num;
+    if (!l || l->kind != LUME_CTR_LIST) return NULL;
+    if (i < 0 || i >= l->len) return NULL;
+    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+    *box = l->items[i];
+    return box;
 }

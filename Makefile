@@ -125,7 +125,7 @@ MODULE_APP := examples/modules/app.lume
 # here too: they are the two scripts that exercise the --compile-* emitters,
 # and without them a type error in a native example (a struct field, a member
 # assignment) only showed up when someone hand-ran `make native-bench`.
-EXAMPLES := $(HELLO) examples/lang-basics.lume $(MODULE_APP) examples/native-fact.lume examples/native-bench.lume examples/http-get.lume examples/regex-smoke.lume
+EXAMPLES := $(HELLO) examples/lang-basics.lume examples/stats.lume $(MODULE_APP) examples/native-fact.lume examples/native-bench.lume examples/http-get.lume examples/regex-smoke.lume
 # make native / make native-llvm 的靶子: 纯计算脚本(不含 server/route/tool),
 # 原生后端覆盖得到。make native-bench 换成长循环的那个(显优化差别)。
 NATIVE_EX := examples/native-fact.lume
@@ -331,6 +331,37 @@ native-text: all
 	else \
 	    echo "FAIL native-text $$stem"; cat out/$$stem.diff; exit 1; \
 	fi
+
+# --- P1: Parser fuzzing (libFuzzer) -----------------------------------------
+# Arbitrary bytes -> lexer -> parse_program (orphan-release path) -> type
+# checker; no backend emission, keeps the corpus small and the target fast.
+# Linux clang only: -fsanitize=fuzzer rejects the Windows GNU targets
+# (x86_64-w64-windows-gnu), so the fuzzer binary is a Linux/asan-job build;
+# the standalone driver shape (LUME_FUZZ_DRIVER in src/fuzz_target.c) covers
+# any compiler for corpus smoke runs, Windows included.
+FUZZ_CC     ?= clang
+FUZZ_TARGET := out/fuzz_lume
+FUZZ_CORPUS := out/fuzz-corpus
+FUZZ_SRCS   := src/fuzz_target.c
+
+out:
+	mkdir -p out
+
+$(FUZZ_TARGET): $(CORE_OBJS) $(FUZZ_SRCS) | out
+	$(FUZZ_CC) $(CFLAGS) -fsanitize=fuzzer,address,undefined \
+	    -o $@ $(CORE_OBJS) $(FUZZ_SRCS) $(LDFLAGS) -lm
+
+# Seed the corpus from the hand-written fixtures (positive + -bad/ negatives),
+# then fuzz for a bounded run. TODO P1: promote to a 60s CI leg in the asan
+# job once a 30-minute local run is stable.
+fuzz: $(FUZZ_TARGET)
+	@mkdir -p $(FUZZ_CORPUS)
+	@cp tests/*.lume $(FUZZ_CORPUS)/ 2>/dev/null || true
+	@if ls tests/*-bad/*.lume >/dev/null 2>&1; then \
+	    cp tests/*-bad/*.lume $(FUZZ_CORPUS)/; fi
+	@./$(FUZZ_TARGET) $(FUZZ_CORPUS) -max_total_time=30 \
+	    -print_final_stats=1
+
 
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
 # 跑 tests/native-consistency.lume 三种路径(解释器 / 文本 / libLLVM), 各自跟

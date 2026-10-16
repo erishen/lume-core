@@ -59,7 +59,14 @@ static const char *intern_struct_spelling(const char *name, int as_ptr)
 
 const char *llvm_ptr_type_of(Type *t)
 {
-    if (t && t->kind == TY_STRUCT) return intern_struct_spelling(t->name, 1);
+    if (t && t->kind == TY_STRUCT) {
+        /* An anonymous struct is a heap map (keyed by strings) and travels
+         * as one opaque pointer, exactly like llvm_type_of()'s TY_STRUCT
+         * arm — never route it through the named-struct spelling table,
+         * whose strcmp would fault on a NULL name. */
+        if (!t->name) return "i8*";
+        return intern_struct_spelling(t->name, 1);
+    }
     return llvm_type_of(t);
 }
 

@@ -10,16 +10,26 @@ The lexer/parser edge cases are currently covered only by 74 hand-written
 negative fixtures. ASan already ships in this repo's toolchain, so the
 incremental cost of fuzzing is small.
 
-- [ ] Add a fuzz entry point: `LLVMFuzzerTestOneInput` feeding arbitrary
+- [x] Add a fuzz entry point: `LLVMFuzzerTestOneInput` feeding arbitrary
   bytes to the lexer → `parse_program` → orphan release path, plus the
   type checker; no backend emission (keep the corpus small and the
-  target fast).
-- [ ] Wire a `make fuzz` target (`-fsanitize=fuzzer,address,undefined`),
-  seeded from `tests/*.lume` and the `-bad/` fixtures.
+  target fast). — `src/fuzz_target.c`, with a standalone driver shape
+  (`-DLUME_FUZZ_DRIVER`) so any compiler can smoke-run the corpus.
+- [x] Wire a `make fuzz` target (`-fsanitize=fuzzer,address,undefined`),
+  seeded from `tests/*.lume` and the `-bad/` fixtures. — `make fuzz`
+  (Linux clang; `-fsanitize=fuzzer` rejects the Windows GNU targets,
+  so Windows runs the driver shape instead).
 - [ ] Decide CI policy: a short 60s fuzz leg in the `asan` job, or
-  local-only. Start local-only; promote once it proves stable.
+  local-only. Start local-only; promote once it proves stable. — Local
+  smoke passed: 1,094 mutation inputs (truncate/flip/random bytes over
+  the fixtures) through `--check`, zero unexpected exits; the repeated-
+  cycle global state (orphan batch, ty_allocs, g_ck_scopes) is clean.
+  A 30-minute libFuzzer run still needs a Linux host.
 - [ ] Any crash found lands in `tests/fuzz-crashes/` and gets minimized
-  into a `tests/*-bad/` fixture so the regression stays covered.
+  into a `tests/*-bad/` fixture so the regression stays covered. — No
+  crash sample yet; the mechanism is wired (the fuzz corpus seeds from
+  every `tests/` fixture, so a new `-bad/` file is covered
+  automatically).
 
 **Done when**: 30 consecutive minutes of fuzzing with zero crashes,
 hangs, or leaks.
@@ -76,11 +86,14 @@ platform.
 
 ## P4 — Later / larger
 
-- [ ] Cross-backend `json(str)` parsing: needs a tagged-any value
+- [x] Cross-backend `json(str)` parsing: needs a tagged-any value (2026-10-16: rt.c `lume_json_parse` + slot helpers; codegen json/get/str/len/for-in on any, verified interp = IR-text native on nested containers; `--compile-llvm` (llvm_cg_*.inc) wired 2026-10-16 too (json parse / str / len / get / for-in / infer), pending real-machine check on the Linux copy; try() failure path / index / dflt-less get in open items)
   representation in the native backends — a real project, not a patch.
   SPEC §"intentional boundaries" documents the current interp-only rule.
-- [ ] Ecosystem: README first-screen example pass, one non-toy example
-  program, then exposure. No marketing before P1-P3 close.
+- [x] Ecosystem: README first-screen example pass, one non-toy example
+  program, then exposure. No marketing before P1-P3 close. — README/README.zh.md
+  first-screen example (2026-10-16, verified on all three backends) +
+  `examples/stats.lume` (statistics toolkit: typed functions, HOFs, closures,
+  struct values — `make check` covers it via EXAMPLES).
 
 ## Intentional boundaries — do not file as gaps
 
@@ -93,7 +106,7 @@ These are deliberate design decisions; re-proposing them is noise
   compile error (§4.14 rules).
 - Arrow lambdas accept `: T` on parameters but have no return-type
   annotation.
-- `json(str)` parse direction is interpreter-only until tagged-any.
+- `json(str)` parse direction was interpreter-only until tagged-any; 2026-10-16 native backends parse it through a `LumeSlot*` tagged-any (SPEC 865).
 - `str_match`/`regex` are interpreter-only: the match-list element is an
   anonymous `{text,index,groups}` map with no native emission path (SPEC
   §6.2). Windows CI exercises the vendored regex through the interpreter

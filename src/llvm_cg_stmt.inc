@@ -56,6 +56,9 @@ static Type *for_in_elem_type(CG *g, Node *n)
     }
     /* An anonymous struct literal is a runtime map, which iterates its keys. */
     if (t && t->kind == TY_STRUCT && !t->name) return type_prim(TY_STRING);
+    /* An `any` iterable (a json() array) iterates its runtime elements as
+     * tagged slots; the loop variable is `any`. */
+    if (t && t->kind == TY_ANY) return any_type();
     ERR(g, "line %zu: the native backend can only iterate a list or a map in "
            "a 'for ... in' loop", n->line);
     return NULL;   /* the checker is never the one that reads this path */
@@ -115,7 +118,8 @@ static void cg_for_in(CG *g, Node *n)
      * ty_of(g, TY_ANY) returns i8*, so the loop variable's alloca and the
      * store below stay consistent. */
     const char *fn = is_map ? NULL
-                            : (et->kind == TY_ANY ? "lume_list_at_slot" : list_at_fn(et));
+        : (it.ty && it.ty->kind == TY_ANY ? "lume_slot_at"
+          : (et->kind == TY_ANY ? "lume_list_at_slot" : list_at_fn(et)));
     if (!is_map && !fn)
         ERRX(g, "line %zu: a list of this element type cannot be iterated", n->line);
 
@@ -127,9 +131,11 @@ static void cg_for_in(CG *g, Node *n)
      * every iteration made `push(xs, v)` inside the body extend the bound
      * forever and OOM the backend. */
     LLVMValueRef len_slot = LLVMBuildAlloca(g->ab, g->i64, "len");
+    const char *lenfn = is_map ? "lume_map_len"
+                       : (it.ty && it.ty->kind == TY_ANY ? "lume_slot_len"
+                                                         : "lume_list_len");
     LLVMValueRef len0 = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, &g->i8ptr, 1, 0),
-                                       rt_decl(g, is_map ? "lume_map_len" : "lume_list_len",
-                                                g->i64, &g->i8ptr, 1),
+                                       rt_decl(g, lenfn, g->i64, &g->i8ptr, 1),
                                        &it.v, 1, "len0");
     LLVMBuildStore(g->ab, len0, len_slot);
 

@@ -212,7 +212,13 @@ static void cg_for_in(CG *g, Node *n)
      * cannot serve an any-typed iteration. */
     const char *acc;
     Type *accty;
-    if (et->kind == TY_ANY) { acc = "lume_list_at_slot"; accty = type_prim(TY_STRING); }
+    if (it.ty && it.ty->kind == TY_ANY) {
+        /* Iterating an `any` value (a json() array): the value is a boxed
+         * LumeSlot* whose container shape only exists at runtime, so both the
+         * length and the element reads go through the slot helpers (src/rt.c),
+         * and each element comes back as its own boxed slot. */
+        acc = "lume_slot_at"; accty = type_prim(TY_ANY);
+    } else if (et->kind == TY_ANY) { acc = "lume_list_at_slot"; accty = type_prim(TY_STRING); }
     else                    { acc = list_at_fn(et);    accty = elem_rty(et); }
     if (!is_map && !acc) {
         free(it.v);
@@ -236,7 +242,10 @@ static void cg_for_in(CG *g, Node *n)
     char lenalloc[64];
     snprintf(lenalloc, sizeof lenalloc, "%%li%d", g->tid++);
     EMIT(g, "  %s = alloca i64\n", lenalloc);
-    Val len0 = rt_call(g, type_prim(TY_INT), is_map ? "lume_map_len" : "lume_list_len",
+    Val len0 = rt_call(g, type_prim(TY_INT),
+                        is_map ? "lume_map_len"
+                               : (it.ty && it.ty->kind == TY_ANY ? "lume_slot_len"
+                                                                 : "lume_list_len"),
                         "i8* %s", it.v);
     if (!len0.v) { free(it.v); ERRX(g, "line %zu: cannot read the collection's length", n->line); }
     EMIT(g, "  store i64 %s, i64* %s\n", len0.v, lenalloc);

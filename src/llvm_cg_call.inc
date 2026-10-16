@@ -79,7 +79,7 @@ static LLVMValueRef get_zero_default(CG *g, Type *rty)
 {
     if (rty->kind == TY_STRING || rty->kind == TY_NULL ||
         rty->kind == TY_LIST || rty->kind == TY_STRUCT ||
-        rty->kind == TY_RESULT)
+        rty->kind == TY_RESULT || rty->kind == TY_ANY)
         return LLVMConstNull(g->i8ptr);
     if (rty->kind == TY_FLOAT)
         return LLVMConstReal(g->dbl, 0.0);
@@ -253,13 +253,26 @@ static Val cg_builtin(CG *g, Node *n)
             case TY_STRING:
                 /* str of a string is itself; stringify quotes it (the
                  * interpreter's json_append_value does); json(str) means
-                 * parse, whose result type is dynamic -- the statically
-                 * typed emitters cannot spell it yet. */
+                 * parse: the result is a tagged-any tree (LumeSlot*),
+                 * readable through the slot helpers (src/rt.c). Mirrors the
+                 * text emitter's json(str) branch in codegen_call.c. */
                 if (is_str) return a;
-                if (is_json)
-                    ERRV(g, "line %zu: json() string parsing is interpreter-only;"
-                            " the native backends cannot type the dynamic result",
-                         n->line);
+                if (is_json) {
+                    LLVMTypeRef ety = LLVMArrayType(LLVMInt8TypeInContext(g->ctx), 256);
+                    LLVMValueRef eb = LLVMBuildAlloca(g->ab, ety, "jeb");
+                    LLVMValueRef ep = LLVMBuildInBoundsGEP2(g->ab, ety, eb,
+                        (LLVMValueRef[]){ LLVMConstInt(g->i64, 0, 0),
+                                         LLVMConstInt(g->i64, 0, 0) }, 2, "jep");
+                    LLVMBuildStore(g->ab,
+                        LLVMConstNull(LLVMInt8TypeInContext(g->ctx)), ep);
+                    LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i64 };
+                    LLVMValueRef v3[3] = { a.v, ep, LLVMConstInt(g->i64, 256, 0) };
+                    LLVMValueRef r = LLVMBuildCall2(g->ab,
+                        LLVMFunctionType(g->i8ptr, p3, 3, 0),
+                        rt_decl(g, "lume_json_parse", g->i8ptr, p3, 3), v3, 3, "j");
+                    if (!r) ERRV(g, "line %zu: json() parse failed", n->line);
+                    return val_make(type_prim(TY_ANY), r);
+                }
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0); pty = g->i8ptr;
                 break;
             case TY_LIST:
@@ -288,6 +301,13 @@ static Val cg_builtin(CG *g, Node *n)
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
                 pty = g->i8ptr;
                 break;
+            case TY_ANY:
+                /* A tagged-any value serializes by its runtime tag (src/rt.c
+                 * lume_slot_str): containers as JSON, strings quoted, scalars
+                 * unquoted -- the interpreter's str() rules. */
+                ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0);
+                pty = g->i8ptr;
+                break;
             case TY_NULL:
                 /* The serializer's null entry point prints the bare word the
                  * interpreter's str(null)/stringify(null) produce. */
@@ -312,7 +332,9 @@ static Val cg_builtin(CG *g, Node *n)
         }
 
         const char *name;
-        if (a.ty && (a.ty->kind == TY_LIST || a.ty->kind == TY_NULL ||
+        if (a.ty && a.ty->kind == TY_ANY)
+            name = "lume_slot_str";
+        else if (a.ty && (a.ty->kind == TY_LIST || a.ty->kind == TY_NULL ||
                      (a.ty->kind == TY_STRUCT && !a.ty->name)))
             name = "lume_rt_to_json_obj";
         else if (a.ty && a.ty->kind == TY_STRING)
@@ -345,15 +367,16 @@ static Val cg_builtin(CG *g, Node *n)
         if (argc != 1)
             ERRV(g, "line %zu: len() takes exactly one argument", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
-        if (!a.v || !a.ty || (a.ty->kind != TY_LIST && a.ty->kind != TY_STRING))
-            ERRV(g, "line %zu: len() needs a list or a string", n->line);
+        if (!a.v || !a.ty || (a.ty->kind != TY_LIST && a.ty->kind != TY_STRING &&
+                              a.ty->kind != TY_ANY))
+            ERRV(g, "line %zu: len() needs a list, a string or an any value", n->line);
         LLVMTypeRef p[1] = { g->i8ptr };
         LLVMValueRef v[1] = { a.v };
+        const char *lenfn = a.ty->kind == TY_LIST ? "lume_list_len"
+                          : a.ty->kind == TY_ANY  ? "lume_slot_len"
+                                                  : "lume_bi_len_s";
         LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p, 1, 0),
-                                        rt_decl(g, a.ty->kind == TY_LIST
-                                                    ? "lume_list_len"
-                                                    : "lume_bi_len_s",
-                                                g->i64, p, 1), v, 1, "len");
+                                        rt_decl(g, lenfn, g->i64, p, 1), v, 1, "len");
         if (!r) ERRV(g, "line %zu: cannot take the length of this value", n->line);
         return val_make(type_prim(TY_INT), r);
     }
@@ -460,22 +483,51 @@ static Val cg_builtin(CG *g, Node *n)
          * the *default*, and the int read when neither says. */
         const char *fn = "lume_map_get_i";
         Type    *rty = type_prim(TY_INT);
-        Type *shape = map_key_shape(g, &m, n->as.call.args[1]);
-        if (shape && shape->kind != TY_ANY) {
-            const char *sfn; Type *srty;
-            if (!get_flavour(shape, &sfn, &srty))
-                ERRV(g, "line %zu: get() cannot read a value of type %s",
-                     n->line, ty_str(shape));
-            if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
-                !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
-                !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
-                ERRV(g, "line %zu: get() default is %s but key %s holds %s",
-                     n->line, ty_str(d.ty), n->as.call.args[1]->as.lit.text,
-                     ty_str(shape));
-            fn = sfn; rty = srty;
-        } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
-            const char *dfn; Type *drty;
-            if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+        if (m.ty && m.ty->kind == TY_ANY) {
+            /* A tagged-any value (a json() parse): the runtime shape is only
+             * known at runtime, so the read goes through the slot getters
+             * (src/rt.c), chosen by the default's type -- the same mapping
+             * the text emitter's copy uses. The result keeps the default's
+             * own type where codegen has one: a [] default reads a json
+             * array back as a list, a {} default an anonymous map, a string
+             * default a string. BOOL keeps the get_flavour mapping (an int
+             * read), matching get() on a typed map. */
+            if (d.v && d.ty && d.ty->kind != TY_ANY) {
+                const char *sfn; Type *srty;
+                if (!get_flavour(d.ty, &sfn, &srty))
+                    ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                         n->line, ty_str(d.ty));
+                if (strcmp(sfn, "lume_map_get_i") == 0)      fn = "lume_slot_get_i";
+                else if (strcmp(sfn, "lume_map_get_f") == 0) fn = "lume_slot_get_f";
+                else if (strcmp(sfn, "lume_map_get_s") == 0) fn = "lume_slot_get_s";
+                else if (strcmp(sfn, "lume_map_get_obj") == 0) fn = "lume_slot_get_obj";
+                else
+                    ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                         n->line, ty_str(d.ty));
+                rty = d.ty->kind != TY_BOOL ? d.ty : srty;
+            } else {
+                /* No default (or an any default): read the raw slot. */
+                fn = "lume_slot_get_obj";
+                rty = type_prim(TY_ANY);
+            }
+        } else {
+            Type *shape = map_key_shape(g, &m, n->as.call.args[1]);
+            if (shape && shape->kind != TY_ANY) {
+                const char *sfn; Type *srty;
+                if (!get_flavour(shape, &sfn, &srty))
+                    ERRV(g, "line %zu: get() cannot read a value of type %s",
+                         n->line, ty_str(shape));
+                if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
+                    !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
+                    !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
+                    ERRV(g, "line %zu: get() default is %s but key %s holds %s",
+                         n->line, ty_str(d.ty), n->as.call.args[1]->as.lit.text,
+                         ty_str(shape));
+                fn = sfn; rty = srty;
+            } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
+                const char *dfn; Type *drty;
+                if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+            }
         }
         if (d.v && d.ty && d.ty->kind == TY_BOOL)
             d = coerce(g, type_prim(TY_INT), d, n->line);

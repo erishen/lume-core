@@ -160,7 +160,7 @@ static Type *infer_node_type(CG *g, Node *n)
             n->as.call.argc == 1) {
             Type *at = infer_node_type(g, n->as.call.args[0]);
             if (strcmp(name, "json") == 0 && at && at->kind == TY_STRING)
-                return NULL;
+                return any_type();
             return type_prim(TY_STRING);
         }
 
@@ -200,7 +200,13 @@ static Type *infer_node_type(CG *g, Node *n)
                     }
                 }
             }
-            return NULL;
+            /* A tagged-any receiver (a json() parse) has no static shape:
+             * the result follows the default, or is `any` without one. A
+             * typed map whose shape does not name the key does the same.
+             * Kept in step with codegen_scan.c. */
+            if (n->as.call.argc == 3)
+                return infer_node_type(g, n->as.call.args[2]);
+            return mt && mt->kind == TY_ANY ? any_type() : NULL;
         }
 
         Sig *s = sig_find(&g->sigs, name);

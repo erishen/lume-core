@@ -1,0 +1,58 @@
+// stats.lume — a small statistics toolkit, pure script (no server, no run()).
+//
+//   bin/lume examples/stats.lume                run it
+//   bin/lume --check examples/stats.lume        type-check only
+//   bin/lume --compile-text examples/stats.lume native IR-text backend
+//
+// Shows the language: typed functions (return annotations, inferred
+// parameters), list literals and indexing, HOFs (map / filter / reduce),
+// closures capturing locals, if-expressions and struct values.
+//
+// Note: min/max/stddev stay HOF-only on purpose — they exercise the same
+// map/filter/reduce machinery on both native backends and the interpreter.
+
+type Stats = { n: int, mean: float, stddev: float, min: float, max: float };
+
+let data = [5.5, 7.0, 3.2, 9.8, 6.6, 4.4, 8.1, 2.9, 7.7, 5.5];
+
+func mean(xs): float {
+  return reduce((a, x) => a + x, xs, 0.0) / len(xs);
+}
+
+func variance(xs): float {
+  let m = mean(xs);
+  let diffs = map((x) => (x - m) * (x - m), xs);
+  return reduce((a, d) => a + d, diffs, 0.0) / len(xs);
+}
+
+func stddev(xs): float {
+  return sqrt(variance(xs));
+}
+
+func min_of(xs): float {
+  return reduce((a, x) => if (x < a) x else a, xs, xs[0]);
+}
+
+func max_of(xs): float {
+  return reduce((a, x) => if (x > a) x else a, xs, xs[0]);
+}
+
+func above(xs, threshold: float): float[] {
+  return filter((x) => x > threshold, xs);
+}
+
+let st: Stats = {
+  n: len(data),
+  mean: mean(data),
+  stddev: stddev(data),
+  min: min_of(data),
+  max: max_of(data),
+};
+
+print("count   = " + str(st.n));
+print("mean    = " + str(st.mean));
+print("stddev  = " + str(st.stddev));
+print("min     = " + str(st.min));
+print("max     = " + str(st.max));
+print("above 6 = " + str(above(data, 6.0)));
+print("sum     = " + str(reduce((a, x) => a + x, data, 0.0)));
