@@ -35,8 +35,13 @@ for l in *.lume; do
         cmp -s "$OUT/$base.l.out" "$base.expect" \
             || { echo "FAIL llvm $l (expect below)"; cat "$base.expect"; fail=1; continue; }
     else
-        grep -qi "libllvm" "$OUT/$base.lc" \
-            || { echo "note: llvm leg skipped for $l: $(head -c 80 "$OUT/$base.lc")"; }
+        # Distinguish "no libLLVM" (skip with a note) from a genuine
+        # compile error (must fail loudly).
+        if grep -qi "libllvm" "$OUT/$base.lc"; then
+            echo "note: llvm leg skipped for $l (no libLLVM)"
+        else
+            echo "FAIL llvm-compile $l: $(head -c 160 "$OUT/$base.lc")"; fail=1
+        fi
     fi
 
     cmp -s "$OUT/$base.i" "$base.expect" \
