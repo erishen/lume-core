@@ -396,6 +396,7 @@ void emit_builtin_declares(CG *g)
      * boxed LumeSlot* (src/rt.c) before the typed read or serialization. */
     EMIT(g, "declare i8* @lume_json_parse(i8*, i8*, i64)\n");
     EMIT(g, "declare i8* @lume_slot_str(i8*)\n");
+    EMIT(g, "declare i8* @lume_slot_str_scalar(i8*)\n");
     EMIT(g, "declare i64 @lume_slot_get_i(i8*, i8*, i64)\n");
     EMIT(g, "declare double @lume_slot_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_slot_get_s(i8*, i8*, i8*)\n");
@@ -403,6 +404,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_slot_get_any(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_slot_len(i8*)\n");
     EMIT(g, "declare i8* @lume_slot_at(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_slot_at_key(i8*, i8*)\n");
 
     /* Closures (SPEC 4.8): the box a lambda literal builds and every call
      * site unwraps. The record layout lives in src/rt.c (LumeClosure). */
@@ -1231,10 +1233,13 @@ static Val cg_builtin(CG *g, Node *n)
                 }
                 fn = "@lume_rt_to_json_obj"; pty = "i8*"; break;
             case TY_ANY:
-                /* A tagged-any value serializes by its runtime tag (src/rt.c
-                 * lume_slot_str): containers as JSON, strings quoted, scalars
-                 * unquoted -- the interpreter's str() rules. */
-                fn = "@lume_slot_str"; pty = "i8*"; break;
+                /* A tagged-any value serializes by its runtime tag (src/rt.c):
+                 * str() of a string slot is the bare string (lume_slot_str_scalar),
+                 * stringify() keeps the JSON quotes (lume_slot_str); containers
+                 * are JSON either way — the interpreter's str()/stringify()
+                 * rules. */
+                fn = is_str ? "@lume_slot_str_scalar" : "@lume_slot_str";
+                pty = "i8*"; break;
             case TY_NULL:
                 /* The serializer's null entry point prints the bare word the
                  * interpreter's str(null)/stringify(null) produce. */

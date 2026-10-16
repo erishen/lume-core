@@ -676,7 +676,8 @@ static Val cg_index(CG *g, Node *n)
     int known_list = obj.ty && obj.ty->kind == TY_LIST;
     if (!known_map && !known_list) {
         Type *k = obj.ty;
-        int opaque = k && (k->kind == TY_STRUCT || k->kind == TY_LIST);
+        int opaque = k && (k->kind == TY_STRUCT || k->kind == TY_LIST ||
+                           k->kind == TY_ANY);
         if (!opaque)
             ERRV(g, "line %zu: cannot index into a value of type '%s'", n->line,
                  k ? src_type_name(k) : "unknown");
@@ -712,6 +713,44 @@ static Val cg_index(CG *g, Node *n)
             ix_is_str = 0;
         }
     } else ix_is_str = 0;
+
+    if (obj.ty && obj.ty->kind == TY_ANY) {
+        /* A tagged-any subscript (j["k"] / j[i]): the container is a
+         * LumeSlot*, so the read goes through the slot helpers (rt.c
+         * lume_slot_at_key for a string key / lume_slot_at for an int
+         * index), which hand back a LumeSlot*. A NULL is a failed read
+         * and goes through lume_index_error (SPEC 6.2); the failure
+         * branch is unreachable because, unlike the text backend, the
+         * LLVM backend has no try() yet — outside try() index_error
+         * prints and exits, so falling off the branch cannot happen. */
+        const char *sfn = ix_is_str ? "lume_slot_at_key" : "lume_slot_at";
+        LLVMTypeRef sp[2];
+        LLVMValueRef sv[2];
+        if (ix_is_str) {
+            sp[0] = g->i8ptr; sp[1] = g->i8ptr;
+            sv[0] = obj.v;    sv[1] = ix.v;
+        } else {
+            sp[0] = g->i8ptr; sp[1] = g->i64;
+            sv[0] = obj.v;    sv[1] = ix.v;
+        }
+        LLVMValueRef sc = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, sp, 2, 0),
+                rt_decl(g, sfn, g->i8ptr, sp, 2),
+                sv, 2, "jsl");
+        LLVMBasicBlockRef sb_bad = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "jsl_bad");
+        LLVMBasicBlockRef sb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "jsl_ok");
+        LLVMValueRef snull = LLVMBuildIsNull(g->ab, sc, "jslnull");
+        if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, snull, sb_bad, sb_ok);
+        g->cur = sb_bad; AT(g);
+        LLVMValueRef swhat = cg_string_val(g, "index read failed", 17);
+        LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
+                rt_decl(g, "lume_index_error", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
+                (LLVMValueRef[]){ swhat }, 1, "");
+        if (!DONE(g->cur)) LLVMBuildUnreachable(g->ab);
+        g->cur = sb_ok; AT(g);
+        return val_make(any_type(), sc);
+    }
 
     LLVMTypeRef iparams[3] = { g->i8ptr, g->i64, g->i8ptr };
     LLVMValueRef iargs[3];

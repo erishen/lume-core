@@ -834,8 +834,10 @@ static Val cg_index(CG *g, Node *n)
     if (!known_map && !known_list) {
         Type *k = obj.ty;
         /* An opaque i8* is what a chained read leaves behind. Let it through --
-         * the runtime asks the container which kind it is. */
-        int opaque = k && (k->kind == TY_STRUCT || k->kind == TY_LIST);
+         * the runtime asks the container which kind it is. A tagged-any value
+         * is likewise an i8* (LumeSlot*); it takes the slot-read branch below. */
+        int opaque = k && (k->kind == TY_STRUCT || k->kind == TY_LIST ||
+                           k->kind == TY_ANY);
         if (!opaque) {
             free(ix.v); free(obj.v);
             ERRV(g, "line %zu: cannot index into a value of type '%s'", n->line,
@@ -845,6 +847,42 @@ static Val cg_index(CG *g, Node *n)
 
     Type *rty = known_list ? (obj.ty->elem ? obj.ty->elem : any_type())
                            : type_anon_struct();
+
+    if (obj.ty && obj.ty->kind == TY_ANY) {
+        /* A tagged-any subscript (j["k"] / j[i]): the container is a
+         * LumeSlot*, so the read goes through the slot helpers (rt.c
+         * lume_slot_at_key for a string key / lume_slot_at for an int
+         * index), which hand back a LumeSlot*. A NULL is a failed read
+         * and goes through lume_index_error (SPEC 6.2) so try() can
+         * catch it; the value stays a null slot. */
+        int ix_is_str = ix.ty && ix.ty->kind == TY_STRING;
+        const char *sfn = ix_is_str ? "lume_slot_at_key" : "lume_slot_at";
+        Val r = ix_is_str
+            ? rt_call(g, any_type(), sfn, "i8* %s, i8* %s", obj.v, ix.v)
+            : rt_call(g, any_type(), sfn, "i8* %s, i64 %s", obj.v, ix.v);
+        free(ix.v); free(obj.v);
+        if (!r.v) ERRV(g, "line %zu: index read failed", n->line);
+        char jslot[48], jtst[48];
+        snprintf(jslot, sizeof jslot, "%%js%d", g->tid);
+        snprintf(jtst, sizeof jtst, "%%t%d", g->tid++);
+        int lbad = g->lid++, lok = g->lid++;
+        EMIT(g, "  %s = alloca i8*\n", jslot);
+        EMIT(g, "  store i8* %s, i8* %s\n", r.v, jslot);
+        EMIT(g, "  %s = icmp eq i8* %s, null\n", jtst, r.v);
+        free(r.v);
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", jtst, lbad, lok);
+        EMIT(g, "L%d:\n", lbad);
+        EMIT(g, "  store i8* null, i8* %s\n", jslot);
+        char *what = cg_string_val(g, "index read failed", 17);
+        EMIT(g, "  call void @lume_index_error(i8* %s)\n", what);
+        free(what);
+        EMIT(g, "  br label %%L%d\n", lok);
+        EMIT(g, "L%d:\n", lok);
+        char *jv = emit_instrf(g, any_type(), "load i8*, i8* %s", jslot);
+        if (!jv) ERRV(g, "line %zu: index read failed to lower", n->line);
+        return val_make(any_type(), jv);
+    }
+
     const char *pty = rt_arg_type(rty);
 
     const char *fn = strcmp(pty, "double") == 0 ? "lume_index_float"

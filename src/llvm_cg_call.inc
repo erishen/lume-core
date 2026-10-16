@@ -340,7 +340,11 @@ static Val cg_builtin(CG *g, Node *n)
 
         const char *name;
         if (a.ty && a.ty->kind == TY_ANY)
-            name = "lume_slot_str";
+            /* str() of a string slot is the bare string, stringify() keeps the
+             * JSON quotes (rt.c lume_slot_str_scalar / lume_slot_str) — the
+             * text backend's TY_ANY rule, mirrored. */
+            name = strcmp(bname, "str") == 0 ? "lume_slot_str_scalar"
+                                             : "lume_slot_str";
         else if (a.ty && (a.ty->kind == TY_LIST || a.ty->kind == TY_NULL ||
                      (a.ty->kind == TY_STRUCT && !a.ty->name)))
             name = "lume_rt_to_json_obj";

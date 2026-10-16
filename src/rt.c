@@ -1472,6 +1472,22 @@ char *lume_slot_str(const LumeSlot *s)
     return b.p;
 }
 
+/* str() on a boxed slot in a scalar position (str(j["k"])): the
+ * interpreter's str() of a string value is the bare string, while a
+ * *container* still serializes as compact JSON (strings inside it keep
+ * their quotes). slot_to_json is the container path; only a top-level
+ * string slot is unquoted here. Caller frees. */
+char *lume_slot_str_scalar(const LumeSlot *s)
+{
+    if (!s) return dup_str("null");
+    if (s->tag == LUME_SLOT_STR)
+        return dup_str(s->str ? s->str : "");
+    JsonBuf b = { 0, 0, 0 };
+    slot_to_json(&b, *s);
+    jb_putc(&b, '\0');
+    return b.p;
+}
+
 /* ------------------------------------------------------------------ *
  * Field/element access on a tagged-any slot (the json()/for-in value).
  * An any value is a boxed LumeSlot*, so get(j, k, d) on one has to
@@ -1556,4 +1572,18 @@ LumeSlot *lume_slot_at(const LumeSlot *s, int64_t i)
     LumeSlot *box = rt_alloc(sizeof(LumeSlot));
     *box = l->items[i];
     return box;
+}
+
+/* Keyed element read off an any map slot (j["k"]): returns a pointer
+ * into the map's own value array so every element kind survives; NULL
+ * for a non-map slot or a missing key. The caller reports the failure
+ * through lume_index_error (SPEC 6.2) when it sees NULL. */
+LumeSlot *lume_slot_at_key(const LumeSlot *s, const char *k)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return NULL;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return NULL;
+    int64_t i = map_find(m, k);
+    if (i < 0) return NULL;
+    return &m->vals[i];
 }
