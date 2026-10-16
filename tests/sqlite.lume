@@ -72,6 +72,40 @@ func main(): int {
   let nonread = try(() => { sql_query(db, "DELETE FROM t"); return "ok"; });
   check("sql_query is read-only", get(nonread, "err", null) != null);
 
+  // ALTER TABLE ADD COLUMN: 加列迁移通道（唯一放行的 ALTER，严格形状）
+  // 探测现有列走 SELECT 前缀的 pragma_table_info 表值函数（只读连接可用）；
+  // 语句式 PRAGMA 仍被读护栏拒（上面已验）。
+  let cols0 = sql_query(db, "SELECT name FROM pragma_table_info('t')");
+  check("pragma_table_info probe", len(cols0) == 3 && get(cols0[0], "name") == "id");
+  let a1 = try(() => { sql_write(db, "ALTER TABLE t ADD COLUMN nickname TEXT"); return "ok"; });
+  check("alter add column", get(a1, "err", null) == null);
+  let cols1 = sql_query(db, "SELECT name FROM pragma_table_info('t')");
+  check("column added", len(cols1) == 4 && get(cols1[3], "name") == "nickname");
+  // 旧行新列读出来是 null：迁移只发裸类型，不带默认值（SQLite 也不允许
+  // ADD COLUMN 带 CURRENT_TIMESTAMP 默认值）
+  let rows3 = sql_query(db, "SELECT nickname FROM t WHERE name = '张三'");
+  check("added col null on old row", len(rows3) == 1 && get(rows3[0], "nickname") == null);
+  let up = sql_write(db, "UPDATE t SET nickname = ? WHERE name = ?", ["小张三", "张三"]);
+  check("write added col", up == 1);
+  check("added col readable",
+    get(sql_query(db, "SELECT nickname FROM t WHERE name = '张三'")[0], "nickname") == "小张三");
+
+  // 护栏: 非 ADD 形态的 ALTER / 类型段里的字符串字面量 / 多语句, 一律拒
+  let ad = try(() => { sql_write(db, "ALTER TABLE t DROP COLUMN name"); return "ok"; });
+  check("alter drop column rejects", get(ad, "err", null) != null);
+  let ar = try(() => { sql_write(db, "ALTER TABLE t RENAME TO u"); return "ok"; });
+  check("alter rename rejects", get(ar, "err", null) != null);
+  let ac = try(() => { sql_write(db, "ALTER TABLE t ADD COLUMN x TEXT DEFAULT 'y'"); return "ok"; });
+  check("alter add string default rejects", get(ac, "err", null) != null);
+  let at = try(() => { sql_write(db, "ALTER TABLE t ADD COLUMN x TEXT); DROP TABLE t"); return "ok"; });
+  check("alter add multi-statement rejects", get(at, "err", null) != null);
+  let an = try(() => { sql_write(db, "ALTER TABLE t ADD COLUMN"); return "ok"; });
+  check("alter add missing type rejects", get(an, "err", null) != null);
+  // 加列后表仍可正常增删查（迁移不破坏既有通道）
+  let i4 = sql_write(db, "INSERT INTO t (name, nickname) VALUES (?, ?)", ["王五", "小王五"]);
+  check("insert after alter", i4 == 1);
+  check("select after alter", len(sql_query(db, "SELECT nickname FROM t")) == 3);
+
   // 非 list 参数拒绝
   let badp = try(() => { sql_write(db, "INSERT INTO t (name) VALUES (?)", "x"); return "ok"; });
   check("params must be list", get(badp, "err", null) != null);

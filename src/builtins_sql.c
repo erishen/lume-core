@@ -173,9 +173,70 @@ static int kw_anywhere(const char *s, const char *w) {
     return 0;
 }
 
+/* word boundary after a keyword: next char is neither alnum nor '_'
+ * (end-of-string counts as a boundary). Same predicate as kw_at's tail. */
+static int sql_break(unsigned char c) {
+    return !(isalnum(c) || c == '_');
+}
+
+/* Scan one identifier — bare [A-Za-z0-9_]+ or a simple "double-quoted"
+ * name (no embedded quotes; no caller needs SQL-standard doubling).
+ * Returns the position just past it, or NULL when nothing
+ * identifier-shaped sits at p. */
+static const char *sql_scan_ident(const char *p) {
+    if (*p == '"') {
+        const char *e = strchr(p + 1, '"');
+        return e ? e + 1 : NULL;
+    }
+    const char *s = p;
+    while (isalnum((unsigned char)*p) || *p == '_') p++;
+    return p > s ? p : NULL;
+}
+
+/* Return NULL when b is exactly ALTER TABLE <ident> ADD [COLUMN] <ident>
+ * <typedef>, else an error message. This is the only ALTER form allowed:
+ * DROP/RENAME COLUMN, ALTER COLUMN and table constraints all stay rejected.
+ * The typedef is charset-restricted to identifiers, numbers, spaces,
+ * parens and commas — enough for TEXT / INTEGER / REAL / VARCHAR(120) /
+ * DECIMAL(10,2), unable to smuggle a second statement or a string literal.
+ * SQLite independently refuses the shapes that would be unsafe here anyway
+ * (ADD COLUMN takes no PRIMARY KEY/UNIQUE and no CURRENT_TIMESTAMP default),
+ * and schema-evolution callers emit a bare "<col> <type>". */
+static const char *sql_validate_alter_add(const char *b) {
+    const char *p = b + 5; /* past "alter" (kw_at already matched) */
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "table", 5) != 0 || !sql_break((unsigned char)p[5]))
+        return "only ALTER TABLE ... ADD COLUMN is allowed";
+    p += 5;
+    while (*p == ' ' || *p == '\t') p++;
+    p = sql_scan_ident(p);
+    if (!p) return "ALTER TABLE needs a table name";
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "add", 3) != 0 || !sql_break((unsigned char)p[3]))
+        return "only ALTER TABLE ... ADD COLUMN is allowed";
+    p += 3;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncasecmp(p, "column", 6) == 0 && sql_break((unsigned char)p[6])) {
+        p += 6;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    p = sql_scan_ident(p);
+    if (!p) return "ALTER TABLE ADD needs a column name";
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p) return "ALTER TABLE ADD needs a column type";
+    for (; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (!(isalnum(c) || c == '_' || c == ' ' || c == '\t' ||
+              c == '(' || c == ')' || c == ','))
+            return "unsafe column type in ALTER TABLE";
+    }
+    return NULL;
+}
+
 /* Return an error message if the statement must not run, else NULL.
- * Allowed: INSERT / UPDATE / DELETE (UPDATE/DELETE must carry WHERE) and
- * CREATE TABLE. Everything else (dangerous DDL, multi-statement tricks) is
+ * Allowed: INSERT / UPDATE / DELETE (UPDATE/DELETE must carry WHERE),
+ * CREATE TABLE, and the strictly-shaped additive ALTER TABLE ADD COLUMN
+ * above. Everything else (dangerous DDL, multi-statement tricks) is
  * rejected. body receives the comment-stripped SQL for prepare. */
 static const char *sql_validate_write(const char *sql, char *body, size_t n) {
     const char *t = sql;
@@ -188,12 +249,17 @@ static const char *sql_validate_write(const char *sql, char *body, size_t n) {
     char *b = body;
     while (*b == ' ' || *b == '\t' || *b == '\r' || *b == '\n') b++;
 
+    /* Additive schema evolution is the one DDL beyond CREATE TABLE:
+     * generated apps add columns to existing tables on startup. */
+    if (kw_at(b, "alter"))
+        return sql_validate_alter_add(b);
+
     static const char *const dangerous[] = {
-        "drop", "alter", "truncate", "vacuum", "attach", "detach",
+        "drop", "truncate", "vacuum", "attach", "detach",
         "reindex", "pragma", "grant", "revoke", "copy", NULL };
     for (int i = 0; dangerous[i]; i++) {
         if (kw_at(b, dangerous[i]))
-            return "dangerous statement rejected (DROP/ALTER/TRUNCATE/…)";
+            return "dangerous statement rejected (DROP/TRUNCATE/…)";
     }
 
     if (kw_at(b, "insert") || kw_at(b, "update") || kw_at(b, "delete")) {
