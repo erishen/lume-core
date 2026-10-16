@@ -44,7 +44,12 @@ if errorlevel 1 goto :fail
 "%CC%" -std=c11 -O2 -g -I src -Isrc/compat/regex -Wno-implicit-fallthrough -Wno-sign-compare -c src\compat\regex\tre-mem.c -o build\tre-mem.o
 if errorlevel 1 goto :fail
 
-"%CC%" -std=c11 -Wall -Wextra -O2 -g -I src -Isrc/compat/regex -DTARGET_TRIPLE="\"%TRIPLE%\"" -DLUME_RT_SRC="\"%LUME_RT_SRC%\"" -DLUME_NATIVE_SRC="\"%LUME_NATIVE_SRC%\"" -DLUME_HAS_HTTP=0 -DLUME_CORE_VERSION=\"0.7.0\" %SRCS% build\regcomp.o build\regexec.o build\regerror.o build\tre-mem.o -lws2_32 -o "%OUT%" 2> "%ERR%"
+REM --- vendored SHA-256 (public-domain style, no upstream file copied): same
+REM --- standalone-object pattern as regex; no warning overrides needed ---
+"%CC%" -std=c11 -O2 -g -I src -Isrc/compat/sha256 -c src\compat\sha256\sha256.c -o build\sha256.o
+if errorlevel 1 goto :fail
+
+"%CC%" -std=c11 -Wall -Wextra -O2 -g -I src -Isrc/compat/regex -DTARGET_TRIPLE="\"%TRIPLE%\"" -DLUME_RT_SRC="\"%LUME_RT_SRC%\"" -DLUME_NATIVE_SRC="\"%LUME_NATIVE_SRC%\"" -DLUME_HAS_HTTP=0 -DLUME_CORE_VERSION=\"0.7.0\" %SRCS% build\regcomp.o build\regexec.o build\regerror.o build\tre-mem.o build\sha256.o -lws2_32 -o "%OUT%" 2> "%ERR%"
 
 if errorlevel 1 (
   echo Build FAILED - see %ERR%
