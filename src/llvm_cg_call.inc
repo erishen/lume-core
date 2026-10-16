@@ -271,13 +271,25 @@ static Val cg_builtin(CG *g, Node *n)
                         LLVMFunctionType(g->i8ptr, p3, 3, 0),
                         rt_decl(g, "lume_json_parse", g->i8ptr, p3, 3), v3, 3, "j");
                     if (!r) ERRV(g, "line %zu: json() parse failed", n->line);
-                    /* NOTE: unlike the text backend, a parse failure here is
-                     * not routed through lume_error_set yet — the LLVM backend
-                     * has no recoverable-error branch emission (try() itself
-                     * is unimplemented here), so a failed json() serializes
-                     * as null and try(() => json(...)) cannot capture it.
-                     * Mirrors the text emitter's failure branch in
-                     * codegen_call.c once branch emission lands. */
+                    /* Parse failure goes through the recoverable-error
+                     * channel (rt.c lume_error_set) — outside try() it
+                     * prints and exits, exactly the interpreter's json()
+                     * VM error. try() itself is still unimplemented on
+                     * this backend, so the failure branch is unreachable
+                     * (same shape as the text emitter's json branch in
+                     * codegen_call.c; it becomes reachable when the LLVM
+                     * backend lands try()). */
+                    LLVMBasicBlockRef jb_bad = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "json_bad");
+                    LLVMBasicBlockRef jb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "json_ok");
+                    LLVMValueRef jn = LLVMBuildIsNull(g->ab, r, "jnull");
+                    if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, jn, jb_bad, jb_ok);
+                    g->cur = jb_bad; AT(g);
+                    LLVMBuildCall2(g->ab,
+                        LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
+                        rt_decl(g, "lume_error_set", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
+                        (LLVMValueRef[]){ ep }, 1, "");
+                    if (!DONE(g->cur)) LLVMBuildUnreachable(g->ab);
+                    g->cur = jb_ok; AT(g);
                     return val_make(type_prim(TY_ANY), r);
                 }
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0); pty = g->i8ptr;
@@ -555,6 +567,98 @@ static Val cg_builtin(CG *g, Node *n)
         Val r = rt_call(g, rty, fn, 3, ats, vs);
         if (!r.v) ERRV(g, "line %zu: get() failed", n->line);
         return r;
+    }
+
+    /* try(fn) — SPEC 6.3: call fn with no arguments and wrap the outcome
+     * in { ok, err }, exactly as the interpreter prints. error_begin/end
+     * bracket the closure call; the map is filled by branch — the error
+     * branch puts obj-null ok + string err, the ok branch puts the result
+     * (slot-ized for any payloads) and obj-null err. Mirrors the text
+     * emitter's try block in codegen_call.c. */
+    if (strcmp(bname, "try") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: try() expects (fn)", n->line);
+        Node *lam = hof_lambda(g, n->as.call.args[0]);
+        if (!lam)
+            ERRV(g, "line %zu: try() needs a lambda or a closure variable",
+                 n->line);
+        Val fnv = cg_expr(g, n->as.call.args[0]);
+        if (!fnv.v) ERRV(g, "line %zu: try() needs a function", n->line);
+
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, NULL, 0, 0),
+                       rt_decl(g, "lume_error_begin", g->void_ty, NULL, 0),
+                       NULL, 0, "");
+        LLVMValueRef res = cg_clo_invoke(g, lam, fnv.v, NULL, 0);
+        if (!res) ERRV(g, "line %zu: try() could not call the function", n->line);
+        LLVMValueRef emsg = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, NULL, 0, 0),
+                rt_decl(g, "lume_error_end", g->i8ptr, NULL, 0),
+                NULL, 0, "terr");
+        LLVMValueRef m = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, NULL, 0, 0),
+                rt_decl(g, "lume_map_new", g->i8ptr, NULL, 0),
+                NULL, 0, "tmap");
+        LLVMValueRef kok = cg_string_val(g, "ok", 2);
+        LLVMValueRef kerr = cg_string_val(g, "err", 3);
+
+        LLVMBasicBlockRef bb_e = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "try.err");
+        LLVMBasicBlockRef bb_o = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "try.ok");
+        LLVMBasicBlockRef bb_j = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "try.end");
+        LLVMValueRef terr = LLVMBuildIsNull(g->ab, emsg, "tnull");
+        LLVMValueRef thas = LLVMBuildNot(g->ab, terr, "thas");
+        if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, thas, bb_e, bb_o);
+
+        g->cur = bb_e; AT(g);
+        {
+            LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+            LLVMValueRef vn[3] = { m, kok, LLVMConstNull(g->i8ptr) };
+            LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p3, 3, 0),
+                           rt_decl(g, "lume_map_put_obj", g->i64, p3, 3),
+                           vn, 3, "");
+            LLVMValueRef ve[3] = { m, kerr, emsg };
+            LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p3, 3, 0),
+                           rt_decl(g, "lume_map_put_s", g->i64, p3, 3),
+                           ve, 3, "");
+        }
+        LLVMBuildBr(g->ab, bb_j);
+
+        g->cur = bb_o; AT(g);
+        {
+            Type *ret = lam->as.funclit.ret;
+            if (ret && ret->kind != TY_NULL) {
+                if (ret->kind == TY_ANY) {
+                    LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+                    LLVMValueRef va[3] = { m, kok, res };
+                    LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p3, 3, 0),
+                                   rt_decl(g, "lume_map_put_slot", g->i64, p3, 3),
+                                   va, 3, "");
+                } else {
+                    const char *pfn = map_put_fn(ret);
+                    if (!pfn)
+                        ERRV(g, "line %zu: try() result has no codegen type", n->line);
+                    LLVMTypeRef pa[3] = { g->i8ptr, g->i8ptr, ty_of(g, ret) };
+                    LLVMValueRef va2[3] = { m, kok, res };
+                    LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, pa, 3, 0),
+                                   rt_decl(g, pfn, g->i64, pa, 3),
+                                   va2, 3, "");
+                }
+            } else {
+                LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+                LLVMValueRef vn[3] = { m, kok, LLVMConstNull(g->i8ptr) };
+                LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p3, 3, 0),
+                               rt_decl(g, "lume_map_put_obj", g->i64, p3, 3),
+                               vn, 3, "");
+            }
+            LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+            LLVMValueRef vn[3] = { m, kerr, LLVMConstNull(g->i8ptr) };
+            LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p3, 3, 0),
+                           rt_decl(g, "lume_map_put_obj", g->i64, p3, 3),
+                           vn, 3, "");
+        }
+        LLVMBuildBr(g->ab, bb_j);
+
+        g->cur = bb_j; AT(g);
+        return val_make(type_anon_struct(), m);
     }
 
     /* map(fn, list) / filter(fn, list) / reduce(fn, list, init) — SPEC 4.8's

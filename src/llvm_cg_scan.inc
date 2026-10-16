@@ -135,6 +135,25 @@ static Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
             return type_prim(TY_INT);
 
+        /* try(fn) — { ok, err } where ok is the fn's return type and err is
+         * null. Carrying the members here is what lets `r.ok` / `r.err` pick
+         * the right getter, exactly like a map literal does. Same branch as
+         * codegen_scan.c's shared copy. */
+        if (strcmp(name, "try") == 0 && n->as.call.argc == 1) {
+            Node *fn = n->as.call.args[0];
+            Type *ft = NULL;
+            if (fn->type == N_FUNC_LIT)
+                ft = fn->as.funclit.ret;
+            else if (fn->type == N_VAR) {
+                Type *ct = infer_node_type(g, fn);
+                if (ct && ct->kind == TY_FUNC) ft = ct->ret;
+            }
+            Type *at = type_anon_struct();
+            type_add_member(at, "ok", ft ? ft : any_type());
+            type_add_member(at, "err", type_prim(TY_NULL));
+            return at;
+        }
+
         /* range(...) builds a list of numbers: all-int arguments iterate as
          * ints, one float argument makes the whole range float (the helper's
          * whole-value rule keeps every element readable either way). An arg
