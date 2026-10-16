@@ -719,10 +719,11 @@ static Val cg_index(CG *g, Node *n)
          * LumeSlot*, so the read goes through the slot helpers (rt.c
          * lume_slot_at_key for a string key / lume_slot_at for an int
          * index), which hand back a LumeSlot*. A NULL is a failed read
-         * and goes through lume_index_error (SPEC 6.2); the failure
-         * branch is unreachable because, unlike the text backend, the
-         * LLVM backend has no try() yet — outside try() index_error
-         * prints and exits, so falling off the branch cannot happen. */
+         * and goes through lume_index_error (SPEC 6.2); inside try() it
+         * records the message and returns — the failure branch then falls
+         * through to the shared return with sc (the NULL result = the
+         * null slot), mirroring the text emitter. Outside try() the
+         * error exits, so the fall-through only ever happens under try(). */
         const char *sfn = ix_is_str ? "lume_slot_at_key" : "lume_slot_at";
         LLVMTypeRef sp[2];
         LLVMValueRef sv[2];
@@ -747,7 +748,7 @@ static Val cg_index(CG *g, Node *n)
                 LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
                 rt_decl(g, "lume_index_error", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
                 (LLVMValueRef[]){ swhat }, 1, "");
-        if (!DONE(g->cur)) LLVMBuildUnreachable(g->ab);
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, sb_ok);
         g->cur = sb_ok; AT(g);
         return val_make(any_type(), sc);
     }
@@ -769,7 +770,10 @@ static Val cg_index(CG *g, Node *n)
             iargs, 3, "idx");
 
     /* Strictness, at run time. lume_index_failed() is non-zero when the read
-     * did not happen, and lume_index_error() reports and exits. */
+     * did not happen, and lume_index_error() reports: outside try() it exits,
+     * inside try() it records the message and returns, so the bad branch
+     * falls through to the shared result (the read's 0/NULL default),
+     * mirroring the text emitter. */
     LLVMBasicBlockRef bb_bad = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "idx_bad");
     LLVMBasicBlockRef bb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "idx_ok");
 
@@ -789,7 +793,7 @@ static Val cg_index(CG *g, Node *n)
             LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
             rt_decl(g, "lume_index_error", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
             (LLVMValueRef[]){ what }, 1, "");
-    if (!DONE(g->cur)) LLVMBuildUnreachable(g->ab);
+    if (!DONE(g->cur)) LLVMBuildBr(g->ab, bb_ok);
 
     g->cur = bb_ok; AT(g);
     return val_make(rty, call);

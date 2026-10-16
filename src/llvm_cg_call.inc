@@ -272,13 +272,13 @@ static Val cg_builtin(CG *g, Node *n)
                         rt_decl(g, "lume_json_parse", g->i8ptr, p3, 3), v3, 3, "j");
                     if (!r) ERRV(g, "line %zu: json() parse failed", n->line);
                     /* Parse failure goes through the recoverable-error
-                     * channel (rt.c lume_error_set) — outside try() it
-                     * prints and exits, exactly the interpreter's json()
-                     * VM error. try() itself is still unimplemented on
-                     * this backend, so the failure branch is unreachable
-                     * (same shape as the text emitter's json branch in
-                     * codegen_call.c; it becomes reachable when the LLVM
-                     * backend lands try()). */
+                     * channel (rt.c lume_error_set): inside try() it records
+                     * the message (ok stays a null slot, err gets the text),
+                     * outside try() it prints and exits — the interpreter's
+                     * json() VM error, same shape. The failure branch carries
+                     * on to the shared return with r (lume_json_parse returns
+                     * NULL on failure = the null slot), mirroring the text
+                     * emitter's json branch in codegen_call.c. */
                     LLVMBasicBlockRef jb_bad = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "json_bad");
                     LLVMBasicBlockRef jb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "json_ok");
                     LLVMValueRef jn = LLVMBuildIsNull(g->ab, r, "jnull");
@@ -288,7 +288,7 @@ static Val cg_builtin(CG *g, Node *n)
                         LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
                         rt_decl(g, "lume_error_set", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
                         (LLVMValueRef[]){ ep }, 1, "");
-                    if (!DONE(g->cur)) LLVMBuildUnreachable(g->ab);
+                    if (!DONE(g->cur)) LLVMBuildBr(g->ab, jb_ok);
                     g->cur = jb_ok; AT(g);
                     return val_make(type_prim(TY_ANY), r);
                 }
