@@ -271,6 +271,13 @@ static Val cg_builtin(CG *g, Node *n)
                         LLVMFunctionType(g->i8ptr, p3, 3, 0),
                         rt_decl(g, "lume_json_parse", g->i8ptr, p3, 3), v3, 3, "j");
                     if (!r) ERRV(g, "line %zu: json() parse failed", n->line);
+                    /* NOTE: unlike the text backend, a parse failure here is
+                     * not routed through lume_error_set yet — the LLVM backend
+                     * has no recoverable-error branch emission (try() itself
+                     * is unimplemented here), so a failed json() serializes
+                     * as null and try(() => json(...)) cannot capture it.
+                     * Mirrors the text emitter's failure branch in
+                     * codegen_call.c once branch emission lands. */
                     return val_make(type_prim(TY_ANY), r);
                 }
                 ft = LLVMFunctionType(g->i8ptr, &g->i8ptr, 1, 0); pty = g->i8ptr;

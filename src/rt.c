@@ -952,6 +952,8 @@ static int64_t map_put(LumeMap *m, const char *k, int64_t num, const char *str, 
 
 int64_t lume_map_put_i(LumeMap *m, const char *k, int64_t v) { return map_put(m, k, v, NULL, LUME_SLOT_INT); }
 int64_t lume_map_put_b(LumeMap *m, const char *k, int64_t v) { return map_put(m, k, v ? 1 : 0, NULL, LUME_SLOT_BOOL); }
+static double slot_float_of(LumeSlot s); /* forward decl (defined in the json parser below) */
+
 int64_t lume_map_put_f(LumeMap *m, const char *k, double v)
 {
     int64_t bits;
@@ -966,6 +968,26 @@ int64_t lume_map_put_s(LumeMap *m, const char *k, const char *v) { return map_pu
 int64_t lume_map_put_obj(LumeMap *m, const char *k, void *v)
 {
     return map_put(m, k, (int64_t)(intptr_t)v, NULL, LUME_SLOT_OBJ);
+}
+
+/* Store a tagged-any slot's payload as a map field — the ok half of
+ * try(fn) when fn returns any. The slot's own tag picks the writer
+ * (int/float/string/bool payloads land as scalars, container payloads
+ * as obj pointers), mirroring the json object reader's dispatch below
+ * (json_value:1326-1332), so the resulting map prints exactly like the
+ * interpreter's { ok: <value> }. A null slot, or an OBJ slot with a
+ * null payload, stores obj-null. */
+int64_t lume_map_put_slot(LumeMap *m, const char *k, const LumeSlot *s)
+{
+    if (!s) return lume_map_put_obj(m, k, NULL);
+    switch (s->tag) {
+    case LUME_SLOT_INT:   return lume_map_put_i(m, k, s->num);
+    case LUME_SLOT_FLOAT: return lume_map_put_f(m, k, slot_float_of(*s));
+    case LUME_SLOT_STR:   return lume_map_put_s(m, k, s->str ? s->str : "");
+    case LUME_SLOT_BOOL:  return lume_map_put_b(m, k, s->num);
+    case LUME_SLOT_OBJ:   return lume_map_put_obj(m, k, (void *)(intptr_t)s->num);
+    default:              return lume_map_put_obj(m, k, NULL);
+    }
 }
 
 

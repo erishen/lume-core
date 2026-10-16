@@ -371,6 +371,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i64 @lume_map_put_f(i8*, i8*, double)\n");
     EMIT(g, "declare i64 @lume_map_put_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_put_obj(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_map_put_slot(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_clone(i8*)\n");    EMIT(g, "declare i64 @lume_map_get_i(i8*, i8*, i64)\n");
     EMIT(g, "declare double @lume_map_get_f(i8*, i8*, double)\n");
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
@@ -412,6 +413,7 @@ void emit_builtin_declares(CG *g)
      * inside try() instead of exiting, and hands it back to the wrapper. */
     EMIT(g, "declare void @lume_error_begin()\n");
     EMIT(g, "declare i8* @lume_error_end()\n");
+    EMIT(g, "declare void @lume_error_set(i8*)\n");
 
     /* Native server runtime (src/bridge_native.c): the FFI surface that
      * server{}/route handlers/run() lower onto. SrvReq's layout is a
@@ -907,12 +909,23 @@ static Val cg_builtin(CG *g, Node *n)
         {
             Type *ret = lam->as.funclit.ret;
             if (ret && ret->kind != TY_NULL) {
-                const char *pfn = map_put_fn(ret);
-                if (!pfn) { free(res); free(emsg); free(kok); free(kerr);
-                    ERRV(g, "line %zu: try() result has no codegen type", n->line); }
-                Val r = rt_call(g, type_prim(TY_INT), pfn, "i8* %s, i8* %s, %s %s",
-                                m.v, kok, rt_arg_type(ret), res);
-                free(r.v);
+                if (ret->kind == TY_ANY) {
+                    /* any payload (e.g. try(() => json(...))): the slot
+                     * helper dispatches by tag — scalar payloads land as
+                     * int/float/string/bool, container payloads as obj
+                     * pointers — so the map prints like the interpreter's
+                     * { ok: <value>, err: ... }. */
+                    Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_slot",
+                                    "i8* %s, i8* %s, i8* %s", m.v, kok, res);
+                    free(r.v);
+                } else {
+                    const char *pfn = map_put_fn(ret);
+                    if (!pfn) { free(res); free(emsg); free(kok); free(kerr);
+                        ERRV(g, "line %zu: try() result has no codegen type", n->line); }
+                    Val r = rt_call(g, type_prim(TY_INT), pfn, "i8* %s, i8* %s, %s %s",
+                                    m.v, kok, rt_arg_type(ret), res);
+                    free(r.v);
+                }
             } else {
                 Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj",
                                 "i8* %s, i8* %s, i8* null", m.v, kok);
@@ -1170,8 +1183,31 @@ static Val cg_builtin(CG *g, Node *n)
                     EMIT(g, "  store i8 0, i8* %s\n", ep);
                     EMIT(g, "  %s = call i8* @lume_json_parse(i8* %s, i8* %s, i64 256)\n",
                          tmp2, a.v, ep);
+                    /* Parse failure goes through the recoverable-error channel
+                     * (rt.c lume_error_set): inside try() it fills { err: ... }
+                     * and ok stays a null slot; outside try() it prints and
+                     * exits — the interpreter's json() VM error, same shape. */
+                    char jslot[32], jtst[48];
+                    snprintf(jslot, sizeof jslot, "%%js%d", g->tid);
+                    snprintf(jtst, sizeof jtst, "%%t%d", g->tid++);
+                    int jler = g->lid++, jlok = g->lid++, jle = g->lid++;
+                    EMIT(g, "  %s = alloca i8*\n", jslot);
+                    EMIT(g, "  store i8* %s, i8* %s\n", tmp2, jslot);
+                    EMIT(g, "  %s = icmp eq i8* %s, null\n", jtst, tmp2);
+                    EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", jtst, jler, jlok);
+                    EMIT(g, "L%d:\n", jler);
+                    EMIT(g, "  store i8* null, i8* %s\n", jslot);
+                    EMIT(g, "  call void @lume_error_set(i8* %s)\n", ep);
+                    EMIT(g, "  br label %%L%d\n", jle);
+                    EMIT(g, "L%d:\n", jlok);
+                    EMIT(g, "  br label %%L%d\n", jle);
+                    EMIT(g, "L%d:\n", jle);
+                    char *jv = emit_instrf(g, type_prim(TY_ANY),
+                                           "load i8*, i8* %s", jslot);
+                    if (!jv) { free(a.v);
+                               ERRV(g, "line %zu: json() failed to lower", n->line); }
                     free(a.v);
-                    return val_make(type_prim(TY_ANY), tmp2);
+                    return val_make(type_prim(TY_ANY), jv);
                 }
                 fn = "@lume_rt_quote_str"; pty = "i8*"; break;
             case TY_LIST:
