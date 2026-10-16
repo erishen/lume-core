@@ -786,9 +786,9 @@ static Val cg_index(CG *g, Node *n)
     if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, cond, bb_bad, bb_ok);
 
     g->cur = bb_bad; AT(g);
-    LLVMValueRef what = cg_string_val(g,
-            known_map ? "no such key in this map" : "index out of range",
-            known_map ? 23 : 19);
+    /* One shared message across backends (interp.c and codegen_expr.c use
+     * the same text) so try() captures an identical err string everywhere. */
+    LLVMValueRef what = cg_string_val(g, "index read failed", 17);
     LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
             rt_decl(g, "lume_index_error", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),

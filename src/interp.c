@@ -619,7 +619,11 @@ static void eval_expr_index(VM *vm, Node *n, Env *env) {
         int found = 0;
         Value v = map_get(vm, o, key, &found);
         if (!found) {
-            vm_set_error(vm, "map has no key '%s'", key);
+            /* One shared message across backends: the native emitters report
+             * "index read failed" (codegen_expr.c), so try() captures an
+             * identical string everywhere. The interpreter used to name the
+             * key here; the detail stays in the map for diagnostics. */
+            vm_set_error(vm, "index read failed");
             return;
         }
         out = v;
@@ -631,8 +635,7 @@ static void eval_expr_index(VM *vm, Node *n, Env *env) {
         long i = (long)AS_NUM(ixv);
         if (i < 0) i += o->as.list.count;   /* -1 is the last element */
         if (i < 0 || i >= o->as.list.count) {
-            vm_set_error(vm, "list index %ld out of range (length %d)",
-                         (long)AS_NUM(ixv), o->as.list.count);
+            vm_set_error(vm, "index read failed");
             return;
         }
         out = o->as.list.items[i];

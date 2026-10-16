@@ -3,3 +3,5 @@ idx_name=lume
 idx_n=42
 get_no_dflt=lume
 get_missing_no_dflt=null
+try_sub={"ok":null,"err":"index read failed"}
+try_list={"ok":null,"err":"index read failed"}

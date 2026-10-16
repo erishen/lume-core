@@ -745,9 +745,9 @@ int lume_index_failed(void) { return g_index_failed; }
  * returns -- the IR that called it falls through to the value the strict
  * accessor already returned (0 / NULL) and the try wrapper builds { ok: null,
  * err: msg }. Outside try() it prints and exits, which is what every other
- * fatal runtime condition in the native path does. The interpreter has its own
- * message for the same case and its own exit path; only the wording and the
- * exit code have to match, and both do (SPEC 6.2). */
+ * fatal runtime condition in the native path does. The interpreter reports
+ * the same "index read failed" text (interp.c) so try() captures an identical
+ * err string on every backend (SPEC 6.2). */
 void lume_index_error(const char *what)
 {
     if (g_in_try) {

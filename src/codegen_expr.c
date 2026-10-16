@@ -936,11 +936,9 @@ static Val cg_index(CG *g, Node *n)
     int lbad = g->lid++, lok = g->lid++;
     EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, lbad, lok);
     EMIT(g, "L%d:\n", lbad);
-    /* Which message: a list says "index out of range", a map names the key. The
-     * container is still live here, so the runtime can tell -- lume_index_error
-     * takes the flag into account through lume_is_map() below. */
-    char *what = known_map ? cg_string_val(g, "no such key in this map", 23)
-                          : cg_string_val(g, "index out of range", 19);
+    /* One shared message across backends (interp.c and llvm_cg_expr.inc use
+     * the same text) so try() captures an identical err string everywhere. */
+    char *what = cg_string_val(g, "index read failed", 17);
     EMIT(g, "  call void @lume_index_error(i8* %s)\n", what);
     free(what);
     /* lume_index_error exits outside try(); inside try() it records the

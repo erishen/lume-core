@@ -6,3 +6,5 @@ print("idx_name=" + str(j["name"]));
 print("idx_n=" + str(j["n"]));
 print("get_no_dflt=" + str(get(j, "name")));
 print("get_missing_no_dflt=" + str(get(j, "zzz")));
+print("try_sub=" + str(try(() => j["zzz"])));
+print("try_list=" + str(try(() => j["tags"][9])));
