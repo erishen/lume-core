@@ -19,6 +19,13 @@
  * `params` is a list of scalars bound to ? placeholders (null → SQL NULL);
  * values are converted to text and bound, so they never enter the SQL
  * string and cannot be parsed as SQL.
+ *
+ * Every call opens a fresh connection, so concurrent writers to the same
+ * file (prefork workers) would otherwise hit SQLITE_BUSY instantly —
+ * sqlite3's default busy timeout is 0. Both open paths therefore arm a
+ * busy timeout (see sql_busy_timeout_ms below); single statements stay
+ * atomic either way, the timeout only turns an instant failure into a
+ * bounded wait.
  */
 
 #include "builtins_internal.h"
@@ -386,6 +393,22 @@ static const char *sql_db_path(const char *db) {
     return (p && p[0]) ? p : NULL;
 }
 
+/* Busy timeout (ms) armed on every connection. Without it, sqlite3 fails
+ * immediately (default timeout 0) when another connection holds the write
+ * lock — under prefork workers that turns ordinary write contention into
+ * spurious "database is locked" errors. 5s covers retry storms on a single
+ * file; set LUME_SQLITE_BUSY_TIMEOUT_MS to override (0 restores the stock
+ * fail-fast behavior, clamped to [0, 60000]; unparseable falls back). */
+static int sql_busy_timeout_ms(void) {
+    const char *e = getenv("LUME_SQLITE_BUSY_TIMEOUT_MS");
+    if (!e || !e[0]) return 5000;
+    char *end = NULL;
+    long v = strtol(e, &end, 10);
+    if (!end || *end != '\0' || v < 0) return 5000;
+    if (v > 60000) v = 60000;
+    return (int)v;
+}
+
 static int sql_query_json_impl(const char *db, const char *sql,
                                const char **params, int nparams, sbuf *out,
                                char *err, size_t errsz) {
@@ -410,6 +433,7 @@ static int sql_query_json_impl(const char *db, const char *sql,
         if (sq) sqlite3_close(sq);
         return 1;
     }
+    sqlite3_busy_timeout(sq, sql_busy_timeout_ms());
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
@@ -451,6 +475,7 @@ static int sql_write_exec_impl(const char *db, const char *sql,
         if (sq) sqlite3_close(sq);
         return 1;
     }
+    sqlite3_busy_timeout(sq, sql_busy_timeout_ms());
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));

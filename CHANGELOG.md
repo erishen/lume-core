@@ -115,6 +115,26 @@ All notable changes to Lume are documented here. The format follows
   leaked bytes. Follows `ecd7afc`, which fixed the same class of leak on the
   interpreter path (let-expression nodes, local-function synthetic names).
 
+### Fixed — SQLite connections arm a busy timeout (concurrent writers)
+
+- `sql_query` / `sql_write` open a fresh connection per call, and sqlite3's
+  default busy timeout is 0 — under prefork workers (`WORKERS > 1`) or any
+  second process touching the same file, a write arriving while another
+  connection held the write lock failed instantly with
+  `database is locked`. Empirically: 8 concurrent processes × 60 guarded
+  `UPDATE`s lost 7 of 8 runners and 84% of the writes.
+- Both open paths (read-only and read-write) now arm
+  `sqlite3_busy_timeout(5000)`: contention becomes a bounded wait instead
+  of a spurious failure. Single statements remain atomic either way — the
+  timeout changes failure semantics, not isolation.
+- Override with `LUME_SQLITE_BUSY_TIMEOUT_MS` (clamped to [0, 60000];
+  `0` restores stock fail-fast; unparseable falls back to the default).
+  With the timeout armed, the same 8×60 probe lands every write
+  (0 failures, no lost updates).
+- Does not change the statement guardrails: still single-statement only
+  (`BEGIN`/`COMMIT` remain rejected), still parameter-bound values, same
+  read/write DDL policy.
+
 ## [0.7.0] - 2026-10-14
 
 ### Added — let expressions: `let x = e1 in e2` (SPEC §4.15)
