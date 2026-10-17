@@ -8,163 +8,163 @@ server {
 }
 
 get "/r1", func(req) {
-  return {n: 1};
+  return {ok: true, n: 1};
 };
 
 get "/r2", func(req) {
-  return {n: 2};
+  return {ok: true, n: 2};
 };
 
 get "/r3", func(req) {
-  return {n: 3};
+  return {ok: true, n: 3};
 };
 
 get "/r4", func(req) {
-  return {n: 4};
+  return {ok: true, n: 4};
 };
 
 get "/r5", func(req) {
-  return {n: 5};
+  return {ok: true, n: 5};
 };
 
 get "/r6", func(req) {
-  return {n: 6};
+  return {ok: true, n: 6};
 };
 
 get "/r7", func(req) {
-  return {n: 7};
+  return {ok: true, n: 7};
 };
 
 get "/r8", func(req) {
-  return {n: 8};
+  return {ok: true, n: 8};
 };
 
 get "/r9", func(req) {
-  return {n: 9};
+  return {ok: true, n: 9};
 };
 
 get "/r10", func(req) {
-  return {n: 10};
+  return {ok: true, n: 10};
 };
 
 get "/r11", func(req) {
-  return {n: 11};
+  return {ok: true, n: 11};
 };
 
 get "/r12", func(req) {
-  return {n: 12};
+  return {ok: true, n: 12};
 };
 
 get "/r13", func(req) {
-  return {n: 13};
+  return {ok: true, n: 13};
 };
 
 get "/r14", func(req) {
-  return {n: 14};
+  return {ok: true, n: 14};
 };
 
 get "/r15", func(req) {
-  return {n: 15};
+  return {ok: true, n: 15};
 };
 
 get "/r16", func(req) {
-  return {n: 16};
+  return {ok: true, n: 16};
 };
 
 get "/r17", func(req) {
-  return {n: 17};
+  return {ok: true, n: 17};
 };
 
 get "/r18", func(req) {
-  return {n: 18};
+  return {ok: true, n: 18};
 };
 
 get "/r19", func(req) {
-  return {n: 19};
+  return {ok: true, n: 19};
 };
 
 get "/r20", func(req) {
-  return {n: 20};
+  return {ok: true, n: 20};
 };
 
 get "/r21", func(req) {
-  return {n: 21};
+  return {ok: true, n: 21};
 };
 
 get "/r22", func(req) {
-  return {n: 22};
+  return {ok: true, n: 22};
 };
 
 get "/r23", func(req) {
-  return {n: 23};
+  return {ok: true, n: 23};
 };
 
 get "/r24", func(req) {
-  return {n: 24};
+  return {ok: true, n: 24};
 };
 
 get "/r25", func(req) {
-  return {n: 25};
+  return {ok: true, n: 25};
 };
 
 get "/r26", func(req) {
-  return {n: 26};
+  return {ok: true, n: 26};
 };
 
 get "/r27", func(req) {
-  return {n: 27};
+  return {ok: true, n: 27};
 };
 
 get "/r28", func(req) {
-  return {n: 28};
+  return {ok: true, n: 28};
 };
 
 get "/r29", func(req) {
-  return {n: 29};
+  return {ok: true, n: 29};
 };
 
 get "/r30", func(req) {
-  return {n: 30};
+  return {ok: true, n: 30};
 };
 
 get "/r31", func(req) {
-  return {n: 31};
+  return {ok: true, n: 31};
 };
 
 get "/r32", func(req) {
-  return {n: 32};
+  return {ok: true, n: 32};
 };
 
 get "/r33", func(req) {
-  return {n: 33};
+  return {ok: true, n: 33};
 };
 
 get "/r34", func(req) {
-  return {n: 34};
+  return {ok: true, n: 34};
 };
 
 get "/r35", func(req) {
-  return {n: 35};
+  return {ok: true, n: 35};
 };
 
 get "/r36", func(req) {
-  return {n: 36};
+  return {ok: true, n: 36};
 };
 
 get "/r37", func(req) {
-  return {n: 37};
+  return {ok: true, n: 37};
 };
 
 get "/r38", func(req) {
-  return {n: 38};
+  return {ok: true, n: 38};
 };
 
 get "/r39", func(req) {
-  return {n: 39};
+  return {ok: true, n: 39};
 };
 
 get "/r40", func(req) {
-  return {n: 40};
+  return {ok: true, n: 40};
 };
 
 run();

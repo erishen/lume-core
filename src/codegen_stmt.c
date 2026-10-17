@@ -655,8 +655,11 @@ static void cg_handler_ret(CG *g, Node *n)
             } else if (v->type == N_LITERAL &&
                        (v->as.lit.kind == LIT_TRUE ||
                         v->as.lit.kind == LIT_FALSE)) {
+                /* The constant needs its i32 type: a bare "1" is invalid IR
+                 * (clang: "expected type"), and the generic path below already
+                 * zext's to i32 — the literal fast path just forgot it. */
                 EMIT(g, "  call void @lume_srv_json_bool(i8** %%p1, i64* "
-                        "%%p2, %s)\n",
+                        "%%p2, i32 %s)\n",
                      v->as.lit.kind == LIT_TRUE ? "1" : "0");
             } else if (v->type == N_LITERAL && v->as.lit.kind == LIT_NUM &&
                        !v->as.lit.is_float) {

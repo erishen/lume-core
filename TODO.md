@@ -95,6 +95,29 @@ platform.
   `examples/stats.lume` (statistics toolkit: typed functions, HOFs, closures,
   struct values — `make check` covers it via EXAMPLES).
 
+## P5 — Found 2026-10-17 (both closed same day)
+
+- [x] Route table caps raised 32 -> 128 (`556cbf3`): interpreter
+  `MAX_AL_ROUTES` (lume.h) and native `NATIVE_ROUTES_MAX`
+  (bridge_native.c) in lockstep — one-sided raises would mean "registers
+  fine interpreted, silently loses routes once compiled". A full table now
+  reports `route table full (N routes, max M)` (interpreter; -2 return
+  distinct from bad-arguments -1) or warns on stderr (native; previously a
+  silent drop, surfacing only as a 404 on a handler that exists in source).
+  Regression: `tests/route-cap-srv.lume` + `make route-cap-test` (40 routes,
+  wired into `make test`). Found via lume-nsgm's PayPal variant (31 routes:
+  product 10 + order 10 + pay 4 + shop 6 + `/` 1; a third module would hit 43).
+- [x] Text backend emitted untyped bool constants in server map
+  serialization: a handler returning `{ok: true, ...}` made codegen_stmt.c's
+  literal fast path emit `call void @lume_srv_json_bool(i8** %p1, i64* %p2, 1)`
+  — a bare `1` is invalid IR, clang rejects the .ll ("expected type"), so the
+  text backend could never serve a map with a bool field (the generic path
+  below already zext'd to i32; only the fast path forgot). Fixed by typing the
+  constant `i32 1` / `i32 0`; covered by route-cap-srv.lume's `{ok: true, n: N}`
+  returns, verified through `--compile-text` end to end. Emission dated to
+  `00204ae` (first server{} leg) — latent since then. LLVM side has its own
+  emitter and was not affected.
+
 ## Intentional boundaries — do not file as gaps
 
 These are deliberate design decisions; re-proposing them is noise
