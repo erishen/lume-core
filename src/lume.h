@@ -387,7 +387,12 @@ bool values_equal(Value a, Value b);
  * the server config map. Storing handler Values here keeps them alive —
  * an anonymous function object referenced only by the C callback table
  * would otherwise be collected between registrations. */
-#define MAX_AL_ROUTES 32
+/* Route table cap. Was 32, which a generated CRUD app outgrows the moment it
+ * carries more than two modules (product+order+pay+shop already sums to 31 in
+ * lume-nsgm's PayPal variant; a third module silently fails registration with
+ * a message that blames the last route, not the full table). 128 leaves room
+ * for several modules per app; RouteRec is ~40B, so the VM grows ~4KB. */
+#define MAX_AL_ROUTES 128
 #define MAX_AL_TOOLS 96
 
 typedef struct {

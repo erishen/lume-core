@@ -68,7 +68,10 @@ typedef int SockFd;
 #define sock_recv(f, b, n) recv((f), (b), (n), 0)
 #endif
 
-#define NATIVE_ROUTES_MAX 32
+/* Compiled-backend route cap. Kept in lockstep with the interpreter's
+ * MAX_AL_ROUTES (lume.h): a generated app that registers fine interpreted but
+ * silently loses routes once compiled is the worst version of this bug. */
+#define NATIVE_ROUTES_MAX 128
 #define REQ_BUF_MAX (1 << 20)
 #define HEAD_BUF_MAX 16384
 #define SERVE_BACKLOG 16
@@ -105,7 +108,19 @@ void lume_srv_init(const char *host, long long port)
 
 void lume_srv_route(const char *method, const char *path, SrvHandler h)
 {
-    if (g_route_count >= NATIVE_ROUTES_MAX || !method || !path) return;
+    /* Overflow used to be a silent drop: the route simply never matched, and
+     * the only symptom was a 404 on a handler that plainly exists in source.
+     * Warn on stderr instead — registration happens before the accept loop,
+     * so this surfaces at startup, not mid-request. */
+    if (g_route_count >= NATIVE_ROUTES_MAX) {
+        fprintf(stderr,
+                "lume: route table full (%d routes, NATIVE_ROUTES_MAX=%d); "
+                "dropping %s %s\n",
+                g_route_count, NATIVE_ROUTES_MAX,
+                method ? method : "?", path ? path : "?");
+        return;
+    }
+    if (!method || !path) return;
     g_routes[g_route_count].method = strdup(method);
     g_routes[g_route_count].path = strdup(path);
     g_routes[g_route_count].handler = h;

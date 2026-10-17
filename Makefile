@@ -533,7 +533,7 @@ letexpr-test: all
 	done; \
 	echo "==> letexpr 单测通过"
 
-test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test native-consistency case-parity \
+test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity \
       native native-text treecheck
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -1156,6 +1156,29 @@ docroot-test: all
 	 kill $$SRV 2>/dev/null; \
 	 if [ $$fail -ne 0 ]; then echo "==> docroot 单测失败"; exit 1; fi; \
 	 echo "==> docroot 单测通过"
+
+# 路由表上限回归 (2026-10-17): 40 条路由越过旧上限 32。解释器侧
+# MAX_AL_ROUTES / 原生侧 NATIVE_ROUTES_MAX 必须同步——只改一边,
+# "解释器跑得起来、编译后少路由" 比撞上限更难查。
+route-cap-test: all
+	@./$(TARGET) tests/route-cap-srv.lume > /tmp/lume-route-cap-srv.log 2>&1 & \
+	SRV=$$!; \
+	if ! python3 tests/wait_port.py 18893 15; then \
+	  echo "==> route-cap server 15s 未就绪(路由注册失败?)"; cat /tmp/lume-route-cap-srv.log; kill $$SRV 2>/dev/null; exit 1; fi; \
+	fail=0; \
+	probe() { url="$$1"; want="$$2"; \
+	  out=$$(curl -s --noproxy '*' -w '\n%{http_code}' "http://127.0.0.1:18893$$url"); \
+	  code=$$(printf '%s\n' "$$out" | tail -1); \
+	  body=$$(printf '%s\n' "$$out" | sed '$$d'); \
+	  if [ "$$code" != "200" ]; then echo "FAIL route-cap $$url: code=$$code"; fail=1; \
+	  elif ! printf '%s' "$$body" | grep -q "$$want"; then echo "FAIL route-cap $$url: body missing '$$want'"; printf '%s\n' "$$body"; fail=1; \
+	  else echo "ok   route-cap $$url"; fi; }; \
+	probe "/r1" '"n":1'; \
+	probe "/r32" '"n":32'; \
+	probe "/r40" '"n":40'; \
+	kill $$SRV 2>/dev/null; \
+	if [ $$fail -ne 0 ]; then echo "==> route-cap 单测失败"; exit 1; fi; \
+	echo "==> route-cap 单测通过 (40/40 路由注册)"
 
 # 静态检查：两个原生后端 (text / libLLVM) 必须覆盖同一组 AST 节点类型，
 # 否则单边新增节点会静默漂移（另一端掉进 default:）。见脚本内注释。

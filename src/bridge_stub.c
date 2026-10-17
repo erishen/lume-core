@@ -31,7 +31,9 @@ void bridge_init(VM *vm)
 int bridge_define_route(VM *vm, const char *method, const char *path,
                         Value handler, const char *label)
 {
-    if (vm->route_count >= MAX_AL_ROUTES) return -1;
+    /* -2 = table full (callers report it as such; -1 stays "bad arguments",
+     * and conflating the two made a full table look like a bad route). */
+    if (vm->route_count >= MAX_AL_ROUTES) return -2;
     if (!method || !path) return -1;
     if (!IS_OBJ(handler) ||
         (AS_OBJ(handler)->type != OBJ_FUNC && AS_OBJ(handler)->type != OBJ_NATIVE))
