@@ -278,6 +278,11 @@ bool parse_params(Parser *p, char ***names_out, Type ***types_out,
     if (!check(p, TOK_RPAREN)) {
         do {
             if (!check(p, TOK_IDENT)) {
+                /* Reached by the comma continuation with arity ≥ 1 live
+                 * names (`(http_,` hits it with "http_" pushed): the arrays
+                 * go and every strdup'd name with them — the libFuzzer
+                 * leak-3188fd7 finding. */
+                for (int i = 0; i < arity; i++) free(names[i]);
                 perror_at(p, peek(p).line, "expected parameter name", NULL);
                 free(names);
                 free(types);
@@ -305,12 +310,12 @@ bool parse_params(Parser *p, char ***names_out, Type ***types_out,
         } while (match(p, TOK_COMMA));
     }
     if (!expect(p, TOK_RPAREN)) {
-        /* Same hole as above, minus the off-by-one: arity() has run past the
-         * parameter just parsed, and names[] was sized for `arity + 1` slots
-         * back when arity was still the previous count — so the live name is
-         * names[arity - 1]. When arity is 0 names is NULL (the
-         * !check(TOK_IDENT) branch above returned first). */
-        if (names && arity > 0) free(names[arity - 1]);
+        /* All arity pushed names are live (the old comment's off-by-one
+         * reasoning only held for arity == 1; `(a, b` leaked "a" through
+         * it). types[] holds at most parse_type'd entries that the caller
+         * drops with the probe — the Type graph itself belongs to
+         * type_release_all, so free the array shell only. */
+        for (int i = 0; i < arity; i++) free(names[i]);
         free(names);
         free(types);
         return false;

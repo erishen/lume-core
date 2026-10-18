@@ -312,7 +312,10 @@ static Node *parse_primary(Parser *p) {
                 if (check(p, TOK_RPAREN)) break;   /* trailing comma */
                 Node *it = parse_expression(p);
                 if (!it) {
-                    for (int i = 0; i < count; i++) node_free(items[i]);
+                    /* items[] are still on the orphan journal: a manual
+                     * node_free here double-frees when parse_program sweeps
+                     * the batch (libFuzzer finding, crash input `(http_,`).
+                     * Leave them to the sweep — only the raw array is ours. */
                     free(items);
                     return NULL;
                 }
@@ -320,7 +323,7 @@ static Node *parse_primary(Parser *p) {
                 items[count++] = it;
             }
             if (!expect(p, TOK_RPAREN)) {
-                for (int i = 0; i < count; i++) node_free(items[i]);
+                /* Same journal contract as the parse-failure path above. */
                 free(items);
                 return NULL;
             }
