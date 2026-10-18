@@ -218,8 +218,10 @@ would apply to it too.)
         expected baseline so the gate pins it.
 
 **Done when**: the top-level shape is either three-way consistent or
-loudly rejected, and the CI llvm leg has run green once on Linux (the
-P4 pending real-machine check this note also clears).
+loudly rejected. (The Linux real-machine half is closed 2026-10-18: the
+llvm leg of `tests/native_backends.sh` runs green on ubuntu-latest CI
+since `e817823`, and `tests/llvm-json/run.sh` passed 5/5 on
+ubuntu:24.04 + LLVM 18 — clearing P4's pending note as well.)
 
 ## Intentional boundaries — do not file as gaps
 
