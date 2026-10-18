@@ -250,7 +250,17 @@ Type *parse_type(Parser *p) {
 
 /* ---------- blocks & statements ---------- */
 
+static Node *parse_block_impl(Parser *p);
+
 Node *parse_block(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_block_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_block_impl(Parser *p) {
     size_t line = peek(p).line;
     if (!expect(p, TOK_LBRACE)) return NULL;
     Node *n = nalloc(N_BLOCK, line);
@@ -473,7 +483,7 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
 
     Parser p;
     memset(&p, 0, sizeof(p));
-    p.toks = toks;
+    p.toks = toks;   /* depth rides the memset-zero */
     p.count = count;
 
     Node *prog = nalloc(N_PROGRAM, 1);

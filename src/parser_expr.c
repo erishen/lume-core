@@ -194,7 +194,17 @@ static Node *parse_struct_update(Parser *p, Node *base, size_t line) {
 
 static Node *parse_ternary(Parser *p);
 
-static Node *parse_primary(Parser *p) {
+static Node *parse_primary_impl(Parser *p);
+
+Node *parse_primary(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_primary_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_primary_impl(Parser *p) {
     Token t = peek(p);
 
     if (t.type == TOK_NUMBER) {
@@ -728,7 +738,17 @@ fail:
     return NULL;
 }
 
-static Node *parse_postfix(Parser *p) {
+static Node *parse_postfix_impl(Parser *p);
+
+Node *parse_postfix(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_postfix_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_postfix_impl(Parser *p) {
     Node *n = parse_primary(p);
     if (!n) return NULL;
     while (true) {
@@ -842,7 +862,17 @@ static Node *parse_postfix(Parser *p) {
     return n;
 }
 
-static Node *parse_unary(Parser *p) {
+static Node *parse_unary_impl(Parser *p);
+
+Node *parse_unary(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_unary_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_unary_impl(Parser *p) {
     Token t = peek(p);
     if (t.type == TOK_NOT || t.type == TOK_MINUS) {
         advance(p);
@@ -881,7 +911,17 @@ static Node *parse_unary(Parser *p) {
     return parse_postfix(p);
 }
 
-static Node *parse_factor(Parser *p) {
+static Node *parse_factor_impl(Parser *p);
+
+Node *parse_factor(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_factor_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_factor_impl(Parser *p) {
     Node *left = parse_unary(p);
     if (!left) return NULL;
     while (check(p, TOK_STAR) || check(p, TOK_SLASH) || check(p, TOK_PERCENT)) {
@@ -899,7 +939,17 @@ static Node *parse_factor(Parser *p) {
     return left;
 }
 
-static Node *parse_term(Parser *p) {
+static Node *parse_term_impl(Parser *p);
+
+Node *parse_term(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_term_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_term_impl(Parser *p) {
     Node *left = parse_factor(p);
     if (!left) return NULL;
     while (check(p, TOK_PLUS) || check(p, TOK_MINUS)) {
@@ -916,7 +966,17 @@ static Node *parse_term(Parser *p) {
     return left;
 }
 
-static Node *parse_comparison(Parser *p) {
+static Node *parse_comparison_impl(Parser *p);
+
+Node *parse_comparison(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_comparison_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_comparison_impl(Parser *p) {
     Node *left = parse_term(p);
     if (!left) return NULL;
     while (check(p, TOK_LT) || check(p, TOK_LE) || check(p, TOK_GT) || check(p, TOK_GE)) {
@@ -935,7 +995,17 @@ static Node *parse_comparison(Parser *p) {
     return left;
 }
 
-static Node *parse_equality(Parser *p) {
+static Node *parse_equality_impl(Parser *p);
+
+Node *parse_equality(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_equality_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_equality_impl(Parser *p) {
     Node *left = parse_comparison(p);
     if (!left) return NULL;
     while (check(p, TOK_EQEQ) || check(p, TOK_NEQ)) {
@@ -952,7 +1022,17 @@ static Node *parse_equality(Parser *p) {
     return left;
 }
 
-static Node *parse_and(Parser *p) {
+static Node *parse_and_impl(Parser *p);
+
+Node *parse_and(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_and_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_and_impl(Parser *p) {
     Node *left = parse_equality(p);
     if (!left) return NULL;
     while (check(p, TOK_AND)) {
@@ -969,7 +1049,17 @@ static Node *parse_and(Parser *p) {
     return left;
 }
 
-static Node *parse_or(Parser *p) {
+static Node *parse_or_impl(Parser *p);
+
+Node *parse_or(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_or_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_or_impl(Parser *p) {
     Node *left = parse_and(p);
     if (!left) return NULL;
     while (check(p, TOK_OR)) {
@@ -990,7 +1080,17 @@ static Node *parse_or(Parser *p) {
  * 表达式（允许再套三元/赋值），else 分支递归 parse_ternary 实现
  * `a ? b : c ? d : e` 的右折叠。postfix 的 `f()?` 传播已由
  * ternary_colon_ahead 前瞻让位，这里看到的 `?` 一律是三元。 */
-static Node *parse_ternary(Parser *p) {
+static Node *parse_ternary_impl(Parser *p);
+
+Node *parse_ternary(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_ternary_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_ternary_impl(Parser *p) {
     Node *cond = parse_or(p);
     if (!cond) return NULL;
     if (!check(p, TOK_QUESTION)) return cond;
@@ -1008,7 +1108,17 @@ static Node *parse_ternary(Parser *p) {
     return n;
 }
 
+static Node *parse_expression_impl(Parser *p);
+
 Node *parse_expression(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_expression_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_expression_impl(Parser *p) {
     Node *expr = parse_ternary(p);
     if (!expr) return NULL;
     /* assignment: lhs must be a variable or a member access. */

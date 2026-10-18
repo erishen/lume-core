@@ -12,7 +12,16 @@ typedef struct {
     int count;
     int pos;
     char errbuf[256];
+    /* Left-recursive-descent nesting counter: the expression chain and
+     * parse_block bump it at every level (a 12-frame cycle per source
+     * paren), so a pathological input cannot run the thread stack out
+     * (libFuzzer crash-eb4ae2: ~500 `(` pairs -> stack-overflow). */
+    int depth;
 } Parser;
+
+/* Ceiling in chain levels (≈12 C frames each): 200 ≈ 2.4k frames, a
+ * rounding error on the 8 MB main stack and safe on a 2 MB fuzz thread. */
+#define PARSER_MAX_DEPTH 200
 
 /* ---- 基础工具(parser.c) ---- */
 void perror_at(Parser *p, size_t line, const char *fmt, ...);
