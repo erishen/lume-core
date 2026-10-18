@@ -55,25 +55,9 @@ incremental cost of fuzzing is small.
 
 **Done**: 2026-10-18, campaign 10 — 1,226,047 inputs in the full
 1801s budget, zero crashes/leaks/timeouts, 12,279 new corpus units,
-peak RSS 504 MB. Post-campaign backlog, in priority order (the
-discover-fix-campaign loop stops here; the CI leg takes over patrol):
-
-- [ ] HOST SYNC (correctness debt with a deadline): bugs 1-8 live in
-  the host `lume/lang/` copies of `parser*.c` too, and `typecheck.c`
-  is host_owned — tag v0.8.0 (the 90+ Unreleased CHANGELOG entries
-  include tonight's eight), `make sync-lang` bumps the pin for the
-  parser trio, the ck_put_pat_binds clamp needs a hand-merge. Push
-  agent-httpd before the host.
-- [ ] Same-class audit: the eight cluster as "in-flight slot not
-  counted by the cleanup walk" and "journal/free boundary mismatch".
-  Sweep the remaining `goto fail`/`return NULL` exits that claim
-  slots before filling them (type/struct field decls, server{}/tool{}
-  blocks, localfn hoist, sdef_*) — mechanical, one evening.
-- [ ] fuzz-ci hang patrol: `-hang_threshold=` is unset (crash/leak
-  only). Add it once, with a baseline from the corpus replay speed.
-- [ ] SPEC: record the 200-level nesting ceiling as a deliberate
-  parser boundary (hostile-input guard, like the intentional
-  boundaries list), so future reviews don't re-file it.
+peak RSS 504 MB. The discover-fix-campaign loop stops here (by
+consensus): patrol moves to the CI `fuzz` job, follow-ups are filed as
+**P8** below.
 
 ## P2 — Arena allocator for the AST
 
@@ -265,6 +249,49 @@ loudly rejected. (The Linux real-machine half is closed 2026-10-18: the
 llvm leg of `tests/native_backends.sh` runs green on ubuntu-latest CI
 since `e817823`, and `tests/llvm-json/run.sh` passed 5/5 on
 ubuntu:24.04 + LLVM 18 — clearing P4's pending note as well.)
+
+## P8 — Fuzz follow-ups (filed 2026-10-18 at P1 closure, priority order)
+
+The ten instrumented campaigns found eight memory/stack bugs, all
+fixed with `tests/fuzz-bad/` fixtures. They cluster into two shapes —
+an in-flight slot claimed before it is filled (enum variant,
+parse_patterns variant, parse_params name vector) whose failure exit
+walks only the completed count, and a manual `node_free` crossing the
+orphan journal's sweep. CI (`make fuzz-ci`: deterministic seed replay
++ 60s campaign, artifacts uploaded) now patrols for regressions; the
+items below close the loop the campaign loop left open.
+
+- [ ] **Host sync — the one item with a deadline.** All eight fixes
+      live in the host `lume/lang/` copies of the parser trio
+      (`parser.c`, `parser_expr.c`, `parser_stmt.c` — sync-lang carries
+      them), and the host product runs production scripts on that
+      parser today; the ninth touch-point is `typecheck.c`'s
+      bind-overflow clamp, which is host_owned and needs a hand-merge.
+      Sequence: CHANGELOG
+      promote (Unreleased already carries 90+ entries incl. tonight's
+      eight) → `git tag v0.8.0` → host `make sync-lang && make
+      check-sync` → hand-merge `typecheck.c` (the
+      `ck_put_pat_binds` triple bound) → host `make check`/`test` →
+      push agent-httpd BEFORE the host repo (a dangling gitlink reds
+      every CI job, learned the hard way 2026-10-18).
+- [ ] Same-class audit (mechanical, one evening): every
+      claim-slot-then-fill structure's failure exit must walk through
+      the in-flight slot. Un-audited sites: `type_decl` field vectors,
+      `server{}`/`tool{}` block builders, `localfn` hoist renames
+      (`lf_*`), `sdef_push`/param-type arrays in the checker. Method:
+      for each `goto fail`/mid-loop `return NULL`, compare the cleanup
+      bound against the claim bound (the eight fixes each differ by
+      exactly that comparison). A clean sweep is also P2's strongest
+      ammunition: the arena makes the comparison unnecessary.
+- [ ] fuzz-ci hang patrol: add `-hang_threshold=` to `make fuzz-ci`
+      (phases cover crash/leak/timeout-of-one-run only; an input that
+      makes the PARSER loop spin forever is currently invisible).
+      Baseline from the `-runs=1` replay wall-time; suggest 3x.
+- [ ] SPEC: record `PARSER_MAX_DEPTH 200` as a deliberate boundary
+      (hostile-input guard, not a language limit — the interpreter
+      nests no deeper than the stack allows), in the intentional
+      boundaries list, so the next review does not re-file tonight's
+      crash-eb4ae2 as a gap.
 
 ## Intentional boundaries — do not file as gaps
 
