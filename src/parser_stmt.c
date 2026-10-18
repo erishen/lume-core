@@ -197,15 +197,15 @@ Node *parse_statement(Parser *p) {
             MatchPat *pats = NULL;
             int patc = 0;
             if (!parse_patterns(p, &pats, &patc)) return NULL;
-            if (!expect(p, TOK_EQ)) return NULL;
+            if (!expect(p, TOK_EQ)) { free_pat_array(pats, patc); return NULL; }
             Node *value = parse_expression(p);
-            if (!value) return NULL;
+            if (!value) { free_pat_array(pats, patc); return NULL; }
             Node *then = parse_statement(p);
-            if (!then) return NULL;
+            if (!then) { free_pat_array(pats, patc); return NULL; }
             Node *els = NULL;
             if (match(p, TOK_ELSE)) {
                 els = parse_statement(p);
-                if (!els) return NULL;
+                if (!els) { free_pat_array(pats, patc); return NULL; }
             }
             Node *n = nalloc(N_IF_LET, pline);
             n->as.iflet.pats = pats;

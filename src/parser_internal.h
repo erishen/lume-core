@@ -60,4 +60,8 @@ Node *parse_expression(Parser *p);
  * Shared by match arms and if-let; the caller owns the array. */
 bool parse_patterns(Parser *p, MatchPat **out, int *outc);
 
+/* Release a parse_patterns result no node will own (mid-construction
+ * failure in match / if-let); see parser.c's definition. */
+void free_pat_array(MatchPat *pats, int patc);
+
 #endif /* LUME_PARSER_INTERNAL_H */

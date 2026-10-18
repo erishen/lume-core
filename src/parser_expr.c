@@ -462,11 +462,11 @@ static Node *parse_primary(Parser *p) {
             Node *guard = NULL;
             if (match(p, TOK_IF)) {
                 guard = parse_expression(p);
-                if (!guard) return NULL;
+                if (!guard) { free_pat_array(pats, patc); return NULL; }
             }
-            if (!expect(p, TOK_ARROW)) return NULL;
+            if (!expect(p, TOK_ARROW)) { free_pat_array(pats, patc); return NULL; }
             Node *body = parse_expression(p);
-            if (!body) return NULL;
+            if (!body) { free_pat_array(pats, patc); return NULL; }
             n->as.matchn.arms = realloc(n->as.matchn.arms,
                     sizeof(MatchArm) * ((size_t)n->as.matchn.armc + 1));
             MatchArm *arm = &n->as.matchn.arms[n->as.matchn.armc];
@@ -480,7 +480,8 @@ static Node *parse_primary(Parser *p) {
             if (!match(p, TOK_COMMA)) break;
             if (check(p, TOK_RBRACE)) break; /* trailing comma */
         }
-        if (!expect(p, TOK_RBRACE)) return NULL;
+        if (!expect(p, TOK_RBRACE)) return NULL;   /* no live pats: the last
+                                                    * arm was already attached */
         return n;
     }
     if (t.type == TOK_IF) {

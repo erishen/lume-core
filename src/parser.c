@@ -431,6 +431,19 @@ fail:
     return false;
 }
 
+/* Release a parse_patterns result the caller can no longer attach to a
+ * node: ownership transfers to MatchArm/iflet (freed by node_free_own)
+ * only when the constructor completes; every `return NULL` between here
+ * and there must pass through this first (libFuzzer leak-036b5e7: 48B =
+ * one MatchPat stranded by a failed match arm). */
+void free_pat_array(MatchPat *pats, int patc) {
+    for (int i = 0; i < patc; i++) {
+        free(pats[i].vname);
+        free_name_array(pats[i].binds, pats[i].bindc);
+    }
+    free(pats);
+}
+
 /* ---------- program ---------- */
 
 static void resolve_ctors(Node *prog);
