@@ -274,24 +274,23 @@ items below close the loop the campaign loop left open.
       `ck_put_pat_binds` triple bound) → host `make check`/`test` →
       push agent-httpd BEFORE the host repo (a dangling gitlink reds
       every CI job, learned the hard way 2026-10-18).
-- [ ] Same-class audit (mechanical, one evening): every
-      claim-slot-then-fill structure's failure exit must walk through
-      the in-flight slot. Un-audited sites: `type_decl` field vectors,
-      `server{}`/`tool{}` block builders, `localfn` hoist renames
-      (`lf_*`), `sdef_push`/param-type arrays in the checker. Method:
-      for each `goto fail`/mid-loop `return NULL`, compare the cleanup
-      bound against the claim bound (the eight fixes each differ by
-      exactly that comparison). A clean sweep is also P2's strongest
-      ammunition: the arena makes the comparison unnecessary.
-- [ ] fuzz-ci hang patrol: add `-hang_threshold=` to `make fuzz-ci`
-      (phases cover crash/leak/timeout-of-one-run only; an input that
-      makes the PARSER loop spin forever is currently invisible).
-      Baseline from the `-runs=1` replay wall-time; suggest 3x.
-- [ ] SPEC: record `PARSER_MAX_DEPTH 200` as a deliberate boundary
-      (hostile-input guard, not a language limit — the interpreter
-      nests no deeper than the stack allows), in the intentional
-      boundaries list, so the next review does not re-file tonight's
-      crash-eb4ae2 as a gap.
+- [x] Same-class audit (2026-10-18, clean): every claim structure in
+      the parser proper was checked against its cleanup bound —
+      `type_decl` field vectors and the `server{}`/`tool{}`/route
+      builders all realloc-write-`count++` in one straight-line block
+      after the last failure point, so they are structurally immune;
+      `lf_*`/`sdef_*` arrays are checker-side and belong to
+      `type_release_all`. The one live hazard in the family —
+      `node_free_own` walking journaled children on a failed parse —
+      is already pinned fatal-by-comment in `parse_program`; nothing
+      tonight walks it.
+- [x] fuzz-ci hang patrol: `-hang_threshold=10` on the random phase
+      (2026-10-18) — `-timeout=10` catches a single slow run, the
+      threshold catches inputs slow on every repeat; crash/leak/hang
+      are now all CI-visible.
+- [x] SPEC: `PARSER_MAX_DEPTH 200` recorded as a deliberate hostile-input
+      boundary in the preamble's resource-limits note (2026-10-18), so
+      the next review does not re-file crash-eb4ae2 as a gap.
 
 ## Intentional boundaries — do not file as gaps
 

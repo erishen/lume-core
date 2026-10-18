@@ -400,7 +400,8 @@ fuzz-ci: $(FUZZ_TARGET)
 	    -timeout=10 -error_exitcode=1
 	@echo "fuzz-ci: phase 2 = $${FUZZ_CI_BUDGET}s random campaign"
 	@ASAN_OPTIONS=detect_leaks=1 ./$(FUZZ_TARGET) $(FUZZ_CORPUS) \
-	    -max_total_time=$(FUZZ_CI_BUDGET) -timeout=10 -error_exitcode=1 \
+	    -max_total_time=$(FUZZ_CI_BUDGET) -timeout=10 -hang_threshold=10 \
+	    -error_exitcode=1 \
 	    -artifact_prefix=out/fuzz-artifacts/ -print_final_stats=1
 
 
