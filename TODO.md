@@ -175,7 +175,51 @@ a core transaction builtin owes the host a manual merge, not a copy.
 
 **Done when**: a lume-nsgm-scale workload demonstrates a real crash or
 correctness need for cross-statement atomicity (not just purity), and
-the value-system design clears the llvm closure-capture gap.
+the value-system design clears the llvm closure-capture gap. (The gap
+this gated on — closures capturing function locals on the llvm backend
+— landed 2026-10-18, see P7; a transaction handle behind a closure
+still hits the general capture machinery, and the top-level half of P7
+would apply to it too.)
+
+## P7 — LLVM closure capture (ported 2026-10-18) + the top-level gap (found, not started)
+
+- [x] The llvm backend emits phase-2 captures (2026-10-18): `cg_def`
+      registers the signature pass's `cap_names`/`cap_types` before
+      `scan_block` (at line 0, like parameters — a lambda's source line can
+      be later than uses inside its own body) and materializes each into a
+      typed slot pointer off the closure's `i8*` context parameter in the
+      entry block (bitcast → GEP index → load → bitcast; the text backend's
+      `%cap<i>` string convention becomes an `Asg.cap` flag in the typed
+      IR-value table, and the entry alloca pass must skip flagged
+      bindings); `cg_funclit` builds the i8* array of outer slot addresses
+      at the creation site and hands it to `lume_closure_make`, rejecting
+      capture-of-capture like the text emitter. The llvm leg of
+      `native-consistency.lume` (which failed `cap_hof` at line 503 since
+      the capture tests landed) is green; the three-way suite
+      (`tests/native_backends.sh`) passes on macOS, Linux CI pending.
+- [ ] Top-level lambda captures are broken on BOTH native backends
+      (pre-existing, not introduced by the port above; found with the same
+      probes): `let s = 0; let bump = (n) => { s = s + n; return s; };` at
+      the top level prints `3 4 101 100` interpreted but `0 0 0 100`
+      compiled. The signature pass's capture walk does not treat a top-level
+      binding as capturable — the name is lifted to a module global — while
+      the body scan then registers the free variable as a fresh alloca, so
+      reads hit an uninitialized slot and writes are lost. Function-body
+      captures (the shape `native-consistency`'s cap_* series covers) are
+      three-way consistent; only the top-level shape diverges.
+  - [ ] Decide the semantics first: bind a top-level free name in a closure
+        body to the lifted global's address (capture-like, matching the
+        interpreter's call-time env lookup), or reject it at typecheck with
+        the §4.14 no-capture vocabulary. An interp/native divergence in
+        silent-wrong shape is the one outcome that must not ship.
+  - [ ] Whatever wins, it lands in the shared sig pass plus BOTH native
+        emitters (the text scan registers the same fresh alloca today), and
+        `native-consistency.lume` gains a top-level capture case with an
+        expected baseline so the gate pins it.
+
+**Done when**: the top-level shape is either three-way consistent or
+loudly rejected, and the CI llvm leg has run green once on Linux (the
+P4 pending real-machine check this note also clears).
 
 ## Intentional boundaries — do not file as gaps
 
