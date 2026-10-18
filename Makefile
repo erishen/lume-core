@@ -347,9 +347,26 @@ FUZZ_SRCS   := src/fuzz_target.c
 out:
 	mkdir -p out
 
-$(FUZZ_TARGET): $(CORE_OBJS) $(FUZZ_SRCS) | out
+# The core objects must carry -fsanitize=fuzzer themselves: that flag is
+# what makes clang emit SanCov edge counters, and a plain $(CFLAGS) build
+# (asan+ubsan only) links into the driver with ZERO coverage feedback —
+# libFuzzer then runs blind (a 2026-10-18 Linux campaign burned 54M inputs
+# reporting cov: 5 and a 2-byte corpus, a green-looking number that was
+# actually no fuzzing at all). build-fuzz/ keeps its own instrumented
+# objects; nothing else uses them.
+FUZZ_OBJS := $(SRCS:src/%.c=build-fuzz/%.o)
+
+build-fuzz:
+	@mkdir -p build-fuzz
+
+build-fuzz/%.o: src/%.c src/lume.h $(INT_HDRS) | build-fuzz
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(CFLAGS) -fsanitize=fuzzer-no-link,address,undefined \
+	    -c $< -o $@
+
+$(FUZZ_TARGET): $(filter-out build-fuzz/main.o,$(FUZZ_OBJS)) $(FUZZ_SRCS) | out
 	$(FUZZ_CC) $(CFLAGS) -fsanitize=fuzzer,address,undefined \
-	    -o $@ $(CORE_OBJS) $(FUZZ_SRCS) $(LDFLAGS) -lm
+	    -o $@ $(filter-out build-fuzz/main.o,$(FUZZ_OBJS)) $(FUZZ_SRCS) $(LDFLAGS) -lm
 
 # Seed the corpus from the hand-written fixtures (positive + -bad/ negatives),
 # then fuzz for a bounded run. TODO P1: promote to a 60s CI leg in the asan

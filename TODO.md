@@ -25,14 +25,27 @@ incremental cost of fuzzing is small.
   the fixtures) through `--check`, zero unexpected exits; the repeated-
   cycle global state (orphan batch, ty_allocs, g_ck_scopes) is clean.
   A 30-minute libFuzzer run still needs a Linux host.
-- [ ] Any crash found lands in `tests/fuzz-crashes/` and gets minimized
-  into a `tests/*-bad/` fixture so the regression stays covered. — No
-  crash sample yet; the mechanism is wired (the fuzz corpus seeds from
-  every `tests/` fixture, so a new `-bad/` file is covered
-  automatically).
+- [x] Any crash found lands in `tests/*-bad/` so the regression stays
+  covered. — The first Linux campaigns found three, all fixed with
+  fixtures under `tests/fuzz-bad/`: (1) tuple-literal error paths
+  `node_free`'d journaled nodes — double-free at the parse sweep
+  (crash input `(http_,`); (2) `parse_params` failure paths dropped
+  strdup'd parameter names — 6-byte leak behind the same input;
+  (3) `ck_put_pat_binds` walked to a caller-supplied bindc that the
+  record-only validators could leave longer than `binds[0]`/
+  `vfield_types[0]` — heap-buffer-overflow, reproducible today from
+  the seed corpus via `match2-bad/iflet-binds.lume` and
+  `enum-bad/wrong-binds.lume`.
+- [ ] The `make fuzz` target built the core objects WITHOUT coverage
+  instrumentation (`$(CFLAGS)` has no `-fsanitize=fuzzer`): libFuzzer
+  ran blind — a 54M-input "clean" 30-minute report was `cov: 5`, i.e.
+  no fuzzing at all. Fixed 2026-10-18 with `build-fuzz/` objects on
+  `-fsanitize=fuzzer-no-link`; any pre-fix fuzz number in this repo's
+  history is void.
 
 **Done when**: 30 consecutive minutes of fuzzing with zero crashes,
-hangs, or leaks.
+hangs, or leaks — on the instrumented build, first campaign in flight
+2026-10-18 (the earlier "clean" run was the blind build above).
 
 ## P2 — Arena allocator for the AST
 
