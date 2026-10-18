@@ -369,8 +369,11 @@ $(FUZZ_TARGET): $(filter-out build-fuzz/main.o,$(FUZZ_OBJS)) $(FUZZ_SRCS) | out
 	    -o $@ $(filter-out build-fuzz/main.o,$(FUZZ_OBJS)) $(FUZZ_SRCS) $(LDFLAGS) -lm
 
 # Seed the corpus from the hand-written fixtures (positive + -bad/ negatives),
-# then fuzz for a bounded run. TODO P1: promote to a 60s CI leg in the asan
-# job once a 30-minute local run is stable.
+# then fuzz for a bounded run. 30s was the pre-instrumentation placeholder;
+# with real coverage feedback (2026-10-18) 300s is the meaningful local
+# budget — one campaign at this depth historically surfaced a latent
+# finding, so a local run should be long enough to expect one.
+FUZZ_CI_BUDGET ?= 60
 fuzz: $(FUZZ_TARGET)
 	@mkdir -p $(FUZZ_CORPUS)
 	@cp tests/*.lume $(FUZZ_CORPUS)/ 2>/dev/null || true
@@ -378,6 +381,27 @@ fuzz: $(FUZZ_TARGET)
 	    cp tests/*-bad/*.lume $(FUZZ_CORPUS)/; fi
 	@./$(FUZZ_TARGET) $(FUZZ_CORPUS) -max_total_time=30 \
 	    -print_final_stats=1
+
+# --- CI fuzz leg (make fuzz-ci) -------------------------------------------
+# Two phases, deliberately ordered: (1) -runs=1 replays every staged seed —
+# free regression coverage for the whole tests/ corpus against ASan/UBSan/
+# LSan, deterministic verdict, fails loudly on any fixture that ever
+# regresses; (2) a time-boxed random campaign seeded FROM those fixtures.
+# -artifact_prefix lands crashers in out/fuzz-artifacts/ for the CI step to
+# upload. Ubuntu clang only, same constraint as `make fuzz` (gcc's
+# libFuzzer is absent; macOS Homebrew clang ships no fuzzer runtime).
+fuzz-ci: $(FUZZ_TARGET)
+	@rm -rf $(FUZZ_CORPUS) out/fuzz-artifacts
+	@mkdir -p $(FUZZ_CORPUS) out/fuzz-artifacts
+	@for f in $$(find tests -name '*.lume'); do \
+	    cp "$$f" "$(FUZZ_CORPUS)/$$(echo $$f | tr / _)"; done
+	@echo "fuzz-ci: corpus=$$(ls $(FUZZ_CORPUS) | wc -l) seeds, phase 1 = seed replay"
+	@ASAN_OPTIONS=detect_leaks=1 ./$(FUZZ_TARGET) $(FUZZ_CORPUS) -runs=1 \
+	    -timeout=10 -error_exitcode=1
+	@echo "fuzz-ci: phase 2 = $${FUZZ_CI_BUDGET}s random campaign"
+	@ASAN_OPTIONS=detect_leaks=1 ./$(FUZZ_TARGET) $(FUZZ_CORPUS) \
+	    -max_total_time=$(FUZZ_CI_BUDGET) -timeout=10 -error_exitcode=1 \
+	    -artifact_prefix=out/fuzz-artifacts/ -print_final_stats=1
 
 
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
@@ -818,7 +842,7 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
-         treecheck letpat-test
+         treecheck letpat-test fuzz fuzz-ci
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \

@@ -43,6 +43,31 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
       - run: make -j4 asan
 
+  # Parser fuzzing in CI (TODO P1's promoted leg). ubuntu+clang only:
+  # -fsanitize=fuzzer needs the clang runtime (gcc has none, Homebrew clang
+  # ships none either). Two phases inside `make fuzz-ci` — a deterministic
+  # -runs=1 seed replay over every tests/*.lume (regression tripwire,
+  # seconds) and a 60s random campaign seeded from them. Crashers land in
+  # out/fuzz-artifacts/ and are uploaded before the job fails, so a red
+  # run arrives with its own minimizing input.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang
+      - run: make fuzz-ci
+        env:
+          FUZZ_CC: clang
+          CC: clang
+          FUZZ_CI_BUDGET: 60
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: out/fuzz-artifacts/
+          if-no-files-found: ignore
+
   # The privacy guard lives inside `make pack`; running it here keeps the
   # tarball honest without anyone having to remember `make packcheck`.
   pack:
