@@ -372,7 +372,8 @@ static void cg_block(CG *g, Node *blk)
 }
 
 static void cg_def(CG *g, const char *sym, char **names, Type **params,
-                   int arity, Type *ret, Node *body, int has_cap, size_t line)
+                   int arity, Type *ret, Node *body, int has_cap,
+                   Node *capfn, size_t line)
 {
     int np = arity + (has_cap ? 1 : 0);
     LLVMTypeRef *pts = NULL;
@@ -423,7 +424,7 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
      * as its slot. With a capture context the closure's own parameters start
      * at LLVM param index 1. */
     LLVMValueRef *pv = NULL;
-    if (arity > 0) {
+    if (np > 0) {
         pv = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef) * (size_t)np);
         /* LLVMGetParams fills one entry per function parameter, the capture
          * context first when has_cap — so the readback below indexes
@@ -436,6 +437,16 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
                      0);
     }
 
+    /* Phase-2 captures (mirrors codegen_stmt.c): each captured name gets a
+     * binding whose slot is a typed pointer into the closure's capture
+     * array, materialized in the entry block below. Registering them
+     * before scan_block keeps the body scan from re-declaring a free
+     * variable as a fresh local. */
+    int ncap = capfn ? capfn->as.funclit.cap_count : 0;
+    for (int i = 0; i < ncap; i++)
+        asg_push_cap(&g->locals, capfn->as.funclit.cap_names[i],
+                     capfn->as.funclit.cap_types[i], NULL, 0);
+
     if (!preset) scan_block(g, body);
 
     /* Entry: one alloca per local, then seed the non-struct parameters. */
@@ -446,6 +457,10 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
     for (int i = 0; i < g->locals.n; i++) {
         Asg *a = &g->locals.v[i];
         if (a->slot) continue;                       /* a struct parameter */
+        if (a->cap) continue;  /* a capture: the slot is the capture-array
+                                * pointer materialized below, no stack cell
+                                * — the %cap-prefix skip of the text alloca
+                                * pass */
         /* A local whose type the frontend could not infer has no IR type to
          * allocate, and NULL is not something libLLVM survives: this used to
          * SIGSEGV the compiler on `for (x in [])`, where the loop variable is
@@ -458,6 +473,48 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
                     "(its type could not be inferred, e.g. an empty list)",
                  line, a->name);
         a->slot = LLVMBuildAlloca(g->ab, ty_of(g, a->ty), "lv");
+    }
+
+    /* Capture slots: the i8* context parameter points at the creation
+     * site's array of slot addresses (cg_funclit builds it). A
+     * captured binding enters the alloca pass with slot NULL and cap 1,
+     * so here its entry is loaded and bitcast to the typed pointer the
+     * body's loads/stores use directly — the text backend's
+     * bitcast-gep-load-%cap<i> chain, resolved once per name. */
+    if (ncap > 0 && has_cap) {
+        LLVMValueRef capp = LLVMBuildBitCast(g->ab, pv[0],
+                                             LLVMPointerType(g->i8ptr, 0), "capv");
+        for (int i = 0; i < g->locals.n; i++) {
+            Asg *a = &g->locals.v[i];
+            if (!a->cap || a->slot) continue;
+            size_t idx = 0;
+            int found = 0;
+            for (int j = 0; j < ncap; j++)
+                if (strcmp(capfn->as.funclit.cap_names[j], a->name) == 0
+                    && capfn->as.funclit.cap_types[j] == a->ty) {
+                    idx = (size_t)j; found = 1; break;
+                }
+            if (!found)
+                ERRX(g, "line %zu: internal: captured '%s' missing from the "
+                        "signature pass list", line, a->name);
+            LLVMValueRef idxv = LLVMConstInt(g->i64, idx, 0);
+            LLVMValueRef el = LLVMBuildGEP2(g->ab, g->i8ptr, capp,
+                                            &idxv, 1, "cape");
+            if (!el)
+                ERRX(g, "line %zu: cannot address captured '%s'", line, a->name);
+            LLVMValueRef raw = LLVMBuildLoad2(g->ab, g->i8ptr, el, "capl");
+            if (!raw)
+                ERRX(g, "line %zu: cannot load captured '%s'", line, a->name);
+            LLVMTypeRef vt = ptr_of(g, a->ty);
+            LLVMTypeRef pt = vt ? LLVMPointerType(vt, 0) : NULL;
+            if (!pt)
+                ERRX(g, "line %zu: captured variable '%s' has no codegen type",
+                     line, a->name);
+            LLVMValueRef tp = LLVMBuildBitCast(g->ab, raw, pt, "cap");
+            if (!tp)
+                ERRX(g, "line %zu: cannot capture '%s'", line, a->name);
+            a->slot = tp;
+        }
     }
     if (pv) {
         for (int i = 0; i < arity; i++) {
@@ -514,7 +571,8 @@ static void cg_function(CG *g, Node *fn)
                         : (fn->as.func.name ? fn->as.func.name : "?");
     snprintf(sym, sizeof sym, "L_%s", fname);
     cg_def(g, sym, fn->as.func.names, fn->as.func.param_types,
-           fn->as.func.arity, fn->as.func.ret, fn->as.func.body, 0, fn->line);
+           fn->as.func.arity, fn->as.func.ret, fn->as.func.body, 0, NULL,
+           fn->line);
 }
 
 static void cg_closure(CG *g, Node *fn)
@@ -524,5 +582,5 @@ static void cg_closure(CG *g, Node *fn)
              fn->line);
     cg_def(g, fn->as.funclit.cname, fn->as.funclit.names,
            fn->as.funclit.param_types, fn->as.funclit.arity,
-           fn->as.funclit.ret, fn->as.funclit.body, 1, fn->line);
+           fn->as.funclit.ret, fn->as.funclit.body, 1, fn, fn->line);
 }

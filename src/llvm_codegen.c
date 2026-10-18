@@ -106,6 +106,7 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
     a->v[a->n].name = xstrdup(name);
     a->v[a->n].ty   = ty;
     a->v[a->n].slot = slot;
+    a->v[a->n].cap  = 0;
     /* Declaration line — see codegen.c's asg_push. The flat pre-scanned
      * table can hold several same-name bindings (loop variable + a later
      * `let` of a different type); lookup is position-aware so a use site
@@ -113,6 +114,17 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
      * interpreter's sequential set-or-define rebinding. */
     a->v[a->n].line = line;
     a->n++;
+}
+
+/* A phase-2 capture binding: same shape, but flagged so cg_def materializes
+ * its slot from the closure context (and the alloca pass leaves it alone).
+ * The text backend spells this with a %cap<i>-prefixed slot string; here
+ * the flag replaces the string convention. */
+static void asg_push_cap(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
+                         size_t line)
+{
+    asg_push(a, name, ty, slot, line);
+    a->v[a->n - 1].cap = 1;
 }
 
 static Asg *asg_find(Asgs *a, const char *name, size_t use_line)

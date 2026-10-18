@@ -558,8 +558,65 @@ static Val cg_funclit(CG *g, Node *n)
     LLVMValueRef fnv = LLVMGetNamedFunction(g->mod, cname);
     if (!fnv) ERRV(g, "line %zu: internal: closure symbol vanished", n->line);
 
+    /* Phase-2 captures (mirrors codegen_call.c's cg_funclit): build the
+     * capture array — one i8* per captured name, holding the address of
+     * the outer variable's slot — and hand it to lume_closure_make as the
+     * record's second word. The closure's own define reads those addresses
+     * back through its context parameter (cg_def), so a later write to the
+     * outer variable stays visible inside (shared env, SPEC §4.7). The
+     * array lives in the *creating* frame, so the closure must not
+     * outlive it — the same contract the text backend has. */
+    LLVMValueRef caparg = LLVMConstNull(g->i8ptr);
+    int ncap = n->as.funclit.cap_count;
+    if (ncap > 0) {
+        LLVMValueRef *addrs = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef)
+                                                      * (size_t)ncap);
+        for (int i = 0; i < ncap; i++) {
+            const char *nm = n->as.funclit.cap_names[i];
+            Asg *a = asg_find(&g->locals, nm, n->line);
+            if (!a) { free(addrs); ERRV(g, "line %zu: captured variable '%s' "
+                                        "has no codegen slot", n->line, nm); }
+            if (a->cap) { free(addrs); ERRV(g, "line %zu: capturing a variable "
+                                            "already captured by the enclosing "
+                                            "closure is not supported", n->line); }
+            LLVMTypeRef vt = ty_of(g, a->ty);
+            if (!vt || !a->slot) {
+                free(addrs);
+                ERRV(g, "line %zu: captured variable '%s' has no codegen type",
+                     n->line, nm);
+            }
+            /* Every slot is a pointer (alloca, module global, or a struct
+             * parameter's incoming pointer), so bitcast the *pointer value*
+             * to i8* — that address is what the closure reads back. */
+            LLVMValueRef addr = LLVMBuildBitCast(g->ab, a->slot, g->i8ptr,
+                                                 "capaddr");
+            if (!addr) { free(addrs); ERRV(g, "line %zu: cannot capture '%s'",
+                                           n->line, nm); }
+            addrs[i] = addr;
+        }
+        LLVMValueRef arr = LLVMBuildArrayAlloca(g->ab, g->i8ptr,
+                                                LLVMConstInt(g->i64, (uint64_t)ncap, 0),
+                                                "caparr");
+        if (!arr) { free(addrs); ERRV(g, "line %zu: cannot allocate the "
+                                       "capture array", n->line); }
+        for (int i = 0; i < ncap; i++) {
+            LLVMValueRef idxv = LLVMConstInt(g->i64, (uint64_t)i, 0);
+            LLVMValueRef el = LLVMBuildGEP2(g->ab, g->i8ptr, arr, &idxv, 1,
+                                            "capel");
+            if (!el || LLVMBuildStore(g->ab, addrs[i], el) == NULL) {
+                free(addrs);
+                ERRV(g, "line %zu: cannot store capture '%s'", n->line,
+                     n->as.funclit.cap_names[i]);
+            }
+        }
+        free(addrs);
+        caparg = LLVMBuildBitCast(g->ab, arr, g->i8ptr, "capctx");
+        if (!caparg) ERRV(g, "line %zu: cannot build the capture context",
+                          n->line);
+    }
+
     LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
-    LLVMValueRef vs[2] = { fnv, LLVMConstNull(g->i8ptr) };
+    LLVMValueRef vs[2] = { fnv, caparg };
     LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p2, 2, 0),
                                     rt_decl(g, "lume_closure_make", g->i8ptr, p2, 2),
                                     vs, 2, "clo");

@@ -20,7 +20,9 @@
 #include "llvm_codegen.h"
 
 /* ---- backend-private types (from the original monolithic file) ---- */
-typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line; } Asg;
+typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line;
+                 int cap; } Asg;   /* cap: slot points into the closure's
+                                     * capture array, not a local alloca */
 typedef struct { Asg *v; int n, cap; } Asgs;
 
 /* A name whose type is already known but which has no slot yet — the
@@ -152,6 +154,10 @@ static void asgs_free(Asgs *a);
 static void asg_truncate(Asgs *a, int n);
 static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
                      size_t line);
+/* Like asg_push but marks the binding as a capture (slot materialized from
+ * the closure context in cg_def); used for phase-2 captured names. */
+static void asg_push_cap(Asgs *a, const char *name, Type *ty,
+                         LLVMValueRef slot, size_t line);
 static Asg *asg_find(Asgs *a, const char *name, size_t use_line);
 static Asg *gvar_find(Asgs *a, const char *name);
 static void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int arity);
@@ -236,7 +242,8 @@ static void cg_if(CG *g, Node *n);
 static void cg_stmt(CG *g, Node *n);
 static void cg_block(CG *g, Node *blk);
 static void cg_def(CG *g, const char *sym, char **names, Type **params,
-                   int arity, Type *ret, Node *body, int has_cap, size_t line);
+                   int arity, Type *ret, Node *body, int has_cap,
+                   Node *capfn, size_t line);
 static void cg_function(CG *g, Node *fn);
 static void cg_closure(CG *g, Node *fn);
 void llvm_codegen_init_targets(void);
