@@ -31,7 +31,10 @@ int64_t lume_print_null(void);
 int64_t lume_print_i64(int64_t v)
 {
     char buf[40];
-    int n = snprintf(buf, sizeof buf, "%lld\n", v);
+    /* (long long): int64_t is `long` on Linux LP64, so a bare %lld makes the
+     * runtime cc -O2 step (backend.c) print -Wformat warnings — and
+     * native_backends.sh treats any compiler output as a failure. */
+    int n = snprintf(buf, sizeof buf, "%lld\n", (long long)v);
     emit(buf);
     return n;
 }
@@ -108,7 +111,7 @@ static char *dup_str(const char *s)
 char *lume_bi_str_i64(int64_t v)
 {
     char buf[32];
-    snprintf(buf, sizeof buf, "%lld", v);
+    snprintf(buf, sizeof buf, "%lld", (long long)v);
     return dup_str(buf);
 }
 
@@ -423,7 +426,7 @@ static int slot_emit(LumeSlot s)
     }
     case LUME_SLOT_BOOL:
         return emit(s.num ? "true" : "false");
-    default:              snprintf(buf, sizeof buf, "%lld", s.num); return emit(buf);
+    default:              snprintf(buf, sizeof buf, "%lld", (long long)s.num); return emit(buf);
     }
 }
 
@@ -519,7 +522,7 @@ static void slot_to_json(JsonBuf *b, LumeSlot s)
         return;
     default: {
         char tmp[32];
-        snprintf(tmp, sizeof tmp, "%lld", s.num);
+        snprintf(tmp, sizeof tmp, "%lld", (long long)s.num);
         jb_puts(b, tmp);
         return;
     }
