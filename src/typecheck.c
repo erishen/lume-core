@@ -575,6 +575,16 @@ int ck_pat_list(Checker *c, MatchPat *pats, int patc, EnumDef *ed,
  * variant degrades to any. The first (collecting) walk uses scope_put —
  * the second walk re-declares. */
 void ck_put_pat_binds(Checker *c, MatchPat *pats, int bindc, size_t line) {
+    /* bindc is only an upper bound: both validators that could correct it
+     * (ck_pat_list's arity clamp, the or-pattern same-names check) merely
+     * record their complaint, so on error paths it can exceed pats[0]'s
+     * stamped arrays — binds[] is exactly pats[0].bindc long and
+     * vfield_types[] is the resolve_ctors full-variant stamp (vfieldc).
+     * Skipping the excess is sound: every path that lands here has already
+     * failed the run with a precise diagnostic. */
+    if (bindc > pats[0].bindc) bindc = pats[0].bindc;
+    if (pats[0].vfield_types && bindc > pats[0].vfieldc)
+        bindc = pats[0].vfieldc;
     for (int k = 0; k < bindc; k++) {
         Type *pt = pats[0].vfield_types ? pats[0].vfield_types[k]
                                         : any_type();
