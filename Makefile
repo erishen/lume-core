@@ -596,6 +596,7 @@ build-pack:
 	mkdir -p build-pack
 
 build-pack/%.o: src/%.c src/lume.h $(INT_HDRS) | build-pack
+	@mkdir -p $(dir $@)   # 子目录型源 (compat/sha256, compat/regex) 同 build/%.o 的教训
 	$(CC) $(PACK_CFLAGS) -c $< -o $@
 
 $(PACK_BIN): $(PACK_OBJS) | bin
