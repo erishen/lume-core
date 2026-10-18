@@ -3,6 +3,12 @@
 /build-asan/
 # 发布构建 (make pack 重编这套, 见 Makefile 的 PACK_CFLAGS)
 /build-pack/
+# fuzz-ci 的插桩对象 (SanCov+ASan, 带编译机绝对路径 DWARF)。构建目录刻意逐条
+# 列举而非 build*/ 通配 (宽通配曾误伤 build_core.bat 一类文件), 所以 Makefile
+# 每新增一个 build 目录, 这里必须同步登记 — build-fuzz/ 就是 fuzz-ci 落地时
+# 漏登记的一个: 干净机器跑完 CI 腿, 未跟踪的 .o 群会出现在 git status 里,
+# 一次 `git add .` 就把本机路径带进公开仓 (*.o 兜底, 但兜底不该指望)。
+/build-fuzz/
 /bin/
 /out/
 # make pack 的产物 (lume-core-<os>-<arch>.tar.gz)
