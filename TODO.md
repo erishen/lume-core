@@ -118,6 +118,65 @@ platform.
   `00204ae` (first server{} leg) — latent since then. LLVM side has its own
   emitter and was not affected.
 
+## P6 — Cross-statement transactions (design recorded, deliberately not started)
+
+Motivation: lume-nsgm's PayPal variant inserts the order and decrements
+stock as two statements; a crash in between leaves a pending orphan
+order (their S2). Already mitigated by the CAS-guarded UPDATE
+(`stock = stock - 1 WHERE id=? AND stock>=1`, atomic as a single
+statement), `busy_timeout` (`178501c`), and insert-first + compensating
+DELETE — sufficient at shop scale, which is why this stays filed
+instead of started.
+
+Architecture-level, not a builtin addition — it conflicts with three
+foundation designs at once:
+
+- **Stateless builtin contract**: `sql_write` opens → prepares → steps →
+  closes within one call; the signature carries no handle, so
+  transaction state cannot survive a call boundary. Even a whitelisted
+  `BEGIN` would be a silent no-op — `sqlite3_close()` rolls back an
+  open transaction, so BEGIN/INSERT/COMMIT written as three calls would
+  auto-commit each and quietly lose atomicity (fail-loud rejection is
+  the honest behavior).
+- **Fork safety**: modules are parsed before workers fork; a
+  module-level cached connection would be inherited by every worker —
+  SQLite forbids cross-fork connection use (corruption class, not a
+  perf question). Per-call open sidesteps the whole problem class.
+- **Whitelist guardrail**: `sql_validate_write` guarantees "exactly one
+  known-shape statement per call"; `BEGIN` is session state, so
+  admitting it anywhere in that path breaks the invariant.
+
+The four-layer surface if started:
+
+- [ ] Value system: `sql_tx_begin()` returns a first-class handle —
+  new OBJ type, GC finalizer (handle collected = rollback + close),
+  value-semantics questions (does copying a handle copy the
+  transaction? map round-trip?); closure capture of a handle would
+  hit the known llvm capture gap.
+- [ ] Connection management: per-worker cache keyed by path (never
+  module-level — see fork safety); refcounts, cache bound, close
+  timing (request end vs worker exit).
+- [ ] Guardrails: dedicated builtin entry, never the `sql_write`
+  whitelist; error semantics when `vm_set_error` fires mid-transaction
+  (auto-rollback or leave open?).
+- [ ] Three-backend parity: interpreter + text + llvm emitters,
+  inference/boxing, `case-parity` + `native-consistency` gates — the
+  repo's classic double-copy sync trap.
+
+Gray zone that does not need the above: whitelisting write CTEs
+(`WITH ... INSERT/UPDATE/DELETE`) — still one statement, still
+stateless, guardrail-only change; collapses some multi-step units
+(not general cross-call sequences). Consider on its own merits.
+
+Host-tree debt: `builtins_sql.c` is HOST_PINNED (ownership fork, not
+visibility — the host version carries portfolio-mirror policy on a
+`db_layer` abstraction), so `make sync-lang` will never overwrite it;
+a core transaction builtin owes the host a manual merge, not a copy.
+
+**Done when**: a lume-nsgm-scale workload demonstrates a real crash or
+correctness need for cross-statement atomicity (not just purity), and
+the value-system design clears the llvm closure-capture gap.
+
 ## Intentional boundaries — do not file as gaps
 
 These are deliberate design decisions; re-proposing them is noise
