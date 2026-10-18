@@ -21,8 +21,9 @@
 
 /* ---- backend-private types (from the original monolithic file) ---- */
 typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line;
-                 int cap; } Asg;   /* cap: slot points into the closure's
-                                     * capture array, not a local alloca */
+                 int cap;        /* cap: slot points into the closure's
+                                  * capture array, not a local alloca */
+                 int shadow; } Asg;  /* shadows a module global: seed at entry */
 typedef struct { Asg *v; int n, cap; } Asgs;
 
 /* A name whose type is already known but which has no slot yet — the
@@ -158,6 +159,11 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
  * the closure context in cg_def); used for phase-2 captured names. */
 static void asg_push_cap(Asgs *a, const char *name, Type *ty,
                          LLVMValueRef slot, size_t line);
+/* Like asg_push but marks the binding as a body local that shadows a
+ * module global (scan's N_ASSIGN arm); the entry block seeds it from the
+ * global so the first read matches the interpreter's env lookup. */
+static void asg_push_shadow(Asgs *a, const char *name, Type *ty,
+                            LLVMValueRef slot, size_t line);
 static Asg *asg_find(Asgs *a, const char *name, size_t use_line);
 static Asg *gvar_find(Asgs *a, const char *name);
 static void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int arity);

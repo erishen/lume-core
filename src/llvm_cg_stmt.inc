@@ -475,6 +475,22 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
         a->slot = LLVMBuildAlloca(g->ab, ty_of(g, a->ty), "lv");
     }
 
+    /* Seed the globals-shadowing locals the scan's N_ASSIGN arm registered:
+     * the interpreter's env lookup hands a body the top-level name's current
+     * value, so an unseeded alloca first-reads stack garbage (mirrors
+     * codegen_stmt.c). Named structs are reference-shaped at their global
+     * and stay skipped. */
+    for (int i = 0; i < g->locals.n; i++) {
+        Asg *a = &g->locals.v[i];
+        if (!a->shadow || a->cap) continue;
+        if (a->ty && a->ty->kind == TY_STRUCT && a->ty->name) continue;
+        Asg *gv = gvar_find(&g->gvars, a->name);
+        if (!gv || !gv->slot || !a->slot) continue;
+        LLVMValueRef cur = LLVMBuildLoad2(g->ab, ty_of(g, a->ty), gv->slot, "gvseed");
+        if (!cur) continue;
+        LLVMBuildStore(g->ab, cur, a->slot);
+    }
+
     /* Capture slots: the i8* context parameter points at the creation
      * site's array of slot addresses (cg_funclit builds it). A
      * captured binding enters the alloca pass with slot NULL and cap 1,

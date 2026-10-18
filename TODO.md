@@ -181,7 +181,7 @@ this gated on — closures capturing function locals on the llvm backend
 still hits the general capture machinery, and the top-level half of P7
 would apply to it too.)
 
-## P7 — LLVM closure capture (ported 2026-10-18) + the top-level gap (found, not started)
+## P7 — LLVM closure capture (ported 2026-10-18) + top-level env write path (closed 2026-10-18)
 
 - [x] The llvm backend emits phase-2 captures (2026-10-18): `cg_def`
       registers the signature pass's `cap_names`/`cap_types` before
@@ -197,25 +197,27 @@ would apply to it too.)
       `native-consistency.lume` (which failed `cap_hof` at line 503 since
       the capture tests landed) is green; the three-way suite
       (`tests/native_backends.sh`) passes on macOS, Linux CI pending.
-- [ ] Top-level lambda captures are broken on BOTH native backends
-      (pre-existing, not introduced by the port above; found with the same
-      probes): `let s = 0; let bump = (n) => { s = s + n; return s; };` at
-      the top level prints `3 4 101 100` interpreted but `0 0 0 100`
-      compiled. The signature pass's capture walk does not treat a top-level
-      binding as capturable — the name is lifted to a module global — while
-      the body scan then registers the free variable as a fresh alloca, so
-      reads hit an uninitialized slot and writes are lost. Function-body
-      captures (the shape `native-consistency`'s cap_* series covers) are
-      three-way consistent; only the top-level shape diverges.
-  - [ ] Decide the semantics first: bind a top-level free name in a closure
-        body to the lifted global's address (capture-like, matching the
-        interpreter's call-time env lookup), or reject it at typecheck with
-        the §4.14 no-capture vocabulary. An interp/native divergence in
-        silent-wrong shape is the one outcome that must not ship.
-  - [ ] Whatever wins, it lands in the shared sig pass plus BOTH native
-        emitters (the text scan registers the same fresh alloca today), and
-        `native-consistency.lume` gains a top-level capture case with an
-        expected baseline so the gate pins it.
+- [x] Top-level env access on the native backends (2026-10-18): the
+      original diagnosis in this entry ("reads hit an uninitialized slot")
+      was wrong on the read half — a body's reads of a top-level name
+      already resolve through `gvar_find` to the module global and see
+      rebinds. What was broken is the write path: scan's N_ASSIGN arm
+      registers a frame-local shadow for a body that assigns a top-level
+      name (intentional, matching the interpreter's fresh-frame-per-call
+      rebinding) but the entry block never seeded that alloca from the
+      lifted global — so the shadow's first read was uninitialized stack
+      (`f2(1)` printed garbage where the interpreter says 2). Fixed by
+      marking those registrations (text `Asg.shadow` / llvm `Asg.shadow`,
+      `asg_push_shadow`) and seeding them from the `@lv_` global in both
+      emitters' entry blocks plus the route-handler alloca pass (named
+      structs skipped: reference-shaped globals). Pinned by the new tl8_*
+      series in `native-consistency.lume` (+ its expected baseline):
+      fresh-frame seeds, frame-local writes, shared-cell top level.
+  - [x] Semantics decided: seed-from-global (capture-like freshness per
+        call), not typecheck rejection — the reject branch would break
+        scripts the interpreter runs today, host invest.lume among them.
+  - [x] Landed in both native emitters (shared scan marks); the third
+        backend needed no change.
 
 **Done when**: the top-level shape is either three-way consistent or
 loudly rejected. (The Linux real-machine half is closed 2026-10-18: the

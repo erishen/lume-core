@@ -582,8 +582,12 @@ static void scan_stmt(CG *g, Node *n)
             Asg *gv = gvar_find(&g->gvars, n->as.assign.name);
             if (gv) {
                 Type *ty = infer_node_type(g, n->as.assign.value);
-                asg_push(&g->locals, n->as.assign.name, ty ? ty : gv->ty,
-                         NULL, n->line);
+                /* shadow-marked: the entry block seeds this local from the
+                 * @lv_ global, matching the interpreter's call-time env
+                 * lookup (first read sees the global's value, not stack
+                 * garbage — §8.1 #10's write-side half). */
+                asg_push_shadow(&g->locals, n->as.assign.name,
+                                ty ? ty : gv->ty, NULL, n->line);
             }
         }
         break;

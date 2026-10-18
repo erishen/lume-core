@@ -1204,5 +1204,22 @@ print(lexs);                                   // 1 (外层绑定不动)
 let lexo = (let tmp = lexs * 2 in tmp) + lexs;
 print(lexo);                                   // 3 (body 外不可见, 外层可见)
 
+// ---- top-level env: the shadow-local write path (§8.1 #10 write side) ----
+// A body that ASSIGNS a top-level name gets a frame-local shadow seeded
+// from the global's current value (the interpreter's call-time env lookup);
+// the top level itself keeps writing the shared global. Unseeded allocas
+// used to first-read stack garbage here (CI asan caught the shape).
+let tl8_g: int = 10;
+func tl8_wu(): int { tl8_g = tl8_g + 1; return tl8_g; }
+print(str(tl8_wu()));                          // 11 (fresh frame each call)
+print(str(tl8_wu()));                          // 11 (never 12: writes stay frame-local)
+print(str(tl8_g));                             // 10 (top-level global untouched)
+let tl8_lambda = () => { tl8_g = tl8_g * 2; return tl8_g; };
+print(str(tl8_lambda()));                      // 20 (seeded from the global, not garbage)
+print(str(tl8_lambda()));                      // 20 (fresh frame again)
+print(str(tl8_g));                             // 10 (shadow never escapes)
+tl8_g = 99;                                    // top level writes the shared cell...
+print(str(tl8_wu()));                          // 100 (...so the next seed sees it)
+
 warmup();
 main();

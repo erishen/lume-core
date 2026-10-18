@@ -73,7 +73,9 @@ char *xstrdup(const char *s);
 
 /* ------------------------------------------------------------ codegen ctx --- */
 
-typedef struct { char *name; Type *ty; char *slot; size_t line; } Asg;
+typedef struct { char *name; Type *ty; char *slot; size_t line;
+                 int shadow; } Asg;   /* shadows a @lv_ global: seed from
+                                       * it in the entry block */
 typedef struct { Asg *v; int n, cap; } Asgs;
 
 /* A name whose type the signature pass already knows, and the table it is
@@ -169,6 +171,12 @@ Asg *asg_find(Asgs *a, const char *name, size_t use_line);
 Asg *gvar_find(Asgs *a, const char *name);
 void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
               size_t line);
+/* Like asg_push but marks the binding as a function-body local that
+ * shadows a top-level global (scan's N_ASSIGN arm): the entry block seeds
+ * it from the @lv_ global so the body's first read matches the
+ * interpreter's env lookup instead of uninitialized stack. */
+void asg_push_shadow(Asgs *a, const char *name, Type *ty, const char *slot,
+                     size_t line);
 void asgs_free(Asgs *a);
 void asg_truncate(Asgs *a, int n);
 const char *bad(Node *n, const char *what);

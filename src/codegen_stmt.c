@@ -614,6 +614,21 @@ static void cg_route_handler(CG *g, Node *fn, int rid)
                  fn->line, a->name);
         EMIT(g, "  %s = alloca %s\n", a->slot, lt);
     }
+    /* Same shadow seeding as cg_def's entry: a handler body that writes a
+     * top-level name reads it first, and the interpreter's env lookup would
+     * hand it the global's value, not stack garbage. */
+    for (int i = 0; i < g->locals.n; i++) {
+        Asg *a = &g->locals.v[i];
+        if (!a->shadow) continue;
+        if (a->ty && a->ty->kind == TY_STRUCT && a->ty->name) continue;
+        Asg *gv = gvar_find(&g->gvars, a->name);
+        const char *lt = llvm_type_of(a->ty);
+        if (!gv || !lt || strncmp(a->slot, "%lv_", 4) != 0) continue;
+        char ld[128];
+        snprintf(ld, sizeof ld, "%%gv%ds%d", i, g->tid++);
+        EMIT(g, "  %s = load %s, %s* %s\n", ld, lt, lt, gv->slot);
+        EMIT(g, "  store %s %s, %s* %s\n", lt, ld, lt, a->slot);
+    }
 
     if (fn->as.funclit.body) cg_block(g, fn->as.funclit.body);
     g->in_handler = 0;
@@ -816,6 +831,25 @@ static void cg_def(CG *g, const char *sym, const char *title,
         const char *lt = llvm_type_of(a->ty);
         if (!lt) ERRX(g, "line %zu: variable '%s' has no codegen type", line, a->name);
         EMIT(g, "  %s = alloca %s\n", a->slot, lt);
+    }
+    /* Seed the globals-shadowing locals the scan's N_ASSIGN arm registered:
+     * the interpreter's env lookup hands a body the top-level name's current
+     * value, so an unseeded alloca first-reads stack garbage (the §8.1 #10
+     * write-side half: reads already resolve through gvar_find, writes did
+     * not start from the global). Done after the alloca pass so every slot
+     * exists; before the body so the seed dominates every use. Named
+     * structs are reference-shaped at their global and stay skipped. */
+    for (int i = 0; i < g->locals.n; i++) {
+        Asg *a = &g->locals.v[i];
+        if (!a->shadow) continue;
+        if (a->ty && a->ty->kind == TY_STRUCT && a->ty->name) continue;
+        Asg *gv = gvar_find(&g->gvars, a->name);
+        const char *lt = llvm_type_of(a->ty);
+        if (!gv || !lt || strncmp(a->slot, "%lv_", 4) != 0) continue;
+        char ld[128];
+        snprintf(ld, sizeof ld, "%%gv%ds%d", i, g->tid++);
+        EMIT(g, "  %s = load %s, %s* %s\n", ld, lt, lt, gv->slot);
+        EMIT(g, "  store %s %s, %s* %s\n", lt, ld, lt, a->slot);
     }
     if (params) {
         for (int i = 0; i < arity; i++) {

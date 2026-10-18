@@ -117,7 +117,15 @@ void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
      * interpreter, whose set-or-define env rebinds a name sequentially:
      * the visible binding at a use is the latest one declared before it. */
     a->v[a->n].line = line;
+    a->v[a->n].shadow = 0;
     a->n++;
+}
+
+void asg_push_shadow(Asgs *a, const char *name, Type *ty, const char *slot,
+                     size_t line)
+{
+    asg_push(a, name, ty, slot, line);
+    a->v[a->n - 1].shadow = 1;
 }
 
 Asg *asg_find(Asgs *a, const char *name, size_t use_line)

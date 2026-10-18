@@ -107,6 +107,7 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
     a->v[a->n].ty   = ty;
     a->v[a->n].slot = slot;
     a->v[a->n].cap  = 0;
+    a->v[a->n].shadow = 0;
     /* Declaration line — see codegen.c's asg_push. The flat pre-scanned
      * table can hold several same-name bindings (loop variable + a later
      * `let` of a different type); lookup is position-aware so a use site
@@ -125,6 +126,13 @@ static void asg_push_cap(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
 {
     asg_push(a, name, ty, slot, line);
     a->v[a->n - 1].cap = 1;
+}
+
+static void asg_push_shadow(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
+                            size_t line)
+{
+    asg_push(a, name, ty, slot, line);
+    a->v[a->n - 1].shadow = 1;
 }
 
 static Asg *asg_find(Asgs *a, const char *name, size_t use_line)
