@@ -1,0 +1,7 @@
+enum S { A(r: float) }
+func f(s: S): int {
+  return match (s) {
+    A(r => 1,
+    _   => 0
+  };
+}

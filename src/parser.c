@@ -423,7 +423,12 @@ bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
     *outc = patc;
     return true;
 fail:
-    for (int i = 0; i < patc; i++) {
+    /* The in-flight variant (slot patc) is claimed before its vname/binds
+     * are filled, so every failure after the realloc must release it too:
+     * the `)`- and binding-name exits leak through here (libFuzzer
+     * leak-8c01: vname, bind string and binds shell, 28B total).
+     * A fresh slot is memset-zeroed, so NULL arrays are skip-safe. */
+    for (int i = 0; pats && i <= patc; i++) {
         free(pats[i].vname);
         free_name_array(pats[i].binds, pats[i].bindc);
     }
