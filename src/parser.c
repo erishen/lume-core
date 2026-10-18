@@ -758,7 +758,22 @@ static void node_free_kids(Node *n) {
         for (int i = 0; i < c; i++) node_free(s[i]);
         break;
     }
-    case N_LET:  node_free(n->as.let.init); break;
+    case N_LET: {
+        node_free(n->as.let.init);
+        /* A `fn(...) -> ret` annotation's param vector is the parser's own
+         * realloc'd array (parse_type). Once a scan pass stamps t->func on
+         * the annotation Type, type_release_all's exception skips t->types
+         * expecting this sweep to free it (the comment names N_FUNC_LIT
+         * only) — and the plain path freed the Type shell but never this
+         * vector: the CI asan leg's 40-bytes-in-4 LSan report. The Type
+         * elements stay with type_release_all; only the vector goes here.
+         * NULL it so the sweep that runs after cannot reach it again. */
+        if (n->as.let.annot && n->as.let.annot->kind == TY_FUNC) {
+            free(n->as.let.annot->types);
+            n->as.let.annot->types = NULL;
+        }
+        break;
+    }
     case N_LET_PAT: node_free(n->as.letpat.init); break;
     case N_LET_EXPR:
         node_free(n->as.letx.init);
