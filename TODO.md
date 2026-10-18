@@ -19,12 +19,12 @@ incremental cost of fuzzing is small.
   seeded from `tests/*.lume` and the `-bad/` fixtures. — `make fuzz`
   (Linux clang; `-fsanitize=fuzzer` rejects the Windows GNU targets,
   so Windows runs the driver shape instead).
-- [ ] Decide CI policy: a short 60s fuzz leg in the `asan` job, or
-  local-only. Start local-only; promote once it proves stable. — Local
-  smoke passed: 1,094 mutation inputs (truncate/flip/random bytes over
-  the fixtures) through `--check`, zero unexpected exits; the repeated-
-  cycle global state (orphan batch, ty_allocs, g_ck_scopes) is clean.
-  A 30-minute libFuzzer run still needs a Linux host.
+- [x] Decide CI policy: a short 60s fuzz leg in the `asan` job, or
+  local-only. — Promoted 2026-10-18 as its own `fuzz` job running
+  `make fuzz-ci` (deterministic -runs=1 seed replay + 60s budgeted
+  campaign, artifacts uploaded on failure); first run green. The old
+  "30-minute run still needs a Linux host" note is moot: campaign 10
+  (see Done-when) completed the budget on an arm64 Linux container.
 - [x] Any crash found lands in `tests/*-bad/` so the regression stays
   covered. — The first Linux campaigns found three, all fixed with
   fixtures under `tests/fuzz-bad/`: (1) tuple-literal error paths
@@ -35,17 +35,45 @@ incremental cost of fuzzing is small.
   record-only validators could leave longer than `binds[0]`/
   `vfield_types[0]` — heap-buffer-overflow, reproducible today from
   the seed corpus via `match2-bad/iflet-binds.lume` and
-  `enum-bad/wrong-binds.lume`.
-- [ ] The `make fuzz` target built the core objects WITHOUT coverage
+  `enum-bad/wrong-binds.lume`. Campaigns 6-9 raised the tally to
+  eight: (4) match/if-let mid-construction `MatchPat` arrays stranded
+  (free_pat_array); (5) enum variant slots not published before their
+  payload parse (in-flight arrays outlived the sweep's vcount walk);
+  (6) parse_patterns' own fail exit skipped the in-flight slot; (7)
+  that fix's realloc-failure edge (claimed-slot bound, `1ff919a`);
+  (8) unbounded descent nesting — ~500 parens ran the fuzz thread's
+  stack out, fixed with PARSER_MAX_DEPTH 200 + the expression-chain
+  and parse_block depth guards (`c4d1906`). All carry fuzz-bad
+  fixtures; the 96-seed corpus replays clean on the instrumented
+  build.
+- [x] The `make fuzz` target built the core objects WITHOUT coverage
   instrumentation (`$(CFLAGS)` has no `-fsanitize=fuzzer`): libFuzzer
   ran blind — a 54M-input "clean" 30-minute report was `cov: 5`, i.e.
   no fuzzing at all. Fixed 2026-10-18 with `build-fuzz/` objects on
   `-fsanitize=fuzzer-no-link`; any pre-fix fuzz number in this repo's
   history is void.
 
-**Done when**: 30 consecutive minutes of fuzzing with zero crashes,
-hangs, or leaks — on the instrumented build, first campaign in flight
-2026-10-18 (the earlier "clean" run was the blind build above).
+**Done**: 2026-10-18, campaign 10 — 1,226,047 inputs in the full
+1801s budget, zero crashes/leaks/timeouts, 12,279 new corpus units,
+peak RSS 504 MB. Post-campaign backlog, in priority order (the
+discover-fix-campaign loop stops here; the CI leg takes over patrol):
+
+- [ ] HOST SYNC (correctness debt with a deadline): bugs 1-8 live in
+  the host `lume/lang/` copies of `parser*.c` too, and `typecheck.c`
+  is host_owned — tag v0.8.0 (the 90+ Unreleased CHANGELOG entries
+  include tonight's eight), `make sync-lang` bumps the pin for the
+  parser trio, the ck_put_pat_binds clamp needs a hand-merge. Push
+  agent-httpd before the host.
+- [ ] Same-class audit: the eight cluster as "in-flight slot not
+  counted by the cleanup walk" and "journal/free boundary mismatch".
+  Sweep the remaining `goto fail`/`return NULL` exits that claim
+  slots before filling them (type/struct field decls, server{}/tool{}
+  blocks, localfn hoist, sdef_*) — mechanical, one evening.
+- [ ] fuzz-ci hang patrol: `-hang_threshold=` is unset (crash/leak
+  only). Add it once, with a baseline from the corpus replay speed.
+- [ ] SPEC: record the 200-level nesting ceiling as a deliberate
+  parser boundary (hostile-input guard, like the intentional
+  boundaries list), so future reviews don't re-file it.
 
 ## P2 — Arena allocator for the AST
 
