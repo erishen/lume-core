@@ -387,6 +387,12 @@ static void free_name_array(char **a, int n); /* defined with node_free_own */
 bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
     MatchPat *pats = NULL;
     int patc = 0;
+    /* Slots actually present in the allocation — patc only advances once a
+     * variant completes, and a FAILED realloc leaves pats at the old size
+     * with patc already past it, so the cleanup below walks this instead
+     * (libFuzzer crash-ed0e12: heap-buffer-overflow reading slot patc
+     * after the realloc that would have created it gave up). */
+    int claimed = 0;
     for (;;) {
         Token pt = peek(p);
         if (pt.type != TOK_IDENT) {
@@ -394,8 +400,10 @@ bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
             goto fail;
         }
         advance(p);
-        pats = realloc(pats, sizeof(MatchPat) * ((size_t)patc + 1));
-        if (!pats) goto fail;
+        MatchPat *np = realloc(pats, sizeof(MatchPat) * ((size_t)patc + 1));
+        if (!np) goto fail;
+        pats = np;
+        claimed = patc + 1;
         MatchPat *pat = &pats[patc];
         memset(pat, 0, sizeof *pat);
         pat->vname = ident_name(p, pt);
@@ -428,7 +436,7 @@ fail:
      * the `)`- and binding-name exits leak through here (libFuzzer
      * leak-8c01: vname, bind string and binds shell, 28B total).
      * A fresh slot is memset-zeroed, so NULL arrays are skip-safe. */
-    for (int i = 0; pats && i <= patc; i++) {
+    for (int i = 0; pats && i < claimed; i++) {
         free(pats[i].vname);
         free_name_array(pats[i].binds, pats[i].bindc);
     }

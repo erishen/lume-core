@@ -1,0 +1,7 @@
+enum E { A(x: int) | B(y: int) }
+func f(e: E): int {
+  return match (e) {
+    A(x) | [(y) => xlen + y,
+    _           => 0
+  };
+}
