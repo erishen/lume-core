@@ -6,6 +6,49 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-19
+
+### Added — bump-arena allocator for the AST (P2)
+
+- One bump arena per compilation unit. `nalloc` and every parser-owned
+  string route into it; the free-path patches (`ecd7afc` / `7e5d2f8`)
+  and the orphan journal are deleted — journaling existed solely to
+  reclaim mid-parse garbage, which an arena reclaims wholesale at reset.
+- The tree death points are unchanged in count: the five former
+  `node_free` call sites (compile/run CLI, `--dump`, fuzz cycle per
+  input, loader module destroy, LSP per document version) become arena
+  resets. The loader's per-request AST read stays reset-free; teardown
+  is module-set granularity (watch reload / full unload).
+- `type_func` copies its `params` into the arena so the Type graph keeps
+  its own teardown regime (`type_release_all` unchanged — out of scope
+  for v1, per `docs/ARENA.md`, which records the design and the hazard
+  enumeration).
+- Gates: `make test`; the ASan suite at 182 tests with zero leaks; the
+  native-backend three-leg suite (interp / text IR / libLLVM); fuzz seed
+  replay (94 seeds) under the standalone fuzz driver. The P2 Done-when
+  audit is closed: the free-path patches were deleted without the suite
+  noticing.
+
+### Changed — codegen Asg / arm-scope strings move into the arena
+
+- The `name` / `slot` strings bound per assignment record and switch-arm
+  scope are now allocated from the arena (`arena_strdup`). The four
+  hand-copied variants (`codegen.c` / `llvm_codegen.c` / `codegen_scan.c`
+  / `llvm_cg_stmt.inc`) changed in one commit to preserve text/llvm
+  case parity.
+- `asg_truncate` / `arm_scope_truncate` degenerate to counter resets.
+  The LTys tables (globals / sigs / structs) keep the malloc regime, as
+  do the emitter temporaries (`free(r.v)`).
+
+### Verified — Windows CI and Linux llvm legs (P3 / P4)
+
+- P3 closed: the native-backend three-leg suite (interp / text IR /
+  libLLVM) is green on Windows CI (run 39216687894).
+- P4: `tests/llvm-json` verified on a real Linux machine (OrbStack
+  Docker, clang 18), including the gotcha that the tree copied into the
+  container must exclude host build artifacts (`bin` / `build` /
+  `build-asan` / `out`) or the stale Mach-O mtimes shadow a rebuild.
+
 ## [0.8.0] - 2026-10-19
 
 ### Added — `sha256()` / `hmac_sha256()` message-digest builtins
