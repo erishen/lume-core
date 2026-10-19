@@ -22,6 +22,20 @@ All notable changes to Lume are documented here. The format follows
   `tests/native_backends.sh` is now line-ending agnostic (CRLF-normalized
   diffs), so the three-way suite runs green on Windows builds too.
 
+### Fixed — native HOF element reads follow the list's real element type
+
+- A `let d = map(...)` binding could be typed `list(any)` when the signature
+  pass collected it before the lambda's return was pinned, and every later
+  reduce/map/filter element read degraded that to INT — a double list was then
+  read by its i64 slots, surfacing as garbage on the native backends
+  (`examples/stats.lume` printed `stddev = 2.1474e+09` instead of `2.08713`;
+  the interpreter was correct). The signature pass now walks a HOF
+  initializer before typing the binding, and a placeholder pinned from an
+  any/empty list is upgraded once the real element type resolves.
+- A closure consumed by lists of two different element types is now a
+  compile-time "one closure shape per lambda" error instead of silently
+  reading one of them wrong.
+
 ## [0.9.3] - 2026-10-19
 
 ### Added — lexer scientific notation support
