@@ -431,7 +431,8 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
              * above. A mixed numeric/string operand (e.g. `1 + "x"`) is a type
              * error, not string concat. The numeric check must inspect BOTH
              * sides — the old code only looked at the left, so `1 + "x"`
-             * slipped through --check. */
+             * slipped through and later crashed `watch` hot-reload, which
+             * trusts --check to reject invalid edits. */
             if (lt && rt && lt->kind != TY_ANY && rt->kind != TY_ANY &&
                 (!type_compat(c, lt, type_prim(TY_FLOAT), n->line) ||
                  !type_compat(c, rt, type_prim(TY_FLOAT), n->line)))
