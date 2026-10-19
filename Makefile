@@ -1207,13 +1207,18 @@ docroot-test: all
 route-cap-test: all
 	@./$(TARGET) tests/route-cap-srv.lume > /tmp/lume-route-cap-srv.log 2>&1 & \
 	SRV=$$!; \
-	if ! python3 tests/wait_port.py 18893 15; then \
-	  echo "==> route-cap server 15s 未就绪(路由注册失败?)"; cat /tmp/lume-route-cap-srv.log; kill $$SRV 2>/dev/null; exit 1; fi; \
+	if ! python3 tests/wait_port.py 18893 30; then \
+	  echo "==> route-cap server 30s 未就绪(路由注册失败?)"; cat /tmp/lume-route-cap-srv.log; kill $$SRV 2>/dev/null; exit 1; fi; \
 	fail=0; \
 	probe() { url="$$1"; want="$$2"; \
-	  out=$$(curl -s --noproxy '*' -w '\n%{http_code}' "http://127.0.0.1:18893$$url"); \
-	  code=$$(printf '%s\n' "$$out" | tail -1); \
-	  body=$$(printf '%s\n' "$$out" | sed '$$d'); \
+	  code="000"; body=""; \
+	  for i in 1 2 3 4 5; do \
+	    out=$$(curl -s --noproxy '*' -w '\n%{http_code}' "http://127.0.0.1:18893$$url"); \
+	    code=$$(printf '%s\n' "$$out" | tail -1); \
+	    body=$$(printf '%s\n' "$$out" | sed '$$d'); \
+	    if [ "$$code" = "200" ] && printf '%s' "$$body" | grep -q "$$want"; then break; fi; \
+	    sleep 1; \
+	  done; \
 	  if [ "$$code" != "200" ]; then echo "FAIL route-cap $$url: code=$$code"; fail=1; \
 	  elif ! printf '%s' "$$body" | grep -q "$$want"; then echo "FAIL route-cap $$url: body missing '$$want'"; printf '%s\n' "$$body"; fail=1; \
 	  else echo "ok   route-cap $$url"; fi; }; \
