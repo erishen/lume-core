@@ -300,6 +300,15 @@ static void lex_istr(LexOut *o, const char *str_start) {
         /* EXPR_STR: inside a string literal within the expression — the only
          * character that matters is an unescaped closing quote. */
         if (c == '\\') {
+            if (!p[1]) {
+                /* A trailing backslash at EOF must land on the NUL, not
+                 * stride past it (heap-buffer-overflow read; CI fuzz leg
+                 * found it 2026-10-19, minimized to `s!"{"a\`). The next
+                 * iteration then reports the unterminated string. Same
+                 * guard lex_string applies to escapes. */
+                p++;
+                continue;
+            }
             p += 2;
             continue;
         }
