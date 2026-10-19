@@ -1207,13 +1207,13 @@ docroot-test: all
 route-cap-test: all
 	@./$(TARGET) tests/route-cap-srv.lume > /tmp/lume-route-cap-srv.log 2>&1 & \
 	SRV=$$!; \
-	if ! python3 tests/wait_port.py 18893 30; then \
+	if ! python3 tests/wait_port.py 39184 30; then \
 	  echo "==> route-cap server 30s 未就绪(路由注册失败?)"; cat /tmp/lume-route-cap-srv.log; kill $$SRV 2>/dev/null; exit 1; fi; \
 	fail=0; \
 	probe() { url="$$1"; want="$$2"; \
 	  code="000"; body=""; \
 	  for i in 1 2 3 4 5; do \
-	    out=$$(curl -s --noproxy '*' -w '\n%{http_code}' "http://127.0.0.1:18893$$url"); \
+	    out=$$(curl -s --noproxy '*' -w '\n%{http_code}' "http://127.0.0.1:39184$$url"); \
 	    code=$$(printf '%s\n' "$$out" | tail -1); \
 	    body=$$(printf '%s\n' "$$out" | sed '$$d'); \
 	    if [ "$$code" = "200" ] && printf '%s' "$$body" | grep -q "$$want"; then break; fi; \

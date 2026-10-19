@@ -1,10 +1,10 @@
 // tests/route-cap-srv.lume — 路由表上限回归被测服务端 (2026-10-17)
-// 由 make route-cap-test 后台拉起, curl 打点后杀掉。端口 18893。
+// 由 make route-cap-test 后台拉起, curl 打点后杀掉。端口 39184。
 // 40 条路由: 旧上限 MAX_AL_ROUTES/NATIVE_ROUTES_MAX 32 时第 33 条起注册失败
 // (解释器报错还指向最后一条路由, 原生端直接静默丢), 调到 128 后应全量注册。
 
 server {
-  port = 18893;
+  port = 39184;
 }
 
 get "/r1", func(req) {
