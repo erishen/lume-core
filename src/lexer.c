@@ -403,6 +403,22 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
                 p++;
                 while (is_digit(*p)) p++;
             }
+            /* Scientific notation: an 'e'/'E' followed by an optional sign and
+             * at least one decimal digit. emit_number() already routes a literal
+             * containing 'e'/'E' through strtod (float), so the scanner only
+             * needs to collect the exponent. A bare 'e' with no valid exponent
+             * (e.g. `1e`, `1eX`) is left for the identifier scan so the prior
+             * behavior is preserved for malformed input. */
+            if (*p == 'e' || *p == 'E') {
+                const char *e = p;
+                p++;
+                if (*p == '+' || *p == '-') p++;
+                if (is_digit(*p)) {
+                    while (is_digit(*p)) p++;
+                } else {
+                    p = e;  /* not a real exponent; let 'e' become an ident */
+                }
+            }
             o.lx.pos = (size_t)(p - source);
             emit_number(&o, tok_start, (int)(p - tok_start));
             continue;

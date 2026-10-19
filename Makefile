@@ -577,7 +577,7 @@ letexpr-test: all
 	echo "==> letexpr 单测通过"
 
 test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity \
-      native native-text treecheck
+      native native-text treecheck sci-test
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
 # 两个原生后端是独立翻译单元，各持一份私有 infer_node_type；某个节点/类型
@@ -1077,6 +1077,25 @@ interp2-test: all
 	check_bad with-type-mismatch "struct field: cannot use a value of type string where int is expected"; \
 	check_bad with-unknown-field "unknown field 'z' in struct update"; \
 	echo "==> interp2 单测通过"
+
+# 科学计数法词法单测(tests/sci.lume + tests/sci-bad/*)。
+# 正向: 解释器 11 条断言全 PASS 无 FAIL; 负例: 不完整指数 `1e` 被拒,
+# 诊断关键字钉死(改词会让修复前的"expected ), got identifier ('e')"回归)。
+sci-test: all
+	@./$(TARGET) tests/sci.lume > /tmp/lume-sci-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-sci-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-sci-test.out; then \
+		echo "==> sci 单测失败 (rc=$$rc)"; exit 1; fi; \
+	if [ $$(grep -c PASS /tmp/lume-sci-test.out) -ne 11 ]; then \
+		echo "==> sci 断言数不符 (期望 11)"; exit 1; fi; \
+	set -e; \
+	check_bad() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/sci-bad/$$f.lume > /tmp/lume-sci-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-sci-bad.out; then \
+	    echo "==> sci 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-sci-bad.out; exit 1; fi; \
+	  echo "ok   sci-bad $$f: 拒绝且诊断准确"; }; \
+	check_bad incomplete-exp "expected ), got identifier ('e')"; \
+	echo "==> sci 单测通过"
 
 # 记录解构 `let { a, b } = e;` (SPEC §4.12): 解释器 12 条断言全 PASS; 两个原生
 # 后端各编各跑，输出必须同为 12/12 无 FAIL; 7 个编译期拒绝各断言自己的诊断句

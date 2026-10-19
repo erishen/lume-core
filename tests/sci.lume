@@ -1,0 +1,33 @@
+// tests/sci.lume — 科学计数法词法(sci notation)
+// 运行: make sci-test (并入 make test)
+//
+// 覆盖: 整数/小数底 × e/E × 可选 +/- 指数。emit_number() 早就把含 'e'/'E'
+// 的字面量走 strtod(float) 路径, 但扫描主循环从未采集 e 后的指数部分,
+// 导致 `1e5` 被切成 NUMBER(1) + IDENT(e5) 而报错。本次修复采集指数。
+// 只走解释器; 三后端一致由 native-consistency 覆盖。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+// 大写 E 与小写 e 等价
+check("int-e",      1e5 == 100000);
+check("int-E",      1E5 == 100000);
+// 指数可带正负号
+check("int-e-plus", 1e+5 == 100000);
+check("int-e-minus", 1e-5 == 0.00001);
+// 小数底 + 负指数
+check("frac-e",     2.5e-3 == 0.0025);
+// 小数底 + 正指数
+check("frac-e10",   1.5e10 == 15000000000);
+// 大指数常数(Avogadro 量级), 用区间断言避免浮点串化误差
+check("const-e",    6.022e23 > 6.021e23 && 6.022e23 < 6.023e23);
+// 与同值整数字面量数值相等(无论 int/float 等价类)
+check("equal-int",  100000 == 1e5);
+// double 精度: 1e16 + 1 仍归约到 1e16
+check("round-add",  1e16 + 1.0 == 1e16);
+// 负指数参与乘法
+check("neg-mult",   2.5e-3 * 1000 == 2.5);
+// 混合系数相加
+check("chain",      1e2 + 2e1 + 3e0 == 123);
