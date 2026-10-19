@@ -6,6 +6,18 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-19
+
+### Fixed — CI test-infrastructure stability (no library/runtime change)
+
+- The `route-cap` integration test bound port `18893`, which the GitHub
+  macOS runner also occupies — so the server failed to listen and the probe
+  failed intermittently. Moved the test server to the cold high port `39184`
+  (Makefile target + `tests/route-cap-srv.lume`), and added a 30s readiness
+  wait with up to 5 curl retries (1s apart) so transient bind/listen races no
+  longer read as a product regression. These are test-harness-only changes;
+  the committed `lume-core` binary is byte-identical to `v0.9.1`.
+
 ## [0.9.1] - 2026-10-19
 
 ### Fixed — two hygiene bugs caught by CI (absent from every prior tag)
