@@ -6,6 +6,8 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-19
+
 ### Added — `sha256()` / `hmac_sha256()` message-digest builtins
 
 - Two general-purpose digest builtins on the interpreter path:
