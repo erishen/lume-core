@@ -363,6 +363,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_list_at_obj(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_list_at_slot(i8*, i64)\n");
     EMIT(g, "declare i64 @lume_list_print(i8*)\n");
+    EMIT(g, "declare void @lume_list_sort(i8*)\n");
 
     EMIT(g, "declare i8* @lume_map_new()\n");
     EMIT(g, "declare i64 @lume_map_len(i8*)\n");
@@ -1276,6 +1277,24 @@ static Val cg_builtin(CG *g, Node *n)
         EMIT(g, "  %s = call %s %s(%s %s)\n", tmp, rty, fn, pty, a.v);
         free(a.v);
         return val_make(rt, tmp);
+    }
+
+    /* sort(l): sort the list in place and return it (SPEC collection tools).
+     * The runtime helper (src/rt.c lume_list_sort) applies the interpreter's
+     * homogeneity rule by scanning the element slots, so any statically typed
+     * list compiles and the runtime error shape matches the interpreter; a
+     * non-list argument is a compile-time error here. The same list pointer
+     * is returned (in place, like the interpreter's sort). */
+    if (strcmp(bname, "sort") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: sort() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: sort() needs a list", n->line);
+        }
+        EMIT(g, "  call void @lume_list_sort(i8* %s)\n", a.v);
+        return a;   /* sorted in place; the same list is returned */
     }
 
     return (Val){ NULL, NULL, 0 };

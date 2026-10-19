@@ -166,6 +166,16 @@ static void collect_known(CG *g, Node *n, LTys *t)
     if (!n) return;
 
     if (n->type == N_LET) {
+        /* Seed the scope with what collect_known has already gathered before
+         * typing this initializer, so an init that references an earlier
+         * top-level binding (`let s = sort(scores)`) can see that binding's
+         * type. Without this the variable resolves to NULL here, the binding
+         * is recorded with a NULL type, and an unannotated function
+         * parameter fed the result stays "no known type" even though the
+         * scan pass (pass 1.7) types the very same binding fine by walking
+         * top-level lets in order with a live scope. Keeps the sig pass'
+         * view of top-level bindings in step with the scan. */
+        g->scope = *t;
         Type *ty = n->as.let.annot ? n->as.let.annot
                                    : infer_node_type(g, n->as.let.init);
         lt_push(t, n->as.let.name, ty);

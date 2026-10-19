@@ -742,6 +742,61 @@ void lume_error_set(const char *msg)
     }
 }
 
+/* sort(l) — in-place, returns l (SPEC collection tools). The interpreter's
+ * native_sort (builtins.c) requires a homogeneous list — all int (exact i64
+ * compare), all float (double), or all string (strcmp byte order) — and
+ * rejects bools, containers and mixes; empty and single-element lists are
+ * already sorted and skip the check. The native backends' slots carry their
+ * tag, so this helper applies the same rule by scanning the slots and uses
+ * the same comparators, with the same two error wordings. */
+static int cmp_sort_slot_i(const void *a, const void *b)
+{
+    const LumeSlot *sa = (const LumeSlot *)a, *sb = (const LumeSlot *)b;
+    return (sa->num > sb->num) - (sa->num < sb->num);
+}
+static int cmp_sort_slot_f(const void *a, const void *b)
+{
+    const LumeSlot *sa = (const LumeSlot *)a, *sb = (const LumeSlot *)b;
+    double da, db;
+    memcpy(&da, &sa->num, sizeof da);
+    memcpy(&db, &sb->num, sizeof db);
+    return (da > db) - (da < db);
+}
+static int cmp_sort_slot_s(const void *a, const void *b)
+{
+    const LumeSlot *sa = (const LumeSlot *)a, *sb = (const LumeSlot *)b;
+    return strcmp(sa->str ? sa->str : "", sb->str ? sb->str : "");
+}
+void lume_list_sort(LumeList *l)
+{
+    if (!l || l->len <= 1) return;   /* empty / single: already sorted */
+    int kind = -1, bad = 0;
+    for (int64_t i = 0; i < l->len; i++) {
+        int k;
+        switch (l->items[i].tag) {
+        case LUME_SLOT_INT:   k = 0; break;
+        case LUME_SLOT_FLOAT: k = 1; break;
+        case LUME_SLOT_STR:   k = 2; break;
+        default:              k = 3; break;   /* bool / container / null */
+        }
+        if (k == 3) { bad = 1; break; }       /* not a number or string */
+        if (kind == -1) kind = k;
+        else if (kind != k) { bad = 2; break; }  /* mixed number kinds */
+    }
+    if (bad == 1)
+        lume_error_set("sort() needs a list of numbers or strings");
+    else if (bad == 2)
+        lume_error_set("sort() needs a homogeneous list "
+                       "(all numbers or all strings)");
+    if (bad) return;
+    if (kind == 0)
+        qsort(l->items, (size_t)l->len, sizeof *l->items, cmp_sort_slot_i);
+    else if (kind == 1)
+        qsort(l->items, (size_t)l->len, sizeof *l->items, cmp_sort_slot_f);
+    else
+        qsort(l->items, (size_t)l->len, sizeof *l->items, cmp_sort_slot_s);
+}
+
 int lume_index_failed(void) { return g_index_failed; }
 
 /* Report a failed index read. Inside try() this records the message and

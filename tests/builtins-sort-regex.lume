@@ -2,8 +2,9 @@
 // 运行: make builtins-test (并入 make check)
 //
 // 解析→抽取→排序闭环的最后一块: json() 解析出数组, str_match()/regex() 从
-// 文本抽取字段, sort() 排序。三者都只走解释器(与 json()/split() 一致),
-// 编译型原生后端目前不覆盖这些通用内建。
+// 文本抽取字段, sort() 排序。sort() 自 2026-10-19 起三后端统一(见
+// native-consistency.lume 的 sort 探针段), 本文件仍是解释器侧回归;
+// str_match()/regex() 与 json()/split() 一致继续只走解释器。
 
 func check(name, cond) {
   if (cond) { print("PASS " + name); }

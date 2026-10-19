@@ -89,7 +89,13 @@ check() {
             fail "$label: interpreter wrote to stderr"
         fi
     fi
-    if ! diff -u "$EXPECTED" "$WORK/$label.out" > "$WORK/$label.diff"; then
+    # Windows builds emit CRLF from the CRT's text-mode stdout, while the
+    # committed baseline is LF, so normalize before diffing — the leg itself
+    # is line-ending agnostic this way, and the step is a no-op on Linux.
+    # The cross-leg comparison below uses the same normalized files, so a
+    # mixed-mode pair cannot false-fail either.
+    tr -d '\r' < "$WORK/$label.out" > "$WORK/$label.norm"
+    if ! diff -u "$EXPECTED" "$WORK/$label.norm" > "$WORK/$label.diff"; then
         head -20 "$WORK/$label.diff"
         fail "$label: output differs from $EXPECTED"
     fi
@@ -156,7 +162,7 @@ for (( i = 0; i < ${#RAN[@]}; i++ )); do
     for (( j = i + 1; j < ${#RAN[@]}; j++ )); do
         a=${RAN[$i]}
         b=${RAN[$j]}
-        diff -u "$WORK/$a.out" "$WORK/$b.out" > "$WORK/$a-vs-$b.diff" ||
+        diff -u "$WORK/$a.norm" "$WORK/$b.norm" > "$WORK/$a-vs-$b.diff" ||
             { head -20 "$WORK/$a-vs-$b.diff"; fail "$a and $b disagree"; }
         pass "$a and $b agree with each other"
     done
@@ -324,7 +330,7 @@ func err_path(): Result {
 print(ok_path());
 print(err_path());
 LUME
-prop_want=$("$TARGET" "$PROPAGATE" 2>/dev/null)
+prop_want=$("$TARGET" "$PROPAGATE" 2>/dev/null | tr -d '\r')
 [ "$prop_want" = "21
 {\"ok\":0}
 {\"err\":\"division by zero\"}" ] ||
@@ -337,7 +343,7 @@ for leg in "${RAN[@]}"; do
     esac
     "$TARGET" "$flag" "$PROPAGATE" -o "$WORK/prop-$leg" >/dev/null 2>&1 ||
         fail "propagate: $leg refused to compile a legal \`f()?\`"
-    got=$("$WORK/prop-$leg" 2>/dev/null)
+    got=$("$WORK/prop-$leg" 2>/dev/null | tr -d '\r')
     [ "$got" = "$prop_want" ] || {
         echo "got: $got"
         fail "propagate: $leg disagrees with the interpreter on \`f()?\`"

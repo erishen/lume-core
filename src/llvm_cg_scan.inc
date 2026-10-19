@@ -172,6 +172,16 @@ static Type *infer_node_type(CG *g, Node *n)
             return type_list(et);
         }
 
+        /* sort(l) returns the same list it sorted, so the result keeps the
+         * argument's element type. A non-list argument falls through to
+         * NULL — the explicit-annotation path then explains. Kept in step
+         * with codegen_scan.c's copy. */
+        if (strcmp(name, "sort") == 0 && n->as.call.argc == 1) {
+            Type *lt = infer_node_type(g, n->as.call.args[0]);
+            if (lt && lt->kind == TY_LIST) return lt;
+            return NULL;
+        }
+
         /* json()/stringify() serialize to a JSON string. json(str) means
          * parse, whose result type is dynamic — NULL here keeps the slot
          * opaque and lets the emit-time diagnostic do the explaining. */

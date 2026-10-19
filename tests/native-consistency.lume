@@ -1221,5 +1221,32 @@ print(str(tl8_g));                             // 10 (shadow never escapes)
 tl8_g = 99;                                    // top level writes the shared cell...
 print(str(tl8_wu()));                          // 100 (...so the next seed sees it)
 
+// ---- sort: 三后端统一的内建 (rt lume_list_sort 镜像解释器 native_sort) ----
+let srt_a = [3, 1, 2];
+sort(srt_a);
+print(srt_a);                  // [1,2,3]
+let srt_b = [3.5, 1.2, 2.8];
+sort(srt_b);
+print(srt_b);                  // [1.2,2.8,3.5]
+let srt_c = ["banana", "apple", "cherry"];
+sort(srt_c);
+print(srt_c);                  // ["apple","banana","cherry"]
+let srt_big = [9007199254740993, 1, 9007199254740992];
+sort(srt_big);
+print(srt_big);                // [1,9007199254740992,9007199254740993]
+let srt_e = [];
+sort(srt_e);
+print(srt_e);                  // []
+let srt_ret = sort([2, 1]);
+print(srt_ret);                // [1,2] (原地排序并返回同一列表)
+let srt_l = sort([2, 1]);
+print(srt_l[0] + srt_l[1]);    // 3 (排序结果可直接下标/运算)
+print(str(sort([3, 1, 2])));   // [1,2,3] (str 走同一序列化)
+let srt_v = sort([5, 2, 4, 1, 3]);
+func srt_len(xs): int { return len(xs); }
+print(srt_len(srt_v));       // 5 (排序结果变量可传带类型函数)
+func srt_sum(xs): float { return reduce((a, x) => a + x, xs, 0.0); }
+print(str(srt_sum(srt_v)));  // 15 (reduce 消费排序结果变量)
+
 warmup();
 main();

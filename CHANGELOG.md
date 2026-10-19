@@ -6,6 +6,22 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added — sort() on the native backends
+
+- `sort(l)` is now three-backend uniform: `--compile-text` / `--compile-llvm`
+  emit a call to the rt helper `lume_list_sort` (src/rt.c), which mirrors the
+  interpreter's `native_sort` by scanning the element slots — all int (exact
+  i64 compare), all float (double), or all string (`strcmp` byte order);
+  empty and single-element lists return unchanged. Mixed or bool/container
+  elements fail at run time with the interpreter's exact error wordings.
+- On the native backends the argument must be a statically typed `list`; an
+  `any` value (e.g. a `json()` result) needs a `get()`/annotation step first,
+  like the `m["k"]` scalar-read boundary. `sort(42)` is a compile-time error.
+- `tests/native-consistency.lume` gained a sort probe segment (int, float,
+  string, big-int exact, empty, in-place + return, index after sort, `str()`);
+  `tests/native_backends.sh` is now line-ending agnostic (CRLF-normalized
+  diffs), so the three-way suite runs green on Windows builds too.
+
 ## [0.9.3] - 2026-10-19
 
 ### Added — lexer scientific notation support

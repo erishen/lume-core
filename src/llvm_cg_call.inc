@@ -962,6 +962,24 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(acc0.ty, res);
     }
 
+    /* sort(l): same contract as the text emitter's copy — in-place, returns
+     * l; the runtime helper (src/rt.c lume_list_sort) applies the
+     * interpreter's homogeneity rule by scanning the element slots. */
+    if (strcmp(bname, "sort") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: sort() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: sort() needs a list", n->line);
+        LLVMTypeRef ats[1] = { g->i8ptr };
+        LLVMValueRef vs[1] = { a.v };
+        LLVMBuildCall2(g->ab,
+            LLVMFunctionType(LLVMVoidTypeInContext(g->ctx), ats, 1, 0),
+            rt_decl(g, "lume_list_sort", LLVMVoidTypeInContext(g->ctx), ats, 1),
+            vs, 1, "");
+        return a;   /* sorted in place; the same list is returned */
+    }
+
     return (Val){ NULL, NULL };
 }
 
