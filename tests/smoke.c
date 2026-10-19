@@ -1,4 +1,5 @@
 #include "lume.h"
+#include "arena.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -36,13 +37,14 @@ static void capture_end(int fd, char *path, char *out, size_t cap) {
     out[n < 0 ? 0 : n] = '\0';
 }
 
-/* Hand one test's object graph back: the AST (node_free recurses through
+/* Hand one test's object graph back: the AST (arena_reset reclaims
  * everything the parser built), the GC heap (vm_free), and the Type graph the
  * parser handed to the checker. Every test releases before returning, so the
  * leak report names the process, not one snippet. */
 static void smoke_release(Node *prog, VM *vm) {
+    (void)prog;
     vm_free(vm);
-    node_free(prog);
+    arena_reset();
     type_release_all();
 }
 

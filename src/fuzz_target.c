@@ -1,7 +1,7 @@
 /* src/fuzz_target.c — parser fuzzing entry point.
  *
  * Feeds arbitrary bytes through the lexer → parse_program (including its
- * orphan-release path) → the type checker. No backend emission: the target
+ * fail-path handling) → the type checker. No backend emission: the target
  * stays small and fast, and the corpus seeded from the hand-written
  * fixtures covers the parser/checker surface the negative fixtures probe.
  *
@@ -25,6 +25,7 @@
 #include <stdio.h>
 
 #include "lume.h"
+#include "arena.h"
 
 /* Shared core: one input → one parse+check cycle. Returns 1 when the input
  * parsed (regardless of whether the checker accepted it), 0 on a parse
@@ -40,7 +41,7 @@ static int lume_fuzz_one(const uint8_t *data, size_t size) {
     Node *prog = parse_program(src, err, sizeof(err));
     if (prog) {
         type_check_program(prog, err, sizeof(err));
-        node_free(prog);   /* the parse/check cycle's only tree */
+        arena_reset();     /* the parse/check cycle's only tree */
     }
     type_release_all();    /* Type graph from this cycle (idempotent) */
     free(src);

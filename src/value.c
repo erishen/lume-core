@@ -153,8 +153,8 @@ void gc_collect(VM *vm) {
 /* ---------- teardown ---------- */
 
 /* Release whatever an Obj owns beyond itself. Byte payloads of strings are
- * inline (obj_string), and ObjFunc.params / ObjFunc.body point into the AST
- * (node_free's business), so this only covers the heap-side strings and
+ * inline (obj_string), and ObjFunc.params / ObjFunc.body point into the parse
+ * arena (arena_reset's business), so this only covers the heap-side strings and
  * arrays: the gc_strdup'd keys in maps and envs, the key/value vectors, the
  * list vector, and the two gc_cstr'd name fields. */
 static void obj_release(Obj *o) {

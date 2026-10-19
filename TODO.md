@@ -81,6 +81,14 @@ remember. An arena removes the whole class instead of patching points.
   vectors, checker scope borrows, allocation past parse via the
   signature pass, loader's many-trees model, request-time interp reads,
   host sync debt, the four-copy Asgs trap).
+- [x] Stage 1 (2026-10-19): `src/arena.c` chunked bump allocator; `nalloc`
+  and all parser strings redirected; orphan journal + node_free family
+  deleted; the five tree-death sites reset the arena. `type_func` copies
+  the caller's param vector; the loader's import node borrows the canon
+  path and `loader_free` frees `import_paths` itself. Gates green:
+  `make test`, `make asan` (182 tests, zero leaks), 94-seed fuzz replay
+  via the standalone `-DLUME_FUZZ_DRIVER` driver; host synced (synced
+  six + arena files copied, four pinned files hand-merged).
 - [ ] Keep `asg_truncate` / `arm_scope_truncate` semantics correct: with
   an arena the strings they freed become arena-owned, so the truncate
   helpers degenerate to count resets.

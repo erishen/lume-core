@@ -82,7 +82,14 @@ Type *type_enum(const char *name) {
 Type *type_func(int arity, Type **params, Type *ret) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_FUNC;
-    t->types = params;
+    /* Own the param vector: copy it out of the caller (the parser's and the
+     * emitters' vectors are arena memory, TODO.md P2 — storing the pointer
+     * made type_release_all's free depend on who handed the array in, which
+     * the arena deleted the way to tell). The Type graph stays malloc'd and
+     * type_release_all frees every t->types unconditionally. */
+    t->types = arity > 0 ? malloc((size_t)arity * sizeof(Type *)) : NULL;
+    if (t->types && params)
+        memcpy(t->types, params, (size_t)arity * sizeof(Type *));
     t->count = arity;
     t->ret = ret;
     ty_keep(t);
@@ -146,16 +153,12 @@ void type_release_all(void) {
             free(t->names);
         }
         /* types[] holds Type* (members or params) that are part of this same
-         * graph -- including the param vector calloc'd by the checker's Pass
-         * C -- so the whole shell goes here, not block by block.
-         *
-         * One exception: a TY_FUNC that carries the AST back-pointer (t->func)
-         * borrowed its param vector straight from the N_FUNC_LIT node — the
-         * parser owns that array and node_free_own frees it. The checker's
-         * own type_func vectors (Pass C, the N_FUNC_LIT case in
-         * typecheck_expr.c) are calloc'd here and stay reclaimed below. */
-        if (!(t->kind == TY_FUNC && t->func))
-            free(t->types);
+         * graph -- the param vector calloc'd by the checker's Pass C and the
+         * copies type_func() makes of caller vectors alike -- so the whole
+         * shell goes here, not block by block. Since type_func() copies the
+         * caller's array (TODO.md P2: the parser's vectors are arena memory
+         * now), every t->types is owned by this graph and freed here. */
+        free(t->types);
         free(t);
         t = next;
     }
@@ -353,8 +356,8 @@ static void ck_free(Checker *c) {
         EnumDef *en = e->next;
         for (int j = 0; j < e->vcount; j++) {
             free(e->vnames[j]);
-            /* vfields[j]/vfield_types[j] shells: the field-name strings are
-             * owned by the AST (freed with node_free); the Type* payloads
+            /* vfields[j]/vfield_types[j] shells: the field-name strings live
+             * in the parse arena; the Type* payloads
              * belong to type_release_all(). Only the shells die here. */
             free(e->vfields[j]);
             free(e->vfield_types[j]);

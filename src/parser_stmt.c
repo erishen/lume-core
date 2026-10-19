@@ -3,17 +3,19 @@
  * 控制流(if/while/for/break/continue)与方法简写路由(get/post/...)。 */
 
 #include "parser_internal.h"
+#include "arena.h"
 
 /* Build an N_LET_PAT node from parallel fields[]/names[] arrays. The
- * caller owns both arrays and every string in them (ident_name copies or
- * dupcstr); node_free_own releases them. */
+ * arrays and every string in them are arena-owned (ident_name copies or
+ * dupcstr); nothing is released individually anymore. */
 static Node *make_let_pat(Parser *p, size_t line, char **fields,
                           char **names, int count, Node *init) {
     (void)p;
     Node *n = nalloc(N_LET_PAT, line);
     n->as.letpat.names = names;
     n->as.letpat.fields = fields;
-    n->as.letpat.types = calloc((size_t)count, sizeof(Type *));
+    n->as.letpat.types = arena_alloc((size_t)count * sizeof(Type *));
+    memset(n->as.letpat.types, 0, (size_t)count * sizeof(Type *));
     n->as.letpat.count = count;
     n->as.letpat.init = init;
     return n;
@@ -66,8 +68,10 @@ static Node *parse_let_pattern(Parser *p, size_t line) {
                 perror_at(p, nm.line, "pattern binds '%s' twice", names[i]);
                 goto fail;
             }
-        names = realloc(names, sizeof(char *) * ((size_t)count + 1));
-        fields = realloc(fields, sizeof(char *) * ((size_t)count + 1));
+        names = arena_grow(names, sizeof(char *) * (size_t)count,
+                           sizeof(char *) * ((size_t)count + 1));
+        fields = arena_grow(fields, sizeof(char *) * (size_t)count,
+                            sizeof(char *) * ((size_t)count + 1));
         names[count] = ident_name(p, nm);
         fields[count] = ident_name(p, fld);
         count++;
@@ -80,8 +84,7 @@ static Node *parse_let_pattern(Parser *p, size_t line) {
     if (!expect(p, TOK_SEMI)) goto fail;
     return make_let_pat(p, line, fields, names, count, init);
 fail:
-    for (int i = 0; i < count; i++) { free(names[i]); free(fields[i]); }
-    free(names); free(fields);
+    /* the partial pattern is arena memory — abandoned, not freed */
     return NULL;
 }
 
@@ -115,8 +118,10 @@ static Node *parse_tuple_pattern(Parser *p, size_t line) {
         advance(p);
         char fbuf[16];
         snprintf(fbuf, sizeof fbuf, "_%d", count);
-        names = realloc(names, sizeof(char *) * ((size_t)count + 1));
-        fields = realloc(fields, sizeof(char *) * ((size_t)count + 1));
+        names = arena_grow(names, sizeof(char *) * (size_t)count,
+                           sizeof(char *) * ((size_t)count + 1));
+        fields = arena_grow(fields, sizeof(char *) * (size_t)count,
+                            sizeof(char *) * ((size_t)count + 1));
         names[count] = ident_name(p, nm);
         fields[count] = dupcstr(fbuf);
         count++;
@@ -130,8 +135,7 @@ static Node *parse_tuple_pattern(Parser *p, size_t line) {
     if (!expect(p, TOK_SEMI)) goto fail;
     return make_let_pat(p, line, fields, names, count, init);
 fail:
-    for (int i = 0; i < count; i++) { free(names[i]); free(fields[i]); }
-    free(names); free(fields);
+    /* the partial pattern is arena memory — abandoned, not freed */
     return NULL;
 }
 
@@ -176,9 +180,7 @@ Node *parse_statement(Parser *p) {
         Node *n = nalloc(N_IMPORT, t.line);
         /* keep the raw quoted path (like N_LITERAL strings); the loader
          * unescapes it and resolves it against this file's directory */
-        n->as.imp.path = malloc((size_t)path.length + 1);
-        memcpy(n->as.imp.path, path.start, (size_t)path.length);
-        n->as.imp.path[path.length] = '\0';
+        n->as.imp.path = arena_strndup(path.start, (size_t)path.length);
         n->as.imp.ns = ident_name(p, ns);
         return n;
     }
@@ -197,15 +199,17 @@ Node *parse_statement(Parser *p) {
             MatchPat *pats = NULL;
             int patc = 0;
             if (!parse_patterns(p, &pats, &patc)) return NULL;
-            if (!expect(p, TOK_EQ)) { free_pat_array(pats, patc); return NULL; }
+            /* free_pat_array is gone with the node_free family: an
+             * unattached pattern list is arena memory, abandoned. */
+            if (!expect(p, TOK_EQ)) return NULL;
             Node *value = parse_expression(p);
-            if (!value) { free_pat_array(pats, patc); return NULL; }
+            if (!value) return NULL;
             Node *then = parse_statement(p);
-            if (!then) { free_pat_array(pats, patc); return NULL; }
+            if (!then) return NULL;
             Node *els = NULL;
             if (match(p, TOK_ELSE)) {
                 els = parse_statement(p);
-                if (!els) { free_pat_array(pats, patc); return NULL; }
+                if (!els) return NULL;
             }
             Node *n = nalloc(N_IF_LET, pline);
             n->as.iflet.pats = pats;
@@ -441,7 +445,8 @@ Node *parse_statement(Parser *p) {
             Node *a = nalloc(N_ASSIGN, key.line);
             a->as.assign.name = ident_name(p, key);
             a->as.assign.value = value;
-            n->as.server.assigns = realloc(n->as.server.assigns,
+            n->as.server.assigns = arena_grow(n->as.server.assigns,
+                                           sizeof(Node *) * (size_t)n->as.server.count,
                                            sizeof(Node *) * ((size_t)n->as.server.count + 1));
             n->as.server.assigns[n->as.server.count++] = a;
         }
@@ -458,9 +463,7 @@ Node *parse_statement(Parser *p) {
         }
         Token m = peek(p);
         advance(p);
-        n->as.route.method = malloc((size_t)(m.length - 2) + 1);
-        memcpy(n->as.route.method, m.start + 1, (size_t)(m.length - 2));
-        n->as.route.method[m.length - 2] = '\0';
+        n->as.route.method = arena_strndup(m.start + 1, (size_t)(m.length - 2));
         if (!expect(p, TOK_COMMA)) return NULL;
         return parse_route_tail(p, n);
     }
@@ -471,7 +474,7 @@ Node *parse_statement(Parser *p) {
         if (p->pos + 1 < p->count && p->toks[p->pos + 1].type == TOK_STRING) {
             advance(p); /* consume the method keyword */
             Node *n = nalloc(N_ROUTE, t.line);
-            n->as.route.method = strdup(method_keyword_name(t.type));
+            n->as.route.method = arena_strdup(method_keyword_name(t.type));
             return parse_route_tail(p, n);
         }
     }
@@ -496,9 +499,7 @@ Node *parse_statement(Parser *p) {
         }
         Token nm = peek(p);
         advance(p);
-        n->as.tool.name = malloc((size_t)(nm.length - 2) + 1);
-        memcpy(n->as.tool.name, nm.start + 1, (size_t)(nm.length - 2));
-        n->as.tool.name[nm.length - 2] = '\0';
+        n->as.tool.name = arena_strndup(nm.start + 1, (size_t)(nm.length - 2));
         if (!expect(p, TOK_COMMA)) return NULL;
         if (!check(p, TOK_STRING)) {
             perror_at(p, peek(p).line, "expected description string in tool", NULL);
@@ -506,9 +507,7 @@ Node *parse_statement(Parser *p) {
         }
         Token ds = peek(p);
         advance(p);
-        n->as.tool.desc = malloc((size_t)(ds.length - 2) + 1);
-        memcpy(n->as.tool.desc, ds.start + 1, (size_t)(ds.length - 2));
-        n->as.tool.desc[ds.length - 2] = '\0';
+        n->as.tool.desc = arena_strndup(ds.start + 1, (size_t)(ds.length - 2));
         if (!expect(p, TOK_COMMA)) return NULL;
         n->as.tool.params = parse_expression(p);
         if (!n->as.tool.params) return NULL;
@@ -545,10 +544,12 @@ Node *parse_statement(Parser *p) {
             Type *ft = parse_type(p);
             if (!ft) return NULL;
             n->as.type_decl.field_names =
-                realloc(n->as.type_decl.field_names,
+                arena_grow(n->as.type_decl.field_names,
+                        sizeof(char *) * (size_t)n->as.type_decl.count,
                         sizeof(char *) * ((size_t)n->as.type_decl.count + 1));
             n->as.type_decl.field_types =
-                realloc(n->as.type_decl.field_types,
+                arena_grow(n->as.type_decl.field_types,
+                        sizeof(Type *) * (size_t)n->as.type_decl.count,
                         sizeof(Type *) * ((size_t)n->as.type_decl.count + 1));
             n->as.type_decl.field_names[n->as.type_decl.count] = ident_name(p, f);
             n->as.type_decl.field_types[n->as.type_decl.count] = ft;
@@ -591,25 +592,28 @@ Node *parse_statement(Parser *p) {
             Token v = peek(p);
             advance(p);
             int vi = n->as.enum_decl.vcount;
-            n->as.enum_decl.vnames = realloc(n->as.enum_decl.vnames,
+            n->as.enum_decl.vnames = arena_grow(n->as.enum_decl.vnames,
+                    sizeof(char *) * (size_t)vi,
                     sizeof(char *) * ((size_t)vi + 1));
-            n->as.enum_decl.vfields = realloc(n->as.enum_decl.vfields,
+            n->as.enum_decl.vfields = arena_grow(n->as.enum_decl.vfields,
+                    sizeof(char **) * (size_t)vi,
                     sizeof(char **) * ((size_t)vi + 1));
-            n->as.enum_decl.vfield_types = realloc(n->as.enum_decl.vfield_types,
+            n->as.enum_decl.vfield_types = arena_grow(n->as.enum_decl.vfield_types,
+                    sizeof(Type **) * (size_t)vi,
                     sizeof(Type **) * ((size_t)vi + 1));
-            n->as.enum_decl.vfield_counts = realloc(n->as.enum_decl.vfield_counts,
+            n->as.enum_decl.vfield_counts = arena_grow(n->as.enum_decl.vfield_counts,
+                    sizeof(int) * (size_t)vi,
                     sizeof(int) * ((size_t)vi + 1));
             n->as.enum_decl.vnames[vi] = ident_name(p, v);
             n->as.enum_decl.vfields[vi] = NULL;
             n->as.enum_decl.vfield_types[vi] = NULL;
             n->as.enum_decl.vfield_counts[vi] = 0;
             /* Publish the slot BEFORE the payload loop: any failure below
-             * leaves a journaled node whose node_free_own walks [0,vcount)
-             * — the in-flight variant's half-built vfields/vfield_types
-             * arrays (and the field names counted by vfield_counts[vi])
-             * are otherwise orphaned (libFuzzer leak-5904f81: 2x8B). The
-             * the loop tail no longer re-increments: vi+1 IS the count
-             * until the next variant publishes its own slot. */
+             * leaves the in-flight variant's half-built vfields/vfield_types
+             * arrays unreachable from vcount — arena reset reclaims them
+             * wholesale (libFuzzer leak-5904f81's class). The loop tail no
+             * longer re-increments: vi+1 IS the count until the next variant
+             * publishes its own slot. */
             n->as.enum_decl.vcount = vi + 1;
             if (match(p, TOK_LPAREN)) {
                 /* payload fields: `f: type, g: type` — commas between, and
@@ -626,11 +630,13 @@ Node *parse_statement(Parser *p) {
                     Type *ft = parse_type(p);
                     if (!ft) return NULL;
                     int fc = n->as.enum_decl.vfield_counts[vi];
-                    n->as.enum_decl.vfields[vi] = realloc(
+                    n->as.enum_decl.vfields[vi] = arena_grow(
                             n->as.enum_decl.vfields[vi],
+                            sizeof(char *) * (size_t)fc,
                             sizeof(char *) * ((size_t)fc + 1));
-                    n->as.enum_decl.vfield_types[vi] = realloc(
+                    n->as.enum_decl.vfield_types[vi] = arena_grow(
                             n->as.enum_decl.vfield_types[vi],
+                            sizeof(Type *) * (size_t)fc,
                             sizeof(Type *) * ((size_t)fc + 1));
                     n->as.enum_decl.vfields[vi][fc] = ident_name(p, f);
                     n->as.enum_decl.vfield_types[vi][fc] = ft;

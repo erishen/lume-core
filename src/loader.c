@@ -18,6 +18,7 @@
  */
 
 #include "lume.h"
+#include "arena.h"
 #include <errno.h>
 #include <limits.h>
 #include <sys/stat.h>
@@ -193,8 +194,10 @@ static int collect_imports(VM *vm, Module *m, char *errbuf, size_t errbuf_size) 
         char *canon = resolve_import(dir, raw, errbuf, errbuf_size);
         free(raw);
         if (!canon) { free(dir); return -1; }
-        /* rewrite the node so the interpreter can find the module */
-        free(s->as.imp.path);
+        /* rewrite the node so the interpreter can find the module. The node
+         * borrows canon (no free of the arena-owned raw path — abandoned to
+         * the reset); ownership of the malloc'd canon sits with the module's
+         * import_paths, freed string by string in loader_free(). */
         s->as.imp.path = canon;
         m->import_paths = realloc(m->import_paths,
                                   sizeof(char *) * ((size_t)m->import_count + 1));
@@ -202,9 +205,9 @@ static int collect_imports(VM *vm, Module *m, char *errbuf, size_t errbuf_size) 
                               sizeof(char *) * ((size_t)m->import_count + 1));
         if (!m->import_paths || !m->ns_names) { free(dir); return -1; }
         m->import_paths[m->import_count] = canon;
-        /* Borrowed, not strdup'd: node_free() releases imp.ns together with
-         * the rest of the AST, and loader_free() only frees the two vector
-         * shells. Copying here leaked one string per imported module. */
+        /* Borrowed, not strdup'd: the parse arena reclaims imp.ns together
+         * with the rest of the AST, and loader_free() only frees the two
+         * vector shells. Copying here leaked one string per imported module. */
         m->ns_names[m->import_count] = s->as.imp.ns;
         m->import_count++;
     }
@@ -339,12 +342,13 @@ void loader_free(VM *vm) {
     for (int i = 0; i < vm->module_count; i++) {
         Module *m = vm->modules[i];
         if (!m) continue;
-        node_free(m->prog); /* the AST and every string inside it */
+        /* The AST (m->prog) is arena memory — reclaimed by the
+         * arena_reset() below, not per module. The canon import paths are
+         * loader-owned mallocs the nodes borrow; ns_names[i] borrows the
+         * node's `ns` (arena), so only that vector shell is freed here. */
         free(m->path);
-        /* import_paths[i] and the N_IMPORT node's `path` are the same block —
-         * collect_imports() stores canon in both places — and ns_names[i]
-         * shares the node's `ns`, so only the two vector *shells* are freed
-         * here; the strings themselves die with the node. */
+        for (int j = 0; j < m->import_count; j++)
+            free(m->import_paths[j]);
         free(m->import_paths);
         free(m->ns_names);
         for (int j = 0; j < m->export_types.count; j++)
@@ -357,6 +361,11 @@ void loader_free(VM *vm) {
     vm->modules = NULL;
     vm->module_count = 0;
     vm->export_env = NULL;
+    /* The AST of every module this VM loaded dies here: one reset reclaims
+     * the whole arena (docs/ARENA.md hazard 7 — many trees, one arena; a
+     * per-module reclaim would need per-module handles). Only safe because
+     * loader_free IS the module-set teardown: no tree outlives it. */
+    arena_reset();
 }
 
 /* ---------- public entry ---------- */

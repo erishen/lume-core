@@ -15,6 +15,7 @@
  */
 
 #include "lume.h"
+#include "arena.h"
 #include "sbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -148,7 +149,7 @@ static void lsp_diagnose(VM *vm, const char *uri, const char *text) {
         char terr[512] = {0};
         if (!type_check_program(prog, terr, sizeof terr))
             msg = terr[0] ? terr : "type error";
-        node_free(prog);
+        arena_reset();   /* the per-edit tree dies here (docs/ARENA.md) */
         type_release_all();
     }
     /* "line N: ..." — 1-based; LSP wants 0-based. */

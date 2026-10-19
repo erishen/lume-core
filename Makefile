@@ -148,6 +148,7 @@ define KILL_SERVER
 	done
 endef
 SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_expr.c \
+            src/arena.c \
             src/value.c src/typecheck.c src/typecheck_expr.c src/typecheck_stmt.c \
             src/interp.c src/builtins.c src/builtins_fs.c src/os_win32.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \

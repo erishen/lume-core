@@ -4,6 +4,7 @@
  * and/or)仅本文件内部使用。 */
 
 #include "parser_internal.h"
+#include "arena.h"
 #include <limits.h>
 
 /* ---------- interpolated string segments ---------- */
@@ -83,7 +84,7 @@ static Node *istr_build(Parser *p, Token t) {
              * literal characters with no escape meaning. */
             part = nalloc(N_LITERAL, t.line);
             part->as.lit.kind = LIT_STR;
-            part->as.lit.text = malloc((size_t)n + 3);
+            part->as.lit.text = arena_alloc((size_t)n + 3);
             part->as.lit.text[0] = '"';
             if (n) memcpy(part->as.lit.text + 1, data, (size_t)n);
             part->as.lit.text[n + 1] = '"';
@@ -94,8 +95,8 @@ static Node *istr_build(Parser *p, Token t) {
             if (!e) return NULL;
             part = nalloc(N_CALL, t.line);
             part->as.call.callee = nalloc(N_VAR, t.line);
-            part->as.call.callee->as.var.name = strdup("str");
-            part->as.call.args = malloc(sizeof(Node *));
+            part->as.call.callee->as.var.name = arena_strdup("str");
+            part->as.call.args = arena_alloc(sizeof(Node *));
             part->as.call.args[0] = e;
             part->as.call.argc = 1;
         } else {
@@ -121,7 +122,7 @@ static Node *istr_build(Parser *p, Token t) {
          * the n-2 body span every consumer computes). */
         acc = nalloc(N_LITERAL, t.line);
         acc->as.lit.kind = LIT_STR;
-        acc->as.lit.text = strdup("\"\"");
+        acc->as.lit.text = arena_strdup("\"\"");
         acc->as.lit.len = 2;
     }
     return acc;
@@ -164,18 +165,18 @@ static Node *parse_struct_update(Parser *p, Node *base, size_t line) {
         char *key = ident_name(p, k);
         for (int i = 0; i < n->as.supd.count; i++) {
             if (strcmp(n->as.supd.keys[i], key) == 0) {
-                free(key);
                 perror_at(p, k.line,
                           "duplicate field '%.*s' in with update",
                           k.length, k.start);
                 return NULL;
             }
         }
-        free(key);
-        n->as.supd.keys = realloc(n->as.supd.keys,
-                                  sizeof(char *) * ((size_t)n->as.supd.count + 1));
-        n->as.supd.vals = realloc(n->as.supd.vals,
-                                  sizeof(Node *) * ((size_t)n->as.supd.count + 1));
+        n->as.supd.keys = arena_grow(n->as.supd.keys,
+                                     sizeof(char *) * (size_t)n->as.supd.count,
+                                     sizeof(char *) * ((size_t)n->as.supd.count + 1));
+        n->as.supd.vals = arena_grow(n->as.supd.vals,
+                                     sizeof(Node *) * (size_t)n->as.supd.count,
+                                     sizeof(Node *) * ((size_t)n->as.supd.count + 1));
         n->as.supd.keys[n->as.supd.count] = ident_name(p, k);
         n->as.supd.vals[n->as.supd.count] = v;
         n->as.supd.count++;
@@ -228,16 +229,15 @@ static Node *parse_primary_impl(Parser *p) {
          * eval time like any other, so \" and \\n inside either part keep
          * their meaning across the join. */
         size_t mlen = (size_t)t.length;
-        char *merged = malloc(mlen + 1);
-        memcpy(merged, t.start, mlen);
-        merged[mlen] = '\0';
+        char *merged = arena_strndup(t.start, mlen);
         while (peek(p).type == TOK_STRING) {
             Token u = peek(p);
             advance(p);
             size_t inner = (size_t)u.length - 2; /* drop u's quotes */
-            merged = realloc(merged, mlen - 1 + inner + 1 + 1);
+            size_t nlen = mlen - 1 + inner + 1;
+            merged = arena_grow(merged, mlen, nlen + 1);
             memcpy(merged + mlen - 1, u.start + 1, inner); /* overwrite our closing quote */
-            mlen = mlen - 1 + inner + 1;
+            mlen = nlen;
             merged[mlen - 1] = '"';
             merged[mlen] = '\0';
         }
@@ -290,17 +290,15 @@ static Node *parse_primary_impl(Parser *p) {
                 ret->as.ret.expr = expr;
                 n->as.funclit.body = nalloc(N_BLOCK, expr->line);
                 n->as.funclit.body->as.block.stmts =
-                    malloc(sizeof(Node *));
+                    arena_alloc(sizeof(Node *));
                 n->as.funclit.body->as.block.stmts[0] = ret;
                 n->as.funclit.body->as.block.count = 1;
             }
             if (!n->as.funclit.body) return NULL;
             return n;
         }
-        /* Not an arrow function: free the probe and re-parse as grouping. */
-        for (int i = 0; i < arrow_arity; i++) free(arrow_names[i]);
-        free(arrow_names);
-        free(arrow_types);
+        /* Not an arrow function: abandon the probe (arena memory) and
+         * re-parse as grouping. */
         p->pos = save_pos;
         if (err_was_empty) p->errbuf[0] = '\0';
         advance(p);
@@ -315,31 +313,21 @@ static Node *parse_primary_impl(Parser *p) {
              * comma stays a plain grouped expression; `(a,)` is a 1-tuple. */
             Node **items = NULL;
             int count = 0;
-            items = realloc(items, sizeof(Node *) * ((size_t)count + 1));
+            items = arena_grow(items, 0, sizeof(Node *));
             items[count++] = e;
             for (;;) {
                 if (!match(p, TOK_COMMA)) break;
                 if (check(p, TOK_RPAREN)) break;   /* trailing comma */
                 Node *it = parse_expression(p);
-                if (!it) {
-                    /* items[] are still on the orphan journal: a manual
-                     * node_free here double-frees when parse_program sweeps
-                     * the batch (libFuzzer finding, crash input `(http_,`).
-                     * Leave them to the sweep — only the raw array is ours. */
-                    free(items);
-                    return NULL;
-                }
-                items = realloc(items, sizeof(Node *) * ((size_t)count + 1));
+                if (!it) return NULL;
+                items = arena_grow(items, sizeof(Node *) * (size_t)count,
+                                   sizeof(Node *) * ((size_t)count + 1));
                 items[count++] = it;
             }
-            if (!expect(p, TOK_RPAREN)) {
-                /* Same journal contract as the parse-failure path above. */
-                free(items);
-                return NULL;
-            }
+            if (!expect(p, TOK_RPAREN)) return NULL;
             Node *n = nalloc(N_MAP_LIT, t.line);
-            n->as.map.keys = malloc(sizeof(char *) * (size_t)count);
-            n->as.map.vals = malloc(sizeof(Node *) * (size_t)count);
+            n->as.map.keys = arena_alloc(sizeof(char *) * (size_t)count);
+            n->as.map.vals = arena_alloc(sizeof(Node *) * (size_t)count);
             n->as.map.count = count;
             n->as.map.is_tuple = true;
             for (int i = 0; i < count; i++) {
@@ -348,7 +336,6 @@ static Node *parse_primary_impl(Parser *p) {
                 n->as.map.keys[i] = dupcstr(fbuf);
                 n->as.map.vals[i] = items[i];
             }
-            free(items);
             return n;
         }
         if (!expect(p, TOK_RPAREN)) return NULL;
@@ -407,10 +394,12 @@ static Node *parse_primary_impl(Parser *p) {
             if (!expect(p, TOK_COLON)) return NULL;
             Node *v = parse_expression(p);
             if (!v) return NULL;
-            n->as.map.keys = realloc(n->as.map.keys,
-                                     sizeof(char *) * ((size_t)n->as.map.count + 1));
-            n->as.map.vals = realloc(n->as.map.vals,
-                                     sizeof(Node *) * ((size_t)n->as.map.count + 1));
+            n->as.map.keys = arena_grow(n->as.map.keys,
+                                        sizeof(char *) * (size_t)n->as.map.count,
+                                        sizeof(char *) * ((size_t)n->as.map.count + 1));
+            n->as.map.vals = arena_grow(n->as.map.vals,
+                                        sizeof(Node *) * (size_t)n->as.map.count,
+                                        sizeof(Node *) * ((size_t)n->as.map.count + 1));
             n->as.map.keys[n->as.map.count] = ident_name(p, k);
             n->as.map.vals[n->as.map.count] = v;
             n->as.map.count++;
@@ -428,8 +417,9 @@ static Node *parse_primary_impl(Parser *p) {
         while (!check(p, TOK_RBRACKET) && !at_end(p)) {
             Node *e = parse_expression(p);
             if (!e) return NULL;
-            n->as.list.items = realloc(n->as.list.items,
-                                       sizeof(Node *) * ((size_t)n->as.list.count + 1));
+            n->as.list.items = arena_grow(n->as.list.items,
+                                          sizeof(Node *) * (size_t)n->as.list.count,
+                                          sizeof(Node *) * ((size_t)n->as.list.count + 1));
             n->as.list.items[n->as.list.count++] = e;
             if (!match(p, TOK_COMMA)) break;
             if (check(p, TOK_RBRACKET)) break;
@@ -472,12 +462,13 @@ static Node *parse_primary_impl(Parser *p) {
             Node *guard = NULL;
             if (match(p, TOK_IF)) {
                 guard = parse_expression(p);
-                if (!guard) { free_pat_array(pats, patc); return NULL; }
+                if (!guard) return NULL;
             }
-            if (!expect(p, TOK_ARROW)) { free_pat_array(pats, patc); return NULL; }
+            if (!expect(p, TOK_ARROW)) return NULL;
             Node *body = parse_expression(p);
-            if (!body) { free_pat_array(pats, patc); return NULL; }
-            n->as.matchn.arms = realloc(n->as.matchn.arms,
+            if (!body) return NULL;
+            n->as.matchn.arms = arena_grow(n->as.matchn.arms,
+                    sizeof(MatchArm) * (size_t)n->as.matchn.armc,
                     sizeof(MatchArm) * ((size_t)n->as.matchn.armc + 1));
             MatchArm *arm = &n->as.matchn.arms[n->as.matchn.armc];
             memset(arm, 0, sizeof *arm);
@@ -654,8 +645,10 @@ static Node *parse_trailing_closure(Parser *p) {
                 }
                 Token nm = peek(p);
                 advance(p);
-                names = realloc(names, sizeof(char *) * ((size_t)arity + 1));
-                types = realloc(types, sizeof(Type *) * ((size_t)arity + 1));
+                names = arena_grow(names, sizeof(char *) * (size_t)arity,
+                                   sizeof(char *) * ((size_t)arity + 1));
+                types = arena_grow(types, sizeof(Type *) * (size_t)arity,
+                                   sizeof(Type *) * ((size_t)arity + 1));
                 names[arity] = ident_name(p, nm);
                 types[arity] = NULL;
                 /* Optional `: type`, same as the arrow form — the native
@@ -663,14 +656,7 @@ static Node *parse_trailing_closure(Parser *p) {
                  * signature left the lambda's parameters unconstrained. */
                 if (match(p, TOK_COLON)) {
                     types[arity] = parse_type(p);
-                    if (!types[arity]) {
-                        /* names[arity] is live; freeing the first `arity`
-                         * names only would drop it (parse_params' lesson). */
-                        for (int i = 0; i <= arity; i++) free(names[i]);
-                        free(names);
-                        free(types);
-                        return NULL;
-                    }
+                    if (!types[arity]) return NULL;
                 }
                 arity++;
                 if (!match(p, TOK_COMMA)) break;
@@ -685,8 +671,8 @@ static Node *parse_trailing_closure(Parser *p) {
     blk->as.block.count = 0;
     while (!check(p, TOK_RBRACE) && !at_end(p)) {
         /* Dispatch on the first token instead of probing with save/restore:
-         * an abandoned probe subtree would sit in the orphan journal with no
-         * owner and leak on the success path. Only tokens that can *only*
+         * an abandoned probe subtree would be dead arena weight until the
+         * next arena_reset. Only tokens that can *only*
          * start an expression take the expression path; every statement
          * keyword (let/if/while/for/return/func/...) goes to parse_statement,
          * so the body accepts the same statements a plain block does. */
@@ -703,7 +689,8 @@ static Node *parse_trailing_closure(Parser *p) {
                 /* statement position: `e;` runs for effect */
                 Node *es = nalloc(N_EXPR_STMT, e->line);
                 es->as.expr_stmt.expr = e;
-                blk->as.block.stmts = realloc(blk->as.block.stmts,
+                blk->as.block.stmts = arena_grow(blk->as.block.stmts,
+                        sizeof(Node *) * (size_t)blk->as.block.count,
                         sizeof(Node *) * ((size_t)blk->as.block.count + 1));
                 blk->as.block.stmts[blk->as.block.count++] = es;
                 continue;
@@ -711,14 +698,16 @@ static Node *parse_trailing_closure(Parser *p) {
             /* no `;` — the closure's value: an implicit return */
             Node *ret = nalloc(N_RETURN, e->line);
             ret->as.ret.expr = e;
-            blk->as.block.stmts = realloc(blk->as.block.stmts,
+            blk->as.block.stmts = arena_grow(blk->as.block.stmts,
+                    sizeof(Node *) * (size_t)blk->as.block.count,
                     sizeof(Node *) * ((size_t)blk->as.block.count + 1));
             blk->as.block.stmts[blk->as.block.count++] = ret;
             break;
         }
         Node *s = parse_statement(p);
         if (!s) goto fail;
-        blk->as.block.stmts = realloc(blk->as.block.stmts,
+        blk->as.block.stmts = arena_grow(blk->as.block.stmts,
+                sizeof(Node *) * (size_t)blk->as.block.count,
                 sizeof(Node *) * ((size_t)blk->as.block.count + 1));
         blk->as.block.stmts[blk->as.block.count++] = s;
     }
@@ -732,9 +721,7 @@ static Node *parse_trailing_closure(Parser *p) {
     n->as.funclit.body = blk;
     return n;
 fail:
-    for (int i = 0; i < arity; i++) free(names[i]);
-    free(names);
-    free(types);
+    /* the partial closure is arena memory — abandoned, not freed */
     return NULL;
 }
 
@@ -760,7 +747,8 @@ static Node *parse_postfix_impl(Parser *p) {
                 for (;;) {
                     Node *e = parse_expression(p);
                     if (!e) return NULL;
-                    args->as.list.items = realloc(args->as.list.items,
+                    args->as.list.items = arena_grow(args->as.list.items,
+                                                  sizeof(Node *) * (size_t)args->as.list.count,
                                                   sizeof(Node *) * ((size_t)args->as.list.count + 1));
                     args->as.list.items[args->as.list.count++] = e;
                     if (!match(p, TOK_COMMA)) break;
@@ -773,11 +761,8 @@ static Node *parse_postfix_impl(Parser *p) {
             call->as.call.args = args->as.list.items;
             call->as.call.argc = args->as.list.count;
             call->as.call.propagate = false;
-            /* The items array now belongs to call; only the shell goes away
-             * here, and it has to leave the orphan batch first (node_free()
-             * would reach the items array a second time via node_free_own). */
-            node_unjournal(args);
-            free(args);
+            /* The items array now belongs to call; the list shell stays —
+             * arena memory is never freed individually. */
             /* `?` 歧义裁决（贴邻优先）：`f()?` 紧贴 → Result 传播；空格
              * 分隔时做冒号前瞻——有配对冒号 → 三元，`?` 不消费、留给
              * parse_ternary（此处的 `?` 后不可能跟 `(`/`.`/`[` 链，提前
@@ -811,7 +796,8 @@ static Node *parse_postfix_impl(Parser *p) {
                 (peek2(p).type == TOK_PIPE || peek2(p).type == TOK_OR)) {
                 Node *clo = parse_trailing_closure(p);
                 if (!clo) return NULL;
-                call->as.call.args = realloc(call->as.call.args,
+                call->as.call.args = arena_grow(call->as.call.args,
+                        sizeof(Node *) * (size_t)call->as.call.argc,
                         sizeof(Node *) * ((size_t)call->as.call.argc + 1));
                 call->as.call.args[call->as.call.argc++] = clo;
             }
@@ -830,7 +816,7 @@ static Node *parse_postfix_impl(Parser *p) {
                  * `_0` / `_1` of the struct a tuple is (numbers are
                  * TOK_NUMBER with is_int, not a dedicated TOK_INT). */
                 size_t need = (size_t)f.length + 2;
-                fname = malloc(need);
+                fname = arena_alloc(need);
                 fname[0] = '_';
                 memcpy(fname + 1, f.start, (size_t)f.length);
                 fname[f.length + 1] = '\0';
@@ -887,20 +873,15 @@ static Node *parse_unary_impl(Parser *p) {
          * AST holds LLONG_MIN exactly, and drop the OP_NEG wrapper since the
          * value is already correct — leaving it in would negate twice.
          *
-         * The shell has to be freed before returning: it came from nalloc, so
-         * it is on the orphan journal, and it never becomes part of the tree
-         * (nothing holds a pointer to it) — returning it without releasing
-         * stranded exactly one node per run, which is what LeakSanitizer
-         * reported on Linux CI (80 bytes, one object, constant regardless of
-         * how many statements the script had). Released the way this file
-         * releases every other discarded shell: unjournal, then free. A plain
-         * free rather than node_free_own() because an N_UNARY carries no
-         * owned arrays — only `operand`, which stays untouched and is the node
-         * being returned. */
+         * The shell used to need an explicit release before returning: it
+         * never becomes part of the tree (nothing holds a pointer to it), and
+         * returning it without releasing stranded exactly one node per run,
+         * which is what LeakSanitizer reported on Linux CI (80 bytes, one
+         * object, constant regardless of how many statements the script
+         * had). Under the arena the abandoned shell is reclaimed by the
+         * reset at the tree's death. */
         if (n->as.unary.op == OP_NEG && operand->type == N_LITERAL &&
             operand->as.lit.kind == LIT_NUM && operand->as.lit.neg_min) {
-            node_unjournal(n);
-            free(n);
             operand->as.lit.inum = LLONG_MIN;
             operand->as.lit.num = (double)LLONG_MIN;
             operand->as.lit.neg_min = 0;
@@ -1129,8 +1110,7 @@ static Node *parse_expression_impl(Parser *p) {
             Node *n = nalloc(N_ASSIGN, previous_line(p));
             n->as.assign.name = expr->as.var.name;
             n->as.assign.value = value;
-            node_unjournal(expr); /* shell only: name and value moved over */
-            free(expr);
+            /* the var shell stays: arena memory is never freed individually */
             return n;
         }
         if (expr->type == N_MEMBER) {
@@ -1138,8 +1118,6 @@ static Node *parse_expression_impl(Parser *p) {
             n->as.assign_mem.obj = expr->as.member.obj;
             n->as.assign_mem.name = expr->as.member.name;
             n->as.assign_mem.value = value;
-            node_unjournal(expr); /* shell only: obj and name moved over */
-            free(expr);
             return n;
         }
         perror_at(p, previous_line(p), "invalid assignment target", NULL);

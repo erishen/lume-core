@@ -1,68 +1,16 @@
 /* Recursive-descent parser with a layered arithmetic grammar
  * (assignment -> or -> and -> equality -> comparison -> term -> factor ->
- * unary -> postfix -> primary). Produces a malloc'd AST that lives for the
- * process lifetime (parsed once before agenthttpd_run forks workers).
+ * unary -> postfix -> primary). Produces an arena-allocated AST (TODO.md
+ * P2, docs/ARENA.md): nothing the parser builds is ever freed
+ * individually — the memory dies wholesale in arena_reset() at the points
+ * where the tree dies today.
  *
  * 2026-09-27: 语句解析(parse_statement)与表达式解析(parse_expression 的
  * 优先级链)分别拆到 parser_stmt.c / parser_expr.c;Parser 结构与共享
  * 工具见 parser_internal.h。 */
 
+#include "arena.h"
 #include "parser_internal.h"
-
-/* ---------- orphan journal ----------
- *
- * A node is created unowned and linked in later (the parent stores it and
- * hands the subtree up). Recursive descent returns NULL without a tree when a
- * statement fails, and every function on the way out drops the partial
- * subtree it built: `print("a" 1);` leaks the `print` reference and the call
- * node it had already linked together. So nalloc() records each node here,
- * and parse_program() — the only entry point — drops the batch when it gives
- * up. On success nothing is freed (every node is reachable from prog, which
- * the caller owns); on failure every node in the batch is garbage, because
- * the whole program is discarded.
- *
- * One parser runs at a time, so the list is a file global; parse_program()
- * empties it on both exits. */
-static Node **g_orphans;
-static size_t g_orphan_len;
-static size_t g_orphan_cap;
-
-static void orphan_add(Node *n) {
-    if (g_orphan_len == g_orphan_cap) {
-        size_t cap = g_orphan_cap ? g_orphan_cap * 2 : 64;
-        Node **v = realloc(g_orphans, sizeof(Node *) * cap);
-        if (!v) return;   /* OOM: stop journaling, parsing still works */
-        g_orphans = v;
-        g_orphan_cap = cap;
-    }
-    g_orphans[g_orphan_len++] = n;
-}
-
-static void orphan_remove(Node *n) {
-    for (size_t i = 0; i < g_orphan_len; i++) {
-        if (g_orphans[i] == n) {
-            g_orphans[i] = g_orphans[--g_orphan_len];
-            return;
-        }
-    }
-}
-
-/* Free every node the parser built during the parse that just failed. Order
- * does not matter (node_free_orphan() never walks into a child), and the
- * batch is exhausted either way: a failed parse discards the whole program. */
-void node_unjournal(Node *n) { orphan_remove(n); }
-
-static void orphan_release_all(void) {
-    while (g_orphan_len > 0) node_free_orphan(g_orphans[--g_orphan_len]);
-    g_orphan_len = 0;
-}
-
-/* Release the tracking list itself, keeping nothing. */
-static void orphan_drop(void) {
-    free(g_orphans);
-    g_orphans = NULL;
-    g_orphan_len = g_orphan_cap = 0;
-}
 
 void perror_at(Parser *p, size_t line, const char *fmt, ...) {
     if (p->errbuf[0]) return;
@@ -75,10 +23,13 @@ void perror_at(Parser *p, size_t line, const char *fmt, ...) {
 }
 
 Node *nalloc(NodeType type, size_t line) {
-    Node *n = calloc(1, sizeof(Node));
+    Node *n = arena_alloc(sizeof(Node));
+    /* calloc semantics preserved: every node starts zeroed — plenty of
+     * union arms (lit.len, funclit.cap_*, route alias, ...) are only set
+     * conditionally and read unconditionally. */
+    memset(n, 0, sizeof(Node));
     n->type = type;
     n->line = line;
-    orphan_add(n);
     return n;
 }
 
@@ -131,17 +82,11 @@ char *ident_name(Parser *p, Token t) {
         start++;
         len -= 2;
     }
-    char *s = malloc((size_t)len + 1);
-    memcpy(s, start, (size_t)len);
-    s[len] = '\0';
-    return s;
+    return arena_strndup(start, (size_t)len);
 }
 
 char *dupcstr(const char *s) {
-    size_t n = strlen(s) + 1;
-    char *r = malloc(n);
-    memcpy(r, s, n);
-    return r;
+    return arena_strdup(s);
 }
 
 /* `type`/`int`/... are keywords in type position but stay usable as map keys
@@ -199,26 +144,27 @@ Type *parse_type(Parser *p) {
             if (!check(p, TOK_RPAREN)) {
                 do {
                     Type *pt = parse_type(p);
-                    if (!pt) { free(params); return NULL; }
-                    params = realloc(params, sizeof(Type *) * ((size_t)arity + 1));
+                    if (!pt) return NULL;
+                    params = arena_grow(params, sizeof(Type *) * (size_t)arity,
+                                        sizeof(Type *) * ((size_t)arity + 1));
                     params[arity++] = pt;
                 } while (match(p, TOK_COMMA));
             }
-            if (!expect(p, TOK_RPAREN)) { free(params); return NULL; }
+            if (!expect(p, TOK_RPAREN)) return NULL;
             Type *ret = NULL;
             if (match(p, TOK_ARROW)) {
                 ret = parse_type(p);
-                if (!ret) { free(params); return NULL; }
+                if (!ret) return NULL;
             }
             ty = type_func(arity, params, ret);
             break;
         }
         case TOK_IDENT: {
             advance(p);
-            /* ident_name() allocates the name, type_struct() copies it into
-             * the Type — so the throwaway has to be released here. Owning
-             * both ends in one expression silently leaked a block per named
-             * type parsed (`let p: Pt = ...`, `func f(): Pt`, ...).
+            /* ident_name() allocates the name (arena-owned now), type_struct()
+             * copies it into the Type — the throwaway needs no release under
+             * the arena, where "leaked a block per named type parsed" was the
+             * reason this used to be split into two owning ends.
              *
              * The bare built-in container name `list` is NOT a struct: it is
              * the homogeneous container (TY_LIST). Building `type_struct("list")`
@@ -231,9 +177,8 @@ Type *parse_type(Parser *p) {
              * struct reference: a map is an anonymous struct at runtime and
              * there is no singleton TY_MAP representation to annotate.) */
             char *nm = ident_name(p, t);
-            if (strcmp(nm, "list") == 0) { free(nm); ty = type_list(any_type()); break; }
+            if (strcmp(nm, "list") == 0) { ty = type_list(any_type()); break; }
             ty = type_struct(nm);
-            free(nm);
             break;
         }
         default:
@@ -269,8 +214,9 @@ static Node *parse_block_impl(Parser *p) {
     while (!check(p, TOK_RBRACE) && !at_end(p)) {
         Node *s = parse_statement(p);
         if (!s) return NULL;
-        n->as.block.stmts = realloc(n->as.block.stmts,
-                                    sizeof(Node *) * ((size_t)n->as.block.count + 1));
+        n->as.block.stmts = arena_grow(n->as.block.stmts,
+                                       sizeof(Node *) * (size_t)n->as.block.count,
+                                       sizeof(Node *) * ((size_t)n->as.block.count + 1));
         n->as.block.stmts[n->as.block.count++] = s;
     }
     if (!expect(p, TOK_RBRACE)) return NULL;
@@ -289,30 +235,25 @@ bool parse_params(Parser *p, char ***names_out, Type ***types_out,
         do {
             if (!check(p, TOK_IDENT)) {
                 /* Reached by the comma continuation with arity ≥ 1 live
-                 * names (`(http_,` hits it with "http_" pushed): the arrays
-                 * go and every strdup'd name with them — the libFuzzer
-                 * leak-3188fd7 finding. */
-                for (int i = 0; i < arity; i++) free(names[i]);
+                 * names (`(http_,` hits it with "http_" pushed): the
+                 * libFuzzer leak-3188fd7 finding. Under the arena the
+                 * partial arrays are simply abandoned. */
                 perror_at(p, peek(p).line, "expected parameter name", NULL);
-                free(names);
-                free(types);
                 return false;
             }
             Token pt = peek(p);
             advance(p);
-            names = realloc(names, sizeof(char *) * ((size_t)arity + 1));
-            types = realloc(types, sizeof(Type *) * ((size_t)arity + 1));
+            names = arena_grow(names, sizeof(char *) * (size_t)arity,
+                               sizeof(char *) * ((size_t)arity + 1));
+            types = arena_grow(types, sizeof(Type *) * (size_t)arity,
+                               sizeof(Type *) * ((size_t)arity + 1));
             names[arity] = ident_name(p, pt);
             types[arity] = NULL;
             if (match(p, TOK_COLON)) {
                 types[arity] = parse_type(p);
                 if (!types[arity]) {
                     /* names[arity] is already the block above (the name of
-                     * the param whose annotation failed) — freeing the first
-                     * `arity` names only would drop that one. */
-                    for (int i = 0; i <= arity; i++) free(names[i]);
-                    free(names);
-                    free(types);
+                     * the param whose annotation failed). */
                     return false;
                 }
             }
@@ -322,12 +263,7 @@ bool parse_params(Parser *p, char ***names_out, Type ***types_out,
     if (!expect(p, TOK_RPAREN)) {
         /* All arity pushed names are live (the old comment's off-by-one
          * reasoning only held for arity == 1; `(a, b` leaked "a" through
-         * it). types[] holds at most parse_type'd entries that the caller
-         * drops with the probe — the Type graph itself belongs to
-         * type_release_all, so free the array shell only. */
-        for (int i = 0; i < arity; i++) free(names[i]);
-        free(names);
-        free(types);
+         * it). Under the arena the partial arrays are abandoned. */
         return false;
     }
     *names_out = names;
@@ -371,9 +307,7 @@ Node *parse_route_tail(Parser *p, Node *n) {
     }
     Token path = peek(p);
     advance(p);
-    n->as.route.path = malloc((size_t)(path.length - 2) + 1);
-    memcpy(n->as.route.path, path.start + 1, (size_t)(path.length - 2));
-    n->as.route.path[path.length - 2] = '\0';
+    n->as.route.path = arena_strndup(path.start + 1, (size_t)(path.length - 2));
     /* The handler is optional: `write "/items";` registers the routes with a
      * default response (action/method/body). */
     if (match(p, TOK_COMMA)) {
@@ -386,34 +320,24 @@ Node *parse_route_tail(Parser *p, Node *n) {
 
 /* ---------- pattern lists (match arms and if-let share this) ---------- */
 
-static void free_name_array(char **a, int n); /* defined with node_free_own */
-
 /* `Variant(b, ...)` / bare `Variant` / `_`, `|`-separated into alternatives.
  * Shared by match arms (`A | B => body`) and if-let (`if let A | B = e`).
- * The caller owns the returned array; vnames and binds are heap strings,
+ * The caller owns the returned array; vnames and binds are arena strings,
  * the resolve_ctors stamps start NULL (parser.c's post-parse pass fills
  * them in once the file's enum table is known). Guards are NOT parsed
  * here — the match-arm caller adds `if cond` after the list. */
 bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
     MatchPat *pats = NULL;
     int patc = 0;
-    /* Slots actually present in the allocation — patc only advances once a
-     * variant completes, and a FAILED realloc leaves pats at the old size
-     * with patc already past it, so the cleanup below walks this instead
-     * (libFuzzer crash-ed0e12: heap-buffer-overflow reading slot patc
-     * after the realloc that would have created it gave up). */
-    int claimed = 0;
     for (;;) {
         Token pt = peek(p);
         if (pt.type != TOK_IDENT) {
             perror_at(p, pt.line, "expected variant name in pattern", NULL);
-            goto fail;
+            return false;
         }
         advance(p);
-        MatchPat *np = realloc(pats, sizeof(MatchPat) * ((size_t)patc + 1));
-        if (!np) goto fail;
-        pats = np;
-        claimed = patc + 1;
+        pats = arena_grow(pats, sizeof(MatchPat) * (size_t)patc,
+                          sizeof(MatchPat) * ((size_t)patc + 1));
         MatchPat *pat = &pats[patc];
         memset(pat, 0, sizeof *pat);
         pat->vname = ident_name(p, pt);
@@ -424,15 +348,15 @@ bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
                 if (bt.type != TOK_IDENT) {
                     perror_at(p, bt.line,
                               "expected a binding name in pattern", NULL);
-                    goto fail;
+                    return false;
                 }
                 advance(p);
-                pat->binds = realloc(pat->binds,
+                pat->binds = arena_grow(pat->binds,
+                        sizeof(char *) * (size_t)pat->bindc,
                         sizeof(char *) * ((size_t)pat->bindc + 1));
-                if (!pat->binds) goto fail;
                 pat->binds[pat->bindc++] = ident_name(p, bt);
             } while (match(p, TOK_COMMA));
-            if (!expect(p, TOK_RPAREN)) goto fail;
+            if (!expect(p, TOK_RPAREN)) return false;
         }
         patc++;
         if (!match(p, TOK_PIPE)) break;
@@ -440,31 +364,6 @@ bool parse_patterns(Parser *p, MatchPat **out, int *outc) {
     *out = pats;
     *outc = patc;
     return true;
-fail:
-    /* The in-flight variant (slot patc) is claimed before its vname/binds
-     * are filled, so every failure after the realloc must release it too:
-     * the `)`- and binding-name exits leak through here (libFuzzer
-     * leak-8c01: vname, bind string and binds shell, 28B total).
-     * A fresh slot is memset-zeroed, so NULL arrays are skip-safe. */
-    for (int i = 0; pats && i < claimed; i++) {
-        free(pats[i].vname);
-        free_name_array(pats[i].binds, pats[i].bindc);
-    }
-    free(pats);
-    return false;
-}
-
-/* Release a parse_patterns result the caller can no longer attach to a
- * node: ownership transfers to MatchArm/iflet (freed by node_free_own)
- * only when the constructor completes; every `return NULL` between here
- * and there must pass through this first (libFuzzer leak-036b5e7: 48B =
- * one MatchPat stranded by a failed match arm). */
-void free_pat_array(MatchPat *pats, int patc) {
-    for (int i = 0; i < patc; i++) {
-        free(pats[i].vname);
-        free_name_array(pats[i].binds, pats[i].bindc);
-    }
-    free(pats);
 }
 
 /* ---------- program ---------- */
@@ -477,7 +376,6 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
     Token *toks = al_lex(source, lexerr, sizeof(lexerr), &count);
     if (!toks) {
         if (errbuf && errbuf_size) snprintf(errbuf, errbuf_size, "%s", lexerr);
-        orphan_drop();
         return NULL;
     }
 
@@ -487,7 +385,6 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
     p.count = count;
 
     Node *prog = nalloc(N_PROGRAM, 1);
-    orphan_remove(prog); /* this one belongs to this function, not the batch */
     prog->as.program.stmts = NULL;
     prog->as.program.count = 0;
 
@@ -502,8 +399,9 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
             ok = false;
             break;
         }
-        prog->as.program.stmts = realloc(prog->as.program.stmts,
-                                         sizeof(Node *) * ((size_t)prog->as.program.count + 1));
+        prog->as.program.stmts = arena_grow(prog->as.program.stmts,
+                                            sizeof(Node *) * (size_t)prog->as.program.count,
+                                            sizeof(Node *) * ((size_t)prog->as.program.count + 1));
         prog->as.program.stmts[prog->as.program.count++] = s;
     }
 
@@ -511,26 +409,16 @@ Node *parse_program(const char *source, char *errbuf, size_t errbuf_size) {
         if (errbuf && errbuf_size)
             snprintf(errbuf, errbuf_size, "%s%s", p.errbuf,
                      p.errbuf[0] ? "" : "parse error");
-        /* Every node the parser allocated is in the orphan batch (nalloc
-         * journals each one), and the statements parsed before the failure
-         * are in prog -- the same nodes, by the same pointers. So the sweep
-         * below is what frees them: releasing prog with node_free() here
-         * walked the whole tree and freed every one of them a second time,
-         * which aborted the process (SIGABRT, no diagnostic) on the *first
-         * failing parse of any script that had already parsed one statement.
-         * prog itself is not in the batch -- orphan_remove() took it out --
-         * so only its own shell goes here. */
-        free(prog->as.program.stmts);
-        free(prog);
+        /* The partial tree is arena memory: abandoned, not swept. The old
+         * orphan-batch release here was what kept failed parses from
+         * leaking — the arena reset at the tree's death (the same call
+         * sites that ran node_free) reclaims it wholesale now. */
         for (int i = 0; i < count; i++) free(toks[i].istr);
         free(toks);
-        orphan_release_all();
-        orphan_drop();
         return NULL;
     }
     for (int i = 0; i < count; i++) free(toks[i].istr);
     free(toks);
-    orphan_drop(); /* prog owns every node in the batch now */
     resolve_ctors(prog);
     return prog;
 }
@@ -696,7 +584,8 @@ static void ctor_rewrite(Node *n, CtorTab *tab) {
                 n->as.ctor.fields = ce->fields;
                 n->as.ctor.fieldc = ce->fieldc;
                 n->as.ctor.ename = ce->ename;
-                free(callee); /* shell only: name and args moved */
+                /* the callee shell stays — arena memory is never freed
+                 * individually, and its name/args moved over above */
                 for (int i = 0; i < n->as.ctor.argc; i++)
                     ctor_rewrite(n->as.ctor.args[i], tab);
                 return;
@@ -747,317 +636,6 @@ static void resolve_ctors(Node *prog) {
     /* The table itself is scratch — names/fields are borrowed from the enum
      * decls, which the AST owns and frees. */
     free(tab.v);
-}
-
-/* ---------- teardown ---------- */
-
-/* Free an array of malloc'd strings plus the array itself. */
-static void free_name_array(char **a, int n) {
-    if (!a) return;
-    for (int i = 0; i < n; i++) free(a[i]);
-    free(a);
-}
-
-/* Release an AST subtree and everything malloc'd inside it.
- *
- * Ownership, per field kind:
- *   - whatever ident_name() / parse_route_tail() / the `tool "..", ".."`
- *     and `import ".." as ns` parsers handed out (name, keys, field_names,
- *     route.alias/method/path, tool.name/desc, imp.path/ns) is a copy owned
- *     by this tree;
- *   - the char**, Node** and Type** array shells themselves go here too;
- *   - Type* fields (let.annot, func.ret, param_types[i], field_types[i],
- *     member.type) are NOT released: Type is a shared graph — AST, checker
- *     scope and the module export table all point at the same blocks — and
- *     one type_release_all() sweep owns them. Only the array shells are
- *     touched here, never the Type behind them;
- *   - lit.text is owned exactly when kind == LIT_STR (it is unset otherwise,
- *     and every reader is gated on kind);
- *
- * Call it when nothing walks the tree any more. ObjFunc.body keeps a Node*
- * into the tree, so free the VM heap before this if the interpreter might
- * still be holding a function value. */
-/* Two passes, on purpose.
- *
- * Pass 1 hands the children back; pass 2 releases what this block owns
- * itself. Splitting them lets the parser sweep a batch of nodes it abandoned
- * mid-statement (see the orphan journal at the top of this file): the sweep
- * releases every node of the batch itself, so a child may already be gone and
- * walking into it from here would be a use-after-free. */
-static void node_free_kids(Node *n);
-static void node_free_own(Node *n);
-
-void node_free_orphan(Node *n);
-
-static void node_free_kids(Node *n) {
-    if (!n) return;
-    switch (n->type) {
-    case N_PROGRAM:
-    case N_BLOCK: {
-        int c   = n->type == N_PROGRAM ? n->as.program.count : n->as.block.count;
-        Node **s = n->type == N_PROGRAM ? n->as.program.stmts : n->as.block.stmts;
-        for (int i = 0; i < c; i++) node_free(s[i]);
-        break;
-    }
-    case N_LET: {
-        node_free(n->as.let.init);
-        /* A `fn(...) -> ret` annotation's param vector is the parser's own
-         * realloc'd array (parse_type). Once a scan pass stamps t->func on
-         * the annotation Type, type_release_all's exception skips t->types
-         * expecting this sweep to free it (the comment names N_FUNC_LIT
-         * only) — and the plain path freed the Type shell but never this
-         * vector: the CI asan leg's 40-bytes-in-4 LSan report. The Type
-         * elements stay with type_release_all; only the vector goes here.
-         * NULL it so the sweep that runs after cannot reach it again. */
-        if (n->as.let.annot && n->as.let.annot->kind == TY_FUNC) {
-            free(n->as.let.annot->types);
-            n->as.let.annot->types = NULL;
-        }
-        break;
-    }
-    case N_LET_PAT: node_free(n->as.letpat.init); break;
-    case N_LET_EXPR:
-        node_free(n->as.letx.init);
-        node_free(n->as.letx.body);
-        break;
-    case N_IF:
-        node_free(n->as.ifs.cond);
-        node_free(n->as.ifs.then);
-        node_free(n->as.ifs.els);
-        break;
-    case N_WHILE:
-        node_free(n->as.whiles.cond);
-        node_free(n->as.whiles.body);
-        break;
-    case N_FOR:
-        node_free(n->as.fors.init);
-        node_free(n->as.fors.cond);
-        node_free(n->as.fors.incr);
-        node_free(n->as.fors.iterable);
-        node_free(n->as.fors.body);
-        break;
-    case N_EXPR_STMT: node_free(n->as.expr_stmt.expr); break;
-    case N_RETURN:    node_free(n->as.ret.expr); break;
-    case N_SERVER:
-        for (int i = 0; i < n->as.server.count; i++)
-            node_free(n->as.server.assigns[i]);
-        break;
-    case N_ROUTE:  node_free(n->as.route.handler); break;
-    case N_VERBS:  node_free(n->as.verbs.methods); break;
-    case N_TOOL:
-        node_free(n->as.tool.params);
-        node_free(n->as.tool.handler);
-        break;
-    case N_FUNC_DECL: node_free(n->as.func.body); break;
-    case N_FUNC_LIT:  node_free(n->as.funclit.body); break;
-    case N_ASSIGN:    node_free(n->as.assign.value); break;
-    case N_ASSIGN_MEMBER:
-        node_free(n->as.assign_mem.obj);
-        node_free(n->as.assign_mem.value);
-        break;
-    case N_MAP_LIT:
-        for (int i = 0; i < n->as.map.count; i++) node_free(n->as.map.vals[i]);
-        break;
-    case N_LIST_LIT:
-        for (int i = 0; i < n->as.list.count; i++)
-            node_free(n->as.list.items[i]);
-        break;
-    case N_CALL:
-        node_free(n->as.call.callee);
-        for (int i = 0; i < n->as.call.argc; i++)
-            node_free(n->as.call.args[i]);
-        break;
-    case N_MEMBER: node_free(n->as.member.obj); break;
-    case N_UNARY:  node_free(n->as.unary.operand); break;
-    case N_BINARY:
-        node_free(n->as.binary.left);
-        node_free(n->as.binary.right);
-        break;
-    case N_TERNARY:
-        node_free(n->as.ternary.cond);
-        node_free(n->as.ternary.then);
-        node_free(n->as.ternary.els);
-        break;
-    case N_INDEX:
-        /* Index syntax (m["k"], l[0]) chains like N_MEMBER: without this
-         * case the node fell into the "no children" default and both the
-         * base expression and the index expression leaked (CI asan caught
-         * it the day after the syntax landed). */
-        node_free(n->as.index.obj);
-        node_free(n->as.index.index);
-        break;
-    case N_CTOR:
-        for (int i = 0; i < n->as.ctor.argc; i++)
-            node_free(n->as.ctor.args[i]);
-        break;
-    case N_MATCH:
-        node_free(n->as.matchn.scrutinee);
-        for (int i = 0; i < n->as.matchn.armc; i++) {
-            node_free(n->as.matchn.arms[i].guard);
-            node_free(n->as.matchn.arms[i].body);
-        }
-        break;
-    case N_IF_LET:
-        node_free(n->as.iflet.value);
-        node_free(n->as.iflet.then);
-        node_free(n->as.iflet.els);
-        break;
-    case N_STRUCT_UPDATE:
-        node_free(n->as.supd.base);
-        for (int i = 0; i < n->as.supd.count; i++)
-            node_free(n->as.supd.vals[i]);
-        break;
-    default: break; /* no children (literals, imports, declarations, ...) */
-    }
-}
-
-/* The strings and array shells named in the header comment above. Never
- * touches a child, so the sweep may call this in any order. */
-static void node_free_own(Node *n) {
-    switch (n->type) {
-    case N_PROGRAM:
-    case N_BLOCK: {
-        /* the statements themselves are children (pass 1) */
-        Node **s = n->type == N_PROGRAM ? n->as.program.stmts : n->as.block.stmts;
-        free(s);
-        break;
-    }
-    case N_LET:           free(n->as.let.name); break;
-    case N_LET_EXPR:      free(n->as.letx.name); break;
-    case N_LET_PAT:
-        free_name_array(n->as.letpat.names, n->as.letpat.count);
-        free_name_array(n->as.letpat.fields, n->as.letpat.count);
-        free(n->as.letpat.types);   /* Type* elements: type_release_all() */
-        break;
-    case N_FOR:           free(n->as.fors.var); break;
-    case N_ROUTE:
-        free(n->as.route.method);
-        free(n->as.route.alias);
-        free(n->as.route.path);
-        break;
-    case N_VERBS:         free(n->as.verbs.name); break;
-    case N_TOOL:
-        free(n->as.tool.name);
-        free(n->as.tool.desc);
-        break;
-    case N_FUNC_DECL:
-        free(n->as.func.name);
-        free(n->as.func.cname);        /* synthetic local-fn name (codegen_sig.c) */
-        free_name_array(n->as.func.names, n->as.func.arity);
-        free(n->as.func.param_types);  /* Type* elements: type_release_all() */
-        break;
-    case N_FUNC_LIT:
-        free_name_array(n->as.funclit.names, n->as.funclit.arity);
-        free(n->as.funclit.param_types);
-        /* The mangled name the signature pass stamped on (NULL for a route
-         * handler, which never goes through that pass). */
-        free(n->as.funclit.cname);
-        /* Captured names are xstrdup'd by the capture pass; the types are
-         * borrowed from the enclosing scope and not owned here. */
-        if (n->as.funclit.cap_names) {
-            for (int i = 0; i < n->as.funclit.cap_count; i++)
-                free(n->as.funclit.cap_names[i]);
-            free(n->as.funclit.cap_names);
-        }
-        free(n->as.funclit.cap_types);
-        break;
-    case N_TYPE_DECL:
-        free(n->as.type_decl.name);
-        free_name_array(n->as.type_decl.field_names, n->as.type_decl.count);
-        free(n->as.type_decl.field_types);
-        break;
-    case N_ENUM_DECL: {
-        free(n->as.enum_decl.name);
-        int vc = n->as.enum_decl.vcount;
-        for (int i = 0; i < vc; i++) {
-            free(n->as.enum_decl.vnames[i]);
-            free_name_array(n->as.enum_decl.vfields[i],
-                            n->as.enum_decl.vfield_counts[i]);
-            free(n->as.enum_decl.vfield_types[i]); /* Type* elems: release_all */
-        }
-        free(n->as.enum_decl.vnames);
-        free(n->as.enum_decl.vfields);
-        free(n->as.enum_decl.vfield_types);
-        free(n->as.enum_decl.vfield_counts);
-        break;
-    }
-    case N_CTOR:
-        free(n->as.ctor.name);
-        free(n->as.ctor.args);
-        break;
-    case N_MATCH:
-        for (int i = 0; i < n->as.matchn.armc; i++) {
-            MatchArm *arm = &n->as.matchn.arms[i];
-            for (int k = 0; k < arm->patc; k++) {
-                free(arm->pats[k].vname);
-                free_name_array(arm->pats[k].binds, arm->pats[k].bindc);
-            }
-            free(arm->pats);
-        }
-        free(n->as.matchn.arms);
-        break;
-    case N_IF_LET:
-        for (int k = 0; k < n->as.iflet.patc; k++) {
-            free(n->as.iflet.pats[k].vname);
-            free_name_array(n->as.iflet.pats[k].binds,
-                            n->as.iflet.pats[k].bindc);
-        }
-        free(n->as.iflet.pats);
-        break;
-    case N_VAR:               free(n->as.var.name); break;
-    case N_ASSIGN:            free(n->as.assign.name); break;
-    case N_ASSIGN_MEMBER:     free(n->as.assign_mem.name); break;
-    case N_SERVER:            free(n->as.server.assigns); break;
-    case N_MAP_LIT:
-        free_name_array(n->as.map.keys, n->as.map.count);
-        free(n->as.map.vals);
-        break;
-    case N_STRUCT_UPDATE:
-        free_name_array(n->as.supd.keys, n->as.supd.count);
-        free(n->as.supd.vals);
-        break;
-    case N_LIST_LIT:          free(n->as.list.items); break;
-    case N_CALL:              free(n->as.call.args); break;
-    case N_MEMBER:            free(n->as.member.name); break;
-    case N_IMPORT:
-        free(n->as.imp.path);
-        free(n->as.imp.ns);
-        break;
-    case N_LITERAL:
-        /* Only string literals own their text: parse_primary() mallocs a
-         * quote-including copy for LIT_STR (and reallocs it while merging
-         * adjacent literals). The other kinds keep a borrowed pointer into
-         * the source buffer, so freeing those would be a double free. */
-        /* The field owns this one (see the note on Node.lit in lume.h) — no
-         * cast, unlike every other free() here. */
-        if (n->as.lit.kind == LIT_STR) free(n->as.lit.text);
-        break;
-    case N_BREAK:
-    case N_CONTINUE:
-    case N_WHILE:
-    case N_RETURN:
-    case N_IF:
-    case N_EXPR_STMT:
-    case N_UNARY:
-    case N_BINARY:
-    default:
-        break; /* no strings or shells of its own */
-    }
-}
-
-void node_free(Node *n) {
-    if (!n) return;
-    node_free_kids(n);
-    node_free_own(n);
-    free(n);
-}
-
-/* Release one node the parser abandoned mid-statement: children are NOT
- * walked, the caller releases every node of the batch itself. */
-void node_free_orphan(Node *n) {
-    if (!n) return;
-    node_free_own(n);
-    free(n);
 }
 
 /* ---------- debug dump ---------- */

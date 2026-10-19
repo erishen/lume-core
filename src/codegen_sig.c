@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arena.h"
+
 #include "codegen.h"
 #include "lume.h"
 #include "irbuf.h"
@@ -204,10 +206,8 @@ static void collect_known(CG *g, Node *n, LTys *t)
 
 static void cap_reset(Node *lam)
 {
-    for (int i = 0; i < lam->as.funclit.cap_count; i++)
-        free(lam->as.funclit.cap_names[i]);
-    free(lam->as.funclit.cap_names);
-    free(lam->as.funclit.cap_types);
+    /* cap_* strings and arrays are arena-owned (TODO.md P2): the fixed-point
+     * rerun just drops the counts and starts over. */
     lam->as.funclit.cap_names = NULL;
     lam->as.funclit.cap_types = NULL;
     lam->as.funclit.cap_count = 0;
@@ -219,10 +219,12 @@ static void cap_add(Node *lam, const char *name, Type *ty)
         if (strcmp(lam->as.funclit.cap_names[i], name) == 0) return;
     int n = lam->as.funclit.cap_count;
     lam->as.funclit.cap_names =
-        (char **)xrealloc(lam->as.funclit.cap_names, (size_t)(n + 1) * sizeof(char *));
+        arena_grow(lam->as.funclit.cap_names, (size_t)n * sizeof(char *),
+                   (size_t)(n + 1) * sizeof(char *));
     lam->as.funclit.cap_types =
-        (Type **)xrealloc(lam->as.funclit.cap_types, (size_t)(n + 1) * sizeof(Type *));
-    lam->as.funclit.cap_names[n] = xstrdup(name);
+        arena_grow(lam->as.funclit.cap_types, (size_t)n * sizeof(Type *),
+                   (size_t)(n + 1) * sizeof(Type *));
+    lam->as.funclit.cap_names[n] = arena_strdup(name);
     lam->as.funclit.cap_types[n] = ty;
     lam->as.funclit.cap_count = n + 1;
 }
@@ -425,7 +427,7 @@ static void ensure_lambda_registered(CG *g, Node *lambda)
 
     char buf[32];
     snprintf(buf, sizeof buf, "__lume_clo_%d", g->nclo++);
-    lambda->as.funclit.cname = xstrdup(buf);
+    lambda->as.funclit.cname = arena_strdup(buf);
 
     sig_push(&g->sigs, buf, lambda->as.funclit.ret,
              lambda->as.funclit.param_types, lambda->as.funclit.arity);
@@ -753,8 +755,9 @@ static void lf_rename_calls(Node *n, const char *from, const char *to)
     case N_CALL: {
         Node *ce = n->as.call.callee;
         if (ce && ce->type == N_VAR && strcmp(ce->as.var.name, from) == 0) {
-            free(ce->as.var.name);   /* drop the source name before stamping cname */
-            ce->as.var.name = xstrdup(to);
+            /* the source name stays reachable (arena); the new name simply
+             * replaces the pointer */
+            ce->as.var.name = arena_strdup(to);
         }
         lf_rename_calls(ce, from, to);
         for (int i = 0; i < n->as.call.argc; i++)
@@ -953,7 +956,7 @@ static void lf_walk_fn_body(LfCtx *c, Node *body)
         if (L->as.func.cname) continue;
         char buf[32];
         snprintf(buf, sizeof buf, "__lume_lf_%d", c->counter++);
-        L->as.func.cname = xstrdup(buf);
+        L->as.func.cname = arena_strdup(buf);
         lf_rename_calls(body, L->as.func.name, L->as.func.cname);
     }
 

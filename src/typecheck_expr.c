@@ -3,6 +3,7 @@
  * 一元/二元运算与调用(含 Result `?` 传播规则)。 */
 
 #include "typecheck_internal.h"
+#include "arena.h"
 
 /* Equality classes for `==` / `!=` (SPEC 1.8). Two operands in different
  * classes are never comparable: natively that shape is invalid IR (icmp i64
@@ -223,8 +224,12 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return ck_list(c, n, expected);
 
         case N_FUNC_LIT: {
-            Type **params = calloc((size_t)n->as.funclit.arity + 1,
-                                   sizeof(Type *));
+            /* Scratch resolved-param vector; type_func() copies it out, so
+             * it lives in the arena and is abandoned (TODO.md P2). */
+            Type **params = arena_alloc(((size_t)n->as.funclit.arity + 1)
+                                        * sizeof(Type *));
+            memset(params, 0,
+                   ((size_t)n->as.funclit.arity + 1) * sizeof(Type *));
             Type *hint = c->param_hint;
             c->param_hint = NULL; /* one-shot */
             /* A `fn (...) => ...` annotation on the binding (`let f: fn(int)

@@ -35,21 +35,10 @@ bool advance(Parser *p);
 bool match(Parser *p, TokenType t);
 bool expect(Parser *p, TokenType t);
 char *ident_name(Parser *p, Token t);
-char *dupcstr(const char *s);   /* owned strdup, freed by free_name_array */
+char *dupcstr(const char *s);   /* arena-owned strdup (docs/ARENA.md) */
 bool is_method_keyword(TokenType t);
 const char *method_keyword_name(TokenType t);
 bool is_field_token(TokenType t);
-
-/* Release one node the parser abandoned mid-statement: children are NOT
- * walked (the caller frees every node of the batch itself). */
-void node_free_orphan(Node *n);
-
-/* Take a node back out of the orphan batch. Every nalloc() node sits in that
- * batch, so a parser file that discards a node of its own -- free()ing just
- * the shell, after moving whatever the node owned over to a node that outlives
- * it -- has to call this first: otherwise the sweep at the end of a failed
- * parse frees the same pointer a second time. */
-void node_unjournal(Node *n);
 
 /* ---- 类型 / 块 / 函数声明(parser.c) ---- */
 Type *any_type(void);          /* defined in typecheck.c; the "anything" type */
@@ -68,9 +57,5 @@ Node *parse_expression(Parser *p);
 /* `V(b, ...)` / bare `V` / `_`, `|`-separated into alternatives (parser.c).
  * Shared by match arms and if-let; the caller owns the array. */
 bool parse_patterns(Parser *p, MatchPat **out, int *outc);
-
-/* Release a parse_patterns result no node will own (mid-construction
- * failure in match / if-let); see parser.c's definition. */
-void free_pat_array(MatchPat *pats, int patc);
 
 #endif /* LUME_PARSER_INTERNAL_H */
