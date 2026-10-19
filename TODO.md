@@ -66,14 +66,21 @@ throwaway map-put results) are all instances of one structural problem:
 manual per-node freeing that every new node type and scope rule must
 remember. An arena removes the whole class instead of patching points.
 
-- [ ] Design first: arena lifetime = one compilation unit
+- [x] Design first: arena lifetime = one compilation unit
   (`parse_program` .. end of backend emission). `nalloc` redirects to
   the arena; `node_free` / `node_free_kids` / `node_free_own` and the
-  orphan journal collapse into a single arena reset.
-- [ ] Enumerate the lifetime hazards before writing code: AST nodes are
+  orphan journal collapse into a single arena reset. — Design recorded
+  2026-10-19 in `docs/ARENA.md` (lifetime map, in/out of scope, staged
+  rollout; Type graph stays on `type_release_all` in v1).
+- [x] Enumerate the lifetime hazards before writing code: AST nodes are
   shared across phases (checker, codegen scan, both emitters read the
   same tree) — the arena must outlive all of them. Cross-check every
   phase that today calls `node_free` on a subtree it claims to own.
+  — Done 2026-10-19: ten hazards in `docs/ARENA.md` (source-buffer
+  borrows, unjournal dances, parse-error abandonment, the mixed Type
+  vectors, checker scope borrows, allocation past parse via the
+  signature pass, loader's many-trees model, request-time interp reads,
+  host sync debt, the four-copy Asgs trap).
 - [ ] Keep `asg_truncate` / `arm_scope_truncate` semantics correct: with
   an arena the strings they freed become arena-owned, so the truncate
   helpers degenerate to count resets.
@@ -261,7 +268,7 @@ orphan journal's sweep. CI (`make fuzz-ci`: deterministic seed replay
 + 60s campaign, artifacts uploaded) now patrols for regressions; the
 items below close the loop the campaign loop left open.
 
-- [ ] **Host sync — the one item with a deadline.** All eight fixes
+- [x] **Host sync — the one item with a deadline.** All eight fixes
       live in the host `lume/lang/` copies of the parser trio
       (`parser.c`, `parser_expr.c`, `parser_stmt.c` — sync-lang carries
       them), and the host product runs production scripts on that
@@ -274,6 +281,15 @@ items below close the loop the campaign loop left open.
       `ck_put_pat_binds` triple bound) → host `make check`/`test` →
       push agent-httpd BEFORE the host repo (a dangling gitlink reds
       every CI job, learned the hard way 2026-10-18).
+      — Closed 2026-10-19: v0.8.0 tagged at `436b744`; host pin bumped
+      to `v0.8.0 @ 436b744` (`bcdccd0`); the parser trio was already
+      byte-identical (the 09:11 sync carried all eight), the
+      ck_put_pat_binds clamp was already hand-merged, and the real
+      residual gap was the `ty_str` ring-slot size fix (`98ceb48`,
+      hand-merged as `4232dd0` — `sizeof buf` = pointer size, 8, vs the
+      ring slot's 128: type names truncated at 7 chars in diagnostics).
+      Host `make check`/`test` green; agent-httpd gitlink `4060a068`
+      verified = its `origin/main` before the host push.
 - [x] Same-class audit (2026-10-18, clean): every claim structure in
       the parser proper was checked against its cleanup bound —
       `type_decl` field vectors and the `server{}`/`tool{}`/route
