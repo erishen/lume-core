@@ -22,6 +22,7 @@
  */
 
 #include "typecheck_internal.h"
+#include "arena.h"
 
 /* ===================== type representation ===================== */
 
@@ -863,7 +864,14 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
             const char *fname = s->as.func.cname ? s->as.func.cname
                                                  : s->as.func.name;
             ck_ctor_shadow(&c, fname, s->line);
-            Type **params = calloc((size_t)s->as.func.arity + 1, sizeof(Type *));
+            /* Scratch resolved-param vector; type_func() copies it out, so
+             * it lives in the arena and is abandoned (TODO.md P2). A malloc
+             * here had no owner after the copy — LeakSanitizer on the fuzz
+             * seed replay caught the orphan. */
+            Type **params = arena_alloc(((size_t)s->as.func.arity + 1)
+                                        * sizeof(Type *));
+            memset(params, 0,
+                   ((size_t)s->as.func.arity + 1) * sizeof(Type *));
             for (int j = 0; j < s->as.func.arity; j++) {
                 params[j] = s->as.func.param_types[j]
                                 ? resolve(&c, s->as.func.param_types[j], s->line)
