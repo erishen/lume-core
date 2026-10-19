@@ -163,8 +163,16 @@ static void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int ar
     s->v[s->n].name   = xstrdup(name);
     s->v[s->n].ret    = ret;
     s->v[s->n].params = params;
+    s->v[s->n].pnames = NULL;
     s->v[s->n].arity  = arity;
-    s->v[s->n].phmask = 0;
+    s->v[s->n].body   = NULL;
+    s->v[s->n].node   = NULL;
+    /* The vector grows by realloc, which does not zero the new tail — every
+     * field added to Sig must be set HERE (same rule as codegen.c's copy:
+     * a named function's write-back must never wander into the lambda
+     * branch and spell its types through the funclit union offsets). */
+    s->v[s->n].is_lambda = 0;
+    s->v[s->n].phmask    = 0;
     s->n++;
 }
 

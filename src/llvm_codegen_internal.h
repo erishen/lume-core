@@ -34,7 +34,20 @@ typedef struct { LTyp *v; int n, cap; } LTys;
 /* Shared with the signature pass (codegen_sig.c): linear lookup by name. */
 Type *lt_find(LTys *t, const char *name);
 
-typedef struct { char *name; Type *ret; Type **params; int arity; } Sig;
+/* Mirrors codegen_internal.h's Sig field-for-field: llvm_cg_scan.inc shares
+ * codegen_scan.c's infer_node_type logic verbatim, and that logic reads
+ * `node` (the lambda a Sig was registered from) and `phmask` (placeholder
+ * pinning). A leaner struct here compiled until 8ac8450 started mirroring
+ * the HOF-element fix into llvm_cg_scan.inc. The extra fields (pnames,
+ * body, is_lambda) are carried for parity so the next mirrored change does
+ * not have to touch this struct again — sig_push below must set every one. */
+typedef struct { char *name; Type *ret; Type **params; char **pnames;
+                 int arity; struct Node *body; struct Node *node;
+                 int is_lambda;
+                 /* Bit i set: params[i] is a placeholder pinned from an
+                  * any/empty list element type (INT), not a real element
+                  * type — a later fixed-point round may upgrade it. */
+                 unsigned int phmask; } Sig;
 typedef struct { Sig *v; int n, cap; } Sigs;
 
 typedef struct { char *name; char **names; Type **types; int count; } SDef;
