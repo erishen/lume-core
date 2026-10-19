@@ -6,6 +6,24 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-19
+
+### Fixed — two hygiene bugs caught by CI (absent from every prior tag)
+
+- `typecheck.c` leaked the Pass-C parameter scratch (40 bytes per module
+  that declares functions): since P2 Stage 1 `type_func()` copies the
+  caller's `params`, the `calloc`'d scratch had no owner and was never
+  freed — caught by LeakSanitizer on the CI seed replay (`make fuzz-ci`,
+  live since `e6896b9`). Now `arena_alloc` + `memset`, abandoned, matching
+  the existing `N_FUNC_LIT` path.
+- `lexer.c` `lex_istr`'s `EXPR_STR` branch skipped a backslash escape with
+  an unguarded `p += 2`; a trailing backslash as the last source byte
+  walked `p` past the NUL terminator and read one byte past the allocation
+  (ASan heap-buffer-overflow, originally surfaced by the v0.8.0 fuzz
+  campaign and minimized to `s!"{"a\`). Guard added (mirroring
+  `lex_string`); regression fixture
+  `tests/interp2-bad/istr-esc-at-eof.lume` added.
+
 ## [0.9.0] - 2026-10-19
 
 ### Added — bump-arena allocator for the AST (P2)
