@@ -136,10 +136,12 @@ platform.
   shape has no native emission path), so the leg exercises the vendored regex
   through `native_str_match` at runtime; the mingw link path is covered because
   the regex is compiled into `lume-core.exe` itself.
-- [ ] If LLVM emission proves heavy on the runner, land the interpreter
-  + text legs first and track the llvm leg separately.
+- [x] If LLVM emission proves heavy on the runner, land the interpreter
+  + text legs first and track the llvm leg separately. — Moot: all three
+  legs were in place and run green on every push since (2026-10-19:
+  run 39216687894 success @ 9fd6d7b).
 
-**Done when**: the Windows workflow runs the three legs green.
+**Done when**: the Windows workflow runs the three legs green. ✅ 2026-10-19.
 
 ## P4 — Later / larger
 
