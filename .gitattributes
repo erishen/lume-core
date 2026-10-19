@@ -1,0 +1,27 @@
+# Normalize every text file to LF on checkout so line endings are byte-identical
+# across macOS / Linux / Windows. Without this, a Windows clone with
+# core.autocrlf=true would CRLF-mangle the sources (the Makefile recipes with
+# backslash continuations break under a CRLF checkout).
+# Mirrors agent-httpd/.gitattributes (commit ee18006).
+* text=auto eol=lf
+
+# Compiled / compressed / binary artifacts — no eol conversion, no diff.
+*.gz     binary
+*.class  binary
+*.jar    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.eot    binary
+*.db     binary
+*.sqlite binary
+*.sqlite3 binary
+*.pem    binary
+*.crt    binary
+*.key    binary
+*.pdf    binary
