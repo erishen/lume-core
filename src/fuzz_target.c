@@ -1,4 +1,4 @@
-/* src/fuzz_target.c — P1 (TODO): parser fuzzing entry point.
+/* src/fuzz_target.c — parser fuzzing entry point.
  *
  * Feeds arbitrary bytes through the lexer → parse_program (including its
  * orphan-release path) → the type checker. No backend emission: the target
@@ -10,7 +10,7 @@
  *   - libFuzzer (Linux clang): `LLVMFuzzerTestOneInput` is compiled in when
  *     __linux__ is defined. `-fsanitize=fuzzer` rejects the Windows GNU
  *     targets (x86_64-w64-windows-gnu), so the fuzzer binary is built by
- *     `make fuzz` on Linux only (TODO P1; CI policy starts local-only).
+ *     `make fuzz` on Linux only; CI runs this via the `fuzz` job in ci.yml.
  *
  *   - standalone driver: `-DLUME_FUZZ_DRIVER` compiles a main() that reads
  *     the files named on the command line and pushes each through the same

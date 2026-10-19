@@ -43,7 +43,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
       - run: make -j4 asan
 
-  # Parser fuzzing in CI (TODO P1's promoted leg). ubuntu+clang only:
+  # Parser fuzzing in CI (promoted leg). ubuntu+clang only:
   # -fsanitize=fuzzer needs the clang runtime (gcc has none, Homebrew clang
   # ships none either). Two phases inside `make fuzz-ci` — a deterministic
   # -runs=1 seed replay over every tests/*.lume (regression tripwire,
