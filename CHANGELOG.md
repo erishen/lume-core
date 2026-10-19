@@ -6,6 +6,15 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-19
+
+### Added — lexer scientific notation support
+
+- `lexer.c` now supports scientific notation (`e`/`E` exponent) in numeric
+  literals, matching the usual `1e5`, `2.3E-4` style numeric constants.
+- Added `tests/sci.lume` (11 assertions) and `tests/sci-bad/incomplete-exp.lume`,
+  wired as the `sci-test` Makefile target.
+
 ## [0.9.2] - 2026-10-19
 
 ### Fixed — CI test-infrastructure stability (no library/runtime change)
