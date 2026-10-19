@@ -422,8 +422,14 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                     return lt->kind == TY_STRING ? type_prim(TY_STRING)
                                                  : any_type();
             }
+            /* Both sides must be numeric; the string-concat case is handled
+             * above. A mixed numeric/string operand (e.g. `1 + "x"`) is a type
+             * error, not string concat. The numeric check must inspect BOTH
+             * sides — the old code only looked at the left, so `1 + "x"`
+             * slipped through --check. */
             if (lt && rt && lt->kind != TY_ANY && rt->kind != TY_ANY &&
-                !type_compat(c, lt, type_prim(TY_FLOAT), n->line))
+                (!type_compat(c, lt, type_prim(TY_FLOAT), n->line) ||
+                 !type_compat(c, rt, type_prim(TY_FLOAT), n->line)))
                 ck_fail(c, n->line, "arithmetic needs numbers");
             return arith_result(lt, rt);
         }

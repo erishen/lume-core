@@ -646,6 +646,14 @@ int main(void) {
     check("string concat",
           "let a = \"hello\"; let b = \" world\"; print(a + b + \"!\");",
           "hello world!\n");
+    /* regression: arithmetic must validate BOTH operands are numeric. A mixed
+     * int/string operand (`1 + "x"`) used to slip through because the numeric
+     * check only inspected the left side — and broke `watch` hot-reload, which
+     * trusts --check to reject invalid edits. */
+    reject("arithmetic rejects int + string", "print(1 + \"x\");",
+           "arithmetic needs numbers");
+    reject("arithmetic rejects string + int", "print(\"x\" + 1);",
+           "arithmetic needs numbers");
 
     check("replace global literal",
           "print(replace(\"a-b-c\", \"-\", \"+\"));\n"
