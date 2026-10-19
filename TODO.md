@@ -177,6 +177,26 @@ platform.
   must all honor `env()` inside `server{}`); until then, serve programs that
   read env at startup are interpreter-pinned. Filed 2026-10-19 from nsgm's
   `HAVE_LLVM=0` workaround.
+- [ ] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
+  medical-stats p-values).** medical-stats' next step is descriptive stats →
+  inference: p-values for the correlation matrix, group-baseline t/χ², and
+  regression coefficient t/Wald tests. The current math builtins
+  (`abs/sqrt/exp/log/ln/pow/floor/ceil/round/min/max` + `pi`/`e`, see
+  `builtins_math.c`) provide none of the needed CDFs. Add, via C `math.h` +
+  self-authored rational approximations (Acklam-style, matching the engine's
+  hand-written `normal_quantile`), registered as three-backend-consistent
+  builtins:
+  - `normcdf(x)` / `erf(x)` — normal CDF (correlation r→t tail, z-test)
+  - `tdist_cdf(t, df)` (or `ibeta`) — t tail (correlation significance,
+    linear-regression t, two-sample t)
+  - `chisq_cdf(x, df)` (or `igamma`) — χ² (categorical group comparison,
+    logistic Wald/LR)
+  - `gamma` / `lgamma` / `igamma` / `ibeta` — shared implementation base
+    (regularized incomplete Gamma/Beta)
+  Consumption side (pure `engine/*.lume` functions) is specced in
+  `work/knowledge/medical-stats/TODO.md`; once core ships these, that project
+  wires the p-values without hand-rolling unstable distribution code in the
+  DSL.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
