@@ -164,6 +164,7 @@ static void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int ar
     s->v[s->n].ret    = ret;
     s->v[s->n].params = params;
     s->v[s->n].arity  = arity;
+    s->v[s->n].phmask = 0;
     s->n++;
 }
 

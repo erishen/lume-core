@@ -120,6 +120,15 @@ static Type *infer_node_type(CG *g, Node *n)
             }
             if (lambda && lambda->as.funclit.ret)
                 return type_list(lambda->as.funclit.ret);
+            /* Same as codegen_scan.c's shared copy: the sig pass pins the
+             * lambda's return in its Sig before the AST write-back, so read
+             * the Sig here or a mid-loop `let d = map(...)` stays list(any)
+             * and later reduce/map element reads degrade to int. */
+            if (lambda && lambda->as.funclit.cname) {
+                for (int i = 0; i < g->sigs.n; i++)
+                    if (g->sigs.v[i].node == lambda && g->sigs.v[i].ret)
+                        return type_list(g->sigs.v[i].ret);
+            }
             return type_list(any_type());
         }
         if (strcmp(name, "filter") == 0) {

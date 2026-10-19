@@ -89,7 +89,11 @@ typedef struct { LTyp *v; int n, cap; } LTys;
  * not. `body` and `pnames` are what make that possible. */
 typedef struct { char *name; Type *ret; Type **params; char **pnames;
                  int arity; struct Node *body; struct Node *node;
-                 int is_lambda; } Sig;
+                 int is_lambda;
+                 /* Bit i set: params[i] is a placeholder pinned from an
+                  * any/empty list element type (INT), not a real element
+                  * type — a later fixed-point round may upgrade it. */
+                 unsigned int phmask; } Sig;
 typedef struct { Sig *v; int n, cap; } Sigs;
 
 typedef struct {

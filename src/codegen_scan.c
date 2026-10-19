@@ -152,6 +152,17 @@ Type *infer_node_type(CG *g, Node *n)
             }
             if (lambda && lambda->as.funclit.ret)
                 return type_list(lambda->as.funclit.ret);
+            /* The signature pass pins a lambda's return in its Sig long
+             * before the AST write-back at the end of the fixed point, so a
+             * top-level `let d = map(...)` typed mid-loop would otherwise be
+             * list(any) and every later reduce/map element read would degrade
+             * to int — reading a double list by its i64 slots. Read the Sig
+             * here as the live source. */
+            if (lambda && lambda->as.funclit.cname) {
+                for (int i = 0; i < g->sigs.n; i++)
+                    if (g->sigs.v[i].node == lambda && g->sigs.v[i].ret)
+                        return type_list(g->sigs.v[i].ret);
+            }
             return type_list(any_type());
         }
         if (strcmp(name, "filter") == 0) {

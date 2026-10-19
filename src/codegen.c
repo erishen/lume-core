@@ -169,6 +169,7 @@ void sig_push(Sigs *s, const char *name, Type *ret, Type **params, int arity)
      * func.param_types). Found as a use-after-free that only reproduced
      * under some binaries: the garbage byte decided which branch ran. */
     s->v[s->n].is_lambda = 0;
+    s->v[s->n].phmask    = 0;
     s->n++;
 }
 

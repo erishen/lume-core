@@ -46,9 +46,12 @@ static void type_desc(Type *t, char *buf, size_t n);
 
 /* forward: same tu, defined below this point. */
 static int types_eq(Type *a, Type *b);
-
 /* forward: same tu, defined below this point. */
 static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s);
+
+/* forward: same tu, defined below this point. */
+static int pin_slot(CG *g, Sig *ls, int slot, Type *et, int placeholder,
+                    size_t line);
 
 /* forward: same tu, defined below this point. */
 static void ensure_lambda_registered(CG *g, Node *lambda);
@@ -176,8 +179,26 @@ static void collect_known(CG *g, Node *n, LTys *t)
          * top-level lets in order with a live scope. Keeps the sig pass'
          * view of top-level bindings in step with the scan. */
         g->scope = *t;
+        /* A higher-order initializer (`let d = map(f, xs)`) types its lambda
+         * only when the HOF call is walked, but this binding's type is
+         * recorded from infer_node_type before that walk — which sees the
+         * lambda's return still NULL and falls back to list(any). Every later
+         * reduce/map element read then degrades list(any) to int and reads a
+         * double list by its i64 slots; the fixed point never upgrades a
+         * parameter once pinned, so the mis-type would stick. Walk the HOF
+         * call here (pins the lambda's params from the list/init argument,
+         * then its body's return) so this binding is typed from the lambda's
+         * real return instead. */
+        Node *init = n->as.let.init;
+        if (init && init->type == N_CALL && init->as.call.callee &&
+            init->as.call.callee->type == N_VAR) {
+            const char *bn = init->as.call.callee->as.var.name;
+            if (strcmp(bn, "map") == 0 || strcmp(bn, "filter") == 0 ||
+                strcmp(bn, "reduce") == 0)
+                walk_sigs(g, init, t, NULL);
+        }
         Type *ty = n->as.let.annot ? n->as.let.annot
-                                   : infer_node_type(g, n->as.let.init);
+                                   : infer_node_type(g, init);
         lt_push(t, n->as.let.name, ty);
         collect_known(g, n->as.let.init, t);
         return;
@@ -1038,6 +1059,44 @@ static void type_desc(Type *t, char *buf, size_t n)
     }
 }
 
+/* Pin lambda parameter `slot` to `et`. `placeholder` marks a type pinned
+ * only because the list's element type was not knowable yet (an empty/any
+ * list pins INT as a spellable stand-in — the loop never reads such a list,
+ * len == 0), so a later fixed-point round that resolves the real element
+ * type upgrades it; a real pin meeting a different type is a
+ * one-shape-per-lambda conflict, reported like every other signature
+ * clash. Without the placeholder, a first round that only sees list(any)
+ * would freeze the item parameter at INT and read a double list by its
+ * i64 slots, with no way for the fixed point to correct it. */
+
+static int pin_slot(CG *g, Sig *ls, int slot, Type *et, int placeholder,
+                    size_t line)
+{
+    if (!et || slot >= ls->arity) return 0;
+    Type *cur = ls->params[slot];
+    if (!cur) {
+        ls->params[slot] = et;
+        if (placeholder) ls->phmask |= (1u << slot);
+        else             ls->phmask &= ~(1u << slot);
+        return 1;
+    }
+    if (types_eq(cur, et)) return 0;
+    if (ls->phmask & (1u << slot)) {
+        /* Placeholder (INT from an any/empty list) → the real element
+         * type: upgrade and forget the placeholder. */
+        ls->params[slot] = et;
+        ls->phmask &= ~(1u << slot);
+        return 1;
+    }
+    char want[32], got[32];
+    type_desc(cur, want, sizeof want);
+    type_desc(et, got, sizeof got);
+    ERR_SET(g, "line %zu: the closure's parameter %d was already resolved "
+               "as a %s, but this call resolves it as a %s — one closure "
+               "shape per lambda", line, slot + 1, want, got);
+    return 0;
+}
+
 /* Walk a function body: type every argument whose parameter is still unknown,
  * and take the return type from the first `return` that has an inferable
  * expression. Returns the number of slots it filled, which is what drives the
@@ -1117,22 +1176,39 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
                                 ? infer_arg_type(g, n->as.call.args[2], t) : NULL;
                             Type *list_t = argc >= 2
                                 ? infer_arg_type(g, n->as.call.args[1], t) : NULL;
-                            /* An empty/any list never calls the lambda (len ==
-                             * 0), so int is a safe spellable element type. */
-                            Type *et = (list_t && list_t->kind == TY_LIST)
-                                ? (list_t->elem && list_t->elem->kind != TY_ANY
-                                   ? list_t->elem : type_prim(TY_INT))
-                                : NULL;
-                            if (init_t && !ls->params[0]) { ls->params[0] = init_t; changed++; }
-                            if (et && !ls->params[1]) { ls->params[1] = et; changed++; }
+                            /* A list whose element type the pass knows pins
+                             * the item parameter to it. An empty/any list
+                             * never calls the lambda (len == 0), so INT is a
+                             * safe spellable element type — but only as a
+                             * placeholder: pin_slot upgrades it if a later
+                             * round resolves the real element type, where a
+                             * mis-pinned INT would read a double list by its
+                             * i64 slots. */
+                            Type *elem = (list_t && list_t->kind == TY_LIST &&
+                                          list_t->elem &&
+                                          list_t->elem->kind != TY_ANY)
+                                ? list_t->elem : NULL;
+                            if (init_t && !ls->params[0])
+                                { ls->params[0] = init_t; changed++; }
+                            if (elem)
+                                changed += pin_slot(g, ls, 1, elem, 0, n->line);
+                            else
+                                changed += pin_slot(g, ls, 1,
+                                                    type_prim(TY_INT), 1,
+                                                    n->line);
                         } else {
                             Type *list_t = argc >= 2
                                 ? infer_arg_type(g, n->as.call.args[1], t) : NULL;
-                            Type *et = (list_t && list_t->kind == TY_LIST)
-                                ? (list_t->elem && list_t->elem->kind != TY_ANY
-                                   ? list_t->elem : type_prim(TY_INT))
-                                : NULL;
-                            if (et && !ls->params[0]) { ls->params[0] = et; changed++; }
+                            Type *elem = (list_t && list_t->kind == TY_LIST &&
+                                          list_t->elem &&
+                                          list_t->elem->kind != TY_ANY)
+                                ? list_t->elem : NULL;
+                            if (elem)
+                                changed += pin_slot(g, ls, 0, elem, 0, n->line);
+                            else
+                                changed += pin_slot(g, ls, 0,
+                                                    type_prim(TY_INT), 1,
+                                                    n->line);
                         }
                     }
                 }

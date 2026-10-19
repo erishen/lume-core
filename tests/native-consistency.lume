@@ -1248,5 +1248,16 @@ print(srt_len(srt_v));       // 5 (排序结果变量可传带类型函数)
 func srt_sum(xs): float { return reduce((a, x) => a + x, xs, 0.0); }
 print(str(srt_sum(srt_v)));  // 15 (reduce 消费排序结果变量)
 
+// double HOF chain: map/filter 产物变量喂 reduce 必须按 double 读槽
+let dbl_xs = [1.0, 2.0, 3.0, 4.0];
+let dbl_sq = map((x) => x * x, dbl_xs);
+print(str(dbl_sq));                       // [1,4,9,16]
+print(str(reduce((a, x) => a + x, dbl_sq, 0.0)));  // 30 (map 产物 double reduce)
+let dbl_ev = filter((x) => x > 2.0, dbl_xs);
+print(str(dbl_ev));                       // [3,4]
+print(str(reduce((a, x) => a + x, dbl_ev, 0.0)));  // 7 (filter 产物 double reduce)
+func dbl_sum(xs): float { let d = map((y) => y * 2.0, xs); return reduce((a, y) => a + y, d, 0.0); }
+print(str(dbl_sum(dbl_xs)));              // 20 (函数内 map 产物 reduce)
+
 warmup();
 main();
