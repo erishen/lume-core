@@ -89,15 +89,32 @@ remember. An arena removes the whole class instead of patching points.
   `make test`, `make asan` (182 tests, zero leaks), 94-seed fuzz replay
   via the standalone `-DLUME_FUZZ_DRIVER` driver; host synced (synced
   six + arena files copied, four pinned files hand-merged).
-- [ ] Keep `asg_truncate` / `arm_scope_truncate` semantics correct: with
-  an arena the strings they freed become arena-owned, so the truncate
-  helpers degenerate to count resets.
-- [ ] Gate on the existing suite: `make asan` must stay at zero leaks
-  (now proving the arena, not the frees), native-consistency unchanged,
-  all `*-test` targets green.
+- [x] Stage 2 — checker coupling (2026-10-19): verified, folded into Stage 1.
+  The mixed-vector frees/NULL-stamps died with the node_free family and
+  `type_release_all`'s skip degenerated to the unconditional
+  `free(t->types)` in the same commit. Hazard 5 verified by inspection:
+  `scope_put`/`ck_free`/EnumDef shells own their malloc'd copies and
+  teardown touches no arena memory (`make asan` agrees).
+- [x] Stage 3 — codegen strings (2026-10-19): Asgs/arm_scope name+slot
+  strings moved to the arena in all four copies in one commit
+  (codegen.c, llvm_codegen.c, codegen_scan.c, llvm_cg_stmt.inc);
+  `asg_truncate`/`arm_scope_truncate`/`asgs_free`/`arm_scope_clear`
+  degenerated to count/vector-shell frees. The LTys tables (globals,
+  sigs, structs) keep their malloc regime by design. Gates green:
+  `tests/native_backends.sh` three legs, `make asan` (182 tests, zero
+  leaks), `make test`, fuzz seed replay.
+- [x] Gate on the existing suite: `make asan` stays at zero leaks (now
+  proving the arena, not the frees), native-consistency unchanged, all
+  `*-test` targets green.
 
 **Done when**: the free-path patches from `ecd7afc`/`7e5d2f8` can be
-deleted without the suite noticing.
+deleted without the suite noticing. — **Satisfied 2026-10-19**: every
+free those patches introduced is either gone with the node_free family
+(ecd7afc: N_LET_EXPR subtrees, local-fn cname, renamed callee names) or
+degenerated to a count reset (7e5d2f8: the four truncate helpers). The
+only survivors are emitter-owned malloc temporaries (`free(r.v)` for
+throwaway map-put results and friends), which were never arena memory
+and stay correct. P2 is complete.
 
 ## P3 — Native-backend test leg on Windows CI
 

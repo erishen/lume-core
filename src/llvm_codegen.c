@@ -54,6 +54,7 @@ Type *any_type(void);
 const char *src_type_name(Type *t);
 
 #include "llvm_codegen_internal.h"
+#include "arena.h"
 
 static void *xmalloc(size_t n)
 {
@@ -79,19 +80,21 @@ static char *xstrdup(const char *s)
 
 static void asgs_free(Asgs *a)
 {
-    for (int i = 0; i < a->n; i++) free(a->v[i].name);
+    /* name strings are arena memory now (TODO.md P2 Stage 3): only the
+     * malloc'd vector shell dies here. */
     free(a->v);
     memset(a, 0, sizeof *a);
 }
 
 /* LLVM twin of the text backend's asg_truncate (codegen.c): scope exits that
- * reset g->locals.n to a saved value must free the discarded entries' names
- * too, or LeakSanitizer reports them as leaks from asg_push. slot is an
- * LLVMValueRef owned by LLVM's context, never freed here. */
+ * reset g->locals.n to a saved value. This used to free the discarded
+ * entries' xstrdup'd names (the bare count reset leaked them); the names are
+ * arena memory now, so the reset is a bare count assignment and the arena
+ * reclaims everything at end-of-emission. slot is an LLVMValueRef owned by
+ * LLVM's context, never freed here. */
 static void asg_truncate(Asgs *a, int n)
 {
     if (n < 0) n = 0;
-    for (int i = n; i < a->n; i++) free(a->v[i].name);
     a->n = n;
 }
 
@@ -103,7 +106,7 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
         a->cap = a->cap ? a->cap * 2 : 8;
         a->v = (Asg *)xrealloc(a->v, (size_t)a->cap * sizeof *a->v);
     }
-    a->v[a->n].name = xstrdup(name);
+    a->v[a->n].name = arena_strdup(name);
     a->v[a->n].ty   = ty;
     a->v[a->n].slot = slot;
     a->v[a->n].cap  = 0;

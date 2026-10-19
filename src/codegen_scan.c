@@ -20,6 +20,7 @@
 #include "lume.h"
 #include "irbuf.h"
 #include "codegen_internal.h"
+#include "arena.h"
 
 /* forward: same tu, defined below this point. */
 static Type *for_in_elem_type(CG *g, Node *n);
@@ -44,29 +45,29 @@ static void arm_scope_push(CG *g, const char *name, Type *ty)
         g->arm_scope.v = (LTyp *)xrealloc(g->arm_scope.v,
                                           (size_t)g->arm_scope.cap * sizeof *g->arm_scope.v);
     }
-    g->arm_scope.v[g->arm_scope.n].name = xstrdup(name);
+    g->arm_scope.v[g->arm_scope.n].name = arena_strdup(name);
     g->arm_scope.v[g->arm_scope.n].ty   = ty;
     g->arm_scope.n++;
 }
 
 static void arm_scope_clear(CG *g)
 {
-    for (int i = 0; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
+    /* names are arena memory now (TODO.md P2 Stage 3): only the malloc'd
+     * vector shell dies here. */
     free(g->arm_scope.v);
     g->arm_scope = (LTys){0};
 }
 
-/* Reset the arm-bind scope back to `n` entries, freeing the names the reset
- * discards. The bare count reset (what the N_MATCH inference loop used to do
- * between arms) leaves every discarded entry's xstrdup'd name allocated, and
- * arm_scope_clear at the end only sees the already-truncated table, so those
- * strings leak — LeakSanitizer reports them from arm_scope_push. Same shape
- * as the emitters' asg_truncate: nested matches truncate to their own saved
- * value, so the freed ranges are disjoint. */
+/* Reset the arm-bind scope back to `n` entries. This used to free the
+ * discarded entries' xstrdup'd names (the bare count reset leaked them;
+ * LeakSanitizer caught it from arm_scope_push); the names are arena memory
+ * now, so the reset is a bare count assignment and the arena reclaims
+ * everything at end-of-emission. Same shape as the emitters' asg_truncate:
+ * nested matches truncate to their own saved value, which stays correct when
+ * nothing is freed. */
 static void arm_scope_truncate(CG *g, int n)
 {
     if (n < 0) n = 0;
-    for (int i = n; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
     g->arm_scope.n = n;
 }
 

@@ -19,25 +19,27 @@ static void arm_scope_push(CG *g, const char *name, Type *ty)
         g->arm_scope.v = (LTyp *)xrealloc(g->arm_scope.v,
                                           (size_t)g->arm_scope.cap * sizeof *g->arm_scope.v);
     }
-    g->arm_scope.v[g->arm_scope.n].name = xstrdup(name);
+    g->arm_scope.v[g->arm_scope.n].name = arena_strdup(name);
     g->arm_scope.v[g->arm_scope.n].ty   = ty;
     g->arm_scope.n++;
 }
 
 static void arm_scope_clear(CG *g)
 {
-    for (int i = 0; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
+    /* names are arena memory now (TODO.md P2 Stage 3): only the malloc'd
+     * vector shell dies here. */
     free(g->arm_scope.v);
     g->arm_scope = (LTys){0};
 }
 
 /* LLVM twin of codegen_scan.c's arm_scope_truncate: resetting the arm-bind
- * scope between match arms must free the discarded entries' names, or they
- * leak (the end-of-match arm_scope_clear only sees the truncated table). */
+ * scope between match arms. This used to free the discarded entries'
+ * xstrdup'd names (they leaked when only the truncated table was cleared);
+ * the names are arena memory now, so the reset is a bare count assignment
+ * and the arena reclaims everything at end-of-emission. */
 static void arm_scope_truncate(CG *g, int n)
 {
     if (n < 0) n = 0;
-    for (int i = n; i < g->arm_scope.n; i++) free(g->arm_scope.v[i].name);
     g->arm_scope.n = n;
 }
 

@@ -104,13 +104,22 @@ sites — the callers already know where a tree dies):
 
 ## Stage plan (each stage gated by the full suite)
 
-- **Stage 1 — parser.** Introduce the arena + `pstrdup`/`pgrow` helpers;
+- **Stage 1 — parser.** Introduce the arena + `pstrdup`/`pgrow` helpers;  ✅ 2026-10-19
   redirect `nalloc` and parser strings; delete the journal and the
   `node_free` family; convert the five call sites to `arena_reset`.
   Gate: `make asan` zero leaks, all `*-test`, fuzz seed replay.
-- **Stage 2 — checker coupling.** Remove the mixed-vector frees/skips
-  (hazard 4/5). Gate: `make asan` + native-consistency.
-- **Stage 3 — codegen strings.** Asgs strings → arena; the four truncate
+- **Stage 2 — checker coupling.** Remove the mixed-vector frees/skips  ✅ 2026-10-19
+  (hazard 4/5). Gate: `make asan` + native-consistency. — Folded into
+  Stage 1: the frees/NULL-stamps died with the node_free family and the
+  skip degenerated in the same commit; hazard 5 verified by inspection
+  (scope teardown owns its copies, touches no arena memory).
+- **Stage 3 — codegen strings.** Asgs strings → arena; the four truncate  ✅ 2026-10-19
   helpers degenerate to `a->n = n` in one commit (hazard 10). Gate:
-  `tests/native_backends.sh` three legs + `make asan`.
-- **Stage 4 — delete the free-path patches** `ecd7afc`/`7e5d2f8` (Done-when).
+  `tests/native_backends.sh` three legs + `make asan`. — The LTys
+  tables (globals, sigs, structs) keep their malloc regime: they xstrdup
+  their own copies and outlive no arena boundary.
+- **Stage 4 — delete the free-path patches** `ecd7afc`/`7e5d2f8` (Done-when).  ✅ 2026-10-19
+  — Satisfied: every free they introduced is gone with the node_free
+  family or degenerated to a count reset; the survivors are
+  emitter-owned malloc temporaries (`free(r.v)` for throwaway map-put
+  results), never arena memory.

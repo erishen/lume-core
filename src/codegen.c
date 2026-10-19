@@ -26,6 +26,7 @@
 #include "lume.h"
 #include "irbuf.h"
 #include "codegen_internal.h"
+#include "arena.h"
 
 /* forward: same tu, defined below this point. */
 static void cg_free(CG *cg);
@@ -54,28 +55,24 @@ char *xstrdup(const char *s)
 
 void asgs_free(Asgs *a)
 {
-    for (int i = 0; i < a->n; i++) { free(a->v[i].name); free(a->v[i].slot); }
+    /* name/slot strings are arena memory now (TODO.md P2 Stage 3): only the
+     * malloc'd vector shell dies here. */
     free(a->v);
     memset(a, 0, sizeof *a);
 }
 
-/* Drop the top of an Asgs table back to `n` entries, freeing the name/slot
- * strings of every entry the truncation discards. The native backends scope
- * local bindings — match-arm binds, if-let binds, let-expression bindings — by
- * pushing onto g->locals and resetting g->locals.n to a saved value afterwards.
- * The bare `n = saved` reset only shrinks the count; the dropped Asg entries'
- * xstrdup'd name/slot strings stay allocated, which LeakSanitizer reports as
- * Direct leaks from asg_push. Freeing them here keeps the reset leak-free
- * while preserving the array's capacity for reuse. A truncation never frees
- * entries below `n`, so nested scopes (each of which captures its own saved_n
- * and truncates to it) free disjoint ranges and cannot double-free. */
+/* Drop the top of an Asgs table back to `n` entries. The native backends
+ * scope local bindings — match-arm binds, if-let binds, let-expression
+ * bindings — by pushing onto g->locals and resetting g->locals.n to a saved
+ * value afterwards. This used to free the discarded entries' xstrdup'd
+ * name/slot strings (the bare count reset leaked them; LeakSanitizer caught
+ * it from asg_push); with the strings in the parse arena the reset is a bare
+ * count assignment again, and the arena reclaims everything at
+ * end-of-emission. Nested scopes each capture their own saved_n and truncate
+ * to it, which stays correct when nothing is freed. */
 void asg_truncate(Asgs *a, int n)
 {
     if (n < 0) n = 0;
-    for (int i = n; i < a->n; i++) {
-        free(a->v[i].name);
-        free(a->v[i].slot);
-    }
     a->n = n;
 }
 
@@ -105,9 +102,9 @@ void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
         snprintf(default_slot, sizeof default_slot, "%%lv_%s_%d", name, s_uid++);
     }
 
-    a->v[a->n].name = xstrdup(name);
+    a->v[a->n].name = arena_strdup(name);
     a->v[a->n].ty   = ty;
-    a->v[a->n].slot = xstrdup(default_slot);
+    a->v[a->n].slot = arena_strdup(default_slot);
     /* The declaration's source line. The locals table is pre-scanned flat
      * (the entry block needs every slot before any statement is emitted),
      * so a name can appear several times — a loop variable and a later
