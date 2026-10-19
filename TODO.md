@@ -153,6 +153,30 @@ platform.
   first-screen example (2026-10-16, verified on all three backends) +
   `examples/stats.lume` (statistics toolkit: typed functions, HOFs, closures,
   struct values — `make check` covers it via EXAMPLES).
+- **Design boundary (2026-10-19): `server{}`/listen is already a lume-core
+  builtin, not a host-only capability — do NOT file "add listen to core".**
+  `bridge_serve.c` is unconditionally compiled into the core main Makefile;
+  the `lume-core` binary ships `server{}` (bind/accept/route/docroot/sql)
+  since 0.7.0, and **lume-nsgm is the live proof**: its generated
+  `gen/app.lume` runs as plain `lume-core app.lume` listening on :18081, no
+  1.7M agent-httpd host binary involved. So the family's run-modes are four:
+  host `lume` (core + LLM tools/SSE/MCP) · **core-only** (nsgm, a bare
+  server runtime, few-MB) · dual-binary (host routes + core as authoritative
+  engine, e.g. medical-stats) · pure-interpret (fuzz/selfcheck/generators).
+  Consequence for cross-agent comms: any repo can be a comms endpoint as a
+  **core-only serve node** (`http_post(peer, allow_private:1)` out, `server{}`
+  in) without inheriting the 1.7M host. Nothing to build; this note exists so
+  we stop re-deriving "listen needs to be added" and instead pick the lightest
+  endpoint shape.
+- [ ] **P4 gap · `server{}` + `env()` is interpreter-backend-only; LLVM leg
+  not aligned (blocks three-backend equivalence for serve programs).** nsgm's
+  `gen/app.lume` reads `env("PORT"/"HOST"/"WORKERS")` inside `server{}` and
+  its Dockerfile forces `HAVE_LLVM=0` because `env()`-in-`server{}` only takes
+  effect on the default (interpreter) backend today. When P3 (three-backend
+  equivalence) hardens, add a serve+env regression leg (interp / text / LLVM
+  must all honor `env()` inside `server{}`); until then, serve programs that
+  read env at startup are interpreter-pinned. Filed 2026-10-19 from nsgm's
+  `HAVE_LLVM=0` workaround.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
