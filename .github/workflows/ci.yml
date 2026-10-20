@@ -82,6 +82,26 @@ jobs:
       # self-checking, only on the tarball existing.
       - run: make packcheck
 
+  # TODO P4 AI self-verification loop — the deterministic machine half of
+  # "AI writes, machine verifies". LLM-generated .lume programs have no
+  # human .expected, so the gate accepts/rejects by backend equivalence
+  # (type check + interp/IR-text/libLLVM output agreement + fuzz-driver
+  # crash leg). This job runs it over the shipped examples so the libLLVM
+  # leg is a real leg here (local toolchains often skip it), plus the
+  # standalone fuzz driver so the crash leg is live too. The host-side
+  # step that feeds actual LLM output into `make ai-verify` lives outside
+  # the core per the TODO scope guard.
+  ai-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang
+      - run: make fuzz-driver
+      - run: make ai-verify
+      - run: make ai-verify AI_VERIFY_FILE="examples/native-fact.lume"
+      - run: make ai-verify AI_VERIFY_FILE="examples/stats.lume"
+      - run: make ai-verify AI_VERIFY_FILE="examples/lang-basics.lume"
+
   # The release tree is produced by `.github/workflows/release.yml` on `v*`
   # tags; this job keeps the release matrix's plain build (no asset upload)
   # honest on every push to main / PR so a platform build break surfaces

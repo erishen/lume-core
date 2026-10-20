@@ -210,7 +210,12 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     `out/fuzz-driver` crash leg. Exit 0 = pass, 1 = reject (counter-example on
     stderr, ready to log back to the LLM), 2 = gate cannot run. Verified on
     Windows (interp + text legs, libLLVM skips without llvm-config): 4 example
-    programs PASS, all 8 enum-bad fixtures rejected. Still open: the host-side
+    programs PASS, all 8 enum-bad fixtures rejected. CI wired 2026-10-20:
+    `ci.yml` gained an `ai-verify` job (ubuntu, llvm-dev + clang) running
+    `make ai-verify` over hello / native-fact / stats / lang-basics with the
+    libLLVM leg live and `make fuzz-driver` built first — the two legs this
+    Windows box cannot run (libLLVM compile, standalone crash path) are real
+    CI legs. Still open: the host-side
     LLM → `.lume` step and the CI/CD wiring that feeds its output into
     `make ai-verify`; `assert_semantic()` remains an uncommitted open question.
 
