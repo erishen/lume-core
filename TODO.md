@@ -238,26 +238,28 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     LLM → `.lume` step and the CI/CD wiring that feeds its output into
     `make ai-verify`; `assert_semantic()` remains an uncommitted open question.
 
-- [ ] **P4 gap (cont.) · `server{}` LLVM leg — closed 2026-10-20 for the
-  env()-reading serve shape; one sub-gap remains (`req.*` member access).**
-  env() part closed 2026-10-20: env() now has a static type in both native
-  backends' inference tables (codegen_scan.c / llvm_cg_scan.inc), an emit
-  path (codegen_call.c / llvm_cg_call.inc → `lume_bi_env`), a runtime helper
-  in bridge_native.c that keeps native_env's credential-masking promise, and
-  the LLVM backend now links bridge_native.o (`backend_build_native`, shared
-  with backend.c) with `-lws2_32` on Windows (the LLVM link previously
-  carried only rt.o — that is also why `now()`/`argv()` never worked there).
-  server{} emission landed the same day: N_SERVER → lume_srv_init, N_ROUTE →
-  lume_srv_route, and a route-handler FFI compiler (cg_route_handler +
-  cg_handler_ret in llvm_cg_stmt.inc — string → text, map literal → JSON),
-  plus a text-backend fix (handler locals were lifted into undefined @lv_
-  globals while the scanning_top window was open). Pinned by
-  `tests/serve-env.lume` (interp==text==LLVM, all print "serve-env ok") +
-  `tests/env-consistency.lume` + the native-consistency three-leg run.
-  **Remaining sub-gap: `req.*` member access inside LLVM route handlers**
-  (the handler compiles with req as an opaque SrvReq* slot; only handlers
-  that read env()/locals compile today — gen/app.lume's shape needs req
-  fields before the Dockerfile can drop `HAVE_LLVM=0`).
+- [x] **P4 gap (cont.) · `server{}` LLVM leg — closed 2026-10-20, including
+  `req.*` member access.** env() part closed 2026-10-20: env() now has a
+  static type in both native backends' inference tables (codegen_scan.c /
+  llvm_cg_scan.inc), an emit path (codegen_call.c / llvm_cg_call.inc →
+  `lume_bi_env`), a runtime helper in bridge_native.c that keeps native_env's
+  credential-masking promise, and the LLVM backend now links bridge_native.o
+  (`backend_build_native`, shared with backend.c) with `-lws2_32` on Windows
+  (the LLVM link previously carried only rt.o — that is also why
+  `now()`/`argv()` never worked there). server{} emission landed the same
+  day: N_SERVER → lume_srv_init, N_ROUTE → lume_srv_route, and a
+  route-handler FFI compiler (cg_route_handler + cg_handler_ret in
+  llvm_cg_stmt.inc — string → text, map literal → JSON), plus a text-backend
+  fix (handler locals were lifted into undefined @lv_ globals while the
+  scanning_top window was open). `req.*` closed 2026-10-20: handler member
+  reads (method/path/query/body → string, body_len → int) emit GEP+load
+  against the SrvReq FFI struct in both backends' member_field_type and
+  emitter; tests/serve-env.lume's handler now reads req.method/req.path on
+  all three legs (interp==text==LLVM, "serve-env ok") + env-consistency +
+  native-consistency three-leg run. Pinned by `tests/serve-env.lume`.
+  **Remaining P4 footnote: `req.query_params("k")` / `req.get("k")` calls
+  inside LLVM route handlers** (the text backend lowers these via
+  lume_srv_qp; the LLVM emitter has no in-handler call branch yet).
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

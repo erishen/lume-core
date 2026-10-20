@@ -16,6 +16,8 @@ server {
 }
 get "/hello", (req) => {
   let who = env("LUME_TEST_WHO");
-  return "hello " + who;
+  let m = req.method;
+  let p = req.path;
+  return "hello " + who + " via " + m + " " + p;
 };
 print("serve-env ok");

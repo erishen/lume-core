@@ -442,6 +442,46 @@ static Val cg_len_of(CG *g, const char *fn, LLVMValueRef obj)
 static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
                           size_t line);
 
+/* req.field inside a native route handler: read straight out of the SrvReq
+ * FFI struct (mirrors codegen_expr.c's cg_handler_req_field). The struct
+ * layout is a contract with bridge_native.c — four i8* pointers (method,
+ * path, query, body) then one i64 (body_len). */
+static Val cg_handler_req_field(CG *g, Node *n)
+{
+    const char *f = n->as.member.name;
+    int idx;
+    if (strcmp(f, "method") == 0)      idx = 0;
+    else if (strcmp(f, "path") == 0)   idx = 1;
+    else if (strcmp(f, "query") == 0)  idx = 2;
+    else if (strcmp(f, "body") == 0)   idx = 3;
+    else if (strcmp(f, "body_len") == 0) idx = 4;
+    else ERRV(g, "line %zu: unknown req field '%s' in a native server "
+                 "handler", n->line, f);
+
+    LLVMTypeRef srv = LLVMGetTypeByName(g->mod, "struct.SrvReq");
+    if (!srv) {
+        srv = LLVMStructCreateNamed(g->ctx, "struct.SrvReq");
+        LLVMTypeRef els[5] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
+                               g->i64 };
+        LLVMStructSetBody(srv, els, 5, 0);
+    }
+    Asg *req = asg_find(&g->locals, g->hreq, n->line);
+    if (!req || !req->slot)
+        ERRV(g, "line %zu: internal: req parameter missing", n->line);
+    LLVMValueRef rp = LLVMBuildBitCast(g->ab, req->slot,
+                                       LLVMPointerType(srv, 0), "rp");
+    LLVMValueRef idxv[2] = { LLVMConstInt(g->i32, 0, 0),
+                             LLVMConstInt(g->i32, idx, 0) };
+    if (idx == 4) {
+        LLVMValueRef gp = LLVMBuildInBoundsGEP2(g->ab, srv, rp, idxv, 2, "rbl");
+        LLVMValueRef ld = LLVMBuildLoad2(g->ab, g->i64, gp, "rblv");
+        return val_make(type_prim(TY_INT), ld);
+    }
+    LLVMValueRef gp = LLVMBuildInBoundsGEP2(g->ab, srv, rp, idxv, 2, "rf");
+    LLVMValueRef ld = LLVMBuildLoad2(g->ab, g->i8ptr, gp, "rfv");
+    return val_make(type_prim(TY_STRING), ld);
+}
+
 /* `let { a, b } = e;` — SPEC §4.12. One evaluation of the init, then every
  * name stored from a field load of that single value: the emitter's
  * spelling of `let a = e.a; let b = e.b;` with one e. The checker stamped
@@ -480,6 +520,16 @@ static void cg_let_pat(CG *g, Node *n)
 static Val cg_member(CG *g, Node *n)
 {
     AT(g);
+
+    /* Native server route handler: req.field reads straight out of the
+     * SrvReq FFI struct — checked before the object is evaluated, so the
+     * req variable itself is never loaded (mirrors codegen_expr.c's
+     * cg_handler_req_field). */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.var.name, g->hreq) == 0)
+        return cg_handler_req_field(g, n);
+
     Val obj = cg_expr(g, n->as.member.obj);
 
     /* `s.len` / `s.length` / `xs.len` / `m.len`, before the struct path: there
@@ -1139,6 +1189,22 @@ static void cg_if_let(CG *g, Node *n)
  * handed a NULL type. */
 static Type *member_field_type(CG *g, Node *n)
 {
+    /* Native server handler: req.<field> types are the SrvReq FFI contract
+     * (mirrors the shared member_field_type in codegen_lit.c) — the handler
+     * parameter has no declared struct type, so the generic path below would
+     * return NULL and `let m = req.method` could not infer. */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.var.name, g->hreq) == 0) {
+        const char *f = n->as.member.name;
+        if (strcmp(f, "method") == 0 || strcmp(f, "path") == 0 ||
+            strcmp(f, "query") == 0 || strcmp(f, "body") == 0 ||
+            strcmp(f, "query_params") == 0)
+            return type_prim(TY_STRING);
+        if (strcmp(f, "body_len") == 0) return type_prim(TY_INT);
+        return NULL;
+    }
+
     Type *t = infer_node_type(g, n->as.member.obj);
     if (t && t->kind == TY_STRUCT) {
         if (t->name) {

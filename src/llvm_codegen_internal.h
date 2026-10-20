@@ -247,6 +247,7 @@ static LLVMValueRef rt_decl(CG *g, const char *name, LLVMTypeRef ret,
                             LLVMTypeRef *params, int n);
 static void cg_route_handler(CG *g, Node *fn, int rid);
 static void cg_handler_ret(CG *g, Node *n);
+static Val cg_handler_req_field(CG *g, Node *n);
 static Val cg_print(CG *g, Node *n, Val a);
 static Val emit_struct_to_map(CG *g, LLVMValueRef sv, Type *st);
 static const Bi *builtin_find(const char *name);

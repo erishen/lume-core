@@ -48,6 +48,23 @@ Type *struct_field_type(CG *g, const char *sname, int idx)
 
 Type *member_field_type(CG *g, Node *n)
 {
+    /* Native server handler: req.<field> types are the SrvReq FFI contract
+     * (mirrors cg_handler_req_field in codegen_expr.c) — the handler
+     * parameter itself has no declared struct type, so the generic struct
+     * path below would return NULL and `let m = req.method` could not
+     * infer. */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.var.name, g->hreq) == 0) {
+        const char *f = n->as.member.name;
+        if (strcmp(f, "method") == 0 || strcmp(f, "path") == 0 ||
+            strcmp(f, "query") == 0 || strcmp(f, "body") == 0 ||
+            strcmp(f, "query_params") == 0)
+            return type_prim(TY_STRING);
+        if (strcmp(f, "body_len") == 0) return type_prim(TY_INT);
+        return NULL;
+    }
+
     Type *t = infer_node_type(g, n->as.member.obj);
     if (t && t->kind == TY_STRUCT) {
         if (t->name) {
