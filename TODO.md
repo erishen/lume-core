@@ -318,6 +318,26 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   ("only direct calls to named functions"), and module functions/type
   decls/top-level bindings have no native emission story yet — the next
   gap abac.lume will hit once member calls emit.
+  — **emit phase (IR-text backend) closed 2026-10-20**: `codegen_emit_ir_multi`
+  emits the entry and every imported module together — module functions are
+  collected under "<ns>.<name>" for member-call resolution but defined under
+  their own source-name symbols (@L_<fname>, which a member call emits
+  against), module type decls join the struct table under their plain names
+  (`d.decision` has no namespace to qualify with), and module top-level
+  statements run first inside L_top so a module function body reads its
+  module's tables through the same @lv_ globals the entry uses.
+  codegen_call.c's N_CALL now accepts an N_MEMBER callee whose object is a
+  variable (policy.decide(...)) and emits against the module function's own
+  symbol. Pinned by tests/ns-member.lume, which now compiles AND runs
+  (`lib.identity(x)` typed from `wrap(42)`, prints 42 on the IR-text
+  backend). **abac.lume's next blocker is entry-side**: `req.user` /
+  `req.query_params.*` inside server route handlers still have no type (the
+  server-handler FFI inference gap, P4-family) — decide's parameters are
+  back-filled from call sites, but the call-site arguments themselves are
+  untyped. **Still open**: the libLLVM backend has no multi-file emit (its
+  N_CALL still refuses a non-N_VAR callee), and module functions that nest
+  lambdas or local functions (cname counters collide across files) are a
+  known boundary.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

@@ -193,6 +193,7 @@ int backend_build_native(char *err, size_t err_size)
 }
 
 int backend_emit_ir(const char *src_path, struct Node *prog,
+                    struct Node **mods, const char **nsnames, int nmods,
                     const char *ll_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -203,8 +204,13 @@ int backend_emit_ir(const char *src_path, struct Node *prog,
 
     char cerr[512];
     cerr[0] = '\0';
-    char *ir = codegen_emit_ir(src_path ? src_path : "lume", prog,
-                               cerr, sizeof cerr);
+    char *ir;
+    if (nmods > 1 && mods)
+        ir = codegen_emit_ir_multi(src_path ? src_path : "lume", mods, nsnames,
+                                   nmods, cerr, sizeof cerr);
+    else
+        ir = codegen_emit_ir(src_path ? src_path : "lume", prog,
+                             cerr, sizeof cerr);
     if (!ir) {
         /* codegen refuses rather than emitting truncated IR, so this message
          * names the real construct instead of a clang syntax error. */
@@ -221,13 +227,15 @@ int backend_emit_ir(const char *src_path, struct Node *prog,
 }
 
 int backend_native(const char *src_path, struct Node *prog,
+                   struct Node **mods, const char **nsnames, int nmods,
                    const char *out_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
 
     char ll_path[PATH_MAX];
     snprintf(ll_path, sizeof ll_path, "%s.ll", out_path);
-    if (backend_emit_ir(src_path, prog, ll_path, err, err_size) != 0)
+    if (backend_emit_ir(src_path, prog, mods, nsnames, nmods,
+                        ll_path, err, err_size) != 0)
         return 1;
     if (backend_build_rt(err, err_size) != 0)
         return 1;

@@ -38,6 +38,40 @@ enum { NAT_DEFAULT = 0, NAT_LLVM = 1, NAT_TEXT = 2 };
 #define lume_mkdir(p) mkdir(p, 0755)
 #endif
 
+static void usage(const char *prog);
+static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
+                        const char ***nsnames_out);
+/* Collect the entry's import modules (dependency order) plus the alias each
+ * entry N_IMPORT uses for it, for the multi-file signature / emit passes.
+ * Returns the module count (1 = entry only), or -1 on allocation failure;
+ * mods_out / nsnames_out are allocated here and freed by the caller. */
+static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
+                        const char ***nsnames_out)
+{
+    int n = vm->module_count;
+    Node **mods = malloc(sizeof(Node *) * (size_t)n);
+    const char **nsnames = malloc(sizeof(char *) * (size_t)n);
+    if (!mods || !nsnames) { free(mods); free(nsnames); return -1; }
+    /* modules[0] is the entry (the loader registers it first); modules[1..]
+     * are the imports in dependency order. */
+    for (int i = 0; i < n; i++) {
+        mods[i] = vm->modules[i]->prog;
+        nsnames[i] = NULL;
+    }
+    Node **top = entry->prog->as.program.stmts;
+    for (int i = 0; i < entry->prog->as.program.count; i++) {
+        Node *st = top[i];
+        if (st && st->type == N_IMPORT) {
+            for (int j = 1; j < n; j++)
+                if (strcmp(st->as.imp.path, vm->modules[j]->path) == 0)
+                    nsnames[j] = st->as.imp.ns;
+        }
+    }
+    *mods_out = mods;
+    *nsnames_out = nsnames;
+    return n;
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
             "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text|--mcp|--lsp] [--no-fs] [--no-net] [--no-pass] <script.lume>\n"
@@ -539,6 +573,17 @@ int main(int argc, char **argv) {
             vm_teardown(&vm);
             return 1;
         }
+        /* The entry's import modules (dependency order) plus the alias each
+         * entry N_IMPORT uses for it — shared by the multi-file signature pass
+         * and the multi-file emit below. NULL/0 for a single-file compile. */
+        Node **mods = NULL;
+        const char **nsnames = NULL;
+        int nmods = compile_mods(&vm, entry, &mods, &nsnames);
+        if (nmods < 0) {
+            fprintf(stderr, "lume: out of memory collecting import modules\n");
+            vm_teardown(&vm);
+            return 1;
+        }
         /* One signature pass for both native backends: unannotated parameters
          * and return types are worked out here, on the AST, so the libLLVM
          * walker and the IR-text emitter cannot resolve the same call to two
@@ -547,30 +592,9 @@ int main(int argc, char **argv) {
          * their callee's signature under "<ns>.<name>". */
         char ierr[512] = {0};
         int sig_rc;
-        if (vm.module_count > 1) {
-            Node **mods = malloc(sizeof(Node *) * (size_t)vm.module_count);
-            const char **nsnames = malloc(sizeof(char *) *
-                                          (size_t)vm.module_count);
-            /* modules[0] is the entry (the loader registers it first);
-             * modules[1..] are the imports in dependency order. */
-            for (int i = 0; i < vm.module_count; i++) {
-                mods[i] = vm.modules[i]->prog;
-                nsnames[i] = NULL;
-            }
-            Node **top = entry->prog->as.program.stmts;
-            for (int i = 0; i < entry->prog->as.program.count; i++) {
-                Node *st = top[i];
-                if (st && st->type == N_IMPORT) {
-                    for (int j = 1; j < vm.module_count; j++)
-                        if (strcmp(st->as.imp.path, vm.modules[j]->path) == 0)
-                            nsnames[j] = st->as.imp.ns;
-                }
-            }
-            sig_rc = codegen_infer_signatures_multi(mods, nsnames,
-                                                    vm.module_count,
+        if (nmods > 1) {
+            sig_rc = codegen_infer_signatures_multi(mods, nsnames, nmods,
                                                     ierr, sizeof ierr);
-            free(mods);
-            free(nsnames);
         } else {
             sig_rc = codegen_infer_signatures(entry->prog, ierr, sizeof ierr);
         }
@@ -646,10 +670,14 @@ int main(int argc, char **argv) {
             }
             if (backend_llvm_native(script, entry->prog, bin, berr, sizeof(berr)) != 0) {
                 fprintf(stderr, "lume: %s\n", berr[0] ? berr : "libLLVM compile failed");
+                free(mods);
+                free((void *)nsnames);
                 vm_teardown(&vm);
                 return 1;
             }
             printf("wrote %s (libLLVM backend)\n", bin);
+            free(mods);
+            free((void *)nsnames);
             /* No note printed here. The default used to carry one, because
              * this path could not run LLVM's optimisation passes and a
              * compute-bound binary came out one to two orders of magnitude
@@ -665,12 +693,17 @@ int main(int argc, char **argv) {
             return 0;
         }
 #endif
-        if (backend_native(script, entry->prog, bin, berr, sizeof(berr)) != 0) {
+        if (backend_native(script, entry->prog, mods, nsnames, nmods,
+                           bin, berr, sizeof(berr)) != 0) {
             fprintf(stderr, "lume: %s\n", berr[0] ? berr : "native compile failed");
+            free(mods);
+            free((void *)nsnames);
             vm_teardown(&vm);
             return 1;
         }
         printf("wrote %s (IR text backend)\n", bin);
+        free(mods);
+        free((void *)nsnames);
         vm_teardown(&vm);
         return 0;
     }

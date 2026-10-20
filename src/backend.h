@@ -17,14 +17,20 @@
 struct Node;                  /* lume's AST (lume.h) */
 
 /* Write LLVM IR text for an already type-checked program to `ll_path`.
- * Returns 0 on success, non-zero with a message written into `err`. */
+ * Returns 0 on success, non-zero with a message written into `err`.
+ * mods/nsnames/nmods are the multi-file form (see codegen_emit_ir_multi):
+ * pass NULL/0 for a single-file compile, or an array whose [0] is `prog`
+ * with imports in dependency order and nsnames[i] their `as` aliases. */
 int backend_emit_ir(const char *src_path, struct Node *prog,
+                    struct Node **mods, const char **nsnames, int nmods,
                     const char *ll_path, char *err, size_t err_size);
 
 /* Emit IR, compile the runtime helper, and link a native executable at
  * `out_path`. The IR is written next to it as `out_path.ll` so a failing
- * compile can be inspected. Returns 0 on success, non-zero with `err` set. */
+ * compile can be inspected. Returns 0 on success, non-zero with `err` set.
+ * Multi-file form as in backend_emit_ir. */
 int backend_native(const char *src_path, struct Node *prog,
+                   struct Node **mods, const char **nsnames, int nmods,
                    const char *out_path, char *err, size_t err_size);
 
 /* Internal, shared by both native backends: compile src/rt.c into build/rt.o

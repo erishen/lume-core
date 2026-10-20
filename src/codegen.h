@@ -16,6 +16,18 @@ struct Node;                  /* the vendored lume AST (upstream/lume.h) */
 char *codegen_emit_ir(const char *mod_name, struct Node *prog,
                       char *err, size_t err_size);
 
+/* Multi-file variant: imported module ASTs join the emission. mods[0] is the
+ * entry program; mods[1..] its imports in dependency order, nsnames[i] the
+ * `as` alias the entry uses for mods[i]. Module functions are collected under
+ * "<ns>.<name>" for member-call resolution but defined under their own
+ * source-name symbols (which is what a member call emits against); module
+ * type decls join the struct table under their plain names; module top-level
+ * statements run first, inside L_top, so a module function body reads its
+ * module's tables through the same @lv_ globals the entry uses. */
+char *codegen_emit_ir_multi(const char *mod_name, struct Node **mods,
+                            const char **nsnames, int nmods,
+                            char *err, size_t err_size);
+
 /* Fill in the `ret` / `params[i]` slots the source left NULL, from the call
  * sites and the `return` statements, and write the result back onto the AST.
  * No IR is emitted.

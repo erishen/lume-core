@@ -1410,28 +1410,49 @@ Val cg_call(CG *g, Node *n)
         return val_take(type_prim(TY_INT), r);
     }
 
-    if (!n->as.call.callee || n->as.call.callee->type != N_VAR)
-        ERRV(g, "line %zu: only direct calls to named functions are supported", n->line);
+    Sig *s = NULL;
+    const char *name = NULL;
+    Node *callee = n->as.call.callee;
+    if (callee && callee->type == N_MEMBER && callee->as.member.obj &&
+        callee->as.member.obj->type == N_VAR) {
+        /* ns member call: policy.decide(...) — the module signature injected
+         * by codegen_infer_signatures_multi resolves under "<ns>.<name>"; the
+         * call itself emits against the module function's own symbol
+         * (@L_<fname>), which codegen_emit_ir_multi defines under its source
+         * name. */
+        char qname[512];
+        snprintf(qname, sizeof qname, "%s.%s",
+                 callee->as.member.obj->as.var.name, callee->as.member.name);
+        s = sig_find(&g->sigs, qname);
+        if (!s)
+            ERRV(g, "line %zu: call to unknown function '%s'", n->line, qname);
+        name = s->node ? (s->node->as.func.cname ? s->node->as.func.cname
+                                                 : s->node->as.func.name)
+                       : qname;
+    } else {
+        if (!callee || callee->type != N_VAR)
+            ERRV(g, "line %zu: only direct calls to named functions are supported", n->line);
 
-    /* A closure-valued variable: `f(3)` where f was bound to a lambda. The
-     * variable's TY_FUNC type carries the back-pointer to the lambda node
-     * the signature pass pinned; a plain named-function reference has no
-     * back-pointer and falls through to the sig_find path below. */
-    {
-        Type *ct = infer_node_type(g, n->as.call.callee);
-        if (ct && ct->kind == TY_FUNC && ct->func &&
-            ct->func->type == N_FUNC_LIT)
-            return cg_clo_call(g, n, ct->func);
-    }
+        /* A closure-valued variable: `f(3)` where f was bound to a lambda. The
+         * variable's TY_FUNC type carries the back-pointer to the lambda node
+         * the signature pass pinned; a plain named-function reference has no
+         * back-pointer and falls through to the sig_find path below. */
+        {
+            Type *ct = infer_node_type(g, callee);
+            if (ct && ct->kind == TY_FUNC && ct->func &&
+                ct->func->type == N_FUNC_LIT)
+                return cg_clo_call(g, n, ct->func);
+        }
 
-    const char *name = n->as.call.callee->as.var.name;
-    Sig *s = sig_find(&g->sigs, name);
-    if (!s) {
-        /* Only after sig_find: a script that shadows a builtin name with its
-         * own function must still call the script's. */
-        Val bv = cg_builtin(g, n);
-        if (bv.v) return bv;
-        ERRV(g, "line %zu: call to unknown function '%s'", n->line, name);
+        name = callee->as.var.name;
+        s = sig_find(&g->sigs, name);
+        if (!s) {
+            /* Only after sig_find: a script that shadows a builtin name with its
+             * own function must still call the script's. */
+            Val bv = cg_builtin(g, n);
+            if (bv.v) return bv;
+            ERRV(g, "line %zu: call to unknown function '%s'", n->line, name);
+        }
     }
     if (n->as.call.argc != s->arity)
         ERRV(g, "line %zu: '%s' expects %d argument(s), got %d",

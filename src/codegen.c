@@ -694,3 +694,332 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
 
     return ir.data;
 }
+
+/* Multi-file variant of codegen_emit_ir: imported module ASTs join the
+ * emission, so a cross-module member call (policy.decide(...)) can link
+ * against the module function and a module function body can read its
+ * module's top-level bindings (attribute tables, audit path) through the
+ * same @lv_ globals the entry uses.
+ *
+ * mods[0] is the entry program; mods[1..] are its imports in dependency
+ * order, nsnames[i] the `as` alias the entry uses for mods[i] (nsnames[0]
+ * is ignored). Module functions are collected under "<ns>.<name>" for
+ * member-call resolution but defined under their own source-name symbols
+ * (cg_function's @L_<fname>), which is what the member call emits against.
+ * Module type decls join the struct table under their plain names (a
+ * `d.decision` member access has no namespace to qualify with), and module
+ * top-level statements run first, inside L_top, before the entry's own — the
+ * native mirror of the loader executing imported module top levels in
+ * dependency order. */
+char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
+                            const char **nsnames, int nmods,
+                            char *err, size_t err_size)
+{
+    if (err && err_size) err[0] = '\0';
+    if (!mods || nmods <= 0 || !mods[0] || mods[0]->type != N_PROGRAM)
+        return NULL;
+
+    Node *prog = mods[0];
+    CG cg;
+    memset(&cg, 0, sizeof cg);
+
+    IrBuf ir;
+    irbuf_init(&ir);
+    cg.ir = &ir;
+    irbuf_init(&cg.gs);
+    irbuf_init(&cg.handlers);
+
+    Node **top  = prog->as.program.stmts;
+    int    ntop = prog->as.program.count;
+
+    /* Local functions first, in every file: stamp cnames and rewrite call
+     * sites before any signature table is built. (Each file's cname counter
+     * starts at zero, so a module that nests local functions inside module
+     * functions can collide with the entry's — a known boundary, the module
+     * functions in the pinned fixtures have none.) */
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        if (!lume_resolve_localfns(mp, err, err_size)) {
+            cg_free(&cg);
+            return NULL;
+        }
+    }
+
+    /* ---- pass 1: signatures and structs, so calls can be resolved in any order ---- */
+    /* Entry functions ride under their plain name/cname; module functions are
+     * registered under "<ns>.<name>" for member-call resolution, but defined
+     * (below, via cg_function) under their own source-name symbol. */
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        int nfn = lume_collect_funcs(mp, NULL, 0);
+        Node **allfns = nfn > 0 ? xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
+        if (nfn > 0) lume_collect_funcs(mp, allfns, nfn);
+        for (int i = 0; i < nfn; i++) {
+            Node *n = allfns[i];
+            const char *fname = n->as.func.cname ? n->as.func.cname
+                                                 : n->as.func.name;
+            char qbuf[512];
+            const char *qname = fname;
+            if (m > 0 && nsnames && nsnames[m]) {
+                snprintf(qbuf, sizeof qbuf, "%s.%s", nsnames[m], fname);
+                qname = qbuf;
+            }
+            sig_push(&cg.sigs, qname, n->as.func.ret,
+                     n->as.func.param_types, n->as.func.arity);
+            cg.sigs.v[cg.sigs.n - 1].body   = n->as.func.body;
+            cg.sigs.v[cg.sigs.n - 1].pnames = n->as.func.names;
+            cg.sigs.v[cg.sigs.n - 1].node   = n;
+        }
+        free(allfns);
+    }
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        Node **mt = mp->as.program.stmts;
+        for (int i = 0; i < mp->as.program.count; i++) {
+            Node *n = mt[i];
+            if (n->type == N_TYPE_DECL)
+                sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
+                          n->as.type_decl.field_types, n->as.type_decl.count);
+            /* An enum has no runtime presence of its own (see the single-file
+             * pass). */
+            else if (n->type == N_ENUM_DECL)
+                continue;
+        }
+    }
+
+    /* ---- pass 1.5: infer the parameters and return types the source left out ----
+     * The multi-file pass so an imported function's unannotated parameters are
+     * back-filled from the entry's call sites; idempotent, and shared with the
+     * libLLVM backend (the driver runs it before picking an emitter). */
+    if (nmods > 1) {
+        if (codegen_infer_signatures_multi(mods, nsnames, nmods,
+                                           cg.err, sizeof cg.err) != 0) {
+            if (err && err_size) snprintf(err, err_size, "%s", cg.err);
+            cg_free(&cg);
+            return NULL;
+        }
+    } else if (codegen_infer_signatures(prog, cg.err, sizeof cg.err) != 0) {
+        if (err && err_size) snprintf(err, err_size, "%s", cg.err);
+        cg_free(&cg);
+        return NULL;
+    }
+    /* The pass rewrote the AST; this table still holds the copies pass 1 took
+     * while every one of those slots was NULL, so a call would resolve a
+     * return type the function no longer has. */
+    for (int i = 0; i < cg.sigs.n; i++) {
+        Sig *s = &cg.sigs.v[i];
+        if (!s->node) continue;
+        s->ret    = s->node->as.func.ret;
+        s->params = s->node->as.func.param_types;
+    }
+
+    /* ---- pass 1.7: lift the top-level bindings into module globals ----
+     * (see the single-file pass for the rationale). Imported module top-level
+     * statements run first, inside L_top, so a module function body reads its
+     * module's tables through @lv_ exactly as the interpreter resolves them
+     * through the module env. */
+    int nfns = 0, ntops = 0;
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        nfns += lume_collect_funcs(mp, NULL, 0);
+    }
+    Node **fns  = nfns > 0 ? xmalloc(sizeof(Node *) * (size_t)nfns) : NULL;
+    if (nfns > 0) {
+        int fi = 0;
+        for (int m = 0; m < nmods; m++) {
+            Node *mp = mods[m];
+            if (!mp || mp->type != N_PROGRAM) continue;
+            int mn = lume_collect_funcs(mp, NULL, 0);
+            if (mn > 0) lume_collect_funcs(mp, fns + fi, mn);
+            fi += mn;
+        }
+    }
+    /* Top-level statements from every file, modules first: they all execute
+     * in one L_top, which is what the entry point runs. */
+    int topcap = ntop;
+    for (int m = 1; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (mp && mp->type == N_PROGRAM) topcap += mp->as.program.count;
+    }
+    Node **tops = topcap > 0 ? xmalloc(sizeof(Node *) * (size_t)topcap) : NULL;
+    /* Does the top level actually call `main`? Only then is `main` a thing the
+     * process can take its status from — a `main` nobody runs is an ordinary
+     * function and the status stays 0. */
+    int tops_main = 0;
+    for (int m = 1; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        Node **mt = mp->as.program.stmts;
+        for (int i = 0; i < mp->as.program.count; i++) {
+            Node *n = mt[i];
+            if (n->type == N_FUNC_DECL)      continue;    /* collected above */
+            else if (n->type == N_TYPE_DECL) continue;   /* already emitted */
+            else if (n->type == N_ENUM_DECL) continue;   /* no runtime presence */
+            else if (n->type == N_IMPORT)    continue;   /* resolved by the loader */
+            else tops[ntops++] = n;
+        }
+    }
+    for (int i = 0; i < ntop; i++) {
+        Node *n = top[i];
+        if (n->type == N_FUNC_DECL)      continue;    /* collected above */
+        else if (n->type == N_TYPE_DECL) continue;   /* already emitted */
+        else if (n->type == N_ENUM_DECL) continue;   /* no runtime presence */
+        else if (n->type == N_IMPORT)    continue;   /* resolved by the loader */
+        else {
+            tops[ntops++] = n;
+            if (n->type == N_EXPR_STMT && n->as.expr_stmt.expr &&
+                n->as.expr_stmt.expr->type == N_CALL &&
+                n->as.expr_stmt.expr->as.call.callee &&
+                n->as.expr_stmt.expr->as.call.callee->type == N_VAR &&
+                strcmp(n->as.expr_stmt.expr->as.call.callee->as.var.name,
+                       "main") == 0)
+                tops_main = 1;
+        }
+    }
+
+    Asgs top_locals;
+    memset(&top_locals, 0, sizeof top_locals);
+    if (ntops > 0) {
+        Node body;
+        memset(&body, 0, sizeof body);
+        body.type = N_BLOCK;
+        body.as.block.stmts = tops;
+        body.as.block.count = ntops;
+
+        cg.scanning_top = 1;
+        scan_block(&cg, &body);      /* fills cg.locals AND cg.gvars */
+        cg.scanning_top = 0;
+        top_locals = cg.locals;      /* steal the scanned table */
+        memset(&cg.locals, 0, sizeof cg.locals);
+    }
+
+    /* ---- header ---- */
+    EMIT(&cg, "; ModuleID = \"%s\"\n", mod_name ? mod_name : "lume");
+    EMIT(&cg, "; generated by lume (native backend: Lume -> LLVM IR text)\n");
+    EMIT(&cg, "\n");
+#ifdef TARGET_TRIPLE
+    EMIT(&cg, "target triple = \"%s\"\n", TARGET_TRIPLE);
+#endif
+    EMIT(&cg, "\n");
+    EMIT(&cg, "declare i64 @lume_print_i64(i64)\n");
+    EMIT(&cg, "declare i64 @lume_print_double(double)\n");
+    EMIT(&cg, "declare i64 @lume_print_bool(i64)\n");
+    EMIT(&cg, "declare i64 @lume_print_str(i8*)\n");
+    EMIT(&cg, "declare i64 @lume_print_null()\n");
+    EMIT(&cg, "declare i64 @lume_print_slot(i8*)\n");
+    emit_builtin_declares(&cg);
+
+    for (int i = 0; i < cg.structs.n; i++) {
+        SDef *sd = &cg.structs.v[i];
+        EMIT(&cg, "%%%s = type {", sd->name);
+        for (int j = 0; j < sd->count; j++) {
+            const char *ft = sd->types[j] ? llvm_type_of(sd->types[j]) : NULL;
+            if (!ft)
+                ERR(&cg, "field '%s' of struct '%s' has no codegen type",
+                    sd->names[j], sd->name);
+            EMIT(&cg, "%s%s", j ? ", " : "", ft);
+        }
+        EMIT(&cg, " }\n");
+    }
+    EMIT(&cg, "\n");
+
+    /* ---- module globals: one @lv_ slot per top-level binding (SPEC 8.1 #10) */
+    for (int i = 0; i < cg.gvars.n; i++) {
+        Asg *gv = &cg.gvars.v[i];
+        const char *lt = llvm_type_of(gv->ty);
+        if (!lt)
+            ERR(&cg, "line %zu: top-level variable '%s' has no codegen type",
+                gv->line, gv->name);
+        EMIT(&cg, "%s = global %s zeroinitializer\n", gv->slot, lt);
+    }
+    if (cg.gvars.n)
+        EMIT(&cg, "\n");
+
+    /* ---- pass 2: one LLVM function per Lume function ---- */
+    for (int i = 0; i < nfns; i++) cg_function(&cg, fns[i]);
+
+    Node *top_fn = NULL;
+    if (ntops > 0) {
+        Node body;
+        memset(&body, 0, sizeof body);
+        body.type = N_BLOCK;
+        body.as.block.stmts = tops;
+        body.as.block.count = ntops;
+
+        top_fn = xmalloc(sizeof(Node));
+        memset(top_fn, 0, sizeof(Node));
+        top_fn->type = N_FUNC_DECL;
+        top_fn->line = top[0] ? top[0]->line : 0;
+        top_fn->as.func.name = "top";
+        top_fn->as.func.body = &body;
+        if (tops_main) {
+            top_fn->as.func.ret = type_prim(TY_INT);
+            cg.capture_main = 1;
+        }
+        cg.preset_locals = &top_locals;
+        cg.scanning_top = 1;
+        cg_function(&cg, top_fn);
+        cg.scanning_top = 0;
+        cg.preset_locals = NULL;
+        asgs_free(&top_locals);
+        cg.capture_main = 0;
+        cg.exit_tmp[0] = '\0';
+    }
+    /* Route handlers were buffered; now that every function has closed,
+     * append them to the module. */
+    if (cg.handlers.len) {
+        irbuf_puts(&ir, cg.handlers.data);
+        irbuf_free(&cg.handlers);
+    }
+    /* Closures: every lambda the signature pass named gets its own define.
+     * (Module functions' lambdas are a known boundary — collect_lambdas
+     * walks the entry only; the pinned fixtures have none in modules.) */
+    {
+        Node **clos = NULL;
+        int nclos = 0, capc = 0;
+        collect_lambdas(prog, &clos, &nclos, &capc);
+        for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
+        free(clos);
+    }
+    free(fns);
+    free(tops);
+
+    if (cg.err[0]) {
+        if (err && err_size) snprintf(err, err_size, "%s", cg.err);
+        cg_free(&cg);
+        return NULL;
+    }
+
+    if (cg.gs.data)
+        irbuf_puts(&ir, cg.gs.data);
+    if (cg.gs.len)
+        EMIT(&cg, "\n");
+
+    /* ---- entry point: wrap the program's top level as the C entry ---- */
+    EMIT(&cg, "\n; --- C entry point ---\n");
+    EMIT(&cg, "declare void @lume_cli_init(i32, i8**)\n");
+    EMIT(&cg, "define i32 @main(i32 %%argc, i8** %%argv) {\nentry:\n");
+    EMIT(&cg, "  call void @lume_cli_init(i32 %%argc, i8** %%argv)\n");
+    if (top_fn) {
+        if (tops_main) {
+            EMIT(&cg, "  %%r = call i64 @L_top()\n");
+            EMIT(&cg, "  %%t = trunc i64 %%r to i32\n");
+            EMIT(&cg, "  ret i32 %%t\n");
+        } else
+            EMIT(&cg, "  call void @L_top()\n");
+    }
+    if (!top_fn || !tops_main) EMIT(&cg, "  ret i32 0\n");
+    EMIT(&cg, "}\n");
+
+    free(top_fn);
+    top_fn = NULL;
+
+    /* ---- cleanup ---- */
+    cg_free(&cg);
+
+    return ir.data;
+}
