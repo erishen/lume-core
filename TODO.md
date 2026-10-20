@@ -429,6 +429,69 @@ items below close the loop the campaign loop left open.
       boundary in the preamble's resource-limits note (2026-10-18), so
       the next review does not re-file crash-eb4ae2 as a gap.
 
+## P9 — for-in over an inline temp value: heap corruption under agent-httpd (filed 2026-10-20)
+
+Writing `for (x in get(load_xxx(), "key", [])) { ... }` — iterating an
+inline expression chain whose only owner is the expression itself,
+instead of binding it to a `let` first — crashes the host `lume` HTTP
+stack after a handful of repeated requests. First observed in the
+chinese knowledge project (`work/knowledge/chinese`, fix commit
+`c10f23d`); the bug is presumably in shared code, not that project.
+
+Evidence (all on host `lume` v0.7.3, agent-httpd :8095, sandboxed
+macOS arm64):
+
+- `GET /api/recite` whose handler contained two such loops returned
+  200 on a single hit but **segfaulted the whole server silently on
+  the 5th consecutive hit** (lsof empty, workers orphaned). No panic
+  message: the master's stdout is block-buffered and lost on death,
+  stderr carries only the startup WARNING.
+- A "killer sequence" reproduced 3/3: any 10 data-loading GETs
+  (poems/guwen/xuci/.../quiz/wrong/sick/synonym) followed by the
+  recite hit → dead; replacing the 12th request with any other
+  endpoint (health/synonym/xuci) → alive. `health`×11 + recite →
+  alive. So the trigger needs both loop-toting handlers AND
+  accumulated per-request state.
+- **Bare interpreter does NOT reproduce**: a standalone script doing
+  300 rounds of the same inline-temp for-in over 60 items
+  (`lume-core script.lume`, this repo's binary) completes clean.
+  Whatever dies is therefore an interaction between the interpreter's
+  temp-value lifetime and agent-httpd's per-request lifecycle (arena
+  reset / prefork worker reuse), not the plain eval path.
+
+Workaround (applied, verified): bind the iteration target to a `let`
+before the loop — `let items = get(load_xxx(), "k", []); for (x in
+items)`. All 9 inline-temp loops in chinese/server.lume were converted
+(fix `c10f23d`); after that, recite ×11 and the full 14-endpoint smoke
+are green. The pattern in other handlers (`for (p in get(ok,
+"results", []))` where `ok` is already a `let`) appears safe.
+
+Steps:
+
+- [ ] Build host `lume` with ASan (Linux container if needed; core's
+      `build-asan` recipe shows the flag set) and replay the chinese
+      `c10f23d^` server.lume: recite ×5 must crash under ASan with a
+      readable report (use-after-free / heap-buffer-overflow expected).
+- [ ] Shrink to a minimal server.lume (one route, one inline-temp
+      loop, one loader) — keep it as a regression fixture if it fits
+      the agent-httpd test layout.
+- [ ] Locate the lifetime bug: likely candidates are (a) the eval of
+      the for-in iterable expression not being retained across
+      statements while agent-httpd resets a per-request arena, or
+      (b) the temp value being allocated in a pool that a later
+      request's setup overwrites (explains "crashes on a LATER
+      request, not the first"). Check how interp holds the iterable
+      vs. how the HTTP layer brackets evaluation.
+- [ ] Fix + regression: if the fix lands in core (interpreter value
+      lifetime), it flows to the host via sync-lang semantics — but
+      note interp.c is host-owned (minijson include block), so a
+      core-side fix must be hand-merged like typecheck_expr was; if
+      it lands in agent-httpd (arena bracketing), the standalone
+      agent-httpd repo is the canonical place.
+- [ ] Done-when: under ASan, the killer sequence replays clean on the
+      unfixed script shape; chinese's original handler works without
+      the workaround; CI (three legs + fuzz) stays green.
+
 ## Intentional boundaries — do not file as gaps
 
 These are deliberate design decisions; re-proposing them is noise
