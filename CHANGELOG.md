@@ -36,6 +36,24 @@ All notable changes to Lume are documented here. The format follows
   compile-time "one closure shape per lambda" error instead of silently
   reading one of them wrong.
 
+### Added — write-CTE whitelist for sql_write (P6 gray zone)
+
+- `sql_write` now accepts a single `WITH` prefix: `WITH [RECURSIVE] name
+  [(cols)] AS (…) [, …]` followed by one whitelisted write statement.
+  Subqueries must be SELECT/VALUES (a nested WITH is allowed) and are
+  checked read-only at any depth; DML inside a CTE (SQLite 3.35+
+  data-modifying CTE) requires a top-level RETURNING, and an UPDATE/DELETE
+  inside a WITH must carry a top-level WHERE before that RETURNING — a
+  WHERE inside a nested expression never exempts it. The trailing statement
+  still passes the exact single-statement whitelist (INSERT/UPDATE/DELETE/
+  CREATE TABLE), so the whole CTE write stays one atomic statement with no
+  transaction API changes; `;` multi-statement and `WITH`-prefixed
+  CREATE/ALTER are rejected.
+- `tests/sqlite.lume` gained a write-CTE regression segment (SELECT/VALUES/
+  multi-CTE accepts, WHERE-in-CTE does not exempt a WHERE-less body,
+  DML-in-CTE RETURNING/WHERE rules, dangerous words, no-trailing-statement
+  and multi-statement rejects, atomic UPDATE…RETURNING…INSERT).
+
 ## [0.9.3] - 2026-10-19
 
 ### Added — lexer scientific notation support

@@ -106,6 +106,57 @@ func main(): int {
   check("insert after alter", i4 == 1);
   check("select after alter", len(sql_query(db, "SELECT nickname FROM t")) == 3);
 
+  // ---- write-CTE 灰区(2026-10-20): WITH 前缀 + 单条白名单写语句 ----
+  // 只读 CTE 放行: SELECT 子查询 + INSERT ... SELECT 主体(SQLite 3.8.3+)
+  let c1 = sql_write(db, "WITH c AS (SELECT ? AS a) INSERT INTO t (name) SELECT a FROM c", ["CTE-one"]);
+  check("with select cte insert", c1 == 1);
+  check("with select cte visible",
+    len(sql_query(db, "SELECT name FROM t WHERE name = 'CTE-one'")) == 1);
+  // VALUES 变体 + 列清单
+  let c2 = sql_write(db, "WITH c (nm) AS (VALUES ('v1')) INSERT INTO t (name) SELECT nm FROM c");
+  check("with values cte insert", c2 == 1);
+  check("with values cte visible",
+    len(sql_query(db, "SELECT name FROM t WHERE name = 'v1'")) == 1);
+  // 多 CTE
+  let c3 = sql_write(db,
+    "WITH c AS (SELECT 1 AS a), d AS (SELECT 'multi' AS b) INSERT INTO t (name) SELECT b FROM d");
+  check("with multi cte insert", c3 == 1);
+  // 只读 CTE + 主体 UPDATE 带 WHERE(0 行也走校验放行)
+  let c4 = sql_write(db, "WITH c AS (SELECT 1) UPDATE t SET score = 0 WHERE name = 'nobody'");
+  check("with cte body update where", c4 == 0);
+  // CTE 内 WHERE 不豁免主体无 WHERE UPDATE(校验作用于主体文本, 非整句)
+  let n1 = try(() => { sql_write(db, "WITH c AS (SELECT 1 WHERE 1) UPDATE t SET score = 0"); return "ok"; });
+  check("cte where not exempt body update", get(n1, "err", null) != null);
+  // CTE 内 DML 无 RETURNING / 无 WHERE
+  let n2 = try(() => { sql_write(db, "WITH c AS (INSERT INTO t (name) VALUES ('x')) SELECT 1"); return "ok"; });
+  check("cte dml no returning rejects", get(n2, "err", null) != null);
+  let n3 = try(() => { sql_write(db, "WITH c AS (UPDATE t SET score = 0 RETURNING name) SELECT 1"); return "ok"; });
+  check("cte update no where rejects", get(n3, "err", null) != null);
+  let n4 = try(() => { sql_write(db, "WITH c AS (DELETE FROM t RETURNING name) SELECT 1"); return "ok"; });
+  check("cte delete no where rejects", get(n4, "err", null) != null);
+  // CTE 内危险词 / 主体非白名单 / 无尾语句 / 多语句
+  let n5 = try(() => { sql_write(db, "WITH c AS (DROP TABLE t) INSERT INTO t (name) VALUES ('x')"); return "ok"; });
+  check("cte drop rejects", get(n5, "err", null) != null);
+  let n6 = try(() => { sql_write(db, "WITH c AS (SELECT 1) CREATE TABLE u (id int)"); return "ok"; });
+  check("with create body rejects", get(n6, "err", null) != null);
+  let n7 = try(() => { sql_write(db, "WITH c AS (SELECT 1)"); return "ok"; });
+  check("with no trailing stmt rejects", get(n7, "err", null) != null);
+  let n8 = try(() => { sql_write(db, "WITH c AS (SELECT 1) INSERT INTO t (name) VALUES ('x'); DROP TABLE t"); return "ok"; });
+  check("with multi-statement rejects", get(n8, "err", null) != null);
+  // DML-in-CTE + RETURNING(SQLite 3.35+ 数据修改 CTE): 单语句原子写。
+  // 宿主 sqlite3 < 3.35 时此句 prepare 期报错属环境版本差异, 白名单本身
+  // 接受该形状(驱动矩阵已验); 其余用例版本无关。
+  let dc1 = try(() => {
+    sql_write(db,
+      "WITH u AS (UPDATE t SET score = ? WHERE name = ? RETURNING name) INSERT INTO t (name) SELECT name FROM u",
+      [8.8, "张三"]);
+    return "ok";
+  });
+  check("with update-returning atomic", get(dc1, "err", null) == null);
+  let sc = sql_query(db, "SELECT score FROM t WHERE name = '张三' AND score IS NOT NULL");
+  check("atomic update visible", len(sc) == 1 && get(sc[0], "score") == 8.8);
+  check("atomic insert visible", len(sql_query(db, "SELECT name FROM t WHERE name = '张三'")) == 2);
+
   // 非 list 参数拒绝
   let badp = try(() => { sql_write(db, "INSERT INTO t (name) VALUES (?)", "x"); return "ok"; });
   check("params must be list", get(badp, "err", null) != null);
