@@ -1,0 +1,21 @@
+// tests/serve-env.lume — P4: server{} + env() 三后端一致 (serve programs)
+//
+// nsgm 的 gen/app.lume 在 server{} 里读 env("PORT"/"HOST"/"WORKERS"),
+// 此前 LLVM 后端不支持 server{}, 导致 serve 程序被钉死在解释器
+// (Dockerfile 被迫 HAVE_LLVM=0)。回归 leg:
+//   - 解释器: 执行本文件应注册 host/port + 一条 route, 打印 serve-env ok
+//   - text / LLVM 后端: --compile 必须接受同样形状(server 字段用 env(),
+//     handler 闭包内读 env()), 不报 "this construct"
+// 本文件不调 run(): 避免测试进程阻塞在 accept 循环。
+// 运行: LUME_TEST_HOST=127.0.0.1 LUME_TEST_WHO=ci lume-core tests/serve-env.lume
+let host = env("LUME_TEST_HOST");
+let port = 8082;
+server {
+  host = host;
+  port = port;
+}
+get "/hello", (req) => {
+  let who = env("LUME_TEST_WHO");
+  return "hello " + who;
+};
+print("serve-env ok");
