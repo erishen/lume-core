@@ -116,6 +116,14 @@ LLVM_CONFIG_PATH := $(or $(wildcard $(LLVM_CONFIG)),$(shell command -v $(LLVM_CO
 # 分得开。另: 只改链接产物名, 不动 Makefile:17 那两个编译期 -D, 所以普通 make
 # 就够, 不必 make -B —— 全量重建只在改目录名/改宏/改源文件时才必要。
 TARGET   := bin/lume-core
+# Windows PE files need the .exe extension for CreateProcess to load them,
+# and MSYS2 bash (windows.yml's shell) refuses to exec an extension-less
+# binary — `./bin/lume-core` was a hard 127. mingw gcc does not append the
+# extension by itself, so the Windows branch names it explicitly; every
+# recipe that runs $(TARGET) then resolves to the loadable file.
+ifeq ($(IS_WINDOWS),1)
+    TARGET := bin/lume-core.exe
+endif
 # The fork ships the language-only examples. The server/demo examples from the
 # host tree (hub.lume, invest.lume, react-ssr, abac, the sqlite demos) live in
 # lume and are deliberately not carried over.
@@ -414,14 +422,20 @@ fuzz-ci: $(FUZZ_TARGET)
 # and the replay doubles as a cheap regression sweep of the whole tests/
 # corpus - positive fixtures and the -bad/ negatives alike. `make fuzz` /
 # `make fuzz-ci` stay Linux-clang-only; this target is what windows.yml runs.
-out/fuzz-driver: src/fuzz_target.c $(CORE_OBJS) | out
+# Windows needs the .exe suffix for the same CreateProcess reason as TARGET.
+ifeq ($(IS_WINDOWS),1)
+    FUZZ_DRIVER := out/fuzz-driver.exe
+else
+    FUZZ_DRIVER := out/fuzz-driver
+endif
+$(FUZZ_DRIVER): src/fuzz_target.c $(CORE_OBJS) | out
 	$(CC) $(CFLAGS) -DLUME_FUZZ_DRIVER -o $@ src/fuzz_target.c $(CORE_OBJS) $(LDFLAGS) -lm
 
-fuzz-driver: out/fuzz-driver
+fuzz-driver: $(FUZZ_DRIVER)
 	@set -e; \
 	files=$$(find tests -name '*.lume'); \
 	n=$$(printf '%s\n' "$$files" | wc -l); \
-	./out/fuzz-driver $$files >/dev/null; \
+	./$(FUZZ_DRIVER) $$files >/dev/null; \
 	echo "ok fuzz-driver: $$n seeds replayed (standalone driver, any compiler)"
 
 # --- P4 AI self-verification gate (make ai-verify) -----------------------

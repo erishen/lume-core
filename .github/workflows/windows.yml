@@ -88,7 +88,7 @@ jobs:
         run: make ai-verify AI_VERIFY_FILE="examples/ai-generated/norm-stats.lume"
 
       - name: Run hello
-        run: ./bin/lume-core examples/hello.lume
+        run: ./bin/lume-core.exe examples/hello.lume
 
       # P3 (TODO): exercise the vendored POSIX regex (src/compat/regex, musl)
       # on Windows for real. str_match/regex are interpreter builtins (SPEC
@@ -98,7 +98,7 @@ jobs:
       # outputs are spelled in the script's comments; a nonzero exit or an
       # assert-style mismatch shows up here.
       - name: Regex smoke (interpreter, vendored POSIX regex)
-        run: ./bin/lume-core examples/regex-smoke.lume
+        run: ./bin/lume-core.exe examples/regex-smoke.lume
 
       # The full regression suite (`make test`) is POSIX-only: it exercises
       # HTTP/TLS builtins (http_get/http_post/...) that are deliberately

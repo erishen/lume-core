@@ -149,13 +149,20 @@ platform.
 (tests/native_backends.sh — interp + text + libLLVM legs each diffed
 against the full tests/native-consistency.expected, the 18 statistical
 distribution prints included, plus the exit-status/null/`?` assertions).
-**Known Windows/MSYS hazard (unfixed, 2026-10-20)**: Makefile's `TARGET` and
-the fuzz-driver object default to extensionless names (`bin/lume-core`,
-`out/fuzz-driver`), which MSYS bash refuses to execute (127). Local builds
-pass `TARGET=bin/lume-core.exe`; the windows.yml steps that run
-`./$(TARGET)` / `./out/fuzz-driver` need a `.exe`-aware fix or explicit
-override before they can be trusted (native-consistency / fuzz-driver /
-ai-verify legs are currently unverified on the runner).
+**Windows/MSYS .exe hazard — closed 2026-10-20**: Makefile's `TARGET` and
+the fuzz-driver object used to default to extensionless names
+(`bin/lume-core`, `out/fuzz-driver`), which MSYS bash refused to execute
+(127 — Windows PE needs the .exe extension for CreateProcess). Both now
+carry `.exe` on the Windows branch (IS_WINDOWS=1): `TARGET :=
+bin/lume-core.exe`, `FUZZ_DRIVER := out/fuzz-driver.exe`, and
+windows.yml's `./bin/lume-core` invocations were updated to
+`./bin/lume-core.exe`. Verified locally in MSYS bash without any TARGET
+override: `make all` produces `bin/lume-core.exe` and `make fuzz-driver`
+replays all 100 seeds. (Diagnosis also surfaced a local-only PATH hazard:
+D:\Software\mingw64\bin holds a libLLVM-23.dll whose dependency chain
+(libffi-8/libxml2-16/libzstd) lives in the MSYS2 tree, so running LLVM-
+linked exes requires /mingw64/bin first in PATH; CI's MSYS2 setup does not
+have that split.)
 and `make fuzz-driver` (the P1 Windows seed replay).
 
 ## P4 — Later / larger
