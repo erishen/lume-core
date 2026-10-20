@@ -248,6 +248,18 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_STRING), r);
     }
 
+    /* now(): the server's current time as a string (SPEC §6.2), via
+     * bridge_native's lume_bi_now. */
+    if (strcmp(bname, "now") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: now() takes no arguments", n->line);
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i8ptr, NULL, 0, 0),
+                                        rt_decl(g, "lume_bi_now", g->i8ptr, NULL, 0),
+                                        NULL, 0, "now");
+        return val_make(type_prim(TY_STRING), r);
+    }
+
     /* str() / int() / float(): which helper they need depends on the operand. */
     if (strcmp(bname, "str") == 0 || strcmp(bname, "int") == 0 ||
         strcmp(bname, "float") == 0 || strcmp(bname, "stringify") == 0 ||
@@ -1017,6 +1029,19 @@ static int struct_is_addr(LLVMValueRef v)
 static Val cg_call(CG *g, Node *n)
 {
     AT(g);
+
+    /* run(): hand control to the native server loop (blocking; mirrors
+     * codegen_call.c). */
+    if (n->as.call.callee && n->as.call.callee->type == N_VAR &&
+        strcmp(n->as.call.callee->as.var.name, "run") == 0) {
+        if (n->as.call.argc != 0)
+            ERRV(g, "line %zu: run() takes no arguments", n->line);
+        LLVMBuildCall2(g->ab,
+                       LLVMFunctionType(g->void_ty, NULL, 0, 0),
+                       rt_decl(g, "lume_srv_run", g->void_ty, NULL, 0),
+                       NULL, 0, "");
+        return val_make(type_prim(TY_NULL), LLVMConstNull(g->i8ptr));
+    }
 
     if (n->as.call.callee && n->as.call.callee->type == N_VAR &&
         strcmp(n->as.call.callee->as.var.name, "print") == 0) {

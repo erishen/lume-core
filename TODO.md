@@ -270,6 +270,20 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   "none") on all three legs. P4 gap is now fully closed: serve programs
   using server{} + env() + req.* fields + req.query_params get() compile
   identically on interp/text/LLVM.
+  LLVM now()/run() also landed 2026-10-20 (the text backend had them,
+  the LLVM emitter did not): now() → lume_bi_now, run() → lume_srv_run.
+- [ ] **Native-backend serve coverage beyond P4 (filed 2026-10-20 from the
+  lume examples).** `write "/path"` / `read "/path"` verb groups
+  (N_VERBS with no handler) are rejected by *both* native backends
+  ("verbs alias routes are not supported by the native backend yet" —
+  examples/hello.lume:71); and a `func respond(d) { return d; return {...}; }`
+  whose parameter has no annotation and whose returns mix an untyped value
+  with a map literal cannot infer the return type in either backend
+  (examples/abac.lume:26 — the interpreter accepts it). Both are
+  text+LLVM-common gaps, not P4: the P4 serve shape (server{} + env() +
+  req.* + query_params) is fully aligned; these need the verb-group
+  registration path and untyped-parameter return inference before the full
+  hello.lume / abac.lume examples compile natively.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,
