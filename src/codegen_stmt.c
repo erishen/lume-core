@@ -681,6 +681,92 @@ static void cg_route_handler(CG *g, Node *fn, int rid)
     g->cur = NULL;
 }
 
+/* Emit one JSON value from a struct field already loaded into `fv`. */
+static void cg_json_field_val(CG *g, Type *ft, char *fv, size_t line)
+{
+    if (ft->kind == TY_STRING) {
+        EMIT(g, "  call void @lume_srv_json_str(i8** %%p1, i64* %%p2, "
+                "i8* %s)\n", fv);
+    } else if (ft->kind == TY_INT) {
+        EMIT(g, "  call void @lume_srv_json_int(i8** %%p1, i64* %%p2, "
+                "i64 %s)\n", fv);
+    } else if (ft->kind == TY_BOOL) {
+        char *z = emit_instrf(g, type_prim(TY_INT), "zext i1 %s to i64", fv);
+        EMIT(g, "  call void @lume_srv_json_int(i8** %%p1, i64* %%p2, "
+                "i64 %s)\n", z);
+        free(z);
+    } else if (ft->kind == TY_FLOAT) {
+        EMIT(g, "  call void @lume_srv_json_float(i8** %%p1, i64* %%p2, "
+                "double %s)\n", fv);
+    } else {
+        ERRX(g, "line %zu: field must be a scalar to serialise", line);
+    }
+}
+
+/* Serialise a struct (map-shaped) value as a JSON object: begin, then each
+ * declared field as a key + value dispatched on its codegen type. Field
+ * order follows the type declaration, matching the interpreter's map
+ * serialisation of the same value. A named struct is a raw GEP object
+ * (field loads by index); an anonymous one is a runtime map (LumeMap*)
+ * whose fields are read through the map getters. Container fields are not
+ * produced by the DSL's route handlers yet, so they error. */
+static void cg_json_struct(CG *g, Val sv, size_t line)
+{
+    Type *st = sv.ty;
+    if (!st || st->kind != TY_STRUCT)
+        ERRX(g, "line %zu: cannot serialise non-struct", line);
+    if (!st->name) {
+        EMIT(g, "  call void @lume_srv_json_begin(i8** %%p1, i64* %%p2)\n");
+        for (int i = 0; i < st->count; i++) {
+            char *kc = cg_string_val(g, st->names[i], strlen(st->names[i]));
+            EMIT(g, "  call void @lume_srv_json_key(i8** %%p1, i64* %%p2, "
+                    "i8* %s)\n", kc);
+            free(kc);
+            Type *ft = st->types[i];
+            const char *gfn = map_get_fn(ft);
+            const char *rty = ft->kind == TY_FLOAT ? "double" :
+                              ft->kind == TY_STRING ? "i8*" : "i64";
+            const char *dflt = ft->kind == TY_FLOAT ? "double 0.0" :
+                               ft->kind == TY_STRING ? "i8* null" : "i64 0";
+            if (!gfn)
+                ERRX(g, "line %zu: field '%s' has no codegen type",
+                     line, st->names[i]);
+            char *fv = emit_instrf(g, ft,
+                                   "call %s @%s(i8* %s, i8* %s, %s)",
+                                   rty, gfn, sv.v, kc, dflt);
+            cg_json_field_val(g, ft, fv, line);
+            free(fv);
+        }
+        EMIT(g, "  call void @lume_srv_json_end(i8** %%p1, i64* %%p2)\n");
+        free(sv.v);
+        return;
+    }
+    struct_addr(g, &sv);
+    /* llvm_type_of, not st->name: the spelling needs its `%` sigil. */
+    const char *stn = llvm_type_of(st);
+    EMIT(g, "  call void @lume_srv_json_begin(i8** %%p1, i64* %%p2)\n");
+    for (int i = 0; i < st->count; i++) {
+        char *kc = cg_string_val(g, st->names[i], strlen(st->names[i]));
+        EMIT(g, "  call void @lume_srv_json_key(i8** %%p1, i64* %%p2, i8* %s)\n",
+             kc);
+        free(kc);
+        Type *ft = st->types[i];
+        const char *ftn = llvm_type_of(ft);
+        if (!ftn)
+            ERRX(g, "line %zu: field '%s' has no codegen type",
+                 line, st->names[i]);
+        char *gep = emit_instrf(g, type_prim(TY_STRING),
+                                "getelementptr inbounds %s, %s* %s, i32 0, i32 %d",
+                                stn, stn, sv.v, i);
+        char *fv = emit_instrf(g, ft, "load %s, %s* %s", ftn, ftn, gep);
+        free(gep);
+        cg_json_field_val(g, ft, fv, line);
+        free(fv);
+    }
+    EMIT(g, "  call void @lume_srv_json_end(i8** %%p1, i64* %%p2)\n");
+    free(sv.v);
+}
+
 /* return in a native handler: string -> plain text, map literal -> JSON. */
 static void cg_handler_ret(CG *g, Node *n)
 {
@@ -735,6 +821,70 @@ static void cg_handler_ret(CG *g, Node *n)
                     EMIT(g, "  call void @lume_srv_json_bool(i8** %%p1, i64* "
                             "%%p2, i32 %s)\n", b);
                     free(b);
+                } else if (vv.ty && vv.ty->kind == TY_FLOAT) {
+                    EMIT(g, "  call void @lume_srv_json_float(i8** %%p1, i64* "
+                            "%%p2, double %s)\n", vv.v);
+                } else if (vv.ty && vv.ty->kind == TY_STRUCT) {
+                    Val s = vv;
+                    vv = (Val){ NULL, NULL, 0 };   /* cg_json_struct frees it */
+                    cg_json_struct(g, s, v->line);
+                } else if (vv.ty && vv.ty->kind == TY_LIST) {
+                    /* array: [ sep elem sep elem ... ] — iterate the list with
+                     * lume_list_len / lume_list_at_*; scalar elements only. */
+                    Type *et = vv.ty->elem;
+                    const char *atfn = list_at_fn(et);
+                    const char *atrt = et && et->kind == TY_STRING ? "i8*" :
+                                       et && et->kind == TY_FLOAT ? "double" :
+                                       "i64";
+                    if (!atfn)
+                        ERRX(g, "line %zu: native server: list element has no "
+                                "codegen type", v->line);
+                    int lc = g->lid, lb = g->lid + 1, le = g->lid + 2;
+                    g->lid += 3;
+                    char *iv = emit_instrf(g, type_prim(TY_INT), "alloca i64");
+                    EMIT(g, "  store i64 0, i64* %s\n", iv);
+                    EMIT(g, "  call void @lume_srv_json_arr_begin(i8** %%p1, "
+                            "i64* %%p2)\n");
+                    EMIT(g, "  br label %%L%d\n", lc);
+                    EMIT(g, "L%d:\n", lc);
+                    char *ic = emit_instrf(g, type_prim(TY_INT),
+                                           "load i64, i64* %s", iv);
+                    char *ln = emit_instrf(g, type_prim(TY_INT),
+                                           "call i64 @lume_list_len(i8* %s)",
+                                           vv.v);
+                    char *cm = emit_instrf(g, type_prim(TY_INT),
+                                           "icmp slt i64 %s, %s", ic, ln);
+                    free(ln);
+                    EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", cm, lb, le);
+                    free(cm);
+                    EMIT(g, "L%d:\n", lb);
+                    EMIT(g, "  call void @lume_srv_json_arr_sep(i8** %%p1, "
+                            "i64* %%p2)\n");
+                    char *at = emit_instrf(g, et, "call %s @%s(i8* %s, i64 %s)",
+                                           atrt, atfn, vv.v, ic);
+                    if (et && et->kind == TY_STRING)
+                        EMIT(g, "  call void @lume_srv_json_str(i8** %%p1, i64* "
+                                "%%p2, i8* %s)\n", at);
+                    else if (et && (et->kind == TY_INT || et->kind == TY_BOOL))
+                        EMIT(g, "  call void @lume_srv_json_int(i8** %%p1, i64* "
+                                "%%p2, i64 %s)\n", at);
+                    else if (et && et->kind == TY_FLOAT)
+                        EMIT(g, "  call void @lume_srv_json_float(i8** %%p1, "
+                                "i64* %%p2, double %s)\n", at);
+                    else
+                        ERRX(g, "line %zu: native server: list element must "
+                                "be a scalar", v->line);
+                    free(at);
+                    char *nv = emit_instrf(g, type_prim(TY_INT),
+                                           "add i64 %s, 1", ic);
+                    free(ic);
+                    EMIT(g, "  store i64 %s, i64* %s\n", nv, iv);
+                    free(nv);
+                    EMIT(g, "  br label %%L%d\n", lc);
+                    EMIT(g, "L%d:\n", le);
+                    EMIT(g, "  call void @lume_srv_json_arr_end(i8** %%p1, "
+                            "i64* %%p2)\n");
+                    free(iv);
                 } else {
                     free(vv.v);
                     ERRX(g, "line %zu: native server: map value must be int, "
@@ -762,6 +912,14 @@ static void cg_handler_ret(CG *g, Node *n)
             EMIT(g, "  store i64 -1, i64* %%p2\n");
             EMIT(g, "  store i32 0, i32* %%p3\n");
             free(sv.v);
+            EMIT(g, "  ret void\n");
+            return;
+        }
+        if (sv.ty && sv.ty->kind == TY_STRUCT) {
+            Val s = sv;
+            sv = (Val){ NULL, NULL, 0 };   /* cg_json_struct frees it */
+            cg_json_struct(g, s, n->line);
+            EMIT(g, "  store i32 1, i32* %%p3\n");
             EMIT(g, "  ret void\n");
             return;
         }

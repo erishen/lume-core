@@ -16,7 +16,12 @@
  * through lume_srv_qp().
  *
  * SrvReq's field layout is a contract with the IR-side struct definition:
- * four i8* pointers followed by one i64, in this order.
+ * four i8* pointers (method, path, query, body), one i64 (body_len), then an
+ * i8* user slot for the authenticated subject. The native server does not
+ * authenticate yet, so user stays NULL; the slot exists so a handler that
+ * reads req.user (abac.lume's route handlers do) compiles and runs the same
+ * shape the interpreter gives it — an unauthenticated request is a NULL
+ * subject, which the policy rejects by default.
  */
 
 #include <ctype.h>
@@ -28,13 +33,48 @@
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
 #else
 #include <errno.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#endif
+
+/* ---- file-lock shims ---- */
+/* Self-contained: the --compile-* link line pulls build/bridge_native.o in
+ * but not os_win32.o, so lume_flock has to live here (LockFileEx on
+ * Windows, flock(2) on POSIX). os_win32.c's copy stays for builtins_fs.c. */
+#if defined(_WIN32)
+#ifndef LOCK_SH
+#define LOCK_SH 1
+#define LOCK_EX 2
+#define LOCK_UN 8
+#define LOCK_NB 4
+#endif
+#include <windows.h>
+static int lume_flock(int fd, int op)
+{
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    if (op & LOCK_UN)
+        return UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov) ? 0 : -1;
+    DWORD flags = (op & LOCK_EX) ? LOCKFILE_EXCLUSIVE_LOCK : 0;
+    if (op & LOCK_NB) flags |= LOCKFILE_FAIL_IMMEDIATELY;
+    if (LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &ov)) return 0;
+    if ((op & LOCK_NB) && GetLastError() == ERROR_LOCK_VIOLATION) return -1;
+    return -1;
+}
+#else
+static int lume_flock(int fd, int op) { return flock(fd, op); }
 #endif
 
 /* ---- platform socket glue: one SockFd type and a few macros so the accept
@@ -83,6 +123,7 @@ typedef struct {
     const char *query;
     const char *body;
     size_t body_len;
+    const char *user;   /* authenticated subject, NULL until native auth exists */
 } SrvReq;
 
 typedef void (*SrvHandler)(const SrvReq *req, char **out, size_t *out_len,
@@ -170,19 +211,13 @@ long long lume_srv_atoi(const char *s)
     return (long long)strtoll(s, NULL, 10);
 }
 
-/* now(): current local time as a string, in a static buffer. */
-const char *lume_bi_now(void)
+/* now(): epoch seconds, matching the interpreter's native_now (builtins.c).
+ * The native backends emit this as an i64 — SPEC §6.2 spells now() as the
+ * current time in seconds since the epoch, and abac's policy computes a
+ * Beijing-hour gate from it. */
+long long lume_bi_now(void)
 {
-    static char buf[64];
-    time_t t = time(NULL);
-    struct tm tmv;
-#if defined(_WIN32)
-    localtime_s(&tmv, &t);
-#else
-    localtime_r(&t, &tmv);
-#endif
-    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &tmv);
-    return buf;
+    return (long long)time(NULL);
 }
 
 /* env(): host environment variable as a string; unset or credential-masked
@@ -215,6 +250,96 @@ const char *lume_bi_env(const char *key)
     if (!key) return NULL;
     if (native_env_is_sensitive(key)) return NULL;
     return getenv(key);
+}
+
+/* ---- file builtins (SPEC §6.2 / interpreter parity with builtins_fs.c) ---- */
+
+/* read_file(path): whole file as a string, or NULL when missing/unreadable.
+ * 16 MiB cap, mirroring native_read_file. The result lives in a static
+ * buffer: a second call overwrites it — the DSL reads one file at a time
+ * (the audit trail in abac's policy is the canonical user). */
+char *lume_bi_read_file(const char *path)
+{
+    static char buf[16u << 20];
+    if (!path) return NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    if (n >= sizeof buf) return NULL;   /* too large, same as the interpreter */
+    buf[n] = '\0';
+    return buf;
+}
+
+/* write_file(path, data): atomically replace (tmp + rename); true on
+ * success. Mirror of native_write_file, including the Windows rename quirk
+ * (MSVCRT refuses to replace an existing file). */
+long long lume_bi_write_file(const char *path, const char *data)
+{
+    if (!path || !data) return 0;
+    char tmp[4096];
+    if (strlen(path) + 32 >= sizeof tmp) return 0;
+    snprintf(tmp, sizeof tmp, "%s.tmp.%d", path, (int)getpid());
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return 0;
+    size_t len = strlen(data);
+    size_t wrote = len ? fwrite(data, 1, len, f) : 0;
+    int ok = (fclose(f) == 0) && (wrote == len);
+    if (ok) {
+#if defined(_WIN32)
+        remove(path);                  /* MSVCRT rename refuses to replace */
+        ok = rename(tmp, path) == 0;
+#else
+        ok = rename(tmp, path) == 0;
+#endif
+    }
+    if (!ok) remove(tmp);
+    return ok ? 1 : 0;
+}
+
+/* Advisory file lock, one lock per process — the same contract as
+ * native_lock_file: flock(2)-based on POSIX, LockFileEx via lume_flock on
+ * Windows. Acquiring again replaces the previously-held lock; the lock dies
+ * with the process (no stale lock files). */
+static int g_lock_fd = -1;
+
+long long lume_bi_lock_file(const char *path, long long wait_ms)
+{
+    if (!path) return 0;
+    if (wait_ms < 0) wait_ms = 0;
+    if (wait_ms > 30000) wait_ms = 30000;
+    if (g_lock_fd >= 0) {
+        lume_flock(g_lock_fd, LOCK_UN);
+        close(g_lock_fd);
+        g_lock_fd = -1;
+    }
+#if defined(_WIN32)
+    int fd = _open(path, _O_CREAT | _O_RDWR, _S_IREAD | _S_IWRITE);
+#else
+    int fd = open(path, O_CREAT | O_RDWR, 0600);
+#endif
+    if (fd < 0) return 0;
+    time_t t0 = time(NULL);
+    for (;;) {
+        if (lume_flock(fd, LOCK_EX | LOCK_NB) == 0) break;
+#if defined(_WIN32)
+        _sleep(25);
+#else
+        usleep(25000);
+#endif
+        if (time(NULL) - t0 >= wait_ms / 1000 + 1) { close(fd); return 0; }
+    }
+    g_lock_fd = fd;
+    return 1;
+}
+
+void lume_bi_unlock_file(void)
+{
+    if (g_lock_fd >= 0) {
+        lume_flock(g_lock_fd, LOCK_UN);
+        close(g_lock_fd);
+        g_lock_fd = -1;
+    }
 }
 
 /* Look a key up in a raw query string ("a=1&b=x"). Single-threaded: the
@@ -332,6 +457,16 @@ void lume_srv_json_int(char **out, size_t *out_len, long long v)
     *out_len = len;
 }
 
+void lume_srv_json_float(char **out, size_t *out_len, double v)
+{
+    size_t cap = *out ? *out_len + 1 : 0;
+    size_t len = *out_len;
+    char buf[64];
+    int n = snprintf(buf, sizeof buf, "%g", v);
+    json_raw(out, &len, &cap, buf, (size_t)n);
+    *out_len = len;
+}
+
 void lume_srv_json_bool(char **out, size_t *out_len, int v)
 {
     size_t cap = *out ? *out_len + 1 : 0;
@@ -346,6 +481,40 @@ void lume_srv_json_end(char **out, size_t *out_len)
     size_t len = *out_len;
     json_raw(out, &len, &cap, "}", 1);
     *out_len = len;
+}
+
+/* JSON array framing: the DSL emits lume_srv_json_arr_sep before each
+ * element and the separator decides commas by an element counter. The
+ * single-threaded server writes one response at a time; nested arrays
+ * (depth > 1) are not produced by the DSL yet, so a plain counter is
+ * enough. */
+static int g_arr_items = 0;
+
+void lume_srv_json_arr_begin(char **out, size_t *out_len)
+{
+    size_t cap = *out ? *out_len + 1 : 0;
+    size_t len = *out_len;
+    json_raw(out, &len, &cap, "[", 1);
+    *out_len = len;
+    g_arr_items = 0;
+}
+
+void lume_srv_json_arr_sep(char **out, size_t *out_len)
+{
+    if (g_arr_items++ == 0) return;     /* first element: nothing before it */
+    size_t cap = *out ? *out_len + 1 : 0;
+    size_t len = *out_len;
+    json_raw(out, &len, &cap, ",", 1);
+    *out_len = len;
+}
+
+void lume_srv_json_arr_end(char **out, size_t *out_len)
+{
+    size_t cap = *out ? *out_len + 1 : 0;
+    size_t len = *out_len;
+    json_raw(out, &len, &cap, "]", 1);
+    *out_len = len;
+    g_arr_items = 0;
 }
 
 /* Handler-less routes (`write "/items";`, `get "/x";`) acknowledge the
@@ -443,7 +612,11 @@ void lume_srv_run(void)
 
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
+    /* AF_INET, not AF_UNSPEC: on Windows, getaddrinfo with AI_PASSIVE +
+     * AF_UNSPEC can hand back an IPv6 socket first, and binding the
+     * IPv4 127.0.0.1 against it fails with WSAENOTSOCK (errno 10038).
+     * IPv4-only keeps the accept loop's SrvReq contract unchanged. */
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
     if (getaddrinfo(g_host, portstr, &hints, &res) != 0 || !res) {
@@ -593,6 +766,7 @@ void lume_srv_run(void)
         req.query = query;
         req.body = body;
         req.body_len = body_len;
+        req.user = NULL;   /* no native auth yet: an unauthenticated subject */
 
         char *out = NULL;
         size_t out_len = 0;

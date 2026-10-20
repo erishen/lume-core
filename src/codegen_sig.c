@@ -1040,6 +1040,49 @@ static int types_eq(Type *a, Type *b)
     return 1;                     /* every remaining kind is a primitive */
 }
 
+/* Strict return-shape equality for the multi-shape widening in N_RETURN.
+ * types_eq treats an anonymous struct as compatible with any named one (a
+ * map literal fills a named parameter — the normal call shape), but two
+ * returns that differ in field count/names cannot share one return slot, so
+ * the looser rule would keep respond()'s Decision and { status, type, body }
+ * returns "equal" and the emitter would demand a 5-field Decision from a
+ * 3-field literal. */
+static int ret_shape_eq(CG *g, Type *a, Type *b)
+{
+    if (a == b) return 1;
+    if (!a || !b || a->kind != b->kind) return 0;
+    if (a->kind == TY_STRUCT) {
+        if (a->name && b->name) return strcmp(a->name, b->name) == 0;
+        if (!a->name && !b->name) {
+            /* two anonymous shapes: field-for-field */
+            if (a->count != b->count) return 0;
+            for (int i = 0; i < a->count; i++) {
+                int j = -1;
+                for (int k = 0; k < b->count; k++)
+                    if (strcmp(a->names[i], b->names[k]) == 0) { j = k; break; }
+                if (j < 0) return 0;
+                if (!types_eq(a->types[i], b->types[j])) return 0;
+            }
+            return 1;
+        }
+        /* one named, one anonymous: the named shape's declared field set
+         * must match the literal's, so they are the same runtime shape. */
+        const char *nm = a->name ? a->name : b->name;
+        Type *anon = a->name ? b : a;
+        SDef *sd = sdef_find(&g->structs, nm);
+        if (!sd || sd->count != anon->count) return 0;
+        for (int i = 0; i < sd->count; i++) {
+            int j = -1;
+            for (int k = 0; k < anon->count; k++)
+                if (strcmp(sd->names[i], anon->names[k]) == 0) { j = k; break; }
+            if (j < 0) return 0;
+        }
+        return 1;
+    }
+    if (a->kind == TY_LIST) return ret_shape_eq(g, a->elem, b->elem);
+    return 1;                     /* every remaining kind is a primitive */
+}
+
 /* A name for a type, for diagnostics. */
 
 static void type_desc(Type *t, char *buf, size_t n)
@@ -1287,22 +1330,36 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
                        "a value — every 'return' must agree", n->line, s->name);
             return changed;
         }
-        if (s && n->as.ret.expr && !s->ret) {
+        if (s && n->as.ret.expr) {
             Type *rt = infer_node_type(g, n->as.ret.expr);
-            if (!rt) {
-                /* The return expression's type may still resolve once the
-                 * signature pass back-fills untyped parameters from call
-                 * sites (the N_CALL branch above) — `func respond(d) {
-                 * return d; ... }` is inferred from a later call
-                 * respond(policy.decide(...)) in a subsequent fixed-point
-                 * iteration. Skip rather than ERR_SET: failing here would
-                 * reject programs the fixed point would resolve. A
-                 * genuinely untypable function still fails later, when the
-                 * emitter needs the return type. */
-                return changed + walk_sigs(g, n->as.ret.expr, t, s);
+            if (s->ret && s->ret->kind != TY_ANY) {
+                /* A second return whose type disagrees with the one already
+                 * pinned widens the function's return type to any: the native
+                 * backends emit one return slot, and refusing multi-shape
+                 * functions (abac's respond returns either a Decision or a
+                 * { status, type, body } map) would reject programs the
+                 * interpreter runs. any is terminal — a later, resolved
+                 * return must not re-widen it, or the fixed point would spin. */
+                if (rt && !ret_shape_eq(g, s->ret, rt)) {
+                    s->ret = any_type();
+                    changed++;
+                }
+            } else if (!s->ret) {
+                if (!rt) {
+                    /* The return expression's type may still resolve once the
+                     * signature pass back-fills untyped parameters from call
+                     * sites (the N_CALL branch above) — `func respond(d) {
+                     * return d; ... }` is inferred from a later call
+                     * respond(policy.decide(...)) in a subsequent fixed-point
+                     * iteration. Skip rather than ERR_SET: failing here would
+                     * reject programs the fixed point would resolve. A
+                     * genuinely untypable function still fails later, when the
+                     * emitter needs the return type. */
+                    return changed + walk_sigs(g, n->as.ret.expr, t, s);
+                }
+                s->ret = rt;
+                changed++;
             }
-            s->ret = rt;
-            changed++;
         }
         return changed + walk_sigs(g, n->as.ret.expr, t, s);
     case N_ASSIGN:
@@ -1493,6 +1550,28 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
         for (int i = 0; i < n->as.block.count; i++)
             changed += walk_sigs(g, n->as.block.stmts[i], t, s);
         return changed;
+    case N_ROUTE: {
+        /* A route handler is emitted through its own path (cg_route_handler)
+         * and its lambda is never cname-stamped, so the N_FUNC_LIT branch
+         * above would skip its body — yet the handler's calls (policy.decide
+         * in abac.lume) are exactly the member-call sites that must fill the
+         * module function's parameters. Walk the body directly under the
+         * same FFI window the emitters use: g->in_handler + g->hreq make
+         * req.<field> and req.query_params.<key> resolve through the SrvReq
+         * contract (member_field_type), so decide's parameters get typed
+         * from the handler's arguments. */
+        Node *h = n->as.route.handler;
+        if (h && h->type == N_FUNC_LIT) {
+            int saved_ih = g->in_handler;
+            const char *saved_hreq = g->hreq;
+            g->in_handler = 1;
+            g->hreq = h->as.funclit.names ? h->as.funclit.names[0] : "req";
+            changed += walk_sigs(g, h->as.funclit.body, t, s);
+            g->in_handler = saved_ih;
+            g->hreq = saved_hreq;
+        }
+        return changed;
+    }
     default: return 0;
     }
 }

@@ -58,12 +58,23 @@ Type *member_field_type(CG *g, Node *n)
         strcmp(n->as.member.obj->as.var.name, g->hreq) == 0) {
         const char *f = n->as.member.name;
         if (strcmp(f, "method") == 0 || strcmp(f, "path") == 0 ||
-            strcmp(f, "query") == 0 || strcmp(f, "body") == 0 ||
-            strcmp(f, "query_params") == 0)
+            strcmp(f, "query") == 0 || strcmp(f, "body") == 0)
             return type_prim(TY_STRING);
         if (strcmp(f, "body_len") == 0) return type_prim(TY_INT);
-        return NULL;
+        if (strcmp(f, "query_params") == 0) return type_prim(TY_STRING);
+        /* req.user — the authenticated subject — and any other FFI field
+         * the runtime exposes default to string. */
+        return type_prim(TY_STRING);
     }
+    /* req.query_params.<key>: the two-hop member is a query-parameter lookup
+     * (see cg_handler_qp_field) whose value is always a string. */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_MEMBER &&
+        n->as.member.obj->as.member.obj &&
+        n->as.member.obj->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.member.obj->as.var.name, g->hreq) == 0 &&
+        strcmp(n->as.member.obj->as.member.name, "query_params") == 0)
+        return type_prim(TY_STRING);
 
     Type *t = infer_node_type(g, n->as.member.obj);
     if (t && t->kind == TY_STRUCT) {

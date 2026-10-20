@@ -801,6 +801,7 @@ static Val cg_handler_req_field(CG *g, Node *n)
     else if (strcmp(f, "query") == 0)  idx = 2;
     else if (strcmp(f, "body") == 0)   idx = 3;
     else if (strcmp(f, "body_len") == 0) idx = 4;
+    else if (strcmp(f, "user") == 0)   idx = 5;
     else ERRV(g, "line %zu: unknown req field '%s' in a native server handler",
               n->line, f);
 
@@ -818,6 +819,24 @@ static Val cg_handler_req_field(CG *g, Node *n)
     char *ld = emit_instrf(g, st, "load i8*, i8** %s", gt);
     free(gt);
     return val_take(st, ld);
+}
+
+/* req.query_params.<key> inside a native route handler: a query-parameter
+ * lookup, the same lume_srv_qp the get() branch in codegen_call.c emits. The
+ * key is the member name itself (a source identifier, so always a literal),
+ * the default is null. The query string is SrvReq field 2. */
+static Val cg_handler_qp_field(CG *g, Node *n)
+{
+    Type *st = type_prim(TY_STRING);
+    char *gt = emit_instrf(g, st,
+        "getelementptr %%struct.SrvReq, %%struct.SrvReq* %%p0, i32 0, i32 2");
+    char *q  = emit_instrf(g, st, "load i8*, i8** %s", gt);
+    free(gt);
+    char *kc = cg_string_val(g, n->as.member.name, strlen(n->as.member.name));
+    char *r = emit_instrf(g, st,
+        "call i8* @lume_srv_qp(i8* %s, i8* %s, i8* null)", q, kc);
+    free(q); free(kc);
+    return val_take(st, r);
 }
 
 static Val cg_index(CG *g, Node *n)
@@ -957,6 +976,16 @@ static Val cg_member(CG *g, Node *n)
         n->as.member.obj->type == N_VAR &&
         strcmp(n->as.member.obj->as.var.name, g->hreq) == 0)
         return cg_handler_req_field(g, n);
+    /* Native server handler: `req.query_params.<key>` is a query-parameter
+     * lookup, not a member of an evaluated value (the @__qp__ symbol is never
+     * defined — only this two-hop shape consumes it). */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_MEMBER &&
+        n->as.member.obj->as.member.obj &&
+        n->as.member.obj->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.member.obj->as.var.name, g->hreq) == 0 &&
+        strcmp(n->as.member.obj->as.member.name, "query_params") == 0)
+        return cg_handler_qp_field(g, n);
 
     Val obj = cg_expr(g, n->as.member.obj);
     if (!obj.v) ERRV(g, "line %zu: bad struct operand", n->line);

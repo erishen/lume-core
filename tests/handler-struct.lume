@@ -1,0 +1,103 @@
+// tests/handler-struct.lume — grows toward abac: nested attribute maps,
+// get(map,key,null), for loops, get(list,i,default), now(), file builtins
+// (audit), req.query_params two-hop members and get(req.query_params,...),
+// struct returns via stringify wrapped in an anonymous 3-field map.
+
+type Decision = { decision: string, reason: string, subject: string,
+                  resource: string, action: string }
+
+let subjects = {
+  admin: { department: "EXEC", clearance: 5, region: "CN" },
+  alice: { department: "ENG", clearance: 3, region: "CN" },
+};
+
+let resources = {
+  board:    { clearance: 5, department: "EXEC", actions: ["read", "approve"] },
+  internal: { clearance: 3, department: "ENG", actions: ["read", "delete"] },
+};
+
+let action_min_clearance = { read: 0, delete: 4, approve: 5 };
+let AUDIT_PATH = ".data/hs-audit.jsonl";
+
+func decide(user, res, action) {
+  let subj = get(subjects, user, null);
+  if (subj == null) {
+    return { decision: "DENY", reason: "unknown user", subject: user,
+             resource: res, action: action };
+  }
+  let doc = get(resources, res, null);
+  if (doc == null) {
+    return { decision: "DENY", reason: "unknown res", subject: user,
+             resource: res, action: action };
+  }
+  let allowed = doc.actions;
+  let ok_action = false;
+  for (let i = 0; i < len(allowed); i = i + 1) {
+    if (get(allowed, i, "") == action) { ok_action = true; }
+  }
+  if (not ok_action) {
+    return { decision: "DENY", reason: "action not allowed", subject: user,
+             resource: res, action: action };
+  }
+  if (doc.clearance > subj.clearance) {
+    return { decision: "DENY", reason: "clearance", subject: user,
+             resource: res, action: action };
+  }
+  if (action != "read") {
+    let hour = int((now() + 28800) % 86400 / 3600);
+    let gate = get(action_min_clearance, action, 0);
+    if (subj.clearance < gate) {
+      return { decision: "DENY", reason: "action needs clearance", subject: user,
+               resource: res, action: action };
+    }
+    if (hour < 9 or hour >= 18) {
+      return { decision: "DENY", reason: "after hours", subject: user,
+               resource: res, action: action };
+    }
+  }
+  return { decision: "PERMIT", reason: "ok", subject: user,
+           resource: res, action: action };
+}
+
+func respond(d) {
+  return { status: 200, type: "application/json", body: stringify(d) };
+}
+
+func audit_read_all() {
+  let cur = read_file(AUDIT_PATH);
+  if (cur == null) { return ""; }
+  return cur;
+}
+
+func audit_write(entry) {
+  lock_file(AUDIT_PATH, 3000);
+  let cur = read_file(AUDIT_PATH);
+  let base = "";
+  if (cur != null) { base = cur; }
+  write_file(AUDIT_PATH, base + stringify(entry) + "\n");
+  unlock_file();
+}
+
+get "/docs", (req) => {
+  return respond(decide(req.user, req.query_params.doc, "read"));
+};
+
+get "/decide", (req) => {
+  let u = req.query_params.user;
+  let r = req.query_params.res;
+  let a = get(req.query_params, "action", "read");
+  let d = decide(u, r, a);
+  audit_write({ debug: true, user: u, resource: r, action: a,
+                decision: d.decision, reason: d.reason });
+  return { input: { user: u, resource: r, action: a },
+           result: d, hint: "trace" };
+};
+
+get "/audit", (req) => {
+  return { lines: audit_read_all() };
+};
+
+server {
+  port = 8892;
+}
+run();

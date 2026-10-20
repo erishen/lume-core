@@ -76,6 +76,28 @@ static void arm_scope_truncate(CG *g, int n)
  * block would have nothing to `alloca` — and the alloca pass bails out, which
  * silently truncates the rest of the function body. */
 
+/* Do two inferred types describe the same runtime shape? Used by the get()
+ * branch: a variable key over a statically-shaped map can only carry one
+ * return type when every value shares one shape. Named structs compare by
+ * name; anonymous ones field-for-field (each is a fresh Type instance, so
+ * pointer equality would never fire). */
+static int value_shape_eq(Type *a, Type *b)
+{
+    if (a == b) return 1;
+    if (!a || !b || a->kind != b->kind) return 0;
+    if (a->kind == TY_STRUCT) {
+        if (a->name && b->name) return strcmp(a->name, b->name) == 0;
+        if (a->count != b->count) return 0;
+        for (int i = 0; i < a->count; i++) {
+            if (!a->names[i] || !b->names[i]) return 0;
+            if (strcmp(a->names[i], b->names[i]) != 0) return 0;
+        }
+        return 1;
+    }
+    if (a->kind == TY_LIST) return value_shape_eq(a->elem, b->elem);
+    return 1;                     /* every remaining kind is a primitive */
+}
+
 Type *infer_node_type(CG *g, Node *n)
 {
     if (!n) return NULL;
@@ -200,6 +222,26 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
 
+        /* now() is epoch seconds; int()/str() convert to a primitive
+         * whatever the argument's static type — and the argument itself may
+         * not be inferable (int((now() + 28800) % 86400 / 3600) in abac's
+         * policy: the arithmetic sits on a builtin call). read_file() yields
+         * a string, or null when the file is absent. */
+        if (strcmp(name, "now") == 0 && n->as.call.argc == 0)
+            return type_prim(TY_INT);
+        if (strcmp(name, "int") == 0 && n->as.call.argc == 1)
+            return type_prim(TY_INT);
+        if (strcmp(name, "str") == 0 && n->as.call.argc == 1)
+            return type_prim(TY_STRING);
+        if (strcmp(name, "read_file") == 0 && n->as.call.argc == 1)
+            return type_prim(TY_STRING);
+        if (strcmp(name, "write_file") == 0 && n->as.call.argc == 2)
+            return type_prim(TY_INT);
+        if (strcmp(name, "lock_file") == 0 && n->as.call.argc == 2)
+            return type_prim(TY_INT);
+        if (strcmp(name, "unlock_file") == 0 && n->as.call.argc == 0)
+            return type_prim(TY_INT);
+
         /* Native server handler: int() / get(req.query_params, ...) lower to
          * lume_srv_atoi / lume_srv_qp. These must precede the generic
          * get(m, "k") branch below, which would otherwise swallow
@@ -310,6 +352,20 @@ Type *infer_node_type(CG *g, Node *n)
                             }
                     }
                 }
+            }
+            /* A variable key over a statically-shaped map: the read can hold
+             * any value the map holds, so it types as the map's value type
+             * when every value shares one shape (get(subjects, user, null)
+             * in abac's policy), and as `any` when they disagree. */
+            if (mt && mt->kind == TY_STRUCT) {
+                Type *first = NULL;
+                for (int i = 0; i < mt->count; i++) {
+                    if (!mt->types[i] || mt->types[i]->kind == TY_ANY) continue;
+                    if (!first) { first = mt->types[i]; continue; }
+                    if (!value_shape_eq(first, mt->types[i])) { first = NULL; break; }
+                }
+                if (first) return first;
+                return any_type();
             }
             return NULL;
         }

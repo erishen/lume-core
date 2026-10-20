@@ -445,7 +445,7 @@ static Val cg_member_load(CG *g, Val obj, const char *name, Type *vt,
 /* req.field inside a native route handler: read straight out of the SrvReq
  * FFI struct (mirrors codegen_expr.c's cg_handler_req_field). The struct
  * layout is a contract with bridge_native.c — four i8* pointers (method,
- * path, query, body) then one i64 (body_len). */
+ * path, query, body), one i64 (body_len), then an i8* user slot. */
 static Val cg_handler_req_field(CG *g, Node *n)
 {
     const char *f = n->as.member.name;
@@ -455,15 +455,16 @@ static Val cg_handler_req_field(CG *g, Node *n)
     else if (strcmp(f, "query") == 0)  idx = 2;
     else if (strcmp(f, "body") == 0)   idx = 3;
     else if (strcmp(f, "body_len") == 0) idx = 4;
+    else if (strcmp(f, "user") == 0)   idx = 5;
     else ERRV(g, "line %zu: unknown req field '%s' in a native server "
                  "handler", n->line, f);
 
     LLVMTypeRef srv = LLVMGetTypeByName(g->mod, "struct.SrvReq");
     if (!srv) {
         srv = LLVMStructCreateNamed(g->ctx, "struct.SrvReq");
-        LLVMTypeRef els[5] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
-                               g->i64 };
-        LLVMStructSetBody(srv, els, 5, 0);
+        LLVMTypeRef els[6] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
+                               g->i64, g->i8ptr };
+        LLVMStructSetBody(srv, els, 6, 0);
     }
     Asg *req = asg_find(&g->locals, g->hreq, n->line);
     if (!req || !req->slot)
@@ -530,6 +531,42 @@ static Val cg_member(CG *g, Node *n)
         strcmp(n->as.member.obj->as.var.name, g->hreq) == 0)
         return cg_handler_req_field(g, n);
 
+    /* req.query_params.<key>: a query-parameter lookup (mirrors
+     * codegen_expr.c's cg_handler_qp_field) — lume_srv_qp over SrvReq
+     * field 2 with the member name as the key. */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_MEMBER &&
+        n->as.member.obj->as.member.obj &&
+        n->as.member.obj->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.member.obj->as.var.name, g->hreq) == 0 &&
+        strcmp(n->as.member.obj->as.member.name, "query_params") == 0) {
+        LLVMTypeRef srv = LLVMGetTypeByName(g->mod, "struct.SrvReq");
+        if (!srv) {
+            srv = LLVMStructCreateNamed(g->ctx, "struct.SrvReq");
+            LLVMTypeRef els[6] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
+                                   g->i64, g->i8ptr };
+            LLVMStructSetBody(srv, els, 6, 0);
+        }
+        Asg *req = asg_find(&g->locals, g->hreq, n->line);
+        if (!req || !req->slot)
+            ERRV(g, "line %zu: internal: req parameter missing", n->line);
+        LLVMValueRef rp = LLVMBuildBitCast(g->ab, req->slot,
+                                           LLVMPointerType(srv, 0), "rp");
+        LLVMValueRef idxv[2] = { LLVMConstInt(g->i32, 0, 0),
+                                 LLVMConstInt(g->i32, 2, 0) };
+        LLVMValueRef gp = LLVMBuildInBoundsGEP2(g->ab, srv, rp, idxv, 2, "rq");
+        LLVMValueRef q = LLVMBuildLoad2(g->ab, g->i8ptr, gp, "rqv");
+        LLVMValueRef key = cg_string_val(g, n->as.member.name,
+                                         (int)strlen(n->as.member.name));
+        LLVMTypeRef qpt[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+        LLVMValueRef qa[3] = { q, key, LLVMConstNull(g->i8ptr) };
+        LLVMValueRef call = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, qpt, 3, 0),
+                rt_decl(g, "lume_srv_qp", g->i8ptr, qpt, 3),
+                qa, 3, "qp");
+        return val_make(type_prim(TY_STRING), call);
+    }
+
     Val obj = cg_expr(g, n->as.member.obj);
 
     /* `s.len` / `s.length` / `xs.len` / `m.len`, before the struct path: there
@@ -550,8 +587,9 @@ static Val cg_member(CG *g, Node *n)
             return cg_len_of(g, "lume_bi_len_s", obj.v);
     }
 
-    return cg_member_load(g, obj, n->as.member.name, n->as.member.type,
-                          n->line);
+    Type *vt = member_field_type(g, n);
+    if (!vt) vt = n->as.member.type;   /* checker-recorded fallback */
+    return cg_member_load(g, obj, n->as.member.name, vt, n->line);
 }
 
 /* Load one field out of an already-evaluated base: the runtime-map path
@@ -1198,12 +1236,23 @@ static Type *member_field_type(CG *g, Node *n)
         strcmp(n->as.member.obj->as.var.name, g->hreq) == 0) {
         const char *f = n->as.member.name;
         if (strcmp(f, "method") == 0 || strcmp(f, "path") == 0 ||
-            strcmp(f, "query") == 0 || strcmp(f, "body") == 0 ||
-            strcmp(f, "query_params") == 0)
+            strcmp(f, "query") == 0 || strcmp(f, "body") == 0)
             return type_prim(TY_STRING);
         if (strcmp(f, "body_len") == 0) return type_prim(TY_INT);
-        return NULL;
+        if (strcmp(f, "query_params") == 0) return type_prim(TY_STRING);
+        /* req.user — the authenticated subject — and any other FFI field
+         * the runtime exposes default to string. */
+        return type_prim(TY_STRING);
     }
+    /* req.query_params.<key>: the two-hop member is a query-parameter lookup
+     * whose value is always a string (see the cg_member branch above). */
+    if (g->in_handler && n->as.member.obj &&
+        n->as.member.obj->type == N_MEMBER &&
+        n->as.member.obj->as.member.obj &&
+        n->as.member.obj->as.member.obj->type == N_VAR &&
+        strcmp(n->as.member.obj->as.member.obj->as.var.name, g->hreq) == 0 &&
+        strcmp(n->as.member.obj->as.member.name, "query_params") == 0)
+        return type_prim(TY_STRING);
 
     Type *t = infer_node_type(g, n->as.member.obj);
     if (t && t->kind == TY_STRUCT) {
@@ -1211,9 +1260,14 @@ static Type *member_field_type(CG *g, Node *n)
             int idx = struct_field_idx(g, t->name, n->as.member.name);
             if (idx >= 0) return struct_field_type(g, t->name, idx);
         } else {
-            /* A runtime map: the type checker required the key to be a
-             * declared field, so the result type is exactly the field's
-             * value type it recorded on the member node. */
+            /* A runtime map: prefer the member shape infer_node_type put on
+             * the map-literal / get() result, so `{ a: 1 }.a` and
+             * get(resources, res).actions are readable without the checker
+             * having seen the read; fall back to the type the checker
+             * recorded (mirrors codegen_lit.c's member_field_type). */
+            for (int i = 0; i < t->count; i++)
+                if (t->names[i] && strcmp(t->names[i], n->as.member.name) == 0)
+                    return t->types[i];
             return n->as.member.type;
         }
     }

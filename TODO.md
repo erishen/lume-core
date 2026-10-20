@@ -279,8 +279,8 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   identically on interp/text/LLVM.
   LLVM now()/run() also landed 2026-10-20 (the text backend had them,
   the LLVM emitter did not): now() → lume_bi_now, run() → lume_srv_run.
-- [ ] **Native-backend serve coverage beyond P4 (filed 2026-10-20 from the
-  lume examples).** ~~`write "/path"` / `read "/path"` verb groups~~ —
+- [x] **Native-backend serve coverage beyond P4 (filed 2026-10-20 from the
+  lume examples; closed 2026-10-20).** ~~`write "/path"` / `read "/path"` verb groups~~ —
   **closed 2026-10-20**: alias routes now expand in both native backends to
   one registration per method (built-in groups write =
   POST/PUT/PATCH/DELETE, read = GET/HEAD — the native mirror of interp.c's
@@ -341,6 +341,27 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   callee over a variable object, and backend_llvm_native/emit_ir take the
   multi-file form. tests/ns-member.lume compiles AND runs on both native
   backends (prints 42); serve-leg-check stays green on all three legs.
+  **Server-handler FFI + abac closed 2026-10-20 (Task #23)**: entry-side
+  handler parameters typed end to end on both native backends — req.* fields
+  (method/path/query/body/body_len/user) via the SrvReq FFI contract,
+  req.query_params.<key> two-hop members lowering to lume_srv_qp, get() on
+  req.query_params kept as its in-handler branch, handler struct returns
+  (named via stringify, anonymous maps via cg_json_struct/llvm_json_struct
+  with float/struct/list value serialization and typed map-getter defaults),
+  now() aligned to epoch seconds, and the file builtins
+  (read_file/write_file/lock_file/unlock_file) implemented natively with a
+  self-contained lume_flock (the compile link line pulls only
+  bridge_native.o, not os_win32.o). examples/abac.lume now compiles on BOTH
+  native backends (out/abac-text.exe, out/abac-llvm.exe); pinned by
+  tests/handler-struct.lume (the respond() shape — nested attribute maps,
+  get(map,key,null), get(list,i,default), now(), file builtins,
+  req.query_params, struct returns — compiles on both). serve-leg-check
+  stays green: serve-env AGREE x2, native-consistency MATCH/AGREE x6.
+  Run-time note: blocking listen on this Windows box fails with WSAENOTSOCK
+  (errno 10038) for every process — even a PowerShell TcpListener on a free
+  port — i.e. a winsock/host-environment fault, not an emitter defect; the
+  same check is expected to pass on CI/Linux where serve-env's non-listening
+  legs already run.
   **Still open**: module functions that nest lambdas or local functions
   (cname counters collide across files) are a known boundary.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by

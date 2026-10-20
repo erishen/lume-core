@@ -248,16 +248,67 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_STRING), r);
     }
 
-    /* now(): the server's current time as a string (SPEC §6.2), via
-     * bridge_native's lume_bi_now. */
+    /* now(): epoch seconds (SPEC §6.2, matching the interpreter's now() and
+     * bridge_native's lume_bi_now). */
     if (strcmp(bname, "now") == 0) {
         if (argc != 0)
             ERRV(g, "line %zu: now() takes no arguments", n->line);
         LLVMValueRef r = LLVMBuildCall2(g->ab,
-                                        LLVMFunctionType(g->i8ptr, NULL, 0, 0),
-                                        rt_decl(g, "lume_bi_now", g->i8ptr, NULL, 0),
+                                        LLVMFunctionType(g->i64, NULL, 0, 0),
+                                        rt_decl(g, "lume_bi_now", g->i64, NULL, 0),
                                         NULL, 0, "now");
+        return val_make(type_prim(TY_INT), r);
+    }
+
+    /* File builtins (SPEC §6.2, mirroring the text backend's branches):
+     * read_file -> string-or-null; write_file/lock_file -> bool;
+     * unlock_file -> bool, releasing the process-wide lock. */
+    if (strcmp(bname, "read_file") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: read_file() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) return (Val){ NULL, NULL, 0 };
+        LLVMTypeRef pp[1] = { g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i8ptr, pp, 1, 0),
+                                        rt_decl(g, "lume_bi_read_file", g->i8ptr, pp, 1),
+                                        (LLVMValueRef[]){ a.v }, 1, "rf");
         return val_make(type_prim(TY_STRING), r);
+    }
+    if (strcmp(bname, "write_file") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: write_file() takes exactly two arguments", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v) return (Val){ NULL, NULL, 0 };
+        LLVMTypeRef pp[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i64, pp, 2, 0),
+                                        rt_decl(g, "lume_bi_write_file", g->i64, pp, 2),
+                                        (LLVMValueRef[]){ a.v, b.v }, 2, "wf");
+        return val_make(type_prim(TY_INT), r);
+    }
+    if (strcmp(bname, "lock_file") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: lock_file() takes a path and a wait (ms)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val m = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !m.v) return (Val){ NULL, NULL, 0 };
+        LLVMTypeRef pp[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i64, pp, 2, 0),
+                                        rt_decl(g, "lume_bi_lock_file", g->i64, pp, 2),
+                                        (LLVMValueRef[]){ a.v, m.v }, 2, "lf");
+        return val_make(type_prim(TY_INT), r);
+    }
+    if (strcmp(bname, "unlock_file") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: unlock_file() takes no arguments", n->line);
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i64, NULL, 0, 0),
+                                        rt_decl(g, "lume_bi_unlock_file", g->i64, NULL, 0),
+                                        NULL, 0, "ulf");
+        return val_make(type_prim(TY_INT), r);
     }
 
     /* str() / int() / float(): which helper they need depends on the operand. */
@@ -562,6 +613,27 @@ static Val cg_builtin(CG *g, Node *n)
                 fn = "lume_slot_get_any";
                 rty = type_prim(TY_ANY);
             }
+        } else if (m.ty && m.ty->kind == TY_LIST) {
+            /* get(list, i[, default]): an index read — mirrors the text
+             * emitter's branch. The element type drives the accessor. */
+            Type *et = m.ty->elem;
+            const char *atfn = list_at_fn(et);
+            if (!atfn)
+                ERRV(g, "line %zu: get() cannot index a list of %s",
+                     n->line, et ? ty_str(et) : "unknown");
+            if (d.v && d.ty && d.ty->kind != TY_ANY &&
+                !(et && d.ty->kind == et->kind) &&
+                !(d.ty->kind == TY_BOOL && et && et->kind == TY_INT))
+                ERRV(g, "line %zu: get() default is %s but the list holds %s",
+                     n->line, ty_str(d.ty), et ? ty_str(et) : "unknown");
+            LLVMTypeRef rty_t = et && et->kind == TY_STRING ? g->i8ptr :
+                                et && et->kind == TY_FLOAT ? g->dbl : g->i64;
+            LLVMTypeRef pat[2] = { g->i8ptr, g->i64 };
+            LLVMValueRef rv = LLVMBuildCall2(g->ab,
+                                LLVMFunctionType(rty_t, pat, 2, 0),
+                                rt_decl(g, atfn, rty_t, pat, 2),
+                                (LLVMValueRef[]){ m.v, k.v }, 2, "gl");
+            return val_make(et ? et : type_prim(TY_INT), rv);
         } else {
             Type *shape = map_key_shape(g, &m, n->as.call.args[1]);
             if (shape && shape->kind != TY_ANY) {
@@ -1093,9 +1165,9 @@ static Val cg_call(CG *g, Node *n)
         LLVMTypeRef srv = LLVMGetTypeByName(g->mod, "struct.SrvReq");
         if (!srv) {
             srv = LLVMStructCreateNamed(g->ctx, "struct.SrvReq");
-            LLVMTypeRef els[5] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
-                                   g->i64 };
-            LLVMStructSetBody(srv, els, 5, 0);
+            LLVMTypeRef els[6] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
+                                   g->i64, g->i8ptr };
+            LLVMStructSetBody(srv, els, 6, 0);
         }
         Asg *req = asg_find(&g->locals, g->hreq, n->line);
         if (!req || !req->slot)
@@ -1180,8 +1252,10 @@ static Val cg_call(CG *g, Node *n)
             n->line, name, s->arity, n->as.call.argc);
 
     LLVMTypeRef rty = ty_of(g, s->ret);
-    if (s->ret && s->ret->kind == TY_STRUCT &&
-        (!s->ret->name || !sdef_find(&g->structs, s->ret->name)))
+    /* Named struct returns need their aggregate defined; anonymous ones are
+     * heap maps (i8*) and need nothing (mirrors codegen_call.c). */
+    if (s->ret && s->ret->kind == TY_STRUCT && s->ret->name &&
+        !sdef_find(&g->structs, s->ret->name))
         ERRV(g, "line %zu: '%s' returns a struct this backend cannot build", n->line, name);
 
     /* A call needs the callee's *symbol* to exist, and bodies are emitted in

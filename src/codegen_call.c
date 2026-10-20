@@ -48,7 +48,7 @@ static const Bi BUILTINS[] = {
     { "ibeta",     NULL, NULL, NULL, 0, "lume_bi_ibeta",     "double", "double", 3 },
     { "tdist_cdf", NULL, NULL, NULL, 0, "lume_bi_tdist_cdf", "double", "double", 2 },
     { "chisq_cdf", NULL, NULL, NULL, 0, "lume_bi_chisq_cdf", "double", "double", 2 },
-    { "now",   "lume_bi_now",  NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
+    { "now",   "lume_bi_now",  NULL,     "i64",    0,  NULL,           NULL,         NULL,     0 },
     { "argv",  "lume_bi_argv", NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
 };
 
@@ -433,7 +433,15 @@ void emit_builtin_declares(CG *g)
      * contract with bridge_native.c (four pointers then one i64). */
     EMIT(g, "; native server runtime (src/bridge_native.c)\n");
     EMIT(g, "declare i8* @lume_bi_env(i8*)\n");
-    EMIT(g, "%%struct.SrvReq = type { i8*, i8*, i8*, i8*, i64 }\n");
+    /* File builtins (SPEC §6.2): read_file returns a string-or-null,
+     * write_file/lock_file are booleans, unlock_file releases the lock.
+     * Declared here because they take string parameters and therefore sit
+     * outside the numeric builtin table. */
+    EMIT(g, "declare i8* @lume_bi_read_file(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_write_file(i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_lock_file(i8*, i64)\n");
+    EMIT(g, "declare i64 @lume_bi_unlock_file()\n");
+    EMIT(g, "%%struct.SrvReq = type { i8*, i8*, i8*, i8*, i64, i8* }\n");
     EMIT(g, "declare void @lume_srv_init(i8*, i64)\n");
     EMIT(g, "declare void @lume_srv_route(i8*, i8*, void (%%struct.SrvReq*, i8**, i64*, i32*)*)\n");
     EMIT(g, "declare void @lume_srv_default_handler(%%struct.SrvReq*, i8**, i64*, i32*)\n");
@@ -454,14 +462,15 @@ static Val cg_builtin(CG *g, Node *n)
     int argc = n->as.call.argc;
     const Bi *b = builtin_find(bname);
 
-    /* now(): current local time as a string (no arguments, so the table
-     * path below — which requires argc >= 1 — cannot serve it). */
+    /* now(): epoch seconds (SPEC §6.2, matching the interpreter's now()) —
+     * no arguments, so the table path below (which requires argc >= 1)
+     * cannot serve it. */
     if (strcmp(bname, "now") == 0) {
         if (argc != 0)
             ERRV(g, "line %zu: now() takes no arguments", n->line);
-        return val_take(type_prim(TY_STRING),
-                        emit_instrf(g, type_prim(TY_STRING),
-                                    "call i8* @lume_bi_now()"));
+        return val_take(type_prim(TY_INT),
+                        emit_instrf(g, type_prim(TY_INT),
+                                    "call i64 @lume_bi_now()"));
     }
 
     /* argv(): the script's trailing CLI arguments as a string list. Also zero
@@ -490,6 +499,57 @@ static Val cg_builtin(CG *g, Node *n)
                                      key.v));
         free(key.v);
         return r;
+    }
+
+    /* File builtins (SPEC §6.2): read_file returns the file as a string or
+     * null; write_file/lock_file are booleans; unlock_file releases the
+     * process-wide lock. String parameters keep these out of the numeric
+     * table path below, so they get their own branches — the same shape the
+     * interpreter's native_read_file/native_lock_file have (builtins_fs.c). */
+    if (strcmp(bname, "read_file") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: read_file() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) return (Val){ NULL, NULL, 0 };
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @lume_bi_read_file(i8* %s)",
+                                     a.v));
+        free(a.v);
+        return r;
+    }
+    if (strcmp(bname, "write_file") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: write_file() takes exactly two arguments", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v) { free(a.v); free(b.v); return (Val){ NULL, NULL, 0 }; }
+        Val r = val_take(type_prim(TY_INT),
+                         emit_instrf(g, type_prim(TY_INT),
+                                     "call i64 @lume_bi_write_file(i8* %s, i8* %s)",
+                                     a.v, b.v));
+        free(a.v); free(b.v);
+        return r;
+    }
+    if (strcmp(bname, "lock_file") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: lock_file() takes a path and a wait (ms)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val m = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !m.v) { free(a.v); free(m.v); return (Val){ NULL, NULL, 0 }; }
+        Val r = val_take(type_prim(TY_INT),
+                         emit_instrf(g, type_prim(TY_INT),
+                                     "call i64 @lume_bi_lock_file(i8* %s, i64 %s)",
+                                     a.v, m.v));
+        free(a.v); free(m.v);
+        return r;
+    }
+    if (strcmp(bname, "unlock_file") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: unlock_file() takes no arguments", n->line);
+        return val_take(type_prim(TY_INT),
+                        emit_instrf(g, type_prim(TY_INT),
+                                    "call i64 @lume_bi_unlock_file()"));
     }
 
     if (b) {
@@ -1133,6 +1193,28 @@ static Val cg_builtin(CG *g, Node *n)
                 fn = "lume_slot_get_any";
                 rty = type_prim(TY_ANY);
             }
+        } else if (m.ty && m.ty->kind == TY_LIST) {
+            /* get(list, i[, default]): an index read — the interpreter's
+             * dynamic get() on a list. The element type drives the accessor;
+             * a default of a different scalar kind is refused like the map
+             * path. */
+            Type *et = m.ty->elem;
+            const char *atfn = list_at_fn(et);
+            if (!atfn)
+                ERRV(g, "line %zu: get() cannot index a list of %s",
+                     n->line, et ? ty_str(et) : "unknown");
+            if (d.v && d.ty && d.ty->kind != TY_ANY &&
+                !(et && d.ty->kind == et->kind) &&
+                !(d.ty->kind == TY_BOOL && et && et->kind == TY_INT))
+                ERRV(g, "line %zu: get() default is %s but the list holds %s",
+                     n->line, ty_str(d.ty), et ? ty_str(et) : "unknown");
+            const char *art = et && et->kind == TY_STRING ? "i8*" :
+                              et && et->kind == TY_FLOAT ? "double" : "i64";
+            char *call = emit_instrf(g, et ? et : type_prim(TY_INT),
+                                     "call %s @%s(i8* %s, i64 %s)",
+                                     art, atfn, m.v, k.v);
+            free(m.v); free(k.v); free(d.v);
+            return val_take(et ? et : type_prim(TY_INT), call);
         } else {
             shape = map_key_shape(g, &m, n->as.call.args[1]);
             if (shape && shape->kind != TY_ANY) {
@@ -1459,8 +1541,12 @@ Val cg_call(CG *g, Node *n)
             n->line, name, s->arity, n->as.call.argc);
 
     const char *rty = llvm_type_of(s->ret);
-    if (s->ret && s->ret->kind == TY_STRUCT &&
-        (!s->ret->name || !sdef_find(&g->structs, s->ret->name)))
+    /* A *named* struct return needs its aggregate defined before the call
+     * can be typed; an anonymous one is a heap map (an i8*), which needs
+     * nothing — respond() in abac.lume returns a 3-field map literal and the
+     * handler serialises it. */
+    if (s->ret && s->ret->kind == TY_STRUCT && s->ret->name &&
+        !sdef_find(&g->structs, s->ret->name))
         ERRV(g, "line %zu: '%s' returns a struct this backend cannot build", n->line, name);
 
     /* Evaluate the arguments before emitting anything, so a type error cannot

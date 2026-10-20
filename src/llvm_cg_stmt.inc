@@ -807,6 +807,110 @@ static void cg_route_handler(CG *g, Node *fn, int rid)
     g->fn = NULL;
 }
 
+/* Emit one JSON value from a struct field already loaded into `fv`. */
+static void llvm_json_field_val(CG *g, Type *ft, LLVMValueRef fv,
+                                LLVMTypeRef p3s[3], LLVMTypeRef p3i[3],
+                                LLVMTypeRef p3f[3], size_t line)
+{
+    if (ft->kind == TY_STRING) {
+        LLVMValueRef sv3[3] = { g->hout, g->hlen, fv };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3s, 3, 0),
+                       rt_decl(g, "lume_srv_json_str", g->void_ty, p3s, 3),
+                       sv3, 3, "");
+    } else if (ft->kind == TY_INT) {
+        LLVMValueRef iv[3] = { g->hout, g->hlen, fv };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3i, 3, 0),
+                       rt_decl(g, "lume_srv_json_int", g->void_ty, p3i, 3),
+                       iv, 3, "");
+    } else if (ft->kind == TY_BOOL) {
+        LLVMValueRef z = LLVMBuildZExt(g->ab, fv, g->i64, "jz");
+        LLVMValueRef iv[3] = { g->hout, g->hlen, z };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3i, 3, 0),
+                       rt_decl(g, "lume_srv_json_int", g->void_ty, p3i, 3),
+                       iv, 3, "");
+    } else if (ft->kind == TY_FLOAT) {
+        LLVMValueRef fv3[3] = { g->hout, g->hlen, fv };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3f, 3, 0),
+                       rt_decl(g, "lume_srv_json_float", g->void_ty,
+                               p3f, 3), fv3, 3, "");
+    } else {
+        ERRX(g, "line %zu: field must be a scalar to serialise", line);
+    }
+}
+
+/* Serialise a struct (map-shaped) value as a JSON object — the LLVM mirror
+ * of codegen_stmt.c's cg_json_struct: begin, each declared field as a key +
+ * value dispatched on its codegen type, end. A named struct is a raw GEP
+ * object; an anonymous one is a runtime map read through the map getters.
+ * Container fields error. */
+static void llvm_json_struct(CG *g, Val sv, size_t line)
+{
+    Type *st = sv.ty;
+    if (!st || st->kind != TY_STRUCT)
+        ERRX(g, "line %zu: cannot serialise non-struct", line);
+    LLVMTypeRef p2[2] = { LLVMPointerType(g->i8ptr, 0),
+                          LLVMPointerType(g->i64, 0) };
+    LLVMTypeRef p3s[3] = { p2[0], p2[1], g->i8ptr };
+    LLVMTypeRef p3i[3] = { p2[0], p2[1], g->i64 };
+    LLVMTypeRef p3f[3] = { p2[0], p2[1], g->dbl };
+    LLVMValueRef v2[2] = { g->hout, g->hlen };
+    LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2, 2, 0),
+                   rt_decl(g, "lume_srv_json_begin", g->void_ty, p2, 2),
+                   v2, 2, "");
+    if (!st->name) {
+        for (int i = 0; i < st->count; i++) {
+            LLVMValueRef kc = LLVMBuildGlobalStringPtr(g->ab, st->names[i], "jk");
+            LLVMValueRef k3[3] = { g->hout, g->hlen, kc };
+            LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3s, 3, 0),
+                           rt_decl(g, "lume_srv_json_key", g->void_ty, p3s, 3),
+                           k3, 3, "");
+            Type *ft = st->types[i];
+            const char *gfn = map_get_fn(ft);
+            if (!gfn)
+                ERRX(g, "line %zu: field '%s' has no codegen type",
+                     line, st->names[i]);
+            LLVMTypeRef rty = ft->kind == TY_FLOAT ? g->dbl :
+                              ft->kind == TY_STRING ? g->i8ptr : g->i64;
+            LLVMValueRef dflt = ft->kind == TY_FLOAT ?
+                                LLVMConstReal(g->dbl, 0.0) :
+                                ft->kind == TY_STRING ?
+                                LLVMConstNull(g->i8ptr) :
+                                LLVMConstInt(g->i64, 0, 0);
+            LLVMTypeRef pg[3] = { g->i8ptr, g->i8ptr, rty };
+            LLVMValueRef fv = LLVMBuildCall2(g->ab,
+                                LLVMFunctionType(rty, pg, 3, 0),
+                                rt_decl(g, gfn, rty, pg, 3),
+                                (LLVMValueRef[]){ sv.v, kc, dflt }, 3, "jf");
+            llvm_json_field_val(g, ft, fv, p3s, p3i, p3f, line);
+        }
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2, 2, 0),
+                       rt_decl(g, "lume_srv_json_end", g->void_ty, p2, 2),
+                       v2, 2, "");
+        return;
+    }
+    struct_addr(g, &sv);
+    LLVMTypeRef stt = ty_of(g, st);
+    if (!stt)
+        ERRX(g, "line %zu: struct '%s' has no codegen type", line, st->name);
+    for (int i = 0; i < st->count; i++) {
+        LLVMValueRef kc = LLVMBuildGlobalStringPtr(g->ab, st->names[i], "jk");
+        LLVMValueRef k3[3] = { g->hout, g->hlen, kc };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3s, 3, 0),
+                       rt_decl(g, "lume_srv_json_key", g->void_ty, p3s, 3),
+                       k3, 3, "");
+        Type *ft = st->types[i];
+        LLVMValueRef gep = LLVMBuildStructGEP2(g->ab, stt, sv.v,
+                                               (unsigned)i, "fgep");
+        LLVMValueRef fv = LLVMBuildLoad2(g->ab,
+                                         LLVMStructGetTypeAtIndex(stt, i),
+                                         gep, "fl");
+        llvm_json_field_val(g, ft, fv, p3s, p3i, p3f, line);
+    }
+    LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2, 2, 0),
+                   rt_decl(g, "lume_srv_json_end", g->void_ty, p2, 2),
+                   v2, 2, "");
+}
+
 /* return in a native handler: string -> plain text, map literal -> JSON.
  * Mirrors codegen_stmt.c's cg_handler_ret — the response is written through
  * the FFI pointers hout/hlen/hjson (the handler's p1/p2/p3). */
@@ -882,6 +986,89 @@ static void cg_handler_ret(CG *g, Node *n)
                     LLVMValueRef bv[3] = { g->hout, g->hlen, z };
                     LLVMBuildCall2(g->ab, vbty, rt_decl(g, "lume_srv_json_bool",
                                                         g->void_ty, p3b, 3), bv, 3, "");
+                } else if (vv.ty && vv.ty->kind == TY_FLOAT) {
+                    LLVMTypeRef p3f[3] = { p2[0], p2[1], g->dbl };
+                    LLVMValueRef fv[3] = { g->hout, g->hlen, vv.v };
+                    LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3f, 3, 0),
+                                   rt_decl(g, "lume_srv_json_float",
+                                           g->void_ty, p3f, 3), fv, 3, "");
+                } else if (vv.ty && vv.ty->kind == TY_STRUCT) {
+                    Val s = vv;
+                    vv = (Val){ NULL, NULL, 0 };
+                    llvm_json_struct(g, s, v->line);
+                } else if (vv.ty && vv.ty->kind == TY_LIST) {
+                    /* array: [ sep elem sep elem ... ] — iterate the list
+                     * with lume_list_len / lume_list_at_*; scalar elements
+                     * only (mirrors codegen_stmt.c's branch). */
+                    Type *et = vv.ty->elem;
+                    const char *atfn = list_at_fn(et);
+                    if (!atfn)
+                        ERRX(g, "line %zu: native server: list element has no "
+                                "codegen type", v->line);
+                    LLVMTypeRef atrt_ty = et && et->kind == TY_STRING ? g->i8ptr :
+                                          et && et->kind == TY_FLOAT ? g->dbl :
+                                          g->i64;
+                    LLVMBasicBlockRef cur = LLVMGetInsertBlock(g->ab);
+                    LLVMValueRef fnv = LLVMGetBasicBlockParent(cur);
+                    LLVMBasicBlockRef lc = LLVMAppendBasicBlock(fnv, "ljc");
+                    LLVMBasicBlockRef lb = LLVMAppendBasicBlock(fnv, "ljb");
+                    LLVMBasicBlockRef le = LLVMAppendBasicBlock(fnv, "lje");
+                    LLVMValueRef iv = LLVMBuildAlloca(g->ab, g->i64, "jiv");
+                    LLVMBuildStore(g->ab, LLVMConstInt(g->i64, 0, 0), iv);
+                    LLVMTypeRef p2b[2] = { p2[0], p2[1] };
+                    LLVMValueRef v2b[2] = { g->hout, g->hlen };
+                    LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2b, 2, 0),
+                                   rt_decl(g, "lume_srv_json_arr_begin",
+                                           g->void_ty, p2b, 2), v2b, 2, "");
+                    LLVMBuildBr(g->ab, lc);
+                    LLVMPositionBuilderAtEnd(g->ab, lc);
+                    LLVMValueRef ic = LLVMBuildLoad2(g->ab, g->i64, iv, "ji");
+                    LLVMTypeRef p1l[1] = { g->i8ptr };
+                    LLVMValueRef ln = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i64, p1l, 1, 0),
+                                        rt_decl(g, "lume_list_len", g->i64,
+                                                p1l, 1),
+                                        (LLVMValueRef[]){ vv.v }, 1, "jl");
+                    LLVMValueRef cm = LLVMBuildICmp(g->ab, LLVMIntSLT, ic, ln,
+                                                    "jcmp");
+                    LLVMBuildCondBr(g->ab, cm, lb, le);
+                    LLVMPositionBuilderAtEnd(g->ab, lb);
+                    LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2b, 2, 0),
+                                   rt_decl(g, "lume_srv_json_arr_sep",
+                                           g->void_ty, p2b, 2), v2b, 2, "");
+                    LLVMTypeRef pat[2] = { g->i8ptr, g->i64 };
+                    LLVMValueRef at = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(atrt_ty, pat, 2, 0),
+                                        rt_decl(g, atfn, atrt_ty, pat, 2),
+                                        (LLVMValueRef[]){ vv.v, ic }, 2, "je");
+                    if (et && et->kind == TY_STRING) {
+                        LLVMValueRef sv3[3] = { g->hout, g->hlen, at };
+                        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3s, 3, 0),
+                                       rt_decl(g, "lume_srv_json_str",
+                                               g->void_ty, p3s, 3), sv3, 3, "");
+                    } else if (et && (et->kind == TY_INT || et->kind == TY_BOOL)) {
+                        LLVMValueRef iv3[3] = { g->hout, g->hlen, at };
+                        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3i, 3, 0),
+                                       rt_decl(g, "lume_srv_json_int",
+                                               g->void_ty, p3i, 3), iv3, 3, "");
+                    } else if (et && et->kind == TY_FLOAT) {
+                        LLVMTypeRef p3f[3] = { p2[0], p2[1], g->dbl };
+                        LLVMValueRef fv3[3] = { g->hout, g->hlen, at };
+                        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3f, 3, 0),
+                                       rt_decl(g, "lume_srv_json_float",
+                                               g->void_ty, p3f, 3), fv3, 3, "");
+                    } else {
+                        ERRX(g, "line %zu: native server: list element must "
+                                "be a scalar", v->line);
+                    }
+                    LLVMValueRef nv = LLVMBuildAdd(g->ab, ic,
+                                                   LLVMConstInt(g->i64, 1, 0), "jn");
+                    LLVMBuildStore(g->ab, nv, iv);
+                    LLVMBuildBr(g->ab, lc);
+                    LLVMPositionBuilderAtEnd(g->ab, le);
+                    LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2b, 2, 0),
+                                   rt_decl(g, "lume_srv_json_arr_end",
+                                           g->void_ty, p2b, 2), v2b, 2, "");
                 } else {
                     ERRX(g, "line %zu: native server: map value must be int, "
                             "string or bool", v->line);
@@ -904,6 +1091,14 @@ static void cg_handler_ret(CG *g, Node *n)
         LLVMBuildStore(g->ab, sv.v, g->hout);
         LLVMBuildStore(g->ab, LLVMConstInt(g->i64, -1, 1), g->hlen);
         LLVMBuildStore(g->ab, LLVMConstInt(g->i32, 0, 0), g->hjson);
+        if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
+        return;
+    }
+    if (sv.ty && sv.ty->kind == TY_STRUCT) {
+        Val s = sv;
+        sv = (Val){ NULL, NULL, 0 };
+        llvm_json_struct(g, s, n->line);
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i32, 1, 0), g->hjson);
         if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
         return;
     }
