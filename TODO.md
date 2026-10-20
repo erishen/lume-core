@@ -215,7 +215,15 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     `make ai-verify` over hello / native-fact / stats / lang-basics with the
     libLLVM leg live and `make fuzz-driver` built first — the two legs this
     Windows box cannot run (libLLVM compile, standalone crash path) are real
-    CI legs. Still open: the host-side
+    CI legs. Seeds + docs 2026-10-20: `examples/ai-generated/norm-stats.lume`
+    (plausible LLM program that must PASS — with an explicit `let p: float`
+    annotation, because ordinary numeric builtins like `tdist_cdf` are NOT in
+    the native backends' inference table, so an unannotated `let p = tdist_cdf(...)`
+    is rejected and the counter-example teaches the LLM to annotate; the
+    interpreter accepts both — backend equivalence is the stricter oracle),
+    `tests/ai-bad/type-mismatch.lume` (must REJECT, string for float param),
+    `docs/ai-verify.md` (gate usage + three wiring entry points + exit codes +
+    scope guard). Still open: the host-side
     LLM → `.lume` step and the CI/CD wiring that feeds its output into
     `make ai-verify`; `assert_semantic()` remains an uncommitted open question.
 

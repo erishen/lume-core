@@ -1,0 +1,16 @@
+// ai-bad/type-mismatch.lume — LLM-slop the AI self-verification gate must
+// reject: a string argument where a float parameter is declared.
+//
+//   scripts/verify-ai-lume.sh tests/ai-bad/type-mismatch.lume   -> exit 1
+//
+// The gate's counter-example (this file + the type-check error) is what
+// gets logged back to the LLM for a retry. Kept as a negative fixture so
+// the fuzz-driver seed replay and the gate itself stay honest: a program
+// that type-checks and runs is accepted, one that does not is not.
+
+func area(r: float): float {
+  return 3.14159 * r * r;
+}
+
+let bad = area("wide");   // string for a float parameter
+print(str(bad));

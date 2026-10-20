@@ -98,6 +98,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang
       - run: make fuzz-driver
       - run: make ai-verify
+      - run: make ai-verify AI_VERIFY_FILE="examples/ai-generated/norm-stats.lume"
       - run: make ai-verify AI_VERIFY_FILE="examples/native-fact.lume"
       - run: make ai-verify AI_VERIFY_FILE="examples/stats.lume"
       - run: make ai-verify AI_VERIFY_FILE="examples/lang-basics.lume"

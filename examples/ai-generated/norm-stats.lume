@@ -1,0 +1,36 @@
+// ai-generated/norm-stats.lume — a plausible LLM-generated program, kept
+// as a regression seed for the AI self-verification gate (TODO P4).
+//
+//   scripts/verify-ai-lume.sh examples/ai-generated/norm-stats.lume
+//   make ai-verify AI_VERIFY_FILE=examples/ai-generated/norm-stats.lume
+//
+// "AI writes, machine verifies": the gate accepts this program because it
+// type-checks and every native backend agrees byte-for-byte. Typical
+// LLM-slop shapes are included on purpose — a re-derived t-statistic, a
+// redundant conditional, a magic-threshold comparison — because the gate
+// judges backend equivalence, not code aesthetics.
+
+func t_stat(mean_diff: float, se: float): float {
+  return mean_diff / se;
+}
+
+func one_sided_p(ts: float, df: int): float {
+  // Explicit annotation is required here: ordinary numeric builtins
+  // (tdist_cdf included) are not in the native backends' inference table,
+  // so `let p = tdist_cdf(...)` fails to infer and the gate rejects. The
+  // counter-example the LLM gets back teaches exactly this: annotate the
+  // binding. (The interpreter accepts both; backend equivalence is the
+  // gate's stricter oracle.)
+  let p: float = tdist_cdf(ts, df);
+  return 1.0 - p;   // survival at the observed t
+}
+
+let mean_diff = 2.7;
+let se = 0.9;
+let t = t_stat(mean_diff, se);
+let p = one_sided_p(t, 10);
+
+print("t      = " + str(t));
+print("p      = " + str(p));
+print("z0.975 = " + str(normcdf(1.959963984540054)));
+print("verdict= " + str(if (p < 0.05) "reject H0" else "accept H0"));
