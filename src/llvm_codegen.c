@@ -437,15 +437,18 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
 }
 
 /* Build (and hand back) the module. Returns NULL with a message in err. */
-LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
-                                  LLVMContextRef *out_ctx, char *err, size_t err_size)
+static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
+                                              const char **nsnames, int nmods,
+                                              LLVMContextRef *out_ctx,
+                                              char *err, size_t err_size)
 {
     char *msg = NULL;
     if (err && err_size) err[0] = '\0';
-    if (!prog || prog->type != N_PROGRAM) {
+    if (!mods || nmods <= 0 || !mods[0] || mods[0]->type != N_PROGRAM) {
         if (err && err_size) snprintf(err, err_size, "internal: not a program node");
         return NULL;
     }
+    Node *prog = mods[0];
 
     CG cg;
     memset(&cg, 0, sizeof cg);
@@ -468,42 +471,72 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
     Node **top  = prog->as.program.stmts;
     int    ntop = prog->as.program.count;
 
-    /* Local functions first: stamp cnames and rewrite call sites before any
-     * signature table is built (idempotent — the driver's inference pass and
-     * the checker already ran this; this is the last-resort guard). */
-    if (!lume_resolve_localfns(prog, err, err_size)) {
-        LLVMDisposeBuilder(cg.ab);
-        LLVMDisposeModule(cg.mod);
-        LLVMContextDispose(ctx);
-        return NULL;
+    /* Local functions first, in every file: stamp cnames and rewrite call
+     * sites before any signature table is built (idempotent — the driver's
+     * inference pass and the checker already ran this; this is the
+     * last-resort guard). (Each file's cname counter starts at zero, so a
+     * module that nests local functions inside module functions can collide
+     * with the entry's — a known boundary, the pinned fixtures have none.) */
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        if (!lume_resolve_localfns(mp, err, err_size)) {
+            LLVMDisposeBuilder(cg.ab);
+            LLVMDisposeModule(cg.mod);
+            LLVMContextDispose(ctx);
+            return NULL;
+        }
     }
 
     /* ---- pass 1: signatures and declared shapes, so calls resolve in any order ----
-     * Top-level and hoisted local functions alike, locals under their cname. */
-    {
-        int nfn = lume_collect_funcs(prog, NULL, 0);
+     * Top-level and hoisted local functions alike, locals under their cname.
+     * Module functions ride under "<ns>.<name>" for member-call resolution;
+     * they are defined below (cg_function) under their own source-name
+     * symbols, which is what a member call emits against. */
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        int nfn = lume_collect_funcs(mp, NULL, 0);
         Node **allfns = nfn > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
-        if (nfn > 0) lume_collect_funcs(prog, allfns, nfn);
+        if (nfn > 0) lume_collect_funcs(mp, allfns, nfn);
         for (int i = 0; i < nfn; i++) {
             Node *n = allfns[i];
-            sig_push(&cg.sigs,
-                     n->as.func.cname ? n->as.func.cname : n->as.func.name,
+            const char *fname = n->as.func.cname ? n->as.func.cname
+                                                 : n->as.func.name;
+            char qbuf[512];
+            const char *qname = fname;
+            if (m > 0 && nsnames && nsnames[m]) {
+                snprintf(qbuf, sizeof qbuf, "%s.%s", nsnames[m], fname);
+                qname = qbuf;
+            }
+            sig_push(&cg.sigs, qname,
                      n->as.func.ret, n->as.func.param_types, n->as.func.arity);
+            /* The body and the parameter names are what let a call site (and
+             * the member-call emitter) recover the function's own symbol name
+             * and signature — a Sig without a node cannot name its callee. */
+            cg.sigs.v[cg.sigs.n - 1].body   = n->as.func.body;
+            cg.sigs.v[cg.sigs.n - 1].pnames = n->as.func.names;
+            cg.sigs.v[cg.sigs.n - 1].node   = n;
         }
         free(allfns);
     }
-    for (int i = 0; i < ntop; i++) {
-        Node *n = top[i];
-        if (n->type == N_TYPE_DECL)
-            sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
-                      n->as.type_decl.field_types, n->as.type_decl.count);
-        /* An enum has no runtime presence of its own: every variant value is
-         * built at its construction site (a tagged map), the constructor
-         * rewrite happened in the parser, and the type rules live in the
-         * checker. Nothing to emit, nothing to skip silently. Same branch as
-         * codegen.c's copy of this walk. */
-        else if (n->type == N_ENUM_DECL)
-            continue;
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        Node **mt = mp->as.program.stmts;
+        for (int i = 0; i < mp->as.program.count; i++) {
+            Node *n = mt[i];
+            if (n->type == N_TYPE_DECL)
+                sdef_push(&cg.structs, n->as.type_decl.name, n->as.type_decl.field_names,
+                          n->as.type_decl.field_types, n->as.type_decl.count);
+            /* An enum has no runtime presence of its own: every variant value is
+             * built at its construction site (a tagged map), the constructor
+             * rewrite happened in the parser, and the type rules live in the
+             * checker. Nothing to emit, nothing to skip silently. Same branch as
+             * codegen.c's copy of this walk. */
+            else if (n->type == N_ENUM_DECL)
+                continue;
+        }
     }
 
     /* Struct bodies must exist before anything can name a field. */
@@ -524,18 +557,34 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
      * Top-level statements (a bare `let`, a `print`, ...) live outside every
      * function but lume runs them in source order, so they are collected here
      * into one synthetic `top` body through exactly the path a real function
-     * takes. */
+     * takes. Imported module top-levels run first (the loader executes them
+     * in dependency order), so a module function body reads its module's
+     * tables through the same globals the entry uses. */
     int nfns = 0, ntops = 0;
-    for (int i = 0; i < ntop; i++) {
-        if (top[i]->type == N_TYPE_DECL || top[i]->type == N_IMPORT ||
-            top[i]->type == N_ENUM_DECL || top[i]->type == N_FUNC_DECL)
-            continue;   /* emitted above / resolved by the loader / collected below */
-        else ntops++;
+    for (int m = 0; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        nfns += lume_collect_funcs(mp, NULL, 0);
+        for (int i = 0; i < mp->as.program.count; i++) {
+            Node *s = mp->as.program.stmts[i];
+            if (s->type == N_TYPE_DECL || s->type == N_IMPORT ||
+                s->type == N_ENUM_DECL || s->type == N_FUNC_DECL)
+                continue;   /* emitted above / resolved by the loader / collected below */
+            else ntops++;
+        }
     }
     /* Every function gets a define: top-level ones and hoisted locals alike. */
-    nfns = lume_collect_funcs(prog, NULL, 0);
     Node **fns  = nfns  > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfns)  : NULL;
-    if (nfns > 0) lume_collect_funcs(prog, fns, nfns);
+    if (nfns > 0) {
+        int fi = 0;
+        for (int m = 0; m < nmods; m++) {
+            Node *mp = mods[m];
+            if (!mp || mp->type != N_PROGRAM) continue;
+            int mn = lume_collect_funcs(mp, NULL, 0);
+            if (mn > 0) lume_collect_funcs(mp, fns + fi, mn);
+            fi += mn;
+        }
+    }
     Node **tops = ntops > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)ntops) : NULL;
     /* Does the top level actually call `main`? Only then is main() a thing the
      * process can take its status from — a main nobody runs is an ordinary
@@ -544,14 +593,28 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
     int tops_main = 0;
     {
         int m = 0;
+        for (int mm = 1; mm < nmods; mm++) {
+            Node *mp = mods[mm];
+            if (!mp || mp->type != N_PROGRAM) continue;
+            Node **mt = mp->as.program.stmts;
+            for (int i = 0; i < mp->as.program.count; i++) {
+                Node *n = mt[i];
+                if (n->type == N_FUNC_DECL)      continue;   /* collected above */
+                else if (n->type == N_TYPE_DECL) continue;   /* emitted above */
+                else if (n->type == N_ENUM_DECL) continue;   /* no runtime presence */
+                else if (n->type == N_IMPORT)    continue;   /* the loader resolved it */
+                else tops[m++] = n;
+            }
+        }
         for (int i = 0; i < ntop; i++) {
-            if (top[i]->type == N_FUNC_DECL)      continue;   /* collected above */
-            else if (top[i]->type == N_TYPE_DECL) continue;   /* emitted above */
-            else if (top[i]->type == N_ENUM_DECL) continue;   /* no runtime presence */
-            else if (top[i]->type == N_IMPORT)    continue;   /* the loader resolved it */
+            Node *n = top[i];
+            if (n->type == N_FUNC_DECL)      continue;   /* collected above */
+            else if (n->type == N_TYPE_DECL) continue;   /* emitted above */
+            else if (n->type == N_ENUM_DECL) continue;   /* no runtime presence */
+            else if (n->type == N_IMPORT)    continue;   /* the loader resolved it */
             else {
-                tops[m++] = top[i];
-                Node *e = top[i]->type == N_EXPR_STMT ? top[i]->as.expr_stmt.expr : NULL;
+                tops[m++] = n;
+                Node *e = n->type == N_EXPR_STMT ? n->as.expr_stmt.expr : NULL;
                 if (e && e->type == N_CALL && e->as.call.callee &&
                     e->as.call.callee->type == N_VAR &&
                     strcmp(e->as.call.callee->as.var.name, "main") == 0)
@@ -711,6 +774,25 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
      * which owns nothing of its own but every type and value it mentions. */
     if (out_ctx) *out_ctx = ctx;
     return cg.mod;
+}
+
+LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
+                                  LLVMContextRef *out_ctx, char *err,
+                                  size_t err_size)
+{
+    Node *mods[1];
+    mods[0] = prog;
+    return llvm_codegen_module_core(mod_name, mods, NULL, 1,
+                                    out_ctx, err, err_size);
+}
+
+LLVMModuleRef llvm_codegen_module_multi(const char *mod_name, Node **mods,
+                                        const char **nsnames, int nmods,
+                                        LLVMContextRef *out_ctx, char *err,
+                                        size_t err_size)
+{
+    return llvm_codegen_module_core(mod_name, mods, nsnames, nmods,
+                                    out_ctx, err, err_size);
 }
 
 #include "llvm_cg_expr.inc"

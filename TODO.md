@@ -334,10 +334,15 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   `req.query_params.*` inside server route handlers still have no type (the
   server-handler FFI inference gap, P4-family) — decide's parameters are
   back-filled from call sites, but the call-site arguments themselves are
-  untyped. **Still open**: the libLLVM backend has no multi-file emit (its
-  N_CALL still refuses a non-N_VAR callee), and module functions that nest
-  lambdas or local functions (cname counters collide across files) are a
-  known boundary.
+  untyped. **libLLVM backend now closed too (2026-10-20)**: the C-API
+  codegen got the same treatment — llvm_codegen_module_core takes the
+  multi-file form, module signatures carry body/pnames/node (so a member call
+  recovers the callee's own symbol), llvm_cg_call.inc accepts an N_MEMBER
+  callee over a variable object, and backend_llvm_native/emit_ir take the
+  multi-file form. tests/ns-member.lume compiles AND runs on both native
+  backends (prints 42); serve-leg-check stays green on all three legs.
+  **Still open**: module functions that nest lambdas or local functions
+  (cname counters collide across files) are a known boundary.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

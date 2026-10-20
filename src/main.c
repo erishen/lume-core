@@ -668,7 +668,8 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "lume: note: --no-pass: lowering the IR without "
                                 "running the optimisation pipeline\n");
             }
-            if (backend_llvm_native(script, entry->prog, bin, berr, sizeof(berr)) != 0) {
+            if (backend_llvm_native(script, entry->prog, mods, nsnames, nmods,
+                                    bin, berr, sizeof(berr)) != 0) {
                 fprintf(stderr, "lume: %s\n", berr[0] ? berr : "libLLVM compile failed");
                 free(mods);
                 free((void *)nsnames);

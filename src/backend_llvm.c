@@ -139,6 +139,7 @@ void backend_llvm_set_no_pass(int no_pass) { g_no_pass = no_pass ? 1 : 0; }
 /* --------------------------------------------------------------- emit ------ */
 
 int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
+                         struct Node **mods, const char **nsnames, int nmods,
                          const char *ll_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -150,8 +151,11 @@ int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
     char cerr[512];
     cerr[0] = '\0';
     LLVMContextRef ctx = NULL;
-    LLVMModuleRef mod = llvm_codegen_module(src_path ? src_path : "lume", prog,
-                                            &ctx, cerr, sizeof cerr);
+    LLVMModuleRef mod = (nmods > 1 && mods)
+        ? llvm_codegen_module_multi(src_path ? src_path : "lume", mods, nsnames,
+                                    nmods, &ctx, cerr, sizeof cerr)
+        : llvm_codegen_module(src_path ? src_path : "lume", prog,
+                              &ctx, cerr, sizeof cerr);
     if (!mod) {
         snprintf(err, err_size, "%s", cerr[0] ? cerr : "code generation failed");
         return 1;
@@ -172,6 +176,7 @@ int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
 }
 
 int backend_llvm_native(const char *src_path, struct Node *prog,
+                        struct Node **mods, const char **nsnames, int nmods,
                         const char *out_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -184,8 +189,11 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
     char cerr[512];
     cerr[0] = '\0';
     LLVMContextRef ctx = NULL;
-    LLVMModuleRef mod = llvm_codegen_module(src_path ? src_path : "lume", prog,
-                                            &ctx, cerr, sizeof cerr);
+    LLVMModuleRef mod = (nmods > 1 && mods)
+        ? llvm_codegen_module_multi(src_path ? src_path : "lume", mods, nsnames,
+                                    nmods, &ctx, cerr, sizeof cerr)
+        : llvm_codegen_module(src_path ? src_path : "lume", prog,
+                              &ctx, cerr, sizeof cerr);
     if (!mod) {
         snprintf(err, err_size, "%s", cerr[0] ? cerr : "code generation failed");
         return 1;

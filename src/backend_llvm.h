@@ -25,14 +25,20 @@ struct Node;                  /* lume's AST (lume.h) */
 void backend_llvm_set_no_pass(int no_pass);
 
 /* Write the IR built through libLLVM to `ll_path`. Returns 0 on success,
- * non-zero with a message in `err`. */
+ * non-zero with a message in `err`. mods/nsnames/nmods are the multi-file
+ * form (see llvm_codegen_module_multi): pass NULL/0 for a single-file
+ * compile, or an array whose [0] is `prog` with imports in dependency order
+ * and nsnames[i] their `as` aliases. */
 int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
+                         struct Node **mods, const char **nsnames, int nmods,
                          const char *ll_path, char *err, size_t err_size);
 
 /* Build the module, lower it to an object file with libLLVM, link against the
  * runtime helper and place the executable at `out_path`; `out_path.ll` keeps
- * the IR so a failing build can still be read. Returns 0 on success. */
+ * the IR so a failing build can still be read. Returns 0 on success.
+ * Multi-file form as in backend_llvm_emit_ir. */
 int backend_llvm_native(const char *src_path, struct Node *prog,
+                        struct Node **mods, const char **nsnames, int nmods,
                         const char *out_path, char *err, size_t err_size);
 
 #endif /* LUME_BACKEND_LLVM_H */

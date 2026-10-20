@@ -34,6 +34,18 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, struct Node *prog,
                                   LLVMContextRef *out_ctx, char *err,
                                   size_t err_size);
 
+/* Multi-file variant: mods[0] is the entry program, mods[1..] its imports in
+ * dependency order with nsnames[i] the `as` alias the entry uses for mods[i]
+ * (nsnames[0] ignored; pass NULL/0 for a single-file compile). Module
+ * functions are collected under "<ns>.<name>" for member-call resolution but
+ * defined under their own source-name symbols; module type decls join the
+ * struct table under their plain names; module top-level statements run
+ * first, inside L_top. Same contract as llvm_codegen_module otherwise. */
+LLVMModuleRef llvm_codegen_module_multi(const char *mod_name, struct Node **mods,
+                                        const char **nsnames, int nmods,
+                                        LLVMContextRef *out_ctx, char *err,
+                                        size_t err_size);
+
 /* Optimization level applied by the driver, not by this file: the module
  * comes back already verified (LLVMVerifyModule) so a bad build is reported
  * as a compile error rather than as broken machine code. */
