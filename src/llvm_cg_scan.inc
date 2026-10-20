@@ -159,6 +159,14 @@ static Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
 
+        /* Native server handler: int() / get(req.query_params, ...) lower to
+         * lume_srv_atoi / lume_srv_qp (mirrors codegen_scan.c's in-handler
+         * branches — int -> int, get -> string). */
+        if (g->in_handler && strcmp(name, "int") == 0)
+            return type_prim(TY_INT);
+        if (g->in_handler && strcmp(name, "get") == 0)
+            return type_prim(TY_STRING);
+
         /* try(fn) — { ok, err } where ok is the fn's return type and err is
          * null. Carrying the members here is what lets `r.ok` / `r.err` pick
          * the right getter, exactly like a map literal does. Same branch as

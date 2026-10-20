@@ -183,6 +183,16 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
 
+        /* Native server handler: int() / get(req.query_params, ...) lower to
+         * lume_srv_atoi / lume_srv_qp. These must precede the generic
+         * get(m, "k") branch below, which would otherwise swallow
+         * get(req.query_params, "k", "d") — its receiver is a string (the
+         * req.query_params member type), not a struct, so it returns NULL. */
+        if (g->in_handler && strcmp(name, "int") == 0)
+            return type_prim(TY_INT);
+        if (g->in_handler && strcmp(name, "get") == 0)
+            return type_prim(TY_STRING);
+
         /* try(fn) — { ok, err } where ok is the fn's return type and err is
          * null. Carrying the members here is what lets `r.ok` / `r.err` pick
          * the right getter (member_field_type reads this shape), exactly like
@@ -287,9 +297,6 @@ Type *infer_node_type(CG *g, Node *n)
             return NULL;
         }
 
-        /* Native server handler: int() lowers to atoi -> int. */
-        if (g->in_handler && strcmp(name, "int") == 0)
-            return type_prim(TY_INT);
         Sig *s = sig_find(&g->sigs, name);
         if (!s) return NULL;
         /* `f()?` is not a Result -- it is the `ok` payload, so the slot has to

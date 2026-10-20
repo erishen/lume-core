@@ -260,6 +260,16 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   **Remaining P4 footnote: `req.query_params("k")` / `req.get("k")` calls
   inside LLVM route handlers** (the text backend lowers these via
   lume_srv_qp; the LLVM emitter has no in-handler call branch yet).
+  — **closed 2026-10-20**: get(req.query_params, k, d?) → lume_srv_qp and
+  int(x) → lume_srv_atoi now emit in the LLVM backend (llvm_cg_call.inc
+  in-handler branch); both backends' inference tables type int→int /
+  get→string, with the text copy moved ahead of the generic get(m,"k")
+  branch (which otherwise swallowed get(req.query_params,…) — its receiver
+  types as string, not struct, so it returned NULL). Pinned by
+  tests/serve-env.lume's handler now reading get(req.query_params, "tag",
+  "none") on all three legs. P4 gap is now fully closed: serve programs
+  using server{} + env() + req.* fields + req.query_params get() compile
+  identically on interp/text/LLVM.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

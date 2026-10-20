@@ -1025,6 +1025,88 @@ static Val cg_call(CG *g, Node *n)
         return cg_print(g, n, cg_expr(g, n->as.call.args[0]));
     }
 
+    /* Native server handler: get(req.query_params, key, default?) lowers to
+     * lume_srv_qp with the handler's query FFI argument (mirrors
+     * codegen_call.c's in-handler branch). */
+    if (g->in_handler && n->as.call.callee &&
+        n->as.call.callee->type == N_VAR &&
+        strcmp(n->as.call.callee->as.var.name, "get") == 0) {
+        Node *a0 = n->as.call.argc >= 1 ? n->as.call.args[0] : NULL;
+        int qp = a0 && a0->type == N_MEMBER && a0->as.member.obj &&
+                 a0->as.member.obj->type == N_VAR &&
+                 strcmp(a0->as.member.obj->as.var.name, g->hreq) == 0 &&
+                 strcmp(a0->as.member.name, "query_params") == 0;
+        if (!qp)
+            ERRV(g, "line %zu: native server: get() must be called on "
+                    "req.query_params", n->line);
+        if (n->as.call.argc < 2 || n->as.call.argc > 3)
+            ERRV(g, "line %zu: get() takes (query_params, key, default?)",
+                 n->line);
+        Node *a1 = n->as.call.args[1];
+        if (!(a1->type == N_LITERAL && a1->as.lit.kind == LIT_STR))
+            ERRV(g, "line %zu: native server: get() key must be a string "
+                    "literal", n->line);
+        const char *kt = a1->as.lit.text;
+        size_t kl = (size_t)a1->as.lit.len;
+        if (kl >= 2 && kt[0] == '"' && kt[kl - 1] == '"') { kt++; kl -= 2; }
+        LLVMValueRef key = cg_string_val(g, kt, (int)kl);
+        LLVMValueRef dflt;
+        if (n->as.call.argc == 3) {
+            Node *a2 = n->as.call.args[2];
+            if (!(a2->type == N_LITERAL && a2->as.lit.kind == LIT_STR))
+                ERRV(g, "line %zu: native server: get() default must be a "
+                        "string literal", n->line);
+            const char *dt = a2->as.lit.text;
+            size_t dl = (size_t)a2->as.lit.len;
+            if (dl >= 2 && dt[0] == '"' && dt[dl - 1] == '"') { dt++; dl -= 2; }
+            dflt = cg_string_val(g, dt, (int)dl);
+        } else {
+            dflt = LLVMConstNull(g->i8ptr);
+        }
+        /* query string = SrvReq field 2; reuse the struct registration from
+         * cg_handler_req_field. */
+        LLVMTypeRef srv = LLVMGetTypeByName(g->mod, "struct.SrvReq");
+        if (!srv) {
+            srv = LLVMStructCreateNamed(g->ctx, "struct.SrvReq");
+            LLVMTypeRef els[5] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i8ptr,
+                                   g->i64 };
+            LLVMStructSetBody(srv, els, 5, 0);
+        }
+        Asg *req = asg_find(&g->locals, g->hreq, n->line);
+        if (!req || !req->slot)
+            ERRV(g, "line %zu: internal: req parameter missing", n->line);
+        LLVMValueRef rp = LLVMBuildBitCast(g->ab, req->slot,
+                                           LLVMPointerType(srv, 0), "rp");
+        LLVMValueRef idxv[2] = { LLVMConstInt(g->i32, 0, 0),
+                                 LLVMConstInt(g->i32, 2, 0) };
+        LLVMValueRef gp = LLVMBuildInBoundsGEP2(g->ab, srv, rp, idxv, 2, "rq");
+        LLVMValueRef q = LLVMBuildLoad2(g->ab, g->i8ptr, gp, "rqv");
+        LLVMTypeRef qpt[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+        LLVMValueRef qa[3] = { q, key, dflt };
+        LLVMValueRef call = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, qpt, 3, 0),
+                rt_decl(g, "lume_srv_qp", g->i8ptr, qpt, 3),
+                qa, 3, "qp");
+        return val_make(type_prim(TY_STRING), call);
+    }
+
+    /* Native server handler: int(...) — string/number to i64 via atoi
+     * (mirrors codegen_call.c's in-handler branch). */
+    if (g->in_handler && n->as.call.callee &&
+        n->as.call.callee->type == N_VAR &&
+        strcmp(n->as.call.callee->as.var.name, "int") == 0) {
+        if (n->as.call.argc != 1)
+            ERRV(g, "line %zu: int() takes one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) ERRV(g, "line %zu: bad int() operand", n->line);
+        if (a.ty && a.ty->kind == TY_INT) return a;
+        LLVMValueRef call = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, &g->i8ptr, 1, 0),
+                rt_decl(g, "lume_srv_atoi", g->i64, &g->i8ptr, 1),
+                &a.v, 1, "atoi");
+        return val_make(type_prim(TY_INT), call);
+    }
+
     if (!n->as.call.callee || n->as.call.callee->type != N_VAR)
         ERRV(g, "line %zu: only direct calls to named functions are supported", n->line);
 

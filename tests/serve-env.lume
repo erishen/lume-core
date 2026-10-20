@@ -18,6 +18,7 @@ get "/hello", (req) => {
   let who = env("LUME_TEST_WHO");
   let m = req.method;
   let p = req.path;
-  return "hello " + who + " via " + m + " " + p;
+  let q = get(req.query_params, "tag", "none");
+  return "hello " + who + " via " + m + " " + p + " tag=" + q;
 };
 print("serve-env ok");
