@@ -100,6 +100,16 @@ typedef struct {
      * `return`, but here it answers for the program's exit code. */
     int          capture_main;
     LLVMValueRef exit_val;
+
+    /* Native server routes (mirrors codegen_internal.h's CG): while a route
+     * handler body is emitted, `in_handler` makes N_RETURN serialise into
+     * the FFI response pointers (hout/hlen/hjson = the handler's p1/p2/p3),
+     * and `hreq` names the handler's req parameter. `hrid` sequences route
+     * ids for the L_route_N symbols. */
+    int           in_handler;
+    const char   *hreq;
+    int           hrid;
+    LLVMValueRef  hout, hlen, hjson;
 } CG;
 
 typedef struct { LLVMValueRef v; Type *ty; } Val;
@@ -235,6 +245,8 @@ static Type *resolve_struct_lit(CG *g, Node *n);
 static Val cg_struct_lit(CG *g, Node *n);
 static LLVMValueRef rt_decl(CG *g, const char *name, LLVMTypeRef ret,
                             LLVMTypeRef *params, int n);
+static void cg_route_handler(CG *g, Node *fn, int rid);
+static void cg_handler_ret(CG *g, Node *n);
 static Val cg_print(CG *g, Node *n, Val a);
 static Val emit_struct_to_map(CG *g, LLVMValueRef sv, Type *st);
 static const Bi *builtin_find(const char *name);

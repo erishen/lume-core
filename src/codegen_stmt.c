@@ -594,7 +594,14 @@ static void cg_route_handler(CG *g, Node *fn, int rid)
 
     g->in_handler = 1;
     g->hreq = fn->as.funclit.names ? fn->as.funclit.names[0] : "req";
+    /* The handler body is its own function: scanning it while the driver's
+     * scanning_top window is open would lift its locals into @lv_ globals
+     * that the handlers buffer never defines (serve-env's `let who` inside
+     * the route handler compiled to an undefined @lv_who_2). */
+    int saved_scan_top = g->scanning_top;
+    g->scanning_top = 0;
     scan_block(g, fn->as.funclit.body);
+    g->scanning_top = saved_scan_top;
 
     /* Emit into the handlers buffer: a `define` is only legal at module
      * top level, so handler bodies wait until L_top has closed. */

@@ -306,6 +306,10 @@ static void cg_stmt(CG *g, Node *n)
 
     case N_RETURN: {
         AT(g);
+        /* Native server route handler: `return` serialises into the FFI
+         * response pointers instead of returning a value (mirrors
+         * codegen_stmt.c's cg_handler_ret). */
+        if (g->in_handler) { cg_handler_ret(g, n); break; }
         if (!n->as.ret.expr) {
             if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
             break;
@@ -361,6 +365,86 @@ static void cg_stmt(CG *g, Node *n)
          * the declaration site itself contributes no code. Same rule as the
          * text backend's cg_stmt. */
         break;
+
+    case N_SERVER: {
+        /* server { host=..; port=N; } -> lume_srv_init(host, port) (mirrors
+         * codegen_stmt.c's N_SERVER: only literal host/port are read, the
+         * serve-env shape feeds env() values through let bindings that the
+         * runtime resolves at lume_srv_init time). */
+        AT(g);
+        const char *host = "127.0.0.1";
+        long long port = 8082;
+        char hostbuf[256];
+        for (int i = 0; i < n->as.server.count; i++) {
+            Node *a = n->as.server.assigns[i];
+            if (!a || a->type != N_ASSIGN) continue;
+            Node *v = a->as.assign.value;
+            if (strcmp(a->as.assign.name, "host") == 0 && v &&
+                v->type == N_LITERAL && v->as.lit.kind == LIT_STR) {
+                const char *t = v->as.lit.text;
+                size_t l = (size_t)v->as.lit.len;
+                if (l >= 2 && t[0] == '"' && t[l - 1] == '"') { t++; l -= 2; }
+                if (l >= sizeof hostbuf) l = sizeof hostbuf - 1;
+                memcpy(hostbuf, t, l);
+                hostbuf[l] = '\0';
+                host = hostbuf;
+            } else if (strcmp(a->as.assign.name, "port") == 0 && v &&
+                       v->type == N_LITERAL && v->as.lit.kind == LIT_NUM &&
+                       !v->as.lit.is_float) {
+                port = v->as.lit.inum;
+            }
+        }
+        LLVMValueRef hs = LLVMBuildGlobalStringPtr(g->ab, host, "srvhost");
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { hs, LLVMConstInt(g->i64,
+                              (unsigned long long)port, 0) };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p2, 2, 0),
+                       rt_decl(g, "lume_srv_init", g->void_ty, p2, 2),
+                       v2, 2, "");
+        break;
+    }
+
+    case N_ROUTE: {
+        /* get/post/... "path", (req) => { .. } -> lume_srv_route(method,
+         * path, L_route_N). The handler compiles to a module-level define
+         * with the fixed FFI signature the runtime expects (mirrors
+         * codegen_stmt.c's N_ROUTE). */
+        AT(g);
+        if (n->as.route.alias)
+            ERRX(g, "line %zu: verbs alias routes are not supported by the "
+                    "native backend yet", n->line);
+        Node *h = n->as.route.handler;
+        if (!h || h->type != N_FUNC_LIT)
+            ERRX(g, "line %zu: native server: route handler must be a "
+                    "function literal", n->line);
+        int rid = g->hrid++;
+        /* cg_route_handler emits a separate define: it moves g->fn and
+         * g->cur inside, so the caller's block must be recovered before the
+         * route-registration calls below. */
+        LLVMBasicBlockRef rcur = g->cur;
+        cg_route_handler(g, h, rid);
+        g->cur = rcur;
+        AT(g);
+        LLVMValueRef mc = LLVMBuildGlobalStringPtr(g->ab,
+                                                   n->as.route.method, "rtm");
+        LLVMValueRef pc = LLVMBuildGlobalStringPtr(g->ab,
+                                                   n->as.route.path, "rtp");
+        LLVMTypeRef hpt[4] = { g->i8ptr, LLVMPointerType(g->i8ptr, 0),
+                               LLVMPointerType(g->i64, 0),
+                               LLVMPointerType(g->i32, 0) };
+        LLVMTypeRef hfty = LLVMFunctionType(g->void_ty, hpt, 4, 0);
+        char fn[48];
+        snprintf(fn, sizeof fn, "L_route_%d", rid);
+        LLVMValueRef hf = LLVMGetNamedFunction(g->mod, fn);
+        LLVMValueRef hp = LLVMBuildBitCast(g->ab, hf,
+                                           LLVMPointerType(hfty, 0), "hfn");
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, LLVMPointerType(hfty, 0) };
+        LLVMValueRef v3[3] = { mc, pc, hp };
+        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3, 3, 0),
+                       rt_decl(g, "lume_srv_route", g->void_ty, p3, 3),
+                       v3, 3, "");
+        break;
+    }
 
     default:
         ERRX(g, "%s", bad(g, n, "this construct"));
@@ -601,4 +685,197 @@ static void cg_closure(CG *g, Node *fn)
     cg_def(g, fn->as.funclit.cname, fn->as.funclit.names,
            fn->as.funclit.param_types, fn->as.funclit.arity,
            fn->as.funclit.ret, fn->as.funclit.body, 1, fn, fn->line);
+}
+
+/* --- native server: route handler FFI compilation (mirrors the text
+ * backend's cg_route_handler in codegen_stmt.c) --------------------------
+ *
+ * A handler `(req) => { ... }` compiles to
+ *
+ *   void @L_route_N(i8* %p0, i8** %p1, i64* %p2, i32* %p3)
+ *
+ * %p0 is the request (an opaque SrvReq* here — req.* member access on the
+ * LLVM backend is still an open gap, so handlers that only read env()/locals
+ * compile today). %p1/%p2/%p3 receive the response buffer and its length,
+ * and %p3 the content-type flag (0 = text/html, 1 = application/json).
+ * With in_handler set, N_RETURN serialises instead of returning a value. */
+static void cg_route_handler(CG *g, Node *fn, int rid)
+{
+    if (fn->as.funclit.arity != 1)
+        ERRX(g, "line %zu: native server: a route handler must take exactly "
+                "one (req) argument", fn->line);
+
+    LLVMTypeRef hpt[4] = { g->i8ptr, LLVMPointerType(g->i8ptr, 0),
+                           LLVMPointerType(g->i64, 0),
+                           LLVMPointerType(g->i32, 0) };
+    LLVMTypeRef hfty = LLVMFunctionType(g->void_ty, hpt, 4, 0);
+    char sym[48];
+    snprintf(sym, sizeof sym, "L_route_%d", rid);
+    LLVMValueRef prev = LLVMGetNamedFunction(g->mod, sym);
+    g->fn = prev ? prev : LLVMAddFunction(g->mod, sym, hfty);
+
+    Asgs saved = g->locals;
+    memset(&g->locals, 0, sizeof g->locals);
+    Type *saved_ret = g->cur_ret;
+    g->cur_ret = NULL;
+    LLVMBasicBlockRef *saved_brk = g->brk; int snbrk = g->nbrk, scbrk = g->cbrk;
+    LLVMBasicBlockRef *saved_cnt = g->cnt; int sncnt = g->ncnt, sccnt = g->ccnt;
+    g->brk = g->cnt = NULL; g->nbrk = g->ncnt = g->cbrk = g->ccnt = 0;
+
+    g->in_handler = 1;
+    g->hreq = fn->as.funclit.names ? fn->as.funclit.names[0] : "req";
+
+    LLVMValueRef pv[4];
+    LLVMGetParams(g->fn, pv);
+    /* The req parameter keeps its FFI slot directly (an opaque SrvReq*; its
+     * static type, when the signature pass inferred one, is registered so
+     * the name resolves). The response pointers are not lume variables. */
+    Type *reqty = fn->as.funclit.param_types
+                  ? fn->as.funclit.param_types[0] : NULL;
+    asg_push(&g->locals, g->hreq, reqty, pv[0], 0);
+    g->hout = pv[1]; g->hlen = pv[2]; g->hjson = pv[3];
+
+    /* The handler body is its own function: scanning it while the driver's
+     * scanning_top window is open would lift its locals into module globals
+     * that every request then shares (mirrors the text backend fix in
+     * codegen_stmt.c's cg_route_handler). */
+    int saved_scan_top = g->scanning_top;
+    g->scanning_top = 0;
+    scan_block(g, fn->as.funclit.body);
+    g->scanning_top = saved_scan_top;
+
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(g->ctx, g->fn,
+                                                           "entry");
+    g->cur = entry;
+    LLVMPositionBuilderAtEnd(g->ab, entry);
+
+    for (int i = 0; i < g->locals.n; i++) {
+        Asg *a = &g->locals.v[i];
+        if (a->slot) continue;
+        if (!ty_of(g, a->ty))
+            ERRX(g, "line %zu: variable '%s' has no codegen type",
+                 fn->line, a->name);
+        a->slot = LLVMBuildAlloca(g->ab, ty_of(g, a->ty), "lv");
+    }
+    /* req's slot is pv[0] itself, so there is nothing to seed; non-param
+     * locals start uninitialised exactly like cg_def's. */
+
+    if (fn->as.funclit.body) cg_block(g, fn->as.funclit.body);
+
+    if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
+
+    g->in_handler = 0;
+    g->hreq = NULL;
+    asgs_free(&g->locals);
+    g->locals = saved;
+    g->cur_ret = saved_ret;
+    free(g->brk); free(g->cnt);
+    g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
+    g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
+    g->fn = NULL;
+}
+
+/* return in a native handler: string -> plain text, map literal -> JSON.
+ * Mirrors codegen_stmt.c's cg_handler_ret — the response is written through
+ * the FFI pointers hout/hlen/hjson (the handler's p1/p2/p3). */
+static void cg_handler_ret(CG *g, Node *n)
+{
+    Node *e = n->as.ret.expr;
+    if (!e) { if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab); return; }
+
+    if (e->type == N_MAP_LIT) {
+        LLVMTypeRef p2[2] = { LLVMPointerType(g->i8ptr, 0),
+                              LLVMPointerType(g->i64, 0) };
+        /* The value helpers differ in their third parameter: str takes an
+         * i8*, int an i64, bool an i32 (mirrors the text declare block in
+         * codegen_call.c). */
+        LLVMTypeRef p3s[3] = { LLVMPointerType(g->i8ptr, 0),
+                               LLVMPointerType(g->i64, 0), g->i8ptr };
+        LLVMTypeRef p3i[3] = { LLVMPointerType(g->i8ptr, 0),
+                               LLVMPointerType(g->i64, 0), g->i64 };
+        LLVMTypeRef p3b[3] = { LLVMPointerType(g->i8ptr, 0),
+                               LLVMPointerType(g->i64, 0), g->i32 };
+        LLVMTypeRef v2ty = LLVMFunctionType(g->void_ty, p2, 2, 0);
+        LLVMTypeRef vsty = LLVMFunctionType(g->void_ty, p3s, 3, 0);
+        LLVMTypeRef vity = LLVMFunctionType(g->void_ty, p3i, 3, 0);
+        LLVMTypeRef vbty = LLVMFunctionType(g->void_ty, p3b, 3, 0);
+        LLVMValueRef v2[2] = { g->hout, g->hlen };
+        LLVMBuildCall2(g->ab, v2ty, rt_decl(g, "lume_srv_json_begin",
+                                            g->void_ty, p2, 2), v2, 2, "");
+        for (int i = 0; i < e->as.map.count; i++) {
+            LLVMValueRef kc = LLVMBuildGlobalStringPtr(g->ab,
+                                                       e->as.map.keys[i], "jk");
+            LLVMValueRef k3[3] = { g->hout, g->hlen, kc };
+            LLVMBuildCall2(g->ab, vsty, rt_decl(g, "lume_srv_json_key",
+                                                g->void_ty, p3s, 3), k3, 3, "");
+            Node *v = e->as.map.vals[i];
+            if (v->type == N_LITERAL && v->as.lit.kind == LIT_STR) {
+                const char *vt = v->as.lit.text;
+                size_t vl = (size_t)v->as.lit.len;
+                if (vl >= 2 && vt[0] == '"' && vt[vl - 1] == '"') { vt++; vl -= 2; }
+                char buf[1024];
+                if (vl >= sizeof buf) vl = sizeof buf - 1;
+                memcpy(buf, vt, vl); buf[vl] = '\0';
+                LLVMValueRef sc = LLVMBuildGlobalStringPtr(g->ab, buf, "js");
+                LLVMValueRef sv[3] = { g->hout, g->hlen, sc };
+                LLVMBuildCall2(g->ab, vsty, rt_decl(g, "lume_srv_json_str",
+                                                    g->void_ty, p3s, 3), sv, 3, "");
+            } else if (v->type == N_LITERAL &&
+                       (v->as.lit.kind == LIT_TRUE ||
+                        v->as.lit.kind == LIT_FALSE)) {
+                LLVMValueRef bv[3] = { g->hout, g->hlen,
+                    LLVMConstInt(g->i32, v->as.lit.kind == LIT_TRUE ? 1 : 0, 0) };
+                LLVMBuildCall2(g->ab, vbty, rt_decl(g, "lume_srv_json_bool",
+                                                    g->void_ty, p3b, 3), bv, 3, "");
+            } else if (v->type == N_LITERAL && v->as.lit.kind == LIT_NUM &&
+                       !v->as.lit.is_float) {
+                LLVMValueRef iv[3] = { g->hout, g->hlen,
+                    LLVMConstInt(g->i64, (unsigned long long)v->as.lit.inum, 0) };
+                LLVMBuildCall2(g->ab, vity, rt_decl(g, "lume_srv_json_int",
+                                                    g->void_ty, p3i, 3), iv, 3, "");
+            } else {
+                Val vv = cg_expr(g, v);
+                if (!vv.v)
+                    ERRX(g, "line %zu: cannot serialise map value", v->line);
+                if (vv.ty && vv.ty->kind == TY_INT) {
+                    LLVMValueRef iv[3] = { g->hout, g->hlen, vv.v };
+                    LLVMBuildCall2(g->ab, vity, rt_decl(g, "lume_srv_json_int",
+                                                        g->void_ty, p3i, 3), iv, 3, "");
+                } else if (vv.ty && vv.ty->kind == TY_STRING) {
+                    LLVMValueRef sv[3] = { g->hout, g->hlen, vv.v };
+                    LLVMBuildCall2(g->ab, vsty, rt_decl(g, "lume_srv_json_str",
+                                                        g->void_ty, p3s, 3), sv, 3, "");
+                } else if (vv.ty && vv.ty->kind == TY_BOOL) {
+                    LLVMValueRef z = LLVMBuildZExt(g->ab, vv.v, g->i32, "jb");
+                    LLVMValueRef bv[3] = { g->hout, g->hlen, z };
+                    LLVMBuildCall2(g->ab, vbty, rt_decl(g, "lume_srv_json_bool",
+                                                        g->void_ty, p3b, 3), bv, 3, "");
+                } else {
+                    ERRX(g, "line %zu: native server: map value must be int, "
+                            "string or bool", v->line);
+                }
+            }
+        }
+        LLVMValueRef ev[2] = { g->hout, g->hlen };
+        LLVMBuildCall2(g->ab, v2ty, rt_decl(g, "lume_srv_json_end",
+                                            g->void_ty, p2, 2), ev, 2, "");
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i32, 1, 0), g->hjson);
+        if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
+        return;
+    }
+
+    /* String-valued expression -> plain text. The length is unknown at
+     * compile time (concatenations, str(), ...), so out_len = -1 asks the
+     * runtime to strlen the buffer. */
+    Val sv = cg_expr(g, e);
+    if (sv.ty && sv.ty->kind == TY_STRING) {
+        LLVMBuildStore(g->ab, sv.v, g->hout);
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i64, -1, 1), g->hlen);
+        LLVMBuildStore(g->ab, LLVMConstInt(g->i32, 0, 0), g->hjson);
+        if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);
+        return;
+    }
+
+    ERRX(g, "line %zu: native server: handler must return a string or a map "
+            "literal", n->line);
 }
