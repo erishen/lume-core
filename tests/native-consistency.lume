@@ -1259,5 +1259,29 @@ print(str(reduce((a, x) => a + x, dbl_ev, 0.0)));  // 7 (filter 产物 double re
 func dbl_sum(xs): float { let d = map((y) => y * 2.0, xs); return reduce((a, y) => a + y, d, 0.0); }
 print(str(dbl_sum(dbl_xs)));              // 20 (函数内 map 产物 reduce)
 
+// Statistical distribution builtins (P4, 2026-10-20): the medical-stats
+// p-value stack (normcdf / erf / tdist_cdf / chisq_cdf + the gamma family
+// they share) must print identically on all three backends — the numbers
+// come from rt.c's lume_bi_* (math.h erf/lgamma + self-authored series /
+// continued fractions) on every leg, so a backend drift shows as a diff.
+print(normcdf(0.0));
+print(normcdf(1.959963984540054));
+print(normcdf(-1.959963984540054));
+print(erf(1.0));
+print(lgamma(5.0));
+print(gamma(5.0));
+print(igamma(1.0, 1.0));
+print(igamma(2.0, 2.0));
+print(ibeta(1.0, 1.0, 0.5));
+print(ibeta(2.0, 3.0, 0.4));
+print(ibeta(5.0, 5.0, 0.9));
+print(tdist_cdf(0.0, 10.0));
+print(tdist_cdf(1.812461, 10.0));
+print(tdist_cdf(2.228139, 10.0));
+print(tdist_cdf(-1.812461, 10.0));
+print(chisq_cdf(3.841459, 1.0));
+print(chisq_cdf(5.991465, 2.0));
+print(chisq_cdf(7.814728, 3.0));
+
 warmup();
 main();

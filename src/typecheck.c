@@ -420,6 +420,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* math builtins (2026-09-28, builtins_math.c) */
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
     "min", "max", "pi", "e",
+    /* statistical distribution builtins (2026-10-20, builtins_math.c + rt.c) */
+    "normcdf", "erf", "gamma", "lgamma", "igamma", "ibeta", "tdist_cdf", "chisq_cdf",
     /* outbound HTTP (2026-10-04, builtins_http.c) */
     "http_get",
     /* HTTP verbs that carry a body (2026-10-05) */

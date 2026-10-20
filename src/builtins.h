@@ -87,6 +87,17 @@ Value b_ceil(VM *vm, int argc, Value *args);
 Value b_round(VM *vm, int argc, Value *args);
 Value b_min(VM *vm, int argc, Value *args);
 Value b_max(VM *vm, int argc, Value *args);
+/* Statistical distribution builtins (P4, 2026-10-20): the interpreter
+ * wrappers validate arguments and surface vm_set_error; the same numbers
+ * are computed by rt.c's lume_bi_* for the native backends. */
+Value b_normcdf(VM *vm, int argc, Value *args);
+Value b_erf(VM *vm, int argc, Value *args);
+Value b_gamma(VM *vm, int argc, Value *args);
+Value b_lgamma(VM *vm, int argc, Value *args);
+Value b_igamma(VM *vm, int argc, Value *args);
+Value b_ibeta(VM *vm, int argc, Value *args);
+Value b_tdist_cdf(VM *vm, int argc, Value *args);
+Value b_chisq_cdf(VM *vm, int argc, Value *args);
 Value b_el(VM *vm, int argc, Value *args);
 Value b_render(VM *vm, int argc, Value *args);
 Value b_html(VM *vm, int argc, Value *args);

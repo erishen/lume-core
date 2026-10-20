@@ -148,6 +148,158 @@ double lume_bi_floor(double v) { return floor(v); }
 double lume_bi_ceil(double v)  { return ceil(v); }
 double lume_bi_round(double v) { return round(v); }
 
+/* ------------------------------------------------------------------ *
+ * Statistical distribution builtins (P4, 2026-10-20).
+ *
+ * The medical-stats pipeline needs p-values: correlation r -> t tail,
+ * group-baseline t / chi-square, regression coefficient t / Wald tests.
+ * The engine's hand-written `normal_quantile` set the house style for
+ * self-contained numerical code, so these live here as plain C on top of
+ * math.h — erf/lgamma from the C library, the regularized incomplete
+ * Gamma and Beta as self-authored series / continued fractions (the
+ * standard Temme / Lentz forms), and t / chi-square CDFs as one-liners
+ * on top of them.
+ *
+ * The native backend has no error channel of its own, so out-of-domain
+ * arguments come back as NaN (the interpreter's twin implementations
+ * report vm_set_error instead). The CDFs clamp at their tails the way a
+ * CDF should (x <= 0 -> 0, +inf -> 1).
+ * ------------------------------------------------------------------ */
+
+/* Regularized incomplete Gamma P(a,x), lower tail. Series form, good for
+ * x < a+1. The prefactor goes through exp() so huge a or x underflows to
+ * zero instead of overflowing to inf. */
+static double igamma_series(double a, double x)
+{
+    double lnf = -x + a * log(x) - lgamma(a);
+    if (lnf < -745.0) return 0.0;      /* exp underflow */
+    double term = 1.0 / a, sum = term;
+    for (int n = 1; n < 2000; n++) {
+        term *= x / (a + n);
+        sum += term;
+        if (term < sum * 1e-15) break;
+    }
+    return exp(lnf) * sum;
+}
+
+/* Regularized incomplete Gamma Q(a,x) = 1 - P(a,x), upper tail, via the
+ * Temme continued fraction, good for x >= a+1. Evaluated with the modified
+ * Lentz algorithm so a divergent-looking early term cannot blow up. */
+static double igamma_cf(double a, double x)
+{
+    double lnf = -x + a * log(x) - lgamma(a);
+    if (lnf < -745.0) return 0.0;
+    double b = x + 1.0 - a;
+    double c = 1.0e30, d = 1.0 / b, h = d;   /* c ~ 1/FPMIN (Lentz) */
+    for (int i = 1; i < 2000; i++) {
+        double an = -(double)i * (i - a);
+        b += 2.0;
+        d = an * d + b;
+        if (fabs(d) < 1e-30) d = 1e-30;
+        c = b + an / c;
+        if (fabs(c) < 1e-30) c = 1e-30;
+        d = 1.0 / d;
+        double del = d * c;
+        h *= del;
+        if (fabs(del - 1.0) < 1e-15) break;
+    }
+    return exp(lnf) * h;
+}
+
+/* Continued fraction for the incomplete Beta (Lentz), the I_x(a,b) core. */
+static double ibeta_cf(double a, double b, double x)
+{
+    double qab = a + b, qap = a + 1.0, qam = a - 1.0;
+    double c = 1.0, d = 1.0 - qab * x / qap;
+    if (fabs(d) < 1e-30) d = 1e-30;
+    d = 1.0 / d;
+    double h = d;
+    for (int m = 1; m <= 2000; m++) {
+        int m2 = 2 * m;
+        double aa = (double)m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if (fabs(d) < 1e-30) d = 1e-30;
+        c = 1.0 + aa / c;
+        if (fabs(c) < 1e-30) c = 1e-30;
+        d = 1.0 / d;
+        h *= d * c;
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if (fabs(d) < 1e-30) d = 1e-30;
+        c = 1.0 + aa / c;
+        if (fabs(c) < 1e-30) c = 1e-30;
+        d = 1.0 / d;
+        double del = d * c;
+        h *= del;
+        if (fabs(del - 1.0) < 1e-15) break;
+    }
+    return h;
+}
+
+double lume_bi_erf(double x) { return erf(x); }
+
+double lume_bi_normcdf(double x)
+{
+    /* Phi(x) = (1 + erf(x/sqrt(2)))/2; 1/sqrt(2) written out so MSVC's
+     * missing M_SQRT1_2 cannot bite. */
+    return 0.5 * (1.0 + erf(x * 0.70710678118654752440));
+}
+
+double lume_bi_lgamma(double x) { return lgamma(x); }
+
+double lume_bi_gamma(double x)  { return exp(lgamma(x)); }
+
+/* Regularized incomplete Gamma P(a,x): series below a+1, 1 - Q above. */
+double lume_bi_igamma(double a, double x)
+{
+    if (a <= 0.0 || x < 0.0 || !isfinite(a)) return NAN;
+    if (x == 0.0) return 0.0;
+    if (!isfinite(x)) return 1.0;
+    return x < a + 1.0 ? igamma_series(a, x) : 1.0 - igamma_cf(a, x);
+}
+
+/* Regularized incomplete Beta I_x(a,b). Uses the symmetry I_x(a,b) =
+ * 1 - I_{1-x}(b,a) on the right half so the continued fraction stays on
+ * its convergent side. */
+double lume_bi_ibeta(double a, double b, double x)
+{
+    if (a <= 0.0 || b <= 0.0 || x < 0.0 || x > 1.0) return NAN;
+    if (x == 0.0) return 0.0;
+    if (x == 1.0) return 1.0;
+    double lnbt = lgamma(a) + lgamma(b) - lgamma(a + b);
+    double lfront = a * log(x) + b * log1p(-x) - lnbt;
+    if (x < (a + 1.0) / (a + b + 2.0)) {
+        if (lfront < -745.0) return 0.0;
+        return exp(lfront) * ibeta_cf(a, b, x) / a;
+    }
+    /* Right half: 1 - I_{1-x}(b,a); front shares lnbt so only the flipped
+     * powers change. */
+    double lr = b * log(1.0 - x) + a * log(x) - lnbt;
+    if (lr < -745.0) return 1.0;
+    return 1.0 - exp(lr) * ibeta_cf(b, a, 1.0 - x) / b;
+}
+
+/* Student t CDF. P(T <= t) = 1 - 0.5 * I_{df/(df+t^2)}(df/2, 1/2), with the
+ * mirror P(T <= -t) = 1 - P(T <= t) fixing the negative half. */
+double lume_bi_tdist_cdf(double t, double df)
+{
+    if (df <= 0.0 || !isfinite(df)) return NAN;
+    if (!isfinite(t)) return t < 0.0 ? 0.0 : 1.0;
+    double x = df / (df + t * t);
+    double ib = lume_bi_ibeta(df / 2.0, 0.5, x);
+    return t >= 0.0 ? 1.0 - 0.5 * ib : 0.5 * ib;
+}
+
+/* Chi-square CDF: P(X <= x) = igamma(df/2, x/2). */
+double lume_bi_chisq_cdf(double x, double df)
+{
+    if (df <= 0.0 || !isfinite(df)) return NAN;
+    if (x <= 0.0) return 0.0;
+    if (!isfinite(x)) return 1.0;
+    return lume_bi_igamma(df / 2.0, x / 2.0);
+}
+
+
 int64_t   lume_bi_int(double v)  { return (int64_t)v; }
 double lume_bi_float(int64_t v)  { return (double)v; }
 int64_t lume_bi_len_s(const char *s) { return s ? (int64_t)strlen(s) : 0; }

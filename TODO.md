@@ -204,15 +204,15 @@ platform.
   must all honor `env()` inside `server{}`); until then, serve programs that
   read env at startup are interpreter-pinned. Filed 2026-10-19 from nsgm's
   `HAVE_LLVM=0` workaround.
-- [ ] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
-  medical-stats p-values).** medical-stats' next step is descriptive stats →
-  inference: p-values for the correlation matrix, group-baseline t/χ², and
-  regression coefficient t/Wald tests. The current math builtins
-  (`abs/sqrt/exp/log/ln/pow/floor/ceil/round/min/max` + `pi`/`e`, see
-  `builtins_math.c`) provide none of the needed CDFs. Add, via C `math.h` +
-  self-authored rational approximations (Acklam-style, matching the engine's
-  hand-written `normal_quantile`), registered as three-backend-consistent
-  builtins:
+- [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
+  medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
+  descriptive stats → inference: p-values for the correlation matrix,
+  group-baseline t/χ², and regression coefficient t/Wald tests. The current
+  math builtins (`abs/sqrt/exp/log/ln/pow/floor/ceil/round/min/max` +
+  `pi`/`e`, see `builtins_math.c`) provided none of the needed CDFs. Added,
+  via C `math.h` erf/lgamma + self-authored series / continued fractions
+  (Temme / modified Lentz — the same house style as the engine's hand-written
+  `normal_quantile`), registered as three-backend-consistent builtins:
   - `normcdf(x)` / `erf(x)` — normal CDF (correlation r→t tail, z-test)
   - `tdist_cdf(t, df)` (or `ibeta`) — t tail (correlation significance,
     linear-regression t, two-sample t)
@@ -220,10 +220,20 @@ platform.
     logistic Wald/LR)
   - `gamma` / `lgamma` / `igamma` / `ibeta` — shared implementation base
     (regularized incomplete Gamma/Beta)
+  Implementation: rt.c `lume_bi_*` (native twins for text/LLVM emitters,
+  `emit_builtin_declares` / the LLVM `BUILTINS` table spell their
+  signatures), builtins_math.c interpreter wrappers (numerical core
+  duplicated byte-for-byte from rt.c — the interpreter binary does not link
+  rt.c, same split as abs/sqrt/...), interp.c registration, typecheck.c
+  `LUME_BUILTIN_NAMES`. Regression: tests/native-consistency.lume +
+  .expected (18 distribution prints) run by tests/native_backends.sh across
+  interp/text/llvm; the numbers were cross-validated against known critical
+  values (z 0.975, t10 0.95/0.975, χ²₁/₂/₃ 0.95) and the binomial identity
+  I_x(5,5) = Σ C(9,k) x^k (1-x)^(9-k) to ~1e-7.
   Consumption side (pure `engine/*.lume` functions) is specced in
-  `work/knowledge/medical-stats/TODO.md`; once core ships these, that project
-  wires the p-values without hand-rolling unstable distribution code in the
-  DSL.
+  `work/knowledge/medical-stats/TODO.md`; now that core ships these, that
+  project can wire the p-values without hand-rolling unstable distribution
+  code in the DSL.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

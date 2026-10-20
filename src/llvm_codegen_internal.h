@@ -158,6 +158,16 @@ static const Bi BUILTINS[] = {
     { "floor", NULL,           NULL,     NULL,     0,  "lume_bi_floor", "double",      "double", 1 },
     { "ceil",  NULL,           NULL,     NULL,     0,  "lume_bi_ceil",  "double",      "double", 1 },
     { "round", NULL,           NULL,     NULL,     0,  "lume_bi_round", "double",      "double", 1 },
+    /* Statistical distribution builtins (P4, 2026-10-20), float-only. Kept
+     * in lockstep with codegen_call.c's BUILTINS. */
+    { "normcdf",   NULL, NULL, NULL, 0, "lume_bi_normcdf",   "double", "double", 1 },
+    { "erf",       NULL, NULL, NULL, 0, "lume_bi_erf",       "double", "double", 1 },
+    { "gamma",     NULL, NULL, NULL, 0, "lume_bi_gamma",     "double", "double", 1 },
+    { "lgamma",    NULL, NULL, NULL, 0, "lume_bi_lgamma",    "double", "double", 1 },
+    { "igamma",    NULL, NULL, NULL, 0, "lume_bi_igamma",    "double", "double", 2 },
+    { "ibeta",     NULL, NULL, NULL, 0, "lume_bi_ibeta",     "double", "double", 3 },
+    { "tdist_cdf", NULL, NULL, NULL, 0, "lume_bi_tdist_cdf", "double", "double", 2 },
+    { "chisq_cdf", NULL, NULL, NULL, 0, "lume_bi_chisq_cdf", "double", "double", 2 },
 };
 
 /* ---- static prototypes (one definition per TU; declared here) ---- */
