@@ -18,7 +18,10 @@ incremental cost of fuzzing is small.
 - [x] Wire a `make fuzz` target (`-fsanitize=fuzzer,address,undefined`),
   seeded from `tests/*.lume` and the `-bad/` fixtures. — `make fuzz`
   (Linux clang; `-fsanitize=fuzzer` rejects the Windows GNU targets,
-  so Windows runs the driver shape instead).
+  so Windows runs the driver shape instead — landed 2026-10-20 as
+  `make fuzz-driver`: the standalone `-DLUME_FUZZ_DRIVER` shape (any
+  `$(CC)`, mingw gcc included) replays all 92 tests/ seeds through
+  lexer → parser → checker in one process, wired into windows.yml).
 - [x] Decide CI policy: a short 60s fuzz leg in the `asan` job, or
   local-only. — Promoted 2026-10-18 as its own `fuzz` job running
   `make fuzz-ci` (deterministic -runs=1 seed replay + 60s budgeted
@@ -142,6 +145,11 @@ platform.
   run 39216687894 success @ 9fd6d7b).
 
 **Done when**: the Windows workflow runs the three legs green. ✅ 2026-10-19.
+2026-10-20: windows.yml additionally runs `make native-consistency`
+(tests/native_backends.sh — interp + text + libLLVM legs each diffed
+against the full tests/native-consistency.expected, the 18 statistical
+distribution prints included, plus the exit-status/null/`?` assertions)
+and `make fuzz-driver` (the P1 Windows seed replay).
 
 ## P4 — Later / larger
 

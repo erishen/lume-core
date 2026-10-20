@@ -52,6 +52,29 @@ jobs:
       - name: Native backend (default)
         run: make native
 
+      # P3 (full): the three-leg cross-backend consistency fixture. Unlike
+      # the single-example `make native` / `make native-text` legs above,
+      # tests/native_backends.sh runs tests/native-consistency.lume through
+      # the interpreter and BOTH emitters, diffs each run against the
+      # committed expected baseline (18 statistical distribution prints
+      # included), diffs every leg pair against each other, and treats any
+      # compiler diagnostic as a failure. Legs whose toolchain is missing
+      # are skipped (text needs clang on PATH, libLLVM needs llvm-config in
+      # the build), so the step is green both when the MSYS2 clang group
+      # provides both and when only part of it is present.
+      - name: Native consistency (interp + text + llvm)
+        run: make native-consistency
+
+      # P1 (Windows): the standalone driver shape of the parser fuzz entry
+      # point. libFuzzer (-fsanitize=fuzzer) rejects the Windows GNU
+      # targets, so this leg builds src/fuzz_target.c with
+      # -DLUME_FUZZ_DRIVER (any compiler, mingw gcc included) and replays
+      # the whole tests/ corpus - positive fixtures and the -bad/ negatives
+      # - through lexer -> parse_program -> type checker in one process. A
+      # crash/hang/leak in any seed is a regression of a fixed fuzz finding.
+      - name: Fuzz driver seed replay
+        run: make fuzz-driver
+
       - name: Run hello
         run: ./bin/lume-core examples/hello.lume
 

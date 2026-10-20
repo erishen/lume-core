@@ -405,6 +405,24 @@ fuzz-ci: $(FUZZ_TARGET)
 	    -error_exitcode=1 \
 	    -artifact_prefix=out/fuzz-artifacts/ -print_final_stats=1
 
+# --- P1 Windows leg: standalone driver replay (make fuzz-driver) ----------
+# libFuzzer (-fsanitize=fuzzer) rejects the Windows GNU targets, so the
+# corpus smoke run on Windows uses the driver shape compiled out of the same
+# translation unit (-DLUME_FUZZ_DRIVER, see src/fuzz_target.c): one main()
+# reads every staged seed and pushes it through lexer -> parse_program ->
+# type checker in one process. Any $(CC) can build it (mingw gcc included),
+# and the replay doubles as a cheap regression sweep of the whole tests/
+# corpus - positive fixtures and the -bad/ negatives alike. `make fuzz` /
+# `make fuzz-ci` stay Linux-clang-only; this target is what windows.yml runs.
+out/fuzz-driver: src/fuzz_target.c $(CORE_OBJS) | out
+	$(CC) $(CFLAGS) -DLUME_FUZZ_DRIVER -o $@ src/fuzz_target.c $(CORE_OBJS) $(LDFLAGS) -lm
+
+fuzz-driver: out/fuzz-driver
+	@set -e; \
+	files=$$(find tests -name '*.lume'); \
+	n=$$(printf '%s\n' "$$files" | wc -l); \
+	./out/fuzz-driver $$files >/dev/null; \
+	echo "ok fuzz-driver: $$n seeds replayed (standalone driver, any compiler)"
 
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
 # 跑 tests/native-consistency.lume 三种路径(解释器 / 文本 / libLLVM), 各自跟
