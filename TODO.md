@@ -287,9 +287,15 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   construct)" once the verb groups compile; that is a host-integration
   boundary, not a lume-core language gap. And `func respond(d) { return d;
   return {...}; }` (untyped parameter, returns mixing an untyped value with
-  a map literal) cannot infer the return type in either backend
-  (examples/abac.lume:26 — the interpreter accepts it): untyped-parameter
-  return inference.
+  a map literal) — **partially closed 2026-10-20**: the signature pass no
+  longer fails early when a return expression's type is not yet resolvable
+  (N_RETURN in codegen_sig.c now skips instead of ERR_SET, so the fixed
+  point can back-fill untyped parameters from call sites first). The
+  remaining blocker for abac.lume is `policy.decide(...)` — ns (imported
+  module) member calls have no signature/type-inference path in
+  walk_sigs (its N_CALL branch only resolves N_VAR callees), so `d` never
+  gets typed. That is part of a broader native-backend module-support gap
+  (imported-module function calls), filed here for follow-up.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

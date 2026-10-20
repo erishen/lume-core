@@ -1277,12 +1277,16 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
         if (s && n->as.ret.expr && !s->ret) {
             Type *rt = infer_node_type(g, n->as.ret.expr);
             if (!rt) {
-                /* ERR_SET rather than ERRX: this walk returns a count, and a
-                 * bare `return;` from the macro would be a mismatch. */
-                ERR_SET(g, "line %zu: cannot infer the return type of '%s' "
-                           "(annotate it or return a value of a known type)",
-                        n->line, s->name);
-                return changed;
+                /* The return expression's type may still resolve once the
+                 * signature pass back-fills untyped parameters from call
+                 * sites (the N_CALL branch above) — `func respond(d) {
+                 * return d; ... }` is inferred from a later call
+                 * respond(policy.decide(...)) in a subsequent fixed-point
+                 * iteration. Skip rather than ERR_SET: failing here would
+                 * reject programs the fixed point would resolve. A
+                 * genuinely untypable function still fails later, when the
+                 * emitter needs the return type. */
+                return changed + walk_sigs(g, n->as.ret.expr, t, s);
             }
             s->ret = rt;
             changed++;
