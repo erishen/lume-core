@@ -266,15 +266,20 @@ The four-layer surface if started:
   inference/boxing, `case-parity` + `native-consistency` gates — the
   repo's classic double-copy sync trap.
 
-Gray zone that does not need the above: whitelisting write CTEs
-(`WITH ... INSERT/UPDATE/DELETE`) — still one statement, still
-stateless, guardrail-only change; collapses some multi-step units
-(not general cross-call sequences). Consider on its own merits.
+Gray zone — **done 2026-10-20**: write CTEs are whitelisted in
+`sql_validate_write` (`WITH ... INSERT/UPDATE/DELETE`) — still one
+statement, still stateless, guardrail-only; subqueries must be
+SELECT/VALUES (read-only at any depth) or a RETURNING DML (top-level
+WHERE required for UPDATE/DELETE), and the trailing statement passes the
+exact bare-write whitelist. Collapses some multi-step units (not general
+cross-call sequences). `0c44b90` (+ 17 CTE cases in tests/sqlite.lume).
 
-Host-tree debt: `builtins_sql.c` is HOST_PINNED (ownership fork, not
-visibility — the host version carries portfolio-mirror policy on a
-`db_layer` abstraction), so `make sync-lang` will never overwrite it;
-a core transaction builtin owes the host a manual merge, not a copy.
+Host-tree debt — **merged 2026-10-20**: `builtins_sql.c` is HOST_PINNED
+(ownership fork, not visibility — the host version carries
+portfolio-mirror policy on a `db_layer` abstraction), so `make
+sync-lang` will never overwrite it; the write-CTE whitelist was merged
+manually into the host (`agent-httpd src/agent/sqlite_tool.c
+db_validate_write`, `cd94be1`), not copied by sync.
 
 **Done when**: a lume-nsgm-scale workload demonstrates a real crash or
 correctness need for cross-statement atomicity (not just purity), and
