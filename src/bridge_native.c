@@ -348,6 +348,41 @@ void lume_srv_json_end(char **out, size_t *out_len)
     *out_len = len;
 }
 
+/* Handler-less routes (`write "/items";`, `get "/x";`) acknowledge the
+ * request as { action, method, got } — the native mirror of builtins.c's
+ * native_default_route. action follows the write-group labels; a route
+ * whose group carries no label (read) yields null. The native backends
+ * reference this symbol directly when a route has no handler. */
+void lume_srv_default_handler(const SrvReq *req, char **out, size_t *out_len,
+                              int *is_json)
+{
+    const char *method = req && req->method ? req->method : "GET";
+    const char *body = req && req->body ? req->body : "";
+    const char *label = NULL;
+    if (strcmp(method, "POST") == 0) label = "created";
+    else if (strcmp(method, "PUT") == 0) label = "replaced";
+    else if (strcmp(method, "PATCH") == 0) label = "patched";
+    else if (strcmp(method, "DELETE") == 0) label = "deleted";
+
+    *is_json = 1;
+    lume_srv_json_begin(out, out_len);
+    lume_srv_json_key(out, out_len, "action");
+    if (label) {
+        lume_srv_json_str(out, out_len, label);
+    } else {
+        /* No json helper for null; append it directly. */
+        size_t cap = *out ? *out_len + 1 : 0;
+        size_t len = *out_len;
+        json_raw(out, &len, &cap, "null", 4);
+        *out_len = len;
+    }
+    lume_srv_json_key(out, out_len, "method");
+    lume_srv_json_str(out, out_len, method);
+    lume_srv_json_key(out, out_len, "got");
+    lume_srv_json_str(out, out_len, body);
+    lume_srv_json_end(out, out_len);
+}
+
 /* ---------------- HTTP plumbing ---------------- */
 
 static const char *status_text(int code)

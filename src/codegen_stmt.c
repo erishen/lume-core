@@ -524,23 +524,54 @@ void cg_stmt(CG *g, Node *n)
     }
 
     case N_ROUTE: {
-        if (n->as.route.alias)
-            ERRX(g, "line %zu: verbs alias routes are not supported by the "
-                    "native backend yet", n->line);
+        /* `write "/path";` / `get "/x", handler;` — a route. An alias
+         * (verb group) expands to one registration per method: the built-in
+         * groups write (POST/PUT/PATCH/DELETE) and read (GET/HEAD) — the
+         * native mirror of interp.c's seed_verb_groups. A handler-less
+         * route registers lume_srv_default_handler, which acknowledges the
+         * request as { action, method, got } (builtins.c's
+         * native_default_route). */
         Node *h = n->as.route.handler;
-        if (!h || h->type != N_FUNC_LIT)
+        if (h && h->type != N_FUNC_LIT)
             ERRX(g, "line %zu: native server: route handler must be a "
                     "function literal", n->line);
-        int rid = g->hrid++;
-        cg_route_handler(g, h, rid);
-        char *mc = cg_string_val(g, n->as.route.method,
-                                 strlen(n->as.route.method));
+        int rid = -1;
+        if (h) {
+            rid = g->hrid++;
+            cg_route_handler(g, h, rid);
+        }
+        const char *methods[4];
+        int nmethods = 0;
+        if (n->as.route.alias) {
+            if (strcmp(n->as.route.alias, "write") == 0) {
+                methods[0] = "POST"; methods[1] = "PUT";
+                methods[2] = "PATCH"; methods[3] = "DELETE"; nmethods = 4;
+            } else if (strcmp(n->as.route.alias, "read") == 0) {
+                methods[0] = "GET"; methods[1] = "HEAD"; nmethods = 2;
+            } else {
+                ERRX(g, "line %zu: unknown verb group '%s' (the native "
+                        "backend has only the built-in write/read groups; "
+                        "declare `verbs ...` in the interpreter)",
+                     n->line, n->as.route.alias);
+            }
+        } else {
+            methods[0] = n->as.route.method; nmethods = 1;
+        }
         char *pc = cg_string_val(g, n->as.route.path,
-                                 strlen(n->as.route.path));
-        EMIT(g, "  call void @lume_srv_route(i8* %s, i8* %s, void "
-                "(%%struct.SrvReq*, i8**, i64*, i32*)* @L_route_%d)\n",
-             mc, pc, rid);
-        free(mc); free(pc);
+                                strlen(n->as.route.path));
+        for (int i = 0; i < nmethods; i++) {
+            char *mc = cg_string_val(g, methods[i], strlen(methods[i]));
+            if (h)
+                EMIT(g, "  call void @lume_srv_route(i8* %s, i8* %s, void "
+                        "(%%struct.SrvReq*, i8**, i64*, i32*)* @L_route_%d)\n",
+                     mc, pc, rid);
+            else
+                EMIT(g, "  call void @lume_srv_route(i8* %s, i8* %s, void "
+                        "(%%struct.SrvReq*, i8**, i64*, i32*)* "
+                        "@lume_srv_default_handler)\n", mc, pc);
+            free(mc);
+        }
+        free(pc);
         break;
     }
 

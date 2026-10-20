@@ -407,42 +407,74 @@ static void cg_stmt(CG *g, Node *n)
     case N_ROUTE: {
         /* get/post/... "path", (req) => { .. } -> lume_srv_route(method,
          * path, L_route_N). The handler compiles to a module-level define
-         * with the fixed FFI signature the runtime expects (mirrors
-         * codegen_stmt.c's N_ROUTE). */
+         * with the fixed FFI signature the runtime expects. An alias (verb
+         * group) expands to one registration per method — built-in groups
+         * write (POST/PUT/PATCH/DELETE) and read (GET/HEAD), the native
+         * mirror of interp.c's seed_verb_groups; a handler-less route
+         * registers lume_srv_default_handler ({ action, method, got },
+         * mirroring builtins.c's native_default_route). */
         AT(g);
-        if (n->as.route.alias)
-            ERRX(g, "line %zu: verbs alias routes are not supported by the "
-                    "native backend yet", n->line);
         Node *h = n->as.route.handler;
-        if (!h || h->type != N_FUNC_LIT)
+        if (h && h->type != N_FUNC_LIT)
             ERRX(g, "line %zu: native server: route handler must be a "
                     "function literal", n->line);
-        int rid = g->hrid++;
-        /* cg_route_handler emits a separate define: it moves g->fn and
-         * g->cur inside, so the caller's block must be recovered before the
-         * route-registration calls below. */
-        LLVMBasicBlockRef rcur = g->cur;
-        cg_route_handler(g, h, rid);
-        g->cur = rcur;
-        AT(g);
-        LLVMValueRef mc = LLVMBuildGlobalStringPtr(g->ab,
-                                                   n->as.route.method, "rtm");
+        int rid = -1;
+        if (h) {
+            rid = g->hrid++;
+            /* cg_route_handler emits a separate define: it moves g->fn and
+             * g->cur inside, so the caller's block must be recovered before
+             * the route-registration calls below. */
+            LLVMBasicBlockRef rcur = g->cur;
+            cg_route_handler(g, h, rid);
+            g->cur = rcur;
+            AT(g);
+        }
+        const char *methods[4];
+        int nmethods = 0;
+        if (n->as.route.alias) {
+            if (strcmp(n->as.route.alias, "write") == 0) {
+                methods[0] = "POST"; methods[1] = "PUT";
+                methods[2] = "PATCH"; methods[3] = "DELETE"; nmethods = 4;
+            } else if (strcmp(n->as.route.alias, "read") == 0) {
+                methods[0] = "GET"; methods[1] = "HEAD"; nmethods = 2;
+            } else {
+                ERRX(g, "line %zu: unknown verb group '%s' (the native "
+                        "backend has only the built-in write/read groups; "
+                        "declare `verbs ...` in the interpreter)",
+                     n->line, n->as.route.alias);
+            }
+        } else {
+            methods[0] = n->as.route.method; nmethods = 1;
+        }
         LLVMValueRef pc = LLVMBuildGlobalStringPtr(g->ab,
                                                    n->as.route.path, "rtp");
         LLVMTypeRef hpt[4] = { g->i8ptr, LLVMPointerType(g->i8ptr, 0),
                                LLVMPointerType(g->i64, 0),
                                LLVMPointerType(g->i32, 0) };
         LLVMTypeRef hfty = LLVMFunctionType(g->void_ty, hpt, 4, 0);
-        char fn[48];
-        snprintf(fn, sizeof fn, "L_route_%d", rid);
-        LLVMValueRef hf = LLVMGetNamedFunction(g->mod, fn);
-        LLVMValueRef hp = LLVMBuildBitCast(g->ab, hf,
-                                           LLVMPointerType(hfty, 0), "hfn");
-        LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, LLVMPointerType(hfty, 0) };
-        LLVMValueRef v3[3] = { mc, pc, hp };
-        LLVMBuildCall2(g->ab, LLVMFunctionType(g->void_ty, p3, 3, 0),
-                       rt_decl(g, "lume_srv_route", g->void_ty, p3, 3),
-                       v3, 3, "");
+        LLVMValueRef dhf = rt_decl(g, "lume_srv_default_handler",
+                                   g->void_ty, hpt, 4);
+        for (int i = 0; i < nmethods; i++) {
+            LLVMValueRef mc = LLVMBuildGlobalStringPtr(g->ab, methods[i],
+                                                       "rtm");
+            LLVMValueRef hf;
+            if (h) {
+                char fn[48];
+                snprintf(fn, sizeof fn, "L_route_%d", rid);
+                hf = LLVMGetNamedFunction(g->mod, fn);
+            } else {
+                hf = dhf;
+            }
+            LLVMValueRef hp = LLVMBuildBitCast(g->ab, hf,
+                                               LLVMPointerType(hfty, 0), "hfn");
+            LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr,
+                                  LLVMPointerType(hfty, 0) };
+            LLVMValueRef v3[3] = { mc, pc, hp };
+            LLVMBuildCall2(g->ab,
+                           LLVMFunctionType(g->void_ty, p3, 3, 0),
+                           rt_decl(g, "lume_srv_route", g->void_ty, p3, 3),
+                           v3, 3, "");
+        }
         break;
     }
 

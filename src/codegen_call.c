@@ -436,6 +436,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "%%struct.SrvReq = type { i8*, i8*, i8*, i8*, i64 }\n");
     EMIT(g, "declare void @lume_srv_init(i8*, i64)\n");
     EMIT(g, "declare void @lume_srv_route(i8*, i8*, void (%%struct.SrvReq*, i8**, i64*, i32*)*)\n");
+    EMIT(g, "declare void @lume_srv_default_handler(%%struct.SrvReq*, i8**, i64*, i32*)\n");
     EMIT(g, "declare void @lume_srv_run()\n");
     EMIT(g, "declare i8* @lume_srv_qp(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_srv_atoi(i8*)\n");

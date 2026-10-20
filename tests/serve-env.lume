@@ -21,4 +21,6 @@ get "/hello", (req) => {
   let q = get(req.query_params, "tag", "none");
   return "hello " + who + " via " + m + " " + p + " tag=" + q;
 };
+write "/items";
+get "/health";
 print("serve-env ok");
