@@ -143,6 +143,19 @@ make fuzz        # libFuzzer (Linux clang): seed from tests/ fixtures, 30s run
 make clean
 ```
 
+### Verifying the claims
+
+The language's selling point is that **the same source behaves the same on all three backends** — the tree-walking interpreter, the hand-written LLVM-IR *text* emitter, and the *libLLVM C API* emitter. What "verified" means, and how to reproduce it:
+
+| Claim | How to check it | Boundary |
+|---|---|---|
+| `make test` | `make test` (interpreter unit tests + crypto + both native emitters + cross-backend consistency) | The full suite in one command; the cross-backend leg is a **fixed consistency corpus**, not an equivalence proof |
+| Cross-backend consistency | `make test` runs `tests/native_backends.sh` — `tests/native-consistency.lume` through interpreter + both emitters, each diffed against `native-consistency.expected` **and** against each other | Fixed test set; new features must be added to it. A backend whose toolchain is absent is *skipped*, not failed |
+| The two IR emitters stay in lockstep | `make backend-parity` → `scripts/check-backend-parity.sh` | Static guard: it diffs the AST-node case labels the two emitters handle, so a new node type must be implemented in **both** in the same change — it catches drift, it is not a behavioural proof |
+| Parser robustness | `make fuzz` (local, 30 s) / `make fuzz-ci` (seed-replay + 60 s campaign, crashers in `out/fuzz-artifacts/`) | Patrol-level: libFuzzer on the `tests/` corpus under ASan/UBSan. Surfaces latent bugs; it does not assert equivalence |
+
+**"In progress" — say it this way:** the three backends agree on the fixed consistency corpus (and CI enforces it), while *wider* cross-backend behavioural equivalence is an ongoing goal. `make fuzz` / `make fuzz-ci` are the standing check for the parts not yet pinned down.
+
 Run a script with the interpreter, or emit and run native code:
 
 ```bash

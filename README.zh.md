@@ -75,6 +75,19 @@ make fuzz        # libFuzzer（Linux clang）：以 tests/ fixtures 作种子跑
 make clean
 ```
 
+### 核实这些主张
+
+核心卖点是**同一份源在三个后端上行为一致**——树遍历解释器、手写 LLVM IR **文本**发射器、**libLLVM C API** 发射器。"已验证"到底指什么、怎么复现:
+
+| 主张 | 怎么查 | 边界 |
+|---|---|---|
+| `make test` | 一条命令跑全量:解释器单测 + crypt + 两条原生发射器 + 跨后端一致性 | 跨后端那条腿是**固定一致性测试集**,不是等价性证明 |
+| 跨后端一致性 | `make test` 里跑 `tests/native_backends.sh`:`tests/native-consistency.lume` 经解释器 + 两条发射器,各自 diff 到 `native-consistency.expected` **以及**互相 diff | 固定测试集;新增特性必须补进。缺工具链的后端**跳过**而非失败 |
+| 两条 IR 发射器不分叉 | `make backend-parity` → `scripts/check-backend-parity.sh` | 静态闸:diff 两条发射器处理的 AST node case 标签,新 node 类型必须在同一次改动里**两边都实现**——它抓漂移,不是行为证明 |
+| parser 健壮性 | `make fuzz`(本地 30 s)/ `make fuzz-ci`(种子回放 + 60 s 巡检,崩溃件进 `out/fuzz-artifacts/`) | 巡逻级:ASan/UBSan 下对 `tests/` 语料跑 libFuzzer。能挖潜在 bug,不断言等价 |
+
+**"正在验证"该怎么说:** 三后端在固定一致性测试集上对齐(CI 把关);*更宽*的跨后端行为等价是**进行中的目标**。`make fuzz` / `make fuzz-ci` 是尚未固定的那部分的常设检查。
+
 解释执行，或者编出来直接跑：
 
 ```bash
