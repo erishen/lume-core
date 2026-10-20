@@ -418,7 +418,7 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   `00204ae` (first server{} leg) — latent since then. LLVM side has its own
   emitter and was not affected.
 
-## P6 — Cross-statement transactions (design recorded, deliberately not started)
+## P6 — Cross-statement transactions (interpreter closed 2026-10-20; native parity open)
 
 Motivation: lume-nsgm's PayPal variant inserts the order and decrements
 stock as two statements; a crash in between leaves a pending orphan
@@ -448,20 +448,43 @@ foundation designs at once:
 
 The four-layer surface if started:
 
-- [ ] Value system: `sql_tx_begin()` returns a first-class handle —
-  new OBJ type, GC finalizer (handle collected = rollback + close),
-  value-semantics questions (does copying a handle copy the
-  transaction? map round-trip?); closure capture of a handle would
-  hit the known llvm capture gap.
-- [ ] Connection management: per-worker cache keyed by path (never
-  module-level — see fork safety); refcounts, cache bound, close
-  timing (request end vs worker exit).
-- [ ] Guardrails: dedicated builtin entry, never the `sql_write`
-  whitelist; error semantics when `vm_set_error` fires mid-transaction
-  (auto-rollback or leave open?).
+- [x] Value system: `sql_tx_begin()` returns a first-class handle —
+  new OBJ type (`OBJ_SQLTX`, lume.h), GC finalizer (`sql_tx_finalize`,
+  value.c obj_release → rollback + close; SQLite rolls back on close
+  anyway, the explicit ROLLBACK keeps the error path honest).
+  Interpreted 2026-10-20. Value semantics: the handle is a GC object
+  like any other (map round-trip carries the pointer, not a copy);
+  closure capture still hits the llvm capture machinery (see P7 — that
+  half applies, but the native backends don't emit sql at all yet, so
+  capture is moot until parity lands).
+- [x] Connection management: per-handle connection — `sql_tx_begin`
+  opens READWRITE|CREATE, `commit`/`rollback` close, GC collection of
+  an open handle rolls back and closes. No per-worker cache: the
+  stateless contract and fork-safety arguments above are inherited
+  verbatim; the handle scopes the connection to the script's own
+  lifetime. Interpreted 2026-10-20.
+- [x] Guardrails: dedicated builtin entry (`sql_tx_exec`), never the
+  `sql_write` whitelist — but the SAME `sql_validate_write` guard runs
+  inside it (one known-shape statement per call). Error semantics:
+  a failing statement leaves the transaction OPEN; the caller decides
+  commit vs rollback (rolled-back effects are already gone, the handle
+  stays usable). Interpreted 2026-10-20.
 - [ ] Three-backend parity: interpreter + text + llvm emitters,
   inference/boxing, `case-parity` + `native-consistency` gates — the
-  repo's classic double-copy sync trap.
+  repo's classic double-copy sync trap. Still open: the native
+  backends have NO sql emission at all (sql_query/sql_write included),
+  so parity means porting the whole sql builtin set, not just the tx
+  four. Recorded here as the remaining half of P6.
+
+Interpreter implementation (2026-10-20, user-level override of the
+"deliberately not started / Done when" gate): `sql_tx_begin(path)` →
+handle; `sql_tx_exec(tx, sql[, params])` → affected rows; `sql_tx_commit`
+/ `sql_tx_rollback(tx)` → bool, close the handle. Registered in every
+build (stub reports "unavailable" without libsqlite3, same as
+sql_query/sql_write). 11 new cases in tests/sqlite.lume cover atomicity
+(uncommitted rows invisible to a second connection), rollback, spent
+handle rejection, whitelist enforcement, and error paths. Verified on a
+real sqlite3 build (3.34.0 dev kit at `D:\Software\mingw64\opt`).
 
 Gray zone — **done 2026-10-20**: write CTEs are whitelisted in
 `sql_validate_write` (`WITH ... INSERT/UPDATE/DELETE`) — still one
@@ -476,7 +499,9 @@ Host-tree debt — **merged 2026-10-20**: `builtins_sql.c` is HOST_PINNED
 portfolio-mirror policy on a `db_layer` abstraction), so `make
 sync-lang` will never overwrite it; the write-CTE whitelist was merged
 manually into the host (`agent-httpd src/agent/sqlite_tool.c
-db_validate_write`, `cd94be1`), not copied by sync.
+db_validate_write`, `cd94be1`), not copied by sync. The tx builtins
+follow the same rule when the host picks them up (manual merge, same
+path).
 
 **Done when**: a lume-nsgm-scale workload demonstrates a real crash or
 correctness need for cross-statement atomicity (not just purity), and
@@ -484,7 +509,9 @@ the value-system design clears the llvm closure-capture gap. (The gap
 this gated on — closures capturing function locals on the llvm backend
 — landed 2026-10-18, see P7; a transaction handle behind a closure
 still hits the general capture machinery, and the top-level half of P7
-would apply to it too.)
+would apply to it too.) Status 2026-10-20: interpreter closed under a
+user override of the gate; the remaining open half is native-backend
+sql emission (parity item above).
 
 ## P7 — LLVM closure capture (ported 2026-10-18) + top-level env write path (closed 2026-10-18)
 

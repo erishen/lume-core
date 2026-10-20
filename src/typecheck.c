@@ -400,6 +400,9 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* SQLite (2026-10-12, builtins_sql.c): registered in every build;
      * without libsqlite3 the runtime stub reports the missing dep. */
     "sql_query", "sql_write",
+    /* SQLite transactions (2026-10-20, P6): sql_tx_begin returns a
+     * GC-finalized handle; sql_tx_exec / commit / rollback take it. */
+    "sql_tx_begin", "sql_tx_exec", "sql_tx_commit", "sql_tx_rollback",
     "json", "stringify", "now", "el", "render", "html",
     "float", "bool", "string", "type", "Result", /* type words usable as idents */
     "write", "read", /* built-in verb groups (see seed_verb_groups) */

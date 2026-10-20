@@ -1401,9 +1401,15 @@ void bridge_seed_builtins(VM *vm) {
         {"filter", b_filter},
         {"reduce", b_reduce},
         /* SQLite (2026-10-12, builtins_sql.c): guarded SELECT / write with
-         * ? binding; stubs fail clearly on builds without libsqlite3. */
+         * ? binding; stubs fail clearly on builds without libsqlite3.
+         * Transactions (2026-10-20, P6): first-class handles, GC-finalized
+         * to rollback + close. */
         {"sql_query", b_sql_query},
         {"sql_write", b_sql_write},
+        {"sql_tx_begin", b_sql_tx_begin},
+        {"sql_tx_exec", b_sql_tx_exec},
+        {"sql_tx_commit", b_sql_tx_commit},
+        {"sql_tx_rollback", b_sql_tx_rollback},
         {"json", b_json},
         {"stringify", b_stringify},
         {"now", b_now},

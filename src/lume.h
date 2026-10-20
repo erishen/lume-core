@@ -219,7 +219,7 @@ typedef struct {
 } KVPair;
 
 typedef enum {
-    OBJ_STRING, OBJ_MAP, OBJ_LIST, OBJ_FUNC, OBJ_NATIVE, OBJ_ENV
+    OBJ_STRING, OBJ_MAP, OBJ_LIST, OBJ_FUNC, OBJ_NATIVE, OBJ_ENV, OBJ_SQLTX
 } ObjType;
 
 typedef struct {
@@ -264,6 +264,13 @@ struct Obj {
             KVPair vars;   /* local bindings */
             Env *parent;   /* lexical scope */
         } env;             /* OBJ_ENV */
+        struct {
+            void *db;      /* sqlite3* — typed in builtins_sql.c */
+            char *path;    /* gc_strdup'd connection path */
+            int state;     /* 0 open, 1 committed, 2 rolled back */
+            int last_rc;   /* last sqlite3 result code */
+            char *last_err;/* gc_strdup'd message or NULL */
+        } sqltx;           /* OBJ_SQLTX */
     } as;
     /* Static struct name for a map that is really a value of a named type
      * (`let p: P = {...}` stamps it). NULL for an anonymous map. Only the

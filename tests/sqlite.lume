@@ -169,6 +169,46 @@ func main(): int {
   });
   check("missing db errors clearly", get(missing, "err", null) != null);
 
+  // ---- 事务 (2026-10-20, P6): 一等句柄 + 原子性 + guardrail ----
+  // sql_tx_begin 开 READWRITE|CREATE 连接并 BEGIN; 句柄是 GC 对象, 被回收时
+  // 自动 ROLLBACK + close。exec 走 sql_write 同款白名单(独立入口, 不碰
+  // sql_write)。错误语义: 失败语句后事务保持 open, 由调用方 commit/rollback。
+  // 表结构在事务外建好(sql_write 已提交): 未提交的 CREATE TABLE 对外部连接
+  // 是 "no such table"(原子性的一部分), 不能用来验证行不可见。
+  let txdb = "/tmp/lume-sqlite-tx-" + str(now()) + ".lume-test.db";
+  write_file(txdb, "");
+  sql_write(txdb, "CREATE TABLE t (id integer primary key autoincrement, name text)");
+  let tx = sql_tx_begin(txdb);
+  let tx2 = sql_tx_exec(tx, "INSERT INTO t (name) VALUES (?)", ["tx-one"]);
+  check("tx insert", tx2 == 1);
+  // 未提交: 外部只读连接不可见 (原子性)
+  check("tx uncommitted invisible", len(sql_query(txdb, "SELECT name FROM t")) == 0);
+  check("tx commit", sql_tx_commit(tx) == true);
+  check("tx committed visible",
+    len(sql_query(txdb, "SELECT name FROM t WHERE name = 'tx-one'")) == 1);
+  // 已关闭句柄拒绝再执行
+  let used = try(() => { sql_tx_exec(tx, "INSERT INTO t (name) VALUES (?)", ["late"]); return "ok"; });
+  check("tx exec after commit rejects", get(used, "err", null) != null);
+
+  // rollback 原子性: 回滚后不可见
+  let txr = sql_tx_begin(txdb);
+  sql_tx_exec(txr, "INSERT INTO t (name) VALUES (?)", ["tx-rolled"]);
+  check("tx rollback", sql_tx_rollback(txr) == true);
+  check("tx rolled back invisible",
+    len(sql_query(txdb, "SELECT name FROM t WHERE name = 'tx-rolled'")) == 0);
+
+  // guardrail: 专用入口走同一写白名单; 失败后事务保持 open (可显式收尾)
+  let txs = sql_tx_begin(txdb);
+  let bad = try(() => { sql_tx_exec(txs, "DROP TABLE t"); return "ok"; });
+  check("tx drop rejects", get(bad, "err", null) != null);
+  check("tx stays open after error", sql_tx_rollback(txs) == true);
+
+  // 参数错误: 非句柄 / 缺参
+  let notx = try(() => { sql_tx_exec("oops", "SELECT 1"); return "ok"; });
+  check("tx exec non-handle rejects", get(notx, "err", null) != null);
+  let noarg = try(() => { sql_tx_commit(); return "ok"; });
+  check("tx commit missing arg rejects", get(noarg, "err", null) != null);
+
   return 0;
 }
 main();

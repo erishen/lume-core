@@ -47,6 +47,10 @@ Value b_reduce(VM *vm, int argc, Value *args);
  * builtins.c carries runtime stubs otherwise). */
 Value b_sql_query(VM *vm, int argc, Value *args);
 Value b_sql_write(VM *vm, int argc, Value *args);
+Value b_sql_tx_begin(VM *vm, int argc, Value *args);
+Value b_sql_tx_exec(VM *vm, int argc, Value *args);
+Value b_sql_tx_commit(VM *vm, int argc, Value *args);
+Value b_sql_tx_rollback(VM *vm, int argc, Value *args);
 Value b_json(VM *vm, int argc, Value *args);
 Value b_stringify(VM *vm, int argc, Value *args);
 Value b_now(VM *vm, int argc, Value *args);

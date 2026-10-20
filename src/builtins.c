@@ -473,6 +473,10 @@ Value b_reduce(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, a
  * when the Makefile probe found libsqlite3; stubs below otherwise. */
 Value b_sql_query(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_query); }
 Value b_sql_write(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_write); }
+Value b_sql_tx_begin(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_tx_begin); }
+Value b_sql_tx_exec(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_tx_exec); }
+Value b_sql_tx_commit(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_tx_commit); }
+Value b_sql_tx_rollback(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sql_tx_rollback); }
 Value b_json(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_json); }
 Value b_stringify(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_stringify); }
 Value b_now(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_now); }
@@ -532,6 +536,10 @@ static void native_sql_unavailable(VM *vm, int argc, Value *args, Value *out) {
 }
 void native_sql_query(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
 void native_sql_write(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
+void native_sql_tx_begin(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
+void native_sql_tx_exec(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
+void native_sql_tx_commit(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
+void native_sql_tx_rollback(VM *vm, int argc, Value *args, Value *out) { native_sql_unavailable(vm, argc, args, out); }
 #endif
 
 Value b_default_route(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_default_route); }

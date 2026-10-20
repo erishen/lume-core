@@ -1,5 +1,12 @@
 #include "lume.h"
 
+/* OBJ_SQLTX finalizer (builtins_sql.c is the only TU that knows sqlite3).
+ * Declared here because obj_release has to call it; the definition is
+ * compiled only when the Makefile probe found libsqlite3. */
+#if HAVE_SQLITE
+extern void sql_tx_finalize(Obj *o);
+#endif
+
 /* Object heap (mark-sweep GC), string/map/list/function values, environments,
  * and the JSON <-> Value bridge (tool arguments come in as JSON; tool results
  * and the `json()`/`stringify()` builtins go the other way).
@@ -109,6 +116,10 @@ static void mark_obj(Obj *o) {
                 mark_value(e->vars.vals[i]);
             break;
         }
+        case OBJ_SQLTX:
+            /* The sqlite3 handle is not a GC object; nothing to mark. The
+             * connection's lifetime is the object's (finalized on release). */
+            break;
     }
 }
 
@@ -182,6 +193,21 @@ static void obj_release(Obj *o) {
         free(e->vars.vals);
         break;
     }
+    case OBJ_SQLTX:
+#if HAVE_SQLITE
+        /* A collected transaction handle = rollback + close (SQLite rolls an
+         * open transaction back on close anyway; the explicit ROLLBACK keeps
+         * the error path honest). Defined in builtins_sql.c, which is the
+         * only TU that knows sqlite3. */
+        sql_tx_finalize(o);
+#else
+        /* Stub build: the handle is never created (sql_tx_* report
+         * "unavailable"), but the fields are still malloc'd by gc_strdup on
+         * any path that does build one — free them so LSan stays clean. */
+        free(o->as.sqltx.path);
+        free(o->as.sqltx.last_err);
+#endif
+        break;
     }
 }
 

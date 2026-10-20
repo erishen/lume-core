@@ -745,3 +745,179 @@ void native_sql_write(VM *vm, int argc, Value *args, Value *out) {
     free_sql_params(params, nparams);
     *out = val_int(affected);
 }
+
+/* ---- transactions (P6, 2026-10-20) ---- */
+
+/* A transaction handle owns one connection and one open transaction:
+ *   sql_tx_begin(path)  -> handle (GC object; collected = ROLLBACK + close)
+ *   sql_tx_exec(tx, sql[, params]) -> affected rows (sql_write whitelist)
+ *   sql_tx_commit(tx) / sql_tx_rollback(tx) -> bool, closes the handle
+ * Error semantics: a failing statement leaves the transaction OPEN so the
+ * caller decides commit vs rollback (a rolled-back statement's effects are
+ * already gone; the handle is still usable). Only commit/rollback/GC close
+ * the connection. All writes go through sql_validate_write — this is a
+ * dedicated entry point, never through the sql_write whitelist. */
+
+/* Open a READWRITE|CREATE connection and start a deferred transaction.
+ * Returns NULL and fills err on failure (no connection is left open). */
+static sqlite3 *sql_tx_open(const char *path, char *err, size_t errsz) {
+    sqlite3 *sq = NULL;
+    if (sqlite3_open_v2(path, &sq,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)
+        != SQLITE_OK) {
+        snprintf(err, errsz, "cannot open '%s'", path);
+        if (sq) sqlite3_close(sq);
+        return NULL;
+    }
+    sqlite3_busy_timeout(sq, sql_busy_timeout_ms());
+    char *m = NULL;
+    if (sqlite3_exec(sq, "BEGIN", NULL, NULL, &m) != SQLITE_OK) {
+        snprintf(err, errsz, "BEGIN: %s", m ? m : sqlite3_errmsg(sq));
+        sqlite3_free(m);
+        sqlite3_close(sq);
+        return NULL;
+    }
+    return sq;
+}
+
+/* GC finalizer for OBJ_SQLTX (value.c calls this from obj_release). An open
+ * transaction is rolled back and the connection closed. SQLite would roll
+ * the open transaction back on close anyway; the explicit ROLLBACK keeps
+ * the error path honest. */
+void sql_tx_finalize(Obj *o) {
+    if (!o || o->type != OBJ_SQLTX) return;
+    if (o->as.sqltx.db && o->as.sqltx.state == 0) {
+        sqlite3 *sq = (sqlite3 *)o->as.sqltx.db;
+        sqlite3_exec(sq, "ROLLBACK", NULL, NULL, NULL);
+        sqlite3_close(sq);
+        o->as.sqltx.db = NULL;
+        o->as.sqltx.state = 2;
+    }
+    free(o->as.sqltx.path);
+    free(o->as.sqltx.last_err);
+    o->as.sqltx.path = NULL;
+    o->as.sqltx.last_err = NULL;
+}
+
+void native_sql_tx_begin(VM *vm, int argc, Value *args, Value *out) {
+    *out = val_null();
+    if (argc != 1) {
+        vm_set_error(vm, "sql_tx_begin needs (path)");
+        return;
+    }
+    const char *db = NULL;
+    if (!arg_string(vm, args[0], &db)) return;
+    const char *path = sql_db_path(db);
+    if (!path) {
+        vm_set_error(vm, "sql_tx_begin: no database (set SQLITE_DB or pass a path)");
+        return;
+    }
+    char err[512] = {0};
+    sqlite3 *sq = sql_tx_open(path, err, sizeof err);
+    if (!sq) {
+        vm_set_error(vm, "sql_tx_begin: %s", err);
+        return;
+    }
+    Obj *tx = gc_alloc(vm, OBJ_SQLTX, 0);
+    tx->as.sqltx.db = sq;
+    tx->as.sqltx.path = gc_strdup(vm, path, strlen(path));
+    tx->as.sqltx.state = 0;
+    tx->as.sqltx.last_rc = 0;
+    tx->as.sqltx.last_err = NULL;
+    *out = val_obj(tx);
+}
+
+void native_sql_tx_exec(VM *vm, int argc, Value *args, Value *out) {
+    *out = val_null();
+    if (argc < 2 || argc > 3) {
+        vm_set_error(vm, "sql_tx_exec needs (tx, sql[, params])");
+        return;
+    }
+    if (!IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_SQLTX) {
+        vm_set_error(vm, "sql_tx_exec: first argument must be a transaction handle");
+        return;
+    }
+    Obj *tx = AS_OBJ(args[0]);
+    if (!tx->as.sqltx.db || tx->as.sqltx.state != 0) {
+        vm_set_error(vm, "sql_tx_exec: transaction is already closed");
+        return;
+    }
+    const char *dummy = NULL, *sql = NULL, **params = NULL;
+    int nparams = 0;
+    if (sql_arg_bind(vm, argc - 1, args + 1, &dummy, &sql, &params, &nparams))
+        return;   /* vm_set_error already set */
+    char body[SQL_MAX];
+    const char *verr = sql_validate_write(sql, body, sizeof body);
+    if (verr) {
+        vm_set_error(vm, "sql_tx_exec: %s", verr);
+        free_sql_params(params, nparams);
+        return;
+    }
+    sqlite3 *sq = (sqlite3 *)tx->as.sqltx.db;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
+        vm_set_error(vm, "sql_tx_exec: %s", sqlite3_errmsg(sq));
+        free_sql_params(params, nparams);
+        return;
+    }
+    char err[512] = {0};
+    if (bind_params(st, params, nparams, err, sizeof err)) {
+        vm_set_error(vm, "sql_tx_exec: %s", err[0] ? err : "bind failed");
+        sqlite3_finalize(st);
+        free_sql_params(params, nparams);
+        return;
+    }
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        vm_set_error(vm, "sql_tx_exec: %s", sqlite3_errmsg(sq));
+        free_sql_params(params, nparams);
+        return;
+    }
+    int affected = sqlite3_changes(sq);
+    free_sql_params(params, nparams);
+    *out = val_int(affected);
+}
+
+/* Shared tail of commit / rollback. On success the connection is closed and
+ * the handle is spent (state 1 = committed, 2 = rolled back). On failure the
+ * transaction stays open and the caller decides what to do next. */
+static void sql_tx_end(VM *vm, Obj *tx, int commit, Value *out) {
+    *out = val_null();
+    if (!tx->as.sqltx.db || tx->as.sqltx.state != 0) {
+        vm_set_error(vm, "sql_tx_%s: transaction is already closed",
+                     commit ? "commit" : "rollback");
+        return;
+    }
+    sqlite3 *sq = (sqlite3 *)tx->as.sqltx.db;
+    char *m = NULL;
+    if (sqlite3_exec(sq, commit ? "COMMIT" : "ROLLBACK", NULL, NULL, &m)
+        != SQLITE_OK) {
+        vm_set_error(vm, "sql_tx_%s: %s", commit ? "commit" : "rollback",
+                     m ? m : sqlite3_errmsg(sq));
+        sqlite3_free(m);
+        return;
+    }
+    sqlite3_close(sq);
+    tx->as.sqltx.db = NULL;
+    tx->as.sqltx.state = commit ? 1 : 2;
+    *out = val_bool(true);
+}
+
+void native_sql_tx_commit(VM *vm, int argc, Value *args, Value *out) {
+    *out = val_null();
+    if (argc != 1 || !IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_SQLTX) {
+        vm_set_error(vm, "sql_tx_commit needs (tx)");
+        return;
+    }
+    sql_tx_end(vm, AS_OBJ(args[0]), 1, out);
+}
+
+void native_sql_tx_rollback(VM *vm, int argc, Value *args, Value *out) {
+    *out = val_null();
+    if (argc != 1 || !IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_SQLTX) {
+        vm_set_error(vm, "sql_tx_rollback needs (tx)");
+        return;
+    }
+    sql_tx_end(vm, AS_OBJ(args[0]), 0, out);
+}
