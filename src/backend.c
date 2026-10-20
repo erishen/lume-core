@@ -159,6 +159,39 @@ int backend_build_rt(char *err, size_t err_size)
     return 0;
 }
 
+/* Compile the native server runtime (bridge_native.c) once per build,
+ * rebuilt when the source is newer. Backend-neutral, like backend_build_rt:
+ * both native backends link it for lume_srv_*, lume_bi_now and lume_bi_env. */
+int backend_build_native(char *err, size_t err_size)
+{
+    struct stat st;
+    if (stat(LUME_NATIVE_SRC, &st) != 0) {
+        snprintf(err, err_size, "native runtime source not found: %s "
+                 "(rebuild lume so that -DLUME_NATIVE_SRC is set)",
+                 LUME_NATIVE_SRC);
+        return 1;
+    }
+
+    struct stat ost;
+    int have = stat(nat_obj_path(), &ost) == 0;
+    if (!xt_target() && have && ost.st_mtime >= st.st_mtime)
+        return 0;                        /* already up to date */
+
+    lume_mkdir("build");
+
+    char cmd[PATH_MAX * 2];
+    const char *cc = xt_target() ? pick_ir_cc() : pick_cc();
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s",
+             cc, xt_target() ? " -target " : "",
+             xt_target() ? xt_target() : "",
+             nat_obj_path(), LUME_NATIVE_SRC);
+    if (run_cmd(cmd) != 0) {
+        snprintf(err, err_size, "compiling the native server runtime failed");
+        return 1;
+    }
+    return 0;
+}
+
 int backend_emit_ir(const char *src_path, struct Node *prog,
                     const char *ll_path, char *err, size_t err_size)
 {
@@ -198,30 +231,8 @@ int backend_native(const char *src_path, struct Node *prog,
         return 1;
     if (backend_build_rt(err, err_size) != 0)
         return 1;
-
-    /* The native server runtime (bridge_native.c) is a second helper object,
-     * rebuilt on demand exactly like rt.o. It carries lume_srv_* and
-     * lume_bi_now, which the server{} codegen output calls. */
-    {
-        struct stat nst, nost;
-        int have = stat(nat_obj_path(), &nost) == 0;
-        int need = stat(LUME_NATIVE_SRC, &nst) != 0 ||
-                   !have || nost.st_mtime < nst.st_mtime ||
-                   xt_target() != NULL;
-        if (need) {
-            char ncmd[PATH_MAX * 2];
-            snprintf(ncmd, sizeof ncmd, "%s -O2%s%s -c -o %s %s",
-                     xt_target() ? pick_ir_cc() : pick_cc(),
-                     xt_target() ? " -target " : "",
-                     xt_target() ? xt_target() : "",
-                     nat_obj_path(), LUME_NATIVE_SRC);
-            if (run_cmd(ncmd) != 0) {
-                snprintf(err, err_size,
-                         "compiling the native server runtime failed");
-                return 1;
-            }
-        }
-    }
+    if (backend_build_native(err, err_size) != 0)
+        return 1;
 
     /* Two steps, not one: compiling the IR and linking it must be separate so
      * -Wno-override-module can be scoped to the IR step. clang ignores -target

@@ -233,6 +233,21 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(want, r);
     }
 
+    /* env(name): a host environment variable as a string; unset or masked
+     * (credential) names read as null — same promise as the interpreter's
+     * native_env (builtins_fs.c), kept by lume_bi_env (bridge_native.c). */
+    if (strcmp(bname, "env") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: env() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        LLVMTypeRef p1 = g->i8ptr;
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i8ptr, &p1, 1, 0),
+                                        rt_decl(g, "lume_bi_env", g->i8ptr, &p1, 1),
+                                        (LLVMValueRef[]){ a.v }, 1, "b");
+        return val_make(type_prim(TY_STRING), r);
+    }
+
     /* str() / int() / float(): which helper they need depends on the operand. */
     if (strcmp(bname, "str") == 0 || strcmp(bname, "int") == 0 ||
         strcmp(bname, "float") == 0 || strcmp(bname, "stringify") == 0 ||

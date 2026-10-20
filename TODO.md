@@ -148,7 +148,14 @@ platform.
 2026-10-20: windows.yml additionally runs `make native-consistency`
 (tests/native_backends.sh — interp + text + libLLVM legs each diffed
 against the full tests/native-consistency.expected, the 18 statistical
-distribution prints included, plus the exit-status/null/`?` assertions)
+distribution prints included, plus the exit-status/null/`?` assertions).
+**Known Windows/MSYS hazard (unfixed, 2026-10-20)**: Makefile's `TARGET` and
+the fuzz-driver object default to extensionless names (`bin/lume-core`,
+`out/fuzz-driver`), which MSYS bash refuses to execute (127). Local builds
+pass `TARGET=bin/lume-core.exe`; the windows.yml steps that run
+`./$(TARGET)` / `./out/fuzz-driver` need a `.exe`-aware fix or explicit
+override before they can be trusted (native-consistency / fuzz-driver /
+ai-verify legs are currently unverified on the runner).
 and `make fuzz-driver` (the P1 Windows seed replay).
 
 ## P4 — Later / larger
@@ -231,15 +238,19 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     LLM → `.lume` step and the CI/CD wiring that feeds its output into
     `make ai-verify`; `assert_semantic()` remains an uncommitted open question.
 
-- [ ] **P4 gap · `server{}` + `env()` is interpreter-backend-only; LLVM leg
-  not aligned (blocks three-backend equivalence for serve programs).** nsgm's
-  `gen/app.lume` reads `env("PORT"/"HOST"/"WORKERS")` inside `server{}` and
-  its Dockerfile forces `HAVE_LLVM=0` because `env()`-in-`server{}` only takes
-  effect on the default (interpreter) backend today. When P3 (three-backend
-  equivalence) hardens, add a serve+env regression leg (interp / text / LLVM
-  must all honor `env()` inside `server{}`); until then, serve programs that
-  read env at startup are interpreter-pinned. Filed 2026-10-19 from nsgm's
-  `HAVE_LLVM=0` workaround.
+- [ ] **P4 gap (cont.) · `server{}` LLVM leg not aligned.** env() part closed
+  2026-10-20: env() now has a static type in both native backends' inference
+  tables (codegen_scan.c / llvm_cg_scan.inc), an emit path (codegen_call.c /
+  llvm_cg_call.inc → `lume_bi_env`), a runtime helper in bridge_native.c that
+  keeps native_env's credential-masking promise, and the LLVM backend now
+  links bridge_native.o (`backend_build_native`, shared with backend.c) with
+  `-lws2_32` on Windows (the LLVM link previously carried only rt.o — that is
+  also why `now()`/`argv()` never worked there). Pinned by
+  `tests/env-consistency.lume` (interp==text==LLVM) + the native-consistency
+  three-leg run. **Remaining: `server{}` / route handlers in the LLVM backend**
+  (llvm_cg_stmt.inc still rejects "this construct"): needs cg_route_handler's
+  FFI + SrvReq struct + in_handler/hreq state in llvm_codegen_internal.h
+  (filed 2026-10-19 from nsgm's `HAVE_LLVM=0` workaround).
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

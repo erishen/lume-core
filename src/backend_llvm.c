@@ -30,6 +30,9 @@
 #include "llvm_codegen.h"
 
 #define RT_OBJ "build/rt.o"
+/* Same object the text backend links (backend.c's NATIVE_OBJ); carries
+ * lume_srv_*, lume_bi_now and lume_bi_env. */
+#define NATIVE_OBJ "build/bridge_native.o"
 
 /* Requested by --no-pass; reset per process, so a single flag never leaks
  * from one compile into the next. */
@@ -247,6 +250,12 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
         LLVMContextDispose(ctx);
         return 1;
     }
+    if (backend_build_native(err, err_size) != 0) {
+        LLVMDisposeTargetMachine(tm);
+        LLVMDisposeModule(mod);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
 
     /* Lowered by libLLVM, not by clang — this object file is libLLVM's. */
     /* Note the polarity: this returns 0 on success and 1 with a message on
@@ -273,9 +282,15 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
     /* -lm is not optional: rt.c pulls in sqrt()/pow(), which libSystem exports
      * implicitly on macOS (so this quietly worked there) but glibc does not
      * link without it. Omitting it made --compile-* fail at the link step on
-     * any Linux — including the CI runner's `make asan`. */
-    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s -lm", pick_cc(), out_path,
-             obj_path, RT_OBJ);
+     * any Linux — including the CI runner's `make asan`. On native Windows
+     * bridge_native.o pulls in winsock (send/recv/...), which needs ws2_32
+     * instead — same polarity as the text backend's link. */
+    int win_link = 0;
+#ifdef _WIN32
+    win_link = 1;                        /* native windows build: winsock */
+#endif
+    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s", pick_cc(), out_path,
+             obj_path, RT_OBJ, NATIVE_OBJ, win_link ? "-lws2_32" : "-lm");
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (ir kept in %s)",
                  out_path, ll_path);

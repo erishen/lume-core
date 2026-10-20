@@ -432,6 +432,7 @@ void emit_builtin_declares(CG *g)
      * server{}/route handlers/run() lower onto. SrvReq's layout is a
      * contract with bridge_native.c (four pointers then one i64). */
     EMIT(g, "; native server runtime (src/bridge_native.c)\n");
+    EMIT(g, "declare i8* @lume_bi_env(i8*)\n");
     EMIT(g, "%%struct.SrvReq = type { i8*, i8*, i8*, i8*, i64 }\n");
     EMIT(g, "declare void @lume_srv_init(i8*, i64)\n");
     EMIT(g, "declare void @lume_srv_route(i8*, i8*, void (%%struct.SrvReq*, i8**, i64*, i32*)*)\n");
@@ -472,6 +473,22 @@ static Val cg_builtin(CG *g, Node *n)
         return val_take(list_type(),
                         emit_instrf(g, list_type(),
                                     "call i8* @lume_bi_argv()"));
+    }
+
+    /* env(name): a host environment variable as a string; unset or masked
+     * (credential) names read as null — same promise as the interpreter's
+     * native_env (builtins_fs.c), kept by lume_bi_env (bridge_native.c). */
+    if (strcmp(bname, "env") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: env() takes exactly one argument", n->line);
+        Val key = cg_expr(g, n->as.call.args[0]);
+        if (!key.v) return (Val){ NULL, NULL, 0 };
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @lume_bi_env(i8* %s)",
+                                     key.v));
+        free(key.v);
+        return r;
     }
 
     if (b) {

@@ -33,4 +33,10 @@ int backend_native(const char *src_path, struct Node *prog,
  * reimplement the "has this been built yet" bookkeeping. */
 int backend_build_rt(char *err, size_t err_size);
 
+/* Same bookkeeping for the native server runtime (src/bridge_native.c →
+ * build/bridge_native.o), which carries lume_srv_*, lume_bi_now and
+ * lume_bi_env. Rebuilt only when the source is newer; both native backends
+ * must link it, not just the text backend. */
+int backend_build_native(char *err, size_t err_size);
+
 #endif /* LUME_BACKEND_H */

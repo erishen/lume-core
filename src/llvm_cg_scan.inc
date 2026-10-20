@@ -152,6 +152,13 @@ static Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
             return type_prim(TY_INT);
 
+        /* env() reads a host environment variable: a string, or null when
+         * unset / masked (SPEC §6.2). Same branch as codegen_scan.c's
+         * shared copy — the LLVM backend needs the static type before the
+         * lume_bi_env call can be emitted. */
+        if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
+            return type_prim(TY_STRING);
+
         /* try(fn) — { ok, err } where ok is the fn's return type and err is
          * null. Carrying the members here is what lets `r.ok` / `r.err` pick
          * the right getter, exactly like a map literal does. Same branch as

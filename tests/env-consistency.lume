@@ -1,0 +1,13 @@
+// tests/env-consistency.lume — P4: env() 三后端一致 (native backends)
+//
+// serve-env.lume's LLVM leg failed on `let host = env("LUME_TEST_HOST")`
+// because env() had no static type in the native backends' inference table
+// and no emit path. This leg pins the fixed surface:
+//   - 解释器: env() returns the masked env value (string)
+//   - text / LLVM 后端: --compile 接受同样形状, 运行时读到同一个值
+// 运行: LUME_TEST_HOST=127.0.0.1 LUME_TEST_WHO=ci lume-core tests/env-consistency.lume
+let host = env("LUME_TEST_HOST");
+print("host=" + host);
+let who = env("LUME_TEST_WHO");
+print("who=" + who);
+print("env-consistency ok");

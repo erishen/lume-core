@@ -19,6 +19,7 @@
  * four i8* pointers followed by one i64, in this order.
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -182,6 +183,38 @@ const char *lume_bi_now(void)
 #endif
     strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &tmv);
     return buf;
+}
+
+/* env(): host environment variable as a string; unset or credential-masked
+ * names read as NULL. The masking promise mirrors the interpreter's
+ * native_env (builtins_fs.c) so all three backends agree — kept in lockstep
+ * with that file's keyword list. */
+static int native_env_is_sensitive(const char *k) {
+    static const char *const KW[] = {
+        "API_KEY", "SECRET", "PASSWORD", "PASSWD", "TOKEN", "CREDENTIAL",
+    };
+    for (size_t i = 0; i < sizeof KW / sizeof KW[0]; i++) {
+        size_t hn = strlen(k), nn = strlen(KW[i]);
+        if (nn > hn) continue;
+        for (size_t j = 0; j + nn <= hn; j++) {
+            if (j > 0 && isalnum((unsigned char)k[j - 1])) continue;
+            size_t m = 0;
+            for (; m < nn; m++)
+                if (tolower((unsigned char)k[j + m]) !=
+                    tolower((unsigned char)KW[i][m]))
+                    break;
+            if (m == nn && (j + nn >= hn || !isalnum((unsigned char)k[j + nn])))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+const char *lume_bi_env(const char *key)
+{
+    if (!key) return NULL;
+    if (native_env_is_sensitive(key)) return NULL;
+    return getenv(key);
 }
 
 /* Look a key up in a raw query string ("a=1&b=x"). Single-threaded: the

@@ -177,6 +177,12 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "len") == 0 && n->as.call.argc == 1)
             return type_prim(TY_INT);
 
+        /* env() reads a host environment variable: a string, or null when
+         * unset / masked (SPEC §6.2). The native backends need this static
+         * type before they can emit the getenv call. */
+        if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
+            return type_prim(TY_STRING);
+
         /* try(fn) — { ok, err } where ok is the fn's return type and err is
          * null. Carrying the members here is what lets `r.ok` / `r.err` pick
          * the right getter (member_field_type reads this shape), exactly like
