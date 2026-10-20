@@ -27,4 +27,15 @@ char *codegen_emit_ir(const char *mod_name, struct Node *prog,
  * Returns 0, or non-zero with a message in err. */
 int codegen_infer_signatures(struct Node *prog, char *err, size_t err_size);
 
+/* Multi-file variant: imported module ASTs join the signature pass so
+ * cross-module member calls (`policy.decide(...)`) resolve their callee's
+ * signature. mods[0] is the entry program (unresolved parameters rejected);
+ * mods[1..] are its imported modules in dependency order, nsnames[i] being
+ * the `as` alias the entry uses for mods[i]. Module functions are registered
+ * under "<ns>.<name>"; each module's own pass runs with the unresolved-
+ * parameter check disabled (its exported functions are typed by the entry's
+ * call sites). Same contract as the single-program form otherwise. */
+int codegen_infer_signatures_multi(struct Node **mods, const char **nsnames,
+                                   int nmods, char *err, size_t err_size);
+
 #endif /* LUMELLVM_CODEGEN_H */

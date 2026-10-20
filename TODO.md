@@ -303,6 +303,21 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   walk_sigs (its N_CALL branch only resolves N_VAR callees), so `d` never
   gets typed. That is part of a broader native-backend module-support gap
   (imported-module function calls), filed here for follow-up.
+  — **sig phase closed 2026-10-20**: `codegen_infer_signatures_multi` runs
+  each imported module's AST through the signature pass first (unresolved-
+  parameter check disabled — an exported function has no call site inside
+  its own module), registers its functions under `"<ns>.<name>"`, then runs
+  the entry pass with those signatures injected; walk_sigs and
+  infer_node_type's N_CALL both resolve an N_MEMBER callee whose object is
+  a variable (policy.decide) to the injected signature, so untyped module
+  parameters are back-filled from the entry's call sites exactly like local
+  ones. Pinned by tests/ns-member.lume (`lib.identity(x)` typed from
+  `wrap(42)`; abac.lume advances past the decide call to the emitter).
+  **Remaining (emit phase)**: the callee-emission paths
+  (codegen_call.c / llvm_cg_call.inc) still refuse a non-N_VAR callee
+  ("only direct calls to named functions"), and module functions/type
+  decls/top-level bindings have no native emission story yet — the next
+  gap abac.lume will hit once member calls emit.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

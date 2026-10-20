@@ -33,7 +33,7 @@ static Type *infer_arg_type(CG *g, Node *a, LTys *t);
 static void infer_one_sig(CG *g, Sig *s);
 
 /* forward: same tu, defined below this point. */
-static void infer_sigs(CG *g);
+static void infer_sigs(CG *g, int check_unresolved_params);
 
 /* forward: same tu, defined below this point. */
 static void lt_free(LTys *t);
@@ -1219,7 +1219,20 @@ static int walk_sigs(CG *g, Node *n, LTys *t, Sig *s)
             }
         }
 
-        Sig *cs = (c && c->type == N_VAR) ? sig_find(&g->sigs, c->as.var.name) : NULL;
+        Sig *cs = NULL;
+        if (c && c->type == N_VAR) {
+            cs = sig_find(&g->sigs, c->as.var.name);
+        } else if (c && c->type == N_MEMBER && c->as.member.obj &&
+                   c->as.member.obj->type == N_VAR) {
+            /* ns member call: policy.decide(...) — the module signature was
+             * injected under "<ns>.<name>" by codegen_infer_signatures_multi,
+             * so an untyped parameter of an imported function is filled from
+             * the entry's call sites exactly like a local one. */
+            char qname[512];
+            snprintf(qname, sizeof qname, "%s.%s",
+                     c->as.member.obj->as.var.name, c->as.member.name);
+            cs = sig_find(&g->sigs, qname);
+        }
         if (cs) {
             /* One argument at a time: filling a parameter's type makes that
              * name known for the *arguments after* it in the same call. */
@@ -1536,7 +1549,7 @@ static void infer_one_sig(CG *g, Sig *s)
  * caller: `g(f(n))` gives g's return type a dependency on f's parameter, and f's
  * parameter may only be knowable from an argument g is handed. */
 
-static void infer_sigs(CG *g)
+static void infer_sigs(CG *g, int check_unresolved_params)
 {
     for (int round = 0; round <= g->sigs.n + 1; round++) {
         int changed = 0;
@@ -1610,7 +1623,12 @@ static void infer_sigs(CG *g)
     }
 
     /* Done: anything still unresolved is a genuine error (a parameter no call
-     * site typed), not a placeholder a later round would have filled. */
+     * site typed), not a placeholder a later round would have filled. A
+     * module pass skips this: an imported module's exported functions have no
+     * call site inside the module itself — their untyped parameters are
+     * filled by the entry pass (or a sibling module) from cross-module call
+     * sites, so failing here would reject every library module. */
+    if (check_unresolved_params)
     for (int i = 0; i < g->sigs.n; i++) {
         Sig *s = &g->sigs.v[i];
         for (int k = 0; k < s->arity; k++)
@@ -1623,17 +1641,12 @@ static void infer_sigs(CG *g)
     }
 }
 
-/* Run the signature pass over a whole program, without emitting anything.
- *
- * Exported so the *driver* can run it once before it dispatches: both native
- * backends (this one and the libLLVM walker in llvm_codegen.c) read the
- * function signatures straight off the AST, so guessing them separately in two
- * translation units is how the two would drift apart and quietly produce IR
- * that agrees with neither the source nor each other. The pass is idempotent —
- * everything it fills in is a slot the source left NULL, so a second run sees
- * nothing to do. */
-
-int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
+/* Core of the signature pass: collect + infer on ONE program, writing the
+ * results back through to the AST. The caller owns `g` (zeroed before the
+ * call, cleaned up after) so the multi-file entry can run a module pass, keep
+ * its function signatures, then run the entry pass with them injected. */
+static int infer_program(CG *g, Node *prog, int check_unresolved_params,
+                         char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
     if (!prog || prog->type != N_PROGRAM) return 0;
@@ -1642,10 +1655,8 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
      * the signature collection below must see those names. Idempotent. */
     if (!lume_resolve_localfns(prog, err, err_size)) return -1;
 
-    CG g;
-    memset(&g, 0, sizeof g);
     /* No IrBuf is attached: the pass only types nodes, it never emits. */
-    g.prog = prog;
+    g->prog = prog;
 
     /* Top-level and local functions alike: a local's return type is inferred
      * from its own returns exactly like a top-level one, under its cname. */
@@ -1656,9 +1667,9 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
         Node *n = fns[i];
         const char *fname = n->as.func.cname ? n->as.func.cname
                                              : n->as.func.name;
-        sig_push(&g.sigs, fname, n->as.func.ret,
+        sig_push(&g->sigs, fname, n->as.func.ret,
                  n->as.func.param_types, n->as.func.arity);
-        Sig *s = &g.sigs.v[g.sigs.n - 1];
+        Sig *s = &g->sigs.v[g->sigs.n - 1];
         s->body   = n->as.func.body;
         s->pnames = n->as.func.names;
         s->node   = n;
@@ -1671,32 +1682,129 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
     for (int i = 0; i < ntop; i++) {
         Node *n = top[i];
         if (n && n->type == N_TYPE_DECL)
-            sdef_push(&g.structs, n->as.type_decl.name, n->as.type_decl.field_names,
+            sdef_push(&g->structs, n->as.type_decl.name, n->as.type_decl.field_names,
                       n->as.type_decl.field_types, n->as.type_decl.count);
     }
 
     /* Every lambda gets its mangled name and its Sig before inference starts
      * (see preregister_lambdas), and the top-level `let` types are collected
      * once so every function body's scope can see them. Both are safe here:
-     * nothing holds a `Sig *` or aliases `g.globals` while they grow. */
-    preregister_lambdas(&g, prog, 0);
-    collect_known(&g, prog, &g.globals);
+     * nothing holds a `Sig *` or aliases `g->globals` while they grow. */
+    preregister_lambdas(g, prog, 0);
+    collect_known(g, prog, &g->globals);
 
-    infer_sigs(&g);          /* fills g.sigs, writes through to the AST below */
+    infer_sigs(g, check_unresolved_params);  /* fills g->sigs, writes to the AST */
 
-    if (err && err_size && g.err[0])
-        snprintf(err, err_size, "%s", g.err);
+    if (err && err_size && g->err[0])
+        snprintf(err, err_size, "%s", g->err);
+    return g->err[0] ? -1 : 0;
+}
 
-    for (int i = 0; i < g.sigs.n; i++) free(g.sigs.v[i].name);
-    free(g.sigs.v);
-    for (int i = 0; i < g.structs.n; i++) free(g.structs.v[i].name);
-    free(g.structs.v);
-    lt_free(&g.scope);
-    lt_free(&g.globals);
-    memset(&g.sigs, 0, sizeof g.sigs);
-    memset(&g.structs, 0, sizeof g.structs);
-    memset(&g.scope, 0, sizeof g.scope);
-    memset(&g.globals, 0, sizeof g.globals);
+static void cleanup_cg(CG *g)
+{
+    for (int i = 0; i < g->sigs.n; i++) free(g->sigs.v[i].name);
+    free(g->sigs.v);
+    for (int i = 0; i < g->structs.n; i++) free(g->structs.v[i].name);
+    free(g->structs.v);
+    lt_free(&g->scope);
+    lt_free(&g->globals);
+    memset(&g->sigs, 0, sizeof g->sigs);
+    memset(&g->structs, 0, sizeof g->structs);
+    memset(&g->scope, 0, sizeof g->scope);
+    memset(&g->globals, 0, sizeof g->globals);
+}
 
-    return g.err[0] ? -1 : 0;
+/* Run the signature pass over a whole program, without emitting anything.
+ *
+ * Exported so the *driver* can run it once before it dispatches: both native
+ * backends (this one and the libLLVM walker in llvm_codegen.c) read the
+ * function signatures straight off the AST, so guessing them separately in two
+ * translation units is how the two would drift apart and quietly produce IR
+ * that agrees with neither the source nor each other. The pass is idempotent —
+ * everything it fills in is a slot the source left NULL, so a second run sees
+ * nothing to do. */
+int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
+{
+    CG g;
+    memset(&g, 0, sizeof g);
+    int rc = infer_program(&g, prog, 1, err, err_size);
+    cleanup_cg(&g);
+    return rc;
+}
+
+/* Multi-file entry: imported module ASTs participate in the signature pass
+ * so cross-module calls (`policy.decide(...)`) resolve their callee's
+ * signature. mods[0] is the entry program (its unresolved parameters are
+ * rejected); mods[1..] are the entry's imported modules, in dependency order,
+ * with nsnames[i] the `as` alias the entry uses for mods[i]. Each module's
+ * functions are registered under "<ns>.<name>" so a member call resolves
+ * unambiguously, and each module's own pass runs with the unresolved-
+ * parameter check disabled — an imported module's exported functions have no
+ * call site inside the module itself; their untyped parameters are filled by
+ * the entry's cross-module call sites. */
+int codegen_infer_signatures_multi(Node **mods, const char **nsnames, int nmods,
+                                   char *err, size_t err_size)
+{
+    if (err && err_size) err[0] = '\0';
+    if (!mods || nmods <= 0 || !mods[0] || mods[0]->type != N_PROGRAM) return 0;
+
+    Sigs shared = {0};   /* "<ns>.<name>" → module function Sig, injected below */
+    int rc = 0;
+
+    for (int m = 1; m < nmods && !rc; m++) {
+        Node *prog = mods[m];
+        const char *ns = (nsnames && nsnames[m]) ? nsnames[m] : NULL;
+        if (!prog || prog->type != N_PROGRAM || !ns) continue;
+        CG g;
+        memset(&g, 0, sizeof g);
+        if (infer_program(&g, prog, 0, err, err_size) != 0) rc = -1;
+
+        if (!rc) {
+            int nfn = lume_collect_funcs(prog, NULL, 0);
+            Node **fns = nfn > 0 ? xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
+            if (nfn > 0) lume_collect_funcs(prog, fns, nfn);
+            for (int i = 0; i < nfn; i++) {
+                Node *n = fns[i];
+                const char *fname = n->as.func.cname ? n->as.func.cname
+                                                     : n->as.func.name;
+                char *q = xmalloc(strlen(ns) + strlen(fname) + 2);
+                sprintf(q, "%s.%s", ns, fname);
+                sig_push(&shared, q, n->as.func.ret,
+                         n->as.func.param_types, n->as.func.arity);
+                Sig *ss = &shared.v[shared.n - 1];
+                ss->body   = n->as.func.body;
+                ss->pnames = n->as.func.names;
+                ss->node   = n;
+                free(q);
+            }
+            free(fns);
+        }
+        cleanup_cg(&g);
+    }
+
+    if (!rc) {
+        CG g;
+        memset(&g, 0, sizeof g);
+        /* Inject the module signatures before the entry's fixed point so a
+         * member call's callee resolves on the first round. */
+        for (int i = 0; i < shared.n; i++) {
+            Sig *ms = &shared.v[i];
+            sig_push(&g.sigs, ms->name, ms->ret, ms->params, ms->arity);
+            Sig *s = &g.sigs.v[g.sigs.n - 1];
+            s->body     = ms->body;
+            s->pnames   = ms->pnames;
+            s->node     = ms->node;
+            s->is_lambda = ms->is_lambda;
+        }
+        if (infer_program(&g, mods[0], 1, err, err_size) != 0) rc = -1;
+        cleanup_cg(&g);
+    }
+
+    for (int i = 0; i < shared.n; i++) {
+        free(shared.v[i].name);
+        /* params is the module node's own array — the AST owns it, and the
+         * injected entry sigs borrow it; do not free it here. */
+    }
+    free(shared.v);
+    return rc;
 }

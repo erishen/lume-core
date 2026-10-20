@@ -126,8 +126,25 @@ Type *infer_node_type(CG *g, Node *n)
     case N_CALL: {
         /* `let b = f(...)` takes the return type of f — struct returns included,
          * which is how `let b = scale(a, 5)` gets its %Rect slot. */
-        if (!n->as.call.callee || n->as.call.callee->type != N_VAR) return NULL;
-        const char *name = n->as.call.callee->as.var.name;
+        Node *callee = n->as.call.callee;
+        if (!callee) return NULL;
+        if (callee->type == N_MEMBER && callee->as.member.obj &&
+            callee->as.member.obj->type == N_VAR) {
+            /* ns member call: policy.decide(...) — the module signature was
+             * injected under "<ns>.<name>" by codegen_infer_signatures_multi. */
+            char qname[512];
+            snprintf(qname, sizeof qname, "%s.%s",
+                     callee->as.member.obj->as.var.name, callee->as.member.name);
+            Sig *cs = sig_find(&g->sigs, qname);
+            if (cs && cs->ret) {
+                for (int i = 0; i < n->as.call.argc; i++)
+                    infer_node_type(g, n->as.call.args[i]);
+                return cs->ret;
+            }
+            return NULL;
+        }
+        if (callee->type != N_VAR) return NULL;
+        const char *name = callee->as.var.name;
 
         /* Closure-valued variable call: `f(3)` where f : func. The variable's
          * type carries a back-pointer to the lambda node. */

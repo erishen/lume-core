@@ -1,0 +1,6 @@
+// Module library for the ns-member cross-module signature test: an untyped
+// parameter whose type can only be learned from a call site in the entry
+// module (wrap(42) → lib.identity(x) → v is int).
+export func identity(v) {
+  return v;
+}

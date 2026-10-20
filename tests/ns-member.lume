@@ -1,0 +1,10 @@
+// Cross-module member call signature test: policy-style `lib.identity(x)`
+// where the module function has no parameter annotations and its types are
+// filled by the entry's call sites (wrap(42) pins x to int, so v is int).
+import "ns-lib.lume" as lib;
+
+func wrap(x) {
+  return lib.identity(x);
+}
+let v = wrap(42);
+print(v);

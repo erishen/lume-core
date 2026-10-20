@@ -201,6 +201,8 @@ void cg_closure(CG *g, Node *fn);
 const char *list_at_fn(Type *ty);
 Type *elem_rty(Type *ty);
 int codegen_infer_signatures(Node *prog, char *err, size_t err_size);
+int codegen_infer_signatures_multi(Node **mods, const char **nsnames,
+                                   int nmods, char *err, size_t err_size);
 Val coerce(CG *g, Type *to, Val v, size_t line);
 void emit_builtin_declares(CG *g);
 char *emit_instrf(CG *g, Type *ty, const char *fmt, ...);

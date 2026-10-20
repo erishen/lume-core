@@ -542,9 +542,39 @@ int main(int argc, char **argv) {
         /* One signature pass for both native backends: unannotated parameters
          * and return types are worked out here, on the AST, so the libLLVM
          * walker and the IR-text emitter cannot resolve the same call to two
-         * different signatures. */
+         * different signatures. With imports present, the module ASTs join
+         * the pass so cross-module member calls (policy.decide(...)) resolve
+         * their callee's signature under "<ns>.<name>". */
         char ierr[512] = {0};
-        if (codegen_infer_signatures(entry->prog, ierr, sizeof ierr) != 0) {
+        int sig_rc;
+        if (vm.module_count > 1) {
+            Node **mods = malloc(sizeof(Node *) * (size_t)vm.module_count);
+            const char **nsnames = malloc(sizeof(char *) *
+                                          (size_t)vm.module_count);
+            /* modules[0] is the entry (the loader registers it first);
+             * modules[1..] are the imports in dependency order. */
+            for (int i = 0; i < vm.module_count; i++) {
+                mods[i] = vm.modules[i]->prog;
+                nsnames[i] = NULL;
+            }
+            Node **top = entry->prog->as.program.stmts;
+            for (int i = 0; i < entry->prog->as.program.count; i++) {
+                Node *st = top[i];
+                if (st && st->type == N_IMPORT) {
+                    for (int j = 1; j < vm.module_count; j++)
+                        if (strcmp(st->as.imp.path, vm.modules[j]->path) == 0)
+                            nsnames[j] = st->as.imp.ns;
+                }
+            }
+            sig_rc = codegen_infer_signatures_multi(mods, nsnames,
+                                                    vm.module_count,
+                                                    ierr, sizeof ierr);
+            free(mods);
+            free(nsnames);
+        } else {
+            sig_rc = codegen_infer_signatures(entry->prog, ierr, sizeof ierr);
+        }
+        if (sig_rc != 0) {
             fprintf(stderr, "lume: %s\n", ierr[0] ? ierr : "cannot infer a signature");
             vm_teardown(&vm);
             return 1;
