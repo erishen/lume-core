@@ -202,6 +202,17 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   host-independent / no-network). The LLM step lives in the **host** (agenthttpd's
   tool dispatch) or in an external CI script; core only does the deterministic
   verify (native-consistency + fuzz). Same boundary as `server{}`: LLM in, verify out.
+  — Core gate landed 2026-10-20: `scripts/verify-ai-lume.sh` + `make ai-verify`
+    (AI_VERIFY_FILE=...). An AI program has no `.expected`, so the gate's oracle
+    is backend equivalence: type check, then the interpreter / IR-text / libLLVM
+    legs must agree byte-for-byte on stdout (CRLF-normalized; any compiler
+    diagnostic rejects), at least two legs required to judge, plus the optional
+    `out/fuzz-driver` crash leg. Exit 0 = pass, 1 = reject (counter-example on
+    stderr, ready to log back to the LLM), 2 = gate cannot run. Verified on
+    Windows (interp + text legs, libLLVM skips without llvm-config): 4 example
+    programs PASS, all 8 enum-bad fixtures rejected. Still open: the host-side
+    LLM → `.lume` step and the CI/CD wiring that feeds its output into
+    `make ai-verify`; `assert_semantic()` remains an uncommitted open question.
 
 - [ ] **P4 gap · `server{}` + `env()` is interpreter-backend-only; LLVM leg
   not aligned (blocks three-backend equivalence for serve programs).** nsgm's

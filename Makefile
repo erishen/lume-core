@@ -424,6 +424,19 @@ fuzz-driver: out/fuzz-driver
 	./out/fuzz-driver $$files >/dev/null; \
 	echo "ok fuzz-driver: $$n seeds replayed (standalone driver, any compiler)"
 
+# --- P4 AI self-verification gate (make ai-verify) -----------------------
+# Deterministic acceptance for an LLM-generated .lume program ("AI writes,
+# machine verifies", TODO P4): type check + three-backend output
+# equivalence (interpreter / IR-text / libLLVM, pairwise diff, any compiler
+# diagnostic rejects) + the optional fuzz-driver crash leg. An AI program
+# has no .expected baseline, so backend agreement IS the oracle. The LLM
+# step itself lives in the host / an external CI script (scope guard: the
+# core stays host-independent); this target is the machine verify half.
+#   make ai-verify FILE=path/to/generated.lume
+AI_VERIFY_FILE ?= examples/hello.lume
+ai-verify: all
+	@chmod +x scripts/verify-ai-lume.sh && LUME_BIN=./$(TARGET) ./scripts/verify-ai-lume.sh $(AI_VERIFY_FILE)
+
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
 # 跑 tests/native-consistency.lume 三种路径(解释器 / 文本 / libLLVM), 各自跟
 # 基线比对, 再互比, 并且把编译器任何 stderr 都当失败 —— 让校验器抱怨的 IR 不算
@@ -862,7 +875,7 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
-         treecheck letpat-test fuzz fuzz-ci
+         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \
