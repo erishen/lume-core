@@ -168,6 +168,33 @@ platform.
   in) without inheriting the 1.7M host. Nothing to build; this note exists so
   we stop re-deriving "listen needs to be added" and instead pick the lightest
   endpoint shape.
+- [ ] **P4 · AI self-verification loop (filed 2026-10-20, user goal: "turn Lume into an AI-self-verifying language").**
+  Goal: any LLM-generated `.lume` program must pass an automated gate before it enters
+  the regression corpus — "AI writes, machine verifies."
+  Existing base (do NOT rebuild):
+  - `make native-consistency` — three-backend diff (interpreter / IR-text / libLLVM)
+    against `.expected`; clang-rejected IR counts as fail. **This is the acceptance
+    oracle.**
+  - `make fuzz` (libFuzzer, seeded from `tests/*.lume` + 8 fixture classes in
+    `tests/fuzz-bad/`) — regression safety net. Currently human-written seeds.
+  - `make backend-parity` — static AST-node diff between `codegen.c` and
+    `llvm_codegen.c` case labels.
+  Gap (what "AI self-verification" adds):
+  1. **LLM-generated `.lume` as fuzz/consistency seed**: wire a CI/CD leg that
+     takes LLM output (e.g. from a ReAct/planner agent, or a scripted
+     `prompt → .lume` generator) and runs it through `native-consistency`
+     + `fuzz`. Pass → commit to `tests/`; fail → reject + log the counter-example
+     back to the LLM for retry. This closes "AI writes, machine verifies."
+  2. **Optional / open: an `assert_semantic()` DSL builtin** — let `.lume` code
+     declare invariants (`assert_semantic(x => x >= 0 && x <= 1)`) that a
+     *host-side* validator can check against LLM output without running it,
+     turning the program into its own spec. Keep this OUT of the core (same
+     host/interpreter split as above). Open question, not committed.
+  Scope guard: do NOT add a "LLM builtin" into the core interpreter (it stays
+  host-independent / no-network). The LLM step lives in the **host** (agenthttpd's
+  tool dispatch) or in an external CI script; core only does the deterministic
+  verify (native-consistency + fuzz). Same boundary as `server{}`: LLM in, verify out.
+
 - [ ] **P4 gap · `server{}` + `env()` is interpreter-backend-only; LLVM leg
   not aligned (blocks three-backend equivalence for serve programs).** nsgm's
   `gen/app.lume` reads `env("PORT"/"HOST"/"WORKERS")` inside `server{}` and
