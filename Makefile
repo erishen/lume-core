@@ -471,7 +471,8 @@ ifeq ($(HAVE_LLVM),1)
 	stem=$$(basename "$(NATIVE_EX)" .lume); \
 	./$(TARGET) --compile-llvm $(NATIVE_EX); \
 	./out/$$stem > out/$$stem.log; \
-	if diff -u tests/$$stem.expected out/$$stem.log > out/$$stem.diff; then \
+	tr -d '\r' < out/$$stem.log > out/$$stem.norm; \
+	if diff -u tests/$$stem.expected out/$$stem.norm > out/$$stem.diff; then \
 	    echo "PASS native-llvm $$stem"; \
 	else \
 	    echo "FAIL native-llvm $$stem"; cat out/$$stem.diff; exit 1; \
