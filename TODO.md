@@ -215,7 +215,11 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     `make ai-verify` over hello / native-fact / stats / lang-basics with the
     libLLVM leg live and `make fuzz-driver` built first — the two legs this
     Windows box cannot run (libLLVM compile, standalone crash path) are real
-    CI legs. Seeds + docs 2026-10-20: `examples/ai-generated/norm-stats.lume`
+    CI legs. Windows wired 2026-10-20: `windows.yml` gained the gate legs
+    (make ai-verify over hello + norm-stats) under MSYS2 — the first real
+    bash run of `scripts/verify-ai-lume.sh` on Windows, libLLVM leg live via
+    the MSYS2 clang group's llvm-config, so bash/CRLF/quoting compatibility
+    of the script is CI-checked on both OSes. Seeds + docs 2026-10-20: `examples/ai-generated/norm-stats.lume`
     (plausible LLM program that must PASS — with an explicit `let p: float`
     annotation, because ordinary numeric builtins like `tdist_cdf` are NOT in
     the native backends' inference table, so an unannotated `let p = tdist_cdf(...)`

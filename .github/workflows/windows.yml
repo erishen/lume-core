@@ -75,6 +75,18 @@ jobs:
       - name: Fuzz driver seed replay
         run: make fuzz-driver
 
+      # TODO P4 AI self-verification: the bash gate itself has never run
+      # under a real Windows shell. This leg exercises
+      # scripts/verify-ai-lume.sh end to end - type check + interp / text /
+      # libLLVM output agreement - with the libLLVM leg live (the MSYS2
+      # clang group ships llvm-config, so all three legs judge instead of
+      # skipping). Any bash / CRLF / quoting incompatibility in the script
+      # surfaces here, not in the Linux job.
+      - name: AI self-verification gate (bash + 3 legs)
+        run: make ai-verify
+      - name: AI gate - generated stats seed
+        run: make ai-verify AI_VERIFY_FILE="examples/ai-generated/norm-stats.lume"
+
       - name: Run hello
         run: ./bin/lume-core examples/hello.lume
 
