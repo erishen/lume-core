@@ -795,3 +795,298 @@ void lume_srv_run(void)
 
     sock_close(listener);
 }
+
+/* ---------------- SQLite (P6 three-backend parity, 2026-10-20) ----------------
+ *
+ * Native sql_query / sql_write / sql_tx_* — compiled only when the lume-core
+ * build probed libsqlite3 (backend.c passes -DLUME_HAS_SQLITE=1 and the
+ * SQLITE_PREFIX include path). Same semantics as the interpreter's
+ * builtins_sql.c: query returns a list of row maps (rows capped at 200);
+ * write goes through the same single-statement whitelist (sql_guard.h,
+ * shared with the interpreter) and returns the affected count; tx_begin
+ * opens READWRITE|CREATE + BEGIN and returns an opaque handle.
+ *
+ * Differences that are structural, not bugs: the handle is a plain heap
+ * struct (no GC finalizer on the native side — commit/rollback free it; an
+ * abandoned open transaction leaks until process exit, documented in
+ * TODO.md P6). Errors flow through lume_error_set, the native twin of
+ * vm_set_error: inside try() they become {ok: null, err: "..."} and the
+ * sql builtin returns null/-1; outside try() they print and exit. */
+
+#if LUME_HAS_SQLITE
+#include <sqlite3.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include "sql_guard.h"
+
+/* rt.c container/error helpers referenced by the native sql builtins. */
+extern int64_t lume_list_len(const void *l);
+extern int64_t lume_list_push_i(void *l, int64_t v);
+extern int64_t lume_list_push_s(void *l, const char *v);
+extern int64_t lume_list_push_f(void *l, double v);
+extern int64_t lume_list_push_obj(void *l, void *v);
+extern void *lume_list_new(void);
+extern void *lume_map_new(void);
+extern int64_t lume_map_put_i(void *m, const char *k, int64_t v);
+extern int64_t lume_map_put_s(void *m, const char *k, const char *v);
+extern int64_t lume_map_put_f(void *m, const char *k, double v);
+extern int64_t lume_map_put_obj(void *m, const char *k, void *v);
+extern const char *lume_list_param_cstr(const void *l, int64_t i);
+extern void lume_error_set(const char *msg);
+
+/* lume_error_set takes one plain string; the sql builtins want formatted
+ * messages (the interpreter's vm_set_error does the formatting). */
+static void lume_sql_errf(const char *fmt, ...)
+{
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    lume_error_set(buf);
+}
+
+#define SQL_ROW_CAP 200
+
+typedef struct {
+    sqlite3 *db;
+    char *path;
+    int state;   /* 0 open, 1 committed, 2 rolled back */
+} LumeSqlTx;
+
+/* Busy timeout: same environment knob and defaults as the interpreter's
+ * builtins_sql.c. */
+static int lume_sql_busy_timeout_ms(void)
+{
+    const char *e = getenv("LUME_SQLITE_BUSY_TIMEOUT_MS");
+    if (!e || !e[0]) return 5000;
+    char *end = NULL;
+    long v = strtol(e, &end, 10);
+    if (!end || *end != '\0' || v < 0) return 5000;
+    if (v > 60000) v = 60000;
+    return (int)v;
+}
+
+/* DSN semantics identical to the interpreter: bare path wins; empty/NULL
+ * falls back to env SQLITE_DB. */
+static const char *lume_sql_db_path(const char *db)
+{
+    if (db && db[0]) return db;
+    const char *p = getenv("SQLITE_DB");
+    return (p && p[0]) ? p : NULL;
+}
+
+/* One row -> one LumeMap; SQL NULL becomes a null OBJ slot (prints "null",
+ * get() answers null — same as the interpreter's JSON round-trip). */
+static void sql_row_to_map(sqlite3_stmt *st, void *m)
+{
+    int ncol = sqlite3_column_count(st);
+    for (int i = 0; i < ncol; i++) {
+        const char *key = sqlite3_column_name(st, i);
+        if (!key) key = "col";
+        switch (sqlite3_column_type(st, i)) {
+        case SQLITE_INTEGER:
+            lume_map_put_i(m, key, sqlite3_column_int64(st, i));
+            break;
+        case SQLITE_FLOAT:
+            lume_map_put_f(m, key, sqlite3_column_double(st, i));
+            break;
+        case SQLITE_NULL:
+            lume_map_put_obj(m, key, NULL);
+            break;
+        default: {
+            /* sqlite3_column_text is a pointer into the statement's own
+             * buffer: the next sqlite3_step (or finalize) reuses it, so the
+             * map must take its own copy. map_put_s stores the pointer
+             * verbatim (rt.c map_put), which is fine for literals but fatal
+             * for volatile column text. */
+            const char *txt = (const char *)sqlite3_column_text(st, i);
+            lume_map_put_s(m, key, txt ? strdup(txt) : "");
+            break;
+        }
+    }
+    }
+}
+
+/* Bind a params LumeList to a prepared statement; the interpreter binds the
+ * same values as text (SQLite affinity converts numbers). */
+static void sql_bind_params(sqlite3_stmt *st, const void *params)
+{
+    int64_t n = params ? lume_list_len(params) : 0;
+    for (int64_t i = 0; i < n; i++) {
+        const char *v = lume_list_param_cstr(params, i);
+        if (v)
+            sqlite3_bind_text(st, (int)(i + 1), v, -1, SQLITE_TRANSIENT);
+        else
+            sqlite3_bind_null(st, (int)(i + 1));
+    }
+}
+
+void *lume_bi_sql_query(const char *db, const char *sql, void *params)
+{
+    const char *path = lume_sql_db_path(db);
+    if (!path) {
+        lume_sql_errf("sql_query: no database (set SQLITE_DB or pass a path)");
+        return NULL;
+    }
+    if (!sql || !sql[0]) { lume_error_set("sql_query: empty SQL"); return NULL; }
+    char body[SQL_MAX];
+    const char *verr = sql_validate_read(sql, body, sizeof body);
+    if (verr) {
+        lume_sql_errf("sql_query: %s", verr);
+        return NULL;
+    }
+    sqlite3 *sq = NULL;
+    if (sqlite3_open_v2(path, &sq, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        lume_sql_errf("sql_query: cannot open '%s' read-only", path);
+        if (sq) sqlite3_close(sq);
+        return NULL;
+    }
+    sqlite3_busy_timeout(sq, lume_sql_busy_timeout_ms());
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
+        lume_sql_errf("sql_query: %s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return NULL;
+    }
+    sql_bind_params(st, params);
+    void *out = lume_list_new();
+    while (lume_list_len(out) < SQL_ROW_CAP &&
+           sqlite3_step(st) == SQLITE_ROW) {
+        void *row = lume_map_new();
+        sql_row_to_map(st, row);
+        lume_list_push_obj(out, row);
+    }
+    sqlite3_finalize(st);
+    sqlite3_close(sq);
+    return out;
+}
+
+long long lume_bi_sql_write(const char *db, const char *sql, void *params)
+{
+    const char *path = lume_sql_db_path(db);
+    if (!path) {
+        lume_sql_errf("sql_write: no database (set SQLITE_DB or pass a path)");
+        return -1;
+    }
+    if (!sql || !sql[0]) { lume_error_set("sql_write: empty SQL"); return -1; }
+    char body[SQL_MAX];
+    const char *verr = sql_validate_write(sql, body, sizeof body);
+    if (verr) {
+        lume_sql_errf("sql_write: %s", verr);
+        return -1;
+    }
+    sqlite3 *sq = NULL;
+    if (sqlite3_open_v2(path, &sq, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        lume_sql_errf("sql_write: cannot open '%s' for writing", path);
+        if (sq) sqlite3_close(sq);
+        return -1;
+    }
+    sqlite3_busy_timeout(sq, lume_sql_busy_timeout_ms());
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
+        lume_sql_errf("sql_write: %s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return -1;
+    }
+    sql_bind_params(st, params);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        lume_sql_errf("sql_write: %s", sqlite3_errmsg(sq));
+        sqlite3_close(sq);
+        return -1;
+    }
+    long long affected = sqlite3_changes(sq);
+    sqlite3_close(sq);
+    return affected;
+}
+
+void *lume_bi_sql_tx_begin(const char *path)
+{
+    const char *p = lume_sql_db_path(path);
+    if (!p) {
+        lume_sql_errf("sql_tx_begin: no database (set SQLITE_DB or pass a path)");
+        return NULL;
+    }
+    sqlite3 *sq = NULL;
+    if (sqlite3_open_v2(p, &sq,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL)
+        != SQLITE_OK) {
+        lume_sql_errf("sql_tx_begin: cannot open '%s'", p);
+        if (sq) sqlite3_close(sq);
+        return NULL;
+    }
+    sqlite3_busy_timeout(sq, lume_sql_busy_timeout_ms());
+    char *m = NULL;
+    if (sqlite3_exec(sq, "BEGIN", NULL, NULL, &m) != SQLITE_OK) {
+        lume_sql_errf("sql_tx_begin: BEGIN: %s", m ? m : sqlite3_errmsg(sq));
+        sqlite3_free(m);
+        sqlite3_close(sq);
+        return NULL;
+    }
+    LumeSqlTx *tx = (LumeSqlTx *)calloc(1, sizeof *tx);
+    if (!tx) { sqlite3_close(sq); lume_error_set("sql_tx_begin: out of memory"); return NULL; }
+    tx->db = sq;
+    tx->path = strdup(p);
+    tx->state = 0;
+    return tx;
+}
+
+long long lume_bi_sql_tx_exec(void *tx, const char *sql, void *params)
+{
+    LumeSqlTx *t = (LumeSqlTx *)tx;
+    if (!t || !t->db || t->state != 0) {
+        lume_sql_errf("sql_tx_exec: transaction is already closed");
+        return -1;
+    }
+    if (!sql || !sql[0]) { lume_error_set("sql_tx_exec: empty SQL"); return -1; }
+    char body[SQL_MAX];
+    const char *verr = sql_validate_write(sql, body, sizeof body);
+    if (verr) {
+        lume_sql_errf("sql_tx_exec: %s", verr);
+        return -1;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(t->db, body, -1, &st, NULL) != SQLITE_OK) {
+        lume_sql_errf("sql_tx_exec: %s", sqlite3_errmsg(t->db));
+        return -1;
+    }
+    sql_bind_params(st, params);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        /* Transaction stays open; the caller decides commit vs rollback. */
+        lume_sql_errf("sql_tx_exec: %s", sqlite3_errmsg(t->db));
+        return -1;
+    }
+    return sqlite3_changes(t->db);
+}
+
+static long long sql_tx_end(void *tx, int commit)
+{
+    LumeSqlTx *t = (LumeSqlTx *)tx;
+    if (!t || !t->db || t->state != 0) {
+        lume_sql_errf("sql_tx_%s: transaction is already closed",
+                       commit ? "commit" : "rollback");
+        return 0;
+    }
+    char *m = NULL;
+    if (sqlite3_exec(t->db, commit ? "COMMIT" : "ROLLBACK", NULL, NULL, &m)
+        != SQLITE_OK) {
+        lume_sql_errf("sql_tx_%s: %s", commit ? "commit" : "rollback",
+                       m ? m : sqlite3_errmsg(t->db));
+        sqlite3_free(m);
+        return 0;
+    }
+    sqlite3_close(t->db);
+    t->db = NULL;
+    t->state = commit ? 1 : 2;
+    free(t->path);
+    free(t);
+    return 1;
+}
+
+long long lume_bi_sql_tx_commit(void *tx) { return sql_tx_end(tx, 1); }
+long long lume_bi_sql_tx_rollback(void *tx) { return sql_tx_end(tx, 0); }
+#endif /* LUME_HAS_SQLITE */

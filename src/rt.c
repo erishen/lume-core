@@ -759,6 +759,38 @@ void *lume_list_at_slot(const LumeList *l, int64_t i)
     return (void *)&l->items[i];
 }
 
+/* Convert one list element to the text sqlite wants (native sql builtins
+ * in bridge_native.c): strings pass through; int/float render like the
+ * interpreter's str(); bool renders 1/0; null (and containers) become
+ * NULL — the "bind SQL NULL" sentinel, exactly like the interpreter's
+ * sql_arg_bind. One static buffer is enough: the caller binds each
+ * parameter before the next call. */
+const char *lume_list_param_cstr(const LumeList *l, int64_t i)
+{
+    if (!l || i < 0 || i >= l->len) return NULL;
+    const LumeSlot *s = &l->items[i];
+    switch (s->tag) {
+    case LUME_SLOT_STR:
+        return s->str ? s->str : "";
+    case LUME_SLOT_INT: {
+        static char b[32];
+        snprintf(b, sizeof b, "%lld", (long long)s->num);
+        return b;
+    }
+    case LUME_SLOT_FLOAT: {
+        static char b[48];
+        double d;
+        memcpy(&d, &s->num, sizeof d);
+        snprintf(b, sizeof b, "%g", d);
+        return b;
+    }
+    case LUME_SLOT_BOOL:
+        return s->num ? "1" : "0";
+    default:
+        return NULL;                    /* null / container */
+    }
+}
+
 /* Print a single boxed value the way the interpreter would — used by
  * print(x) when x is an `any`-typed for-in variable. NULL prints the bare
  * word "null" (matching lume_print_null and the interpreter). Reuses

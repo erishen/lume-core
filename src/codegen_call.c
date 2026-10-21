@@ -454,6 +454,20 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare void @lume_srv_json_int(i8**, i64*, i64)\n");
     EMIT(g, "declare void @lume_srv_json_bool(i8**, i64*, i32)\n");
     EMIT(g, "declare void @lume_srv_json_end(i8**, i64*)\n");
+
+    /* Native SQLite runtime (src/bridge_native.c, compiled only when the
+     * build probed libsqlite3): sql_query returns a row-list (i8* to a
+     * LumeList) or null on error; sql_write returns the affected count
+     * (-1 on error); tx handles are opaque i8* (heap LumeSqlTx). */
+#if LUME_HAS_SQLITE
+    EMIT(g, "; native sqlite runtime (src/bridge_native.c)\n");
+    EMIT(g, "declare i8* @lume_bi_sql_query(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_sql_write(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_sql_tx_begin(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_sql_tx_exec(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_sql_tx_commit(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_sql_tx_rollback(i8*)\n");
+#endif
 }
 
 static Val cg_builtin(CG *g, Node *n)
@@ -551,6 +565,100 @@ static Val cg_builtin(CG *g, Node *n)
                         emit_instrf(g, type_prim(TY_INT),
                                     "call i64 @lume_bi_unlock_file()"));
     }
+
+#if LUME_HAS_SQLITE
+    /* SQLite (SPEC 6.4, P6 three-backend parity): sql_query / sql_write /
+     * sql_tx_* lower onto the native runtime in bridge_native.c, sharing
+     * the interpreter's multi-shape argument rules: sql_query(sql[, params])
+     * or sql_query(path, sql[, params]). The two-argument form is
+     * disambiguated by arg 1's static type — string means path, a list
+     * means params. tx_begin returns an opaque i8* handle (heap LumeSqlTx)
+     * typed as a string so if (tx) null-checks work like read_file. */
+    if (strcmp(bname, "sql_query") == 0 || strcmp(bname, "sql_write") == 0) {
+        int isq = strcmp(bname, "sql_query") == 0;
+        const char *fn = isq ? "lume_bi_sql_query" : "lume_bi_sql_write";
+        if (argc < 1 || argc > 3)
+            ERRV(g, "line %zu: %s() takes 1 to 3 arguments", n->line, bname);
+        Val *av = (Val *)xmalloc((size_t)argc * sizeof *av);
+        for (int i = 0; i < argc; i++) av[i] = cg_expr(g, n->as.call.args[i]);
+        int bad = 0;
+        for (int i = 0; i < argc; i++) if (!av[i].v) bad = 1;
+        if (bad) {
+            for (int i = 0; i < argc; i++) free(av[i].v);
+            free(av);
+            return (Val){ NULL, NULL, 0 };
+        }
+        const char *db = "null", *sql, *params = "null";
+        if (argc == 1) {
+            sql = av[0].v;
+        } else if (argc == 2) {
+            if (av[1].ty && av[1].ty->kind == TY_STRING) {
+                db = av[0].v;
+                sql = av[1].v;
+            } else {
+                sql = av[0].v;
+                params = av[1].v;
+            }
+        } else {
+            db = av[0].v;
+            sql = av[1].v;
+            params = av[2].v;
+        }
+        Type *rt = isq ? list_type() : type_prim(TY_INT);
+        Val r = val_take(rt,
+                         emit_instrf(g, rt,
+                                     "call %s @%s(i8* %s, i8* %s, i8* %s)",
+                                     isq ? "i8*" : "i64", fn,
+                                     db, sql, params));
+        for (int i = 0; i < argc; i++) free(av[i].v);
+        free(av);
+        return r;
+    }
+    if (strcmp(bname, "sql_tx_begin") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: sql_tx_begin() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) return (Val){ NULL, NULL, 0 };
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @lume_bi_sql_tx_begin(i8* %s)",
+                                     a.v));
+        free(a.v);
+        return r;
+    }
+    if (strcmp(bname, "sql_tx_exec") == 0) {
+        if (argc < 2 || argc > 3)
+            ERRV(g, "line %zu: sql_tx_exec() takes a handle, SQL and optional params",
+                 n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL, 0 };
+        if (!a.v || !b.v || (argc == 3 && !c.v)) {
+            free(a.v); free(b.v); free(c.v);
+            return (Val){ NULL, NULL, 0 };
+        }
+        Val r = val_take(type_prim(TY_INT),
+                         emit_instrf(g, type_prim(TY_INT),
+                                     "call i64 @lume_bi_sql_tx_exec(i8* %s, i8* %s, i8* %s)",
+                                     a.v, b.v, argc == 3 ? c.v : "null"));
+        free(a.v); free(b.v); free(c.v);
+        return r;
+    }
+    if (strcmp(bname, "sql_tx_commit") == 0 || strcmp(bname, "sql_tx_rollback") == 0) {
+        int isc = strcmp(bname, "sql_tx_commit") == 0;
+        if (argc != 1)
+            ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) return (Val){ NULL, NULL, 0 };
+        Val r = val_take(type_prim(TY_INT),
+                         emit_instrf(g, type_prim(TY_INT),
+                                     "call i64 @lume_bi_sql_tx_%s(i8* %s)",
+                                     isc ? "commit" : "rollback", a.v));
+        free(a.v);
+        return r;
+    }
+#endif /* LUME_HAS_SQLITE */
 
     if (b) {
         if (argc < 1)

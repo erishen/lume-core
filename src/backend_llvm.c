@@ -31,8 +31,10 @@
 
 #define RT_OBJ "build/rt.o"
 /* Same object the text backend links (backend.c's NATIVE_OBJ); carries
- * lume_srv_*, lume_bi_now and lume_bi_env. */
-#define NATIVE_OBJ "build/bridge_native.o"
+ * lume_srv_*, lume_bi_now, lume_bi_env and, when the build probed
+ * libsqlite3, the native sql_* runtime. Distinct name from the
+ * interpreter's build/bridge_native.o (see backend.c). */
+#define NATIVE_OBJ "build/bridge_native_sql.o"
 
 /* Requested by --no-pass; reset per process, so a single flag never leaks
  * from one compile into the next. */
@@ -297,8 +299,18 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
 #ifdef _WIN32
     win_link = 1;                        /* native windows build: winsock */
 #endif
+#if LUME_HAS_SQLITE
+    /* sqlite lib dir comes as its own macro (whitespace-free by contract);
+     * empty means the compiler's default paths (-lsqlite3 alone). */
+    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s %s%s -lsqlite3",
+             pick_cc(), out_path, obj_path, RT_OBJ, NATIVE_OBJ,
+             win_link ? "-lws2_32" : "-lm",
+             LUME_SQLITE_LIBDIR[0] ? "-L" : "",
+             LUME_SQLITE_LIBDIR[0] ? LUME_SQLITE_LIBDIR : "");
+#else
     snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s", pick_cc(), out_path,
              obj_path, RT_OBJ, NATIVE_OBJ, win_link ? "-lws2_32" : "-lm");
+#endif
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (ir kept in %s)",
                  out_path, ll_path);

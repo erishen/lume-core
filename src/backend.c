@@ -37,7 +37,12 @@
 #ifndef LUME_NATIVE_SRC
 #define LUME_NATIVE_SRC "src/bridge_native.c"
 #endif
-#define NATIVE_OBJ "build/bridge_native.o"
+/* The interpreter's own build also produces build/bridge_native.o (without
+ * the sql block — it only needs the serve{} runtime), so the native backends
+ * compile their own copy under a distinct name. Without this split the
+ * backend would link the interpreter's sql-free object and the sql_* calls
+ * would dangle as undefined symbols. */
+#define NATIVE_OBJ "build/bridge_native_sql.o"
 
 static struct { char path[PATH_MAX]; struct stat st; } rt_last;
 
@@ -181,10 +186,20 @@ int backend_build_native(char *err, size_t err_size)
 
     char cmd[PATH_MAX * 2];
     const char *cc = xt_target() ? pick_ir_cc() : pick_cc();
+#if LUME_HAS_SQLITE
+    /* bridge_native.c carries the native sql_* implementations, which
+     * #include <sqlite3.h>; the include path and the LUME_HAS_SQLITE flag
+     * come from the lume-core build (Makefile, SQLITE_PREFIX). */
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s %s -DLUME_HAS_SQLITE=1",
+             cc, xt_target() ? " -target " : "",
+             xt_target() ? xt_target() : "",
+             nat_obj_path(), LUME_NATIVE_SRC, LUME_SQLITE_INC);
+#else
     snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s",
              cc, xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
              nat_obj_path(), LUME_NATIVE_SRC);
+#endif
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "compiling the native server runtime failed");
         return 1;
@@ -271,11 +286,23 @@ int backend_native(const char *src_path, struct Node *prog,
 #ifdef _WIN32
     win_link = 1;                        /* native windows build: winsock */
 #endif
+#if LUME_HAS_SQLITE
+    /* sqlite lib dir comes as its own macro (whitespace-free by contract);
+     * empty means the compiler's default paths (-lsqlite3 alone). */
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s %s%s -lsqlite3",
+             pick_ir_cc(), xt_target() ? " -target " : "",
+             xt_target() ? xt_target() : "",
+             oname, out_path, rt_obj_path(), nat_obj_path(),
+             win_link ? "-lws2_32" : "-lm",
+             LUME_SQLITE_LIBDIR[0] ? "-L" : "",
+             LUME_SQLITE_LIBDIR[0] ? LUME_SQLITE_LIBDIR : "");
+#else
     snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s",
              pick_ir_cc(), xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
              oname, out_path, rt_obj_path(), nat_obj_path(),
              win_link ? "-lws2_32" : "-lm");
+#endif
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (IR kept in %s.ll)",
                  out_path, out_path);

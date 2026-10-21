@@ -311,6 +311,109 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_INT), r);
     }
 
+#if LUME_HAS_SQLITE
+    /* SQLite (SPEC 6.4, P6 three-backend parity) — mirror of the text
+     * backend's branches; the native runtime is the same bridge_native.c.
+     * sql_query(sql[, params]) / sql_query(path, sql[, params]) decided by
+     * arg 1's static type; a null i8* stands in for the absent db/params. */
+    if (strcmp(bname, "sql_query") == 0 || strcmp(bname, "sql_write") == 0) {
+        int isq = strcmp(bname, "sql_query") == 0;
+        if (argc < 1 || argc > 3)
+            ERRV(g, "line %zu: %s() takes 1 to 3 arguments", n->line, bname);
+        Val *av = (Val *)xmalloc((size_t)argc * sizeof *av);
+        for (int i = 0; i < argc; i++) av[i] = cg_expr(g, n->as.call.args[i]);
+        int bad = 0;
+        for (int i = 0; i < argc; i++) if (!av[i].v) bad = 1;
+        if (bad) {
+            for (int i = 0; i < argc; i++) free(av[i].v);
+            free(av);
+            return (Val){ NULL, NULL, 0 };
+        }
+        LLVMValueRef dbv = LLVMConstNull(g->i8ptr);
+        LLVMValueRef sqlv, pv = LLVMConstNull(g->i8ptr);
+        if (argc == 1) {
+            sqlv = av[0].v;
+        } else if (argc == 2) {
+            if (av[1].ty && av[1].ty->kind == TY_STRING) {
+                dbv = av[0].v;
+                sqlv = av[1].v;
+            } else {
+                sqlv = av[0].v;
+                pv = av[1].v;
+            }
+        } else {
+            dbv = av[0].v;
+            sqlv = av[1].v;
+            pv = av[2].v;
+        }
+        LLVMTypeRef pp[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+        LLVMTypeRef rty = isq ? g->i8ptr : g->i64;
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(rty, pp, 3, 0),
+                                        rt_decl(g, isq ? "lume_bi_sql_query"
+                                                        : "lume_bi_sql_write",
+                                               rty, pp, 3),
+                                        (LLVMValueRef[]){ dbv, sqlv, pv }, 3,
+                                        isq ? "sq" : "sw");
+        for (int i = 0; i < argc; i++) free(av[i].v);
+        free(av);
+        return val_make(isq ? list_type() : type_prim(TY_INT), r);
+    }
+    if (strcmp(bname, "sql_tx_begin") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: sql_tx_begin() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) return (Val){ NULL, NULL, 0 };
+        LLVMTypeRef pp[1] = { g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i8ptr, pp, 1, 0),
+                                        rt_decl(g, "lume_bi_sql_tx_begin",
+                                               g->i8ptr, pp, 1),
+                                        (LLVMValueRef[]){ a.v }, 1, "txb");
+        return val_make(type_prim(TY_STRING), r);
+    }
+    if (strcmp(bname, "sql_tx_exec") == 0) {
+        if (argc < 2 || argc > 3)
+            ERRV(g, "line %zu: sql_tx_exec() takes a handle, SQL and optional params",
+                 n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL, 0 };
+        if (!a.v || !b.v || (argc == 3 && !c.v)) {
+            free(a.v); free(b.v); free(c.v);
+            return (Val){ NULL, NULL, 0 };
+        }
+        LLVMTypeRef pp[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i64, pp, 3, 0),
+                                        rt_decl(g, "lume_bi_sql_tx_exec",
+                                               g->i64, pp, 3),
+                                        (LLVMValueRef[]){ a.v, b.v,
+                                                          argc == 3 ? c.v
+                                                                    : LLVMConstNull(g->i8ptr) },
+                                        3, "txe");
+        free(a.v); free(b.v); free(c.v);
+        return val_make(type_prim(TY_INT), r);
+    }
+    if (strcmp(bname, "sql_tx_commit") == 0 || strcmp(bname, "sql_tx_rollback") == 0) {
+        int isc = strcmp(bname, "sql_tx_commit") == 0;
+        if (argc != 1)
+            ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v) return (Val){ NULL, NULL, 0 };
+        LLVMTypeRef pp[1] = { g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i64, pp, 1, 0),
+                                        rt_decl(g, isc ? "lume_bi_sql_tx_commit"
+                                                       : "lume_bi_sql_tx_rollback",
+                                               g->i64, pp, 1),
+                                        (LLVMValueRef[]){ a.v }, 1,
+                                        isc ? "txc" : "txr");
+        return val_make(type_prim(TY_INT), r);
+    }
+#endif /* LUME_HAS_SQLITE */
+
     /* str() / int() / float(): which helper they need depends on the operand. */
     if (strcmp(bname, "str") == 0 || strcmp(bname, "int") == 0 ||
         strcmp(bname, "float") == 0 || strcmp(bname, "stringify") == 0 ||

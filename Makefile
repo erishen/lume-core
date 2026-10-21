@@ -209,12 +209,26 @@ endif
 # 所以用 -include sqlite3.h 让编译器代为预包含。
 # Windows/mingw 的 sysroot 没有 sqlite3,自然落进 stub 分支(与宿主
 # Makefile 摘 -lsqlite3 的口径一致)。
-SQLITE_CONF := $(shell printf 'int main(void){return 0;}\n' > build_conftest.c 2>/dev/null && $(CC) $(CFLAGS) -include sqlite3.h -c build_conftest.c -o build_conftest.o 2>/dev/null && echo 1; rm -f build_conftest.c build_conftest.o)
+# SQLITE_PREFIX points at a dev tree holding include/sqlite3.h and
+# lib/libsqlite3.a (e.g. a vendored mingw64 opt tree). Empty = the
+# compiler's default include/link paths (Linux libsqlite3-dev, macOS SDK).
+SQLITE_PREFIX ?=
+SQLITE_INC   := $(if $(SQLITE_PREFIX),-I$(SQLITE_PREFIX)/include,)
+SQLITE_LIBS  := $(if $(SQLITE_PREFIX),-L$(SQLITE_PREFIX)/lib -lsqlite3,-lsqlite3)
+SQLITE_CONF := $(shell printf 'int main(void){return 0;}\n' > build_conftest.c 2>/dev/null && $(CC) $(CFLAGS) $(SQLITE_INC) -include sqlite3.h -c build_conftest.c -o build_conftest.o 2>/dev/null && echo 1; rm -f build_conftest.c build_conftest.o)
 HAVE_SQLITE := $(if $(strip $(SQLITE_CONF)),1,0)
 ifeq ($(HAVE_SQLITE),1)
     SRCS     += src/builtins_sql.c
-    CFLAGS   += -DHAVE_SQLITE=1
-    LDFLAGS  += -lsqlite3
+    CFLAGS   += -DHAVE_SQLITE=1 -DLUME_HAS_SQLITE=1 $(SQLITE_INC)
+    LDFLAGS  += $(SQLITE_LIBS)
+    # Native backends (--compile-text / --compile): the runtime helper and
+    # the link step are built by backend.c / backend_llvm.c at lume-core
+    # runtime, so they need the sqlite include/lib flags spelled at build
+    # time. Backslash-escaped quotes (like LUME_RT_SRC above) survive the
+    # Windows command line; the library dir travels separately (no embedded
+    # spaces), and the backends append -lsqlite3 themselves.
+    CFLAGS += -DLUME_SQLITE_INC=\"$(SQLITE_INC)\" \
+              -DLUME_SQLITE_LIBDIR=\"$(if $(SQLITE_PREFIX),$(SQLITE_PREFIX)/lib,)\"
 endif
 CFLAGS += -DLUME_HAS_SQLITE=$(HAVE_SQLITE)
 
@@ -250,6 +264,16 @@ endif
 OBJS     := $(SRCS:src/%.c=build/%.o)
 # everything except main.o: the headless smoke driver calls the VM directly
 CORE_OBJS := $(filter-out build/main.o, $(OBJS))
+
+# bridge_native.o inside lume-core.exe must NOT carry the native-sql block
+# (-DLUME_HAS_SQLITE): the sql_* runtime references rt.c's container helpers
+# (lume_list_*/lume_map_*/lume_error_set), which exist only in the backend's
+# link (rt.o + bridge_native.o). The interpreter's copy of bridge_native.o
+# exists for the serve{} runtime (lume_srv_*, self-contained). The backends
+# recompile bridge_native.c themselves with -DLUME_HAS_SQLITE=1 (backend.c),
+# so the real sql symbols are built exactly once, at compile time.
+build/bridge_native.o: src/bridge_native.c
+	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) -c $< -o $@
 
 # 内部头:任一 * 片的共享声明变化,所有依赖它的 .o 都要重建
 INT_HDRS := $(wildcard src/*_internal.h)

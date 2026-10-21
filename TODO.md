@@ -469,12 +469,26 @@ The four-layer surface if started:
   a failing statement leaves the transaction OPEN; the caller decides
   commit vs rollback (rolled-back effects are already gone, the handle
   stays usable). Interpreted 2026-10-20.
-- [ ] Three-backend parity: interpreter + text + llvm emitters,
-  inference/boxing, `case-parity` + `native-consistency` gates — the
-  repo's classic double-copy sync trap. Still open: the native
-  backends have NO sql emission at all (sql_query/sql_write included),
-  so parity means porting the whole sql builtin set, not just the tx
-  four. Recorded here as the remaining half of P6.
+- [x] Three-backend parity (2026-10-21): interpreter + text + llvm
+  emitters — the whole sql builtin set now emits on both native
+  backends, not just the tx four. Makefile probes libsqlite3
+  (`SQLITE_PREFIX` → `HAVE_SQLITE=1`, isolated include/lib dirs),
+  `src/sql_guard.h` shares the interpreter's validation verbatim with
+  the native runtime (`bridge_native.c` `#if LUME_HAS_SQLITE`: query
+  read-only, write read-write, tx per-handle connection + BEGIN; errors
+  via `lume_error_set`), `codegen_call.c` + `llvm_cg_call.inc`
+  dispatch the two forms `(sql[,params])` vs `(path,sql[,params])`.
+  One native divergence, structural not a bug: the handle is a plain
+  heap struct with no GC finalizer — commit/rollback free it, an
+  abandoned open transaction leaks until process exit (the interpreter
+  closes via the OBJ_SQLTX finalizer). Fixed en route: sql row maps
+  must copy `sqlite3_column_text` (a volatile per-step buffer; map_put
+  stores the string pointer verbatim), which corrupted TEXT values and
+  crashed the smoke program. Verified: `native-sql-smoke` on the text
+  and llvm backends prints the interpreter's exact expected output;
+  sqlite regression 58 PASS + 3 known sqlite<3.35 DML-CTE diffs. Host
+  sqlite_tool.c needs no merge — validation semantics unchanged (the
+  guard move to sql_guard.h is behavior-preserving).
 
 Interpreter implementation (2026-10-20, user-level override of the
 "deliberately not started / Done when" gate): `sql_tx_begin(path)` →
@@ -510,8 +524,8 @@ this gated on — closures capturing function locals on the llvm backend
 — landed 2026-10-18, see P7; a transaction handle behind a closure
 still hits the general capture machinery, and the top-level half of P7
 would apply to it too.) Status 2026-10-20: interpreter closed under a
-user override of the gate; the remaining open half is native-backend
-sql emission (parity item above).
+user override of the gate; parity (native-backend sql emission) closed
+2026-10-21, see the parity item above.
 
 ## P7 — LLVM closure capture (ported 2026-10-18) + top-level env write path (closed 2026-10-18)
 
