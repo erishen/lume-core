@@ -7,10 +7,9 @@
 //
 //   scripts/verify-ai-lume.sh examples/ai-generated/semantic-sort.lume
 //
-// The three declarations:
+// The two declarations:
 //   sorted  — refers to sorted_returns (defined via let, printed);
-//   total   — refers to total (defined via let, printed);
-//   spread  — refers to hi and lo (both defined and printed).
+//   total   — refers to total (defined via let, printed).
 // Nothing is declared that the program does not define and print.
 
 //@semantic sorted: sorted_returns is ascending

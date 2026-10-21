@@ -11,8 +11,11 @@
 #
 #   //@semantic <label>: <expr>
 #
-#   e.g.   //@semantic p-bound: 0 < p < 1
+#   e.g.   //@semantic p_bound: 0 < p < 1
 #          //@semantic sorted: the portfolio is sorted ascending
+#   (labels are [a-z_][a-z0-9_]* — use underscores, not hyphens; a
+#    hyphenated label is not matched and the declaration is silently
+#    skipped as an empty contract.)
 #
 # A semantic declaration is a contract the program makes about itself:
 #   * every identifier the expr refers to must be DEFINED in the program

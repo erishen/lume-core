@@ -127,6 +127,8 @@ claims. `assert_semantic()` — the old open question — is now closed as a
 **static declaration contract** enforced by
 `scripts/verify-ai-semantics.sh`, which the gate runs before any leg.
 The validator never executes the program; it checks the source:
+(labels are `[a-z_][a-z0-9_]*` — underscores, not hyphens, so a
+hyphenated label like `p-bound` would not match and be silently skipped).
 
 ```
 //@semantic <label>: <expr>
@@ -135,7 +137,7 @@ The validator never executes the program; it checks the source:
 e.g.
 
 ```
-//@semantic p-bound: 0 < p < 1
+//@semantic p_bound: 0 < p < 1
 //@semantic sorted: the portfolio is sorted ascending
 ```
 
