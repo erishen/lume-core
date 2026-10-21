@@ -1,0 +1,12 @@
+// Module library for the nested-local-function cname-collision test:
+// a module function that nests BOTH a local function and a lambda, so its
+// synthetic __lume_lf_* / __lume_clo_* counters collide with the entry's.
+export func apply(n: int) {
+  func twice(x) { return x * 2; }
+  let g = (y) => y + 1;
+  return twice(g(n));
+}
+export func base() {
+  func twice(x) { return x * 2; }
+  return twice(5);
+}

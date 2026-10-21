@@ -169,12 +169,21 @@ Type *infer_node_type(CG *g, Node *n)
         const char *name = callee->as.var.name;
 
         /* Closure-valued variable call: `f(3)` where f : func. The variable's
-         * type carries a back-pointer to the lambda node. */
+         * type carries a back-pointer to the lambda node. The Sig's return
+         * type is read live: `funclit.ret` only receives the resolved value
+         * after the inference fixed point exits, so a parameter typed from
+         * this call (`twice(g(n))` where twice is a local function) would
+         * never fill inside the loop if the AST slot were the source. The
+         * member-call branch above already reads the Sig the same way. */
         {
             Type *ct = infer_node_type(g, n->as.call.callee);
             if (ct && ct->kind == TY_FUNC && ct->func &&
-                ct->func->type == N_FUNC_LIT)
+                ct->func->type == N_FUNC_LIT) {
+                Sig *ls = ct->func->as.funclit.cname
+                    ? sig_find(&g->sigs, ct->func->as.funclit.cname) : NULL;
+                if (ls && ls->ret) return ls->ret;
                 return ct->func->as.funclit.ret;
+            }
         }
 
         /* Higher-order builtins that consume a closure: map/filter/reduce.

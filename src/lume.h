@@ -176,8 +176,10 @@ bool is_builtin_name(const char *name);
  * match the source name). Returns false + errbuf when two locals in one
  * enclosing function share a name — the rewrite would otherwise rename
  * both call sets to the second cname. Runs before the checker and again
- * (as a guard) before native codegen. */
-bool lume_resolve_localfns(Node *prog, char *errbuf, size_t errbuf_size);
+ * (as a guard) before native codegen. `mod_idx` is the module's index in the
+ * multi-file build (0 = entry / single file): synthetic cnames carry it so
+ * __lume_lf_* never collides across files. */
+bool lume_resolve_localfns(Node *prog, int mod_idx, char *errbuf, size_t errbuf_size);
 
 /* Every N_FUNC_DECL in the program, top-level and nested (locals), in
  * pre-order. Writes at most `cap` entries into `out` (which may be NULL);

@@ -742,8 +742,15 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
 
     /* Local functions first: stamp cnames and rewrite the call sites inside
      * each enclosing function, so every pass below sees the hoisted names
-     * (SPEC §4.14). Idempotent; the native backends re-run it as a guard. */
-    if (!lume_resolve_localfns(prog, errbuf, errbuf_size)) return false;
+     * (SPEC §4.14). Idempotent; the native backends re-run it as a guard.
+     * mods[0] is the entry module (loader registry order), so `self`'s index
+     * seeds the synthetic-name namespace — a module that nests local
+     * functions must not collide with the entry's or another module's. */
+    int mod_idx = 0;
+    if (mods && mod_count > 1)
+        for (int i = 0; i < mod_count; i++)
+            if (mods[i] == self) { mod_idx = i; break; }
+    if (!lume_resolve_localfns(prog, mod_idx, errbuf, errbuf_size)) return false;
 
     Checker c;
     memset(&c, 0, sizeof(c));

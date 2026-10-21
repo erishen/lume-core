@@ -362,8 +362,22 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   port — i.e. a winsock/host-environment fault, not an emitter defect; the
   same check is expected to pass on CI/Linux where serve-env's non-listening
   legs already run.
-  **Still open**: module functions that nest lambdas or local functions
-  (cname counters collide across files) are a known boundary.
+  **Closed 2026-10-21**: module functions that nest lambdas or local
+  functions are now fully supported — the old boundary (cname counters
+  colliding across files) is fixed. Synthetic names carry the module index
+  (`__lume_lf_<m>_<n>` / `__lume_clo_<m>_<n>`; entry keeps the historic
+  `__lume_lf_N`/`__lume_clo_N` spelling), both emitters collect module-file
+  lambdas (not just the entry's), and a plain call inside a module function
+  resolves "<ns>.<name>" first via the per-emit `cur_ns`. En route, a
+  deeper inference gap surfaced and was fixed: `infer_node_type` read a
+  lambda's return type from the AST slot, which the inference fixed point
+  only writes back *after* the loop — a parameter typed from a lambda call
+  (`twice(g(n))` where twice is a local function) never filled. It now
+  reads the Sig's live return type (same as the member-call branch).
+  Pinned by tests/ns-lf.lume + tests/ns-lib-lf.lume: entry and module both
+  nest a local function and a lambda; interp/text/libLLVM all print
+  39/10. Remaining ns note: a module function calling *another module's*
+  member (module-side imports) is still untyped territory.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,

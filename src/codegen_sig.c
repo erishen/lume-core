@@ -71,6 +71,10 @@ typedef struct NodeVec { Node **v; int n, cap; } NodeVec;
 
 typedef struct LfCtx {
     int    counter;                 /* synthetic-name source */
+    int    mod_idx;                 /* module index (multi-file build): local-function
+                                     * cnames carry it so __lume_lf_* never collides
+                                     * across files (0 = entry / single file, which
+                                     * keeps the historic __lume_lf_N spelling) */
     bool   failed;
     char  *err;
     size_t err_size;
@@ -457,7 +461,10 @@ static void ensure_lambda_registered(CG *g, Node *lambda)
     if (lambda->as.funclit.cname) return;
 
     char buf[32];
-    snprintf(buf, sizeof buf, "__lume_clo_%d", g->nclo++);
+    if (g->mod_idx > 0)
+        snprintf(buf, sizeof buf, "__lume_clo_%d_%d", g->mod_idx, g->nclo++);
+    else
+        snprintf(buf, sizeof buf, "__lume_clo_%d", g->nclo++);
     lambda->as.funclit.cname = arena_strdup(buf);
 
     sig_push(&g->sigs, buf, lambda->as.funclit.ret,
@@ -986,7 +993,10 @@ static void lf_walk_fn_body(LfCtx *c, Node *body)
         Node *L = v.v[i];
         if (L->as.func.cname) continue;
         char buf[32];
-        snprintf(buf, sizeof buf, "__lume_lf_%d", c->counter++);
+        if (c->mod_idx > 0)
+            snprintf(buf, sizeof buf, "__lume_lf_%d_%d", c->mod_idx, c->counter++);
+        else
+            snprintf(buf, sizeof buf, "__lume_lf_%d", c->counter++);
         L->as.func.cname = arena_strdup(buf);
         lf_rename_calls(body, L->as.func.name, L->as.func.cname);
     }
@@ -997,7 +1007,7 @@ static void lf_walk_fn_body(LfCtx *c, Node *body)
     free(v.v);
 }
 
-bool lume_resolve_localfns(Node *prog, char *errbuf, size_t errbuf_size)
+bool lume_resolve_localfns(Node *prog, int mod_idx, char *errbuf, size_t errbuf_size)
 {
     if (errbuf && errbuf_size) errbuf[0] = '\0';
     if (!prog || prog->type != N_PROGRAM) return true;
@@ -1005,6 +1015,7 @@ bool lume_resolve_localfns(Node *prog, char *errbuf, size_t errbuf_size)
     LfCtx c = {0};
     c.err      = errbuf;
     c.err_size = errbuf_size;
+    c.mod_idx  = mod_idx;
 
     NodeVec fns = {0};
     fn_collect_walk(prog, &fns);
@@ -1731,8 +1742,11 @@ static int infer_program(CG *g, Node *prog, int check_unresolved_params,
     if (!prog || prog->type != N_PROGRAM) return 0;
 
     /* Local functions first: it stamps cnames and rewrites call sites, and
-     * the signature collection below must see those names. Idempotent. */
-    if (!lume_resolve_localfns(prog, err, err_size)) return -1;
+     * the signature collection below must see those names. Idempotent.
+     * The CG's mod_idx seeds the synthetic-name namespace in the multi-file
+     * build (set by codegen_infer_signatures_multi; 0 = entry / single file,
+     * which keeps the historic __lume_lf_N spelling). */
+    if (!lume_resolve_localfns(prog, g->mod_idx, err, err_size)) return -1;
 
     /* No IrBuf is attached: the pass only types nodes, it never emits. */
     g->prog = prog;
@@ -1836,6 +1850,7 @@ int codegen_infer_signatures_multi(Node **mods, const char **nsnames, int nmods,
         if (!prog || prog->type != N_PROGRAM || !ns) continue;
         CG g;
         memset(&g, 0, sizeof g);
+        g.mod_idx = m;   /* synthetic names in this file carry the module index */
         if (infer_program(&g, prog, 0, err, err_size) != 0) rc = -1;
 
         if (!rc) {

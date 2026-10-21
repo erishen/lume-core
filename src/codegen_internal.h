@@ -135,6 +135,10 @@ typedef struct {
                              * which is also the scan L_top reuses.            */
     Sig   *cur;             /* signature of the function currently emitted   */
     Type  *expect;          /* type the expression context wants (struct lits) */
+    const char *cur_ns;     /* alias of the module whose function is being
+                             * emitted (multi-file build): a plain call inside a
+                             * module body first resolves "<ns>.<name>", then
+                             * the bare name. NULL for the entry / single file. */
 
     /* Set while the driver pre-scans / emits the synthetic L_top: the scan
      * then lifts every top-level `let` and for-in variable into `gvars` (an
@@ -147,6 +151,10 @@ typedef struct {
     int    tid;             /* temp/id counter            */
     int    sid;             /* string constant counter    */
     int    nclo;            /* closure mangled-name counter */
+    int    mod_idx;         /* module index in the multi-file build: synthetic
+                             * closure cnames carry it so __lume_clo_* never
+                             * collides across files (0 = entry / single file,
+                             * which keeps the historic __lume_clo_N spelling) */
 
     int   *brk; int nbrk, cbrk;    /* stack of enclosing loop labels */
     int   *cnt; int ncnt, ccnt;

@@ -515,13 +515,13 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     /* Local functions first, in every file: stamp cnames and rewrite call
      * sites before any signature table is built (idempotent — the driver's
      * inference pass and the checker already ran this; this is the
-     * last-resort guard). (Each file's cname counter starts at zero, so a
-     * module that nests local functions inside module functions can collide
-     * with the entry's — a known boundary, the pinned fixtures have none.) */
+     * last-resort guard). Each file's cname carries its module index, so a
+     * module that nests local functions inside module functions cannot
+     * collide with the entry's or another module's. */
     for (int m = 0; m < nmods; m++) {
         Node *mp = mods[m];
         if (!mp || mp->type != N_PROGRAM) continue;
-        if (!lume_resolve_localfns(mp, err, err_size)) {
+        if (!lume_resolve_localfns(mp, m, err, err_size)) {
             LLVMDisposeBuilder(cg.ab);
             LLVMDisposeModule(cg.mod);
             LLVMContextDispose(ctx);
@@ -616,6 +616,7 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     }
     /* Every function gets a define: top-level ones and hoisted locals alike. */
     Node **fns  = nfns  > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfns)  : NULL;
+    int *fnmod = nfns > 0 ? (int *)xmalloc(sizeof(int) * (size_t)nfns) : NULL;
     if (nfns > 0) {
         int fi = 0;
         for (int m = 0; m < nmods; m++) {
@@ -623,6 +624,7 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
             if (!mp || mp->type != N_PROGRAM) continue;
             int mn = lume_collect_funcs(mp, NULL, 0);
             if (mn > 0) lume_collect_funcs(mp, fns + fi, mn);
+            for (int k = 0; k < mn; k++) fnmod[fi + k] = m;
             fi += mn;
         }
     }
@@ -687,8 +689,16 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     }
 
     for (int i = 0; i < nfns; i++) {
+        /* A plain call inside a module function resolves "<ns>.<name>" first
+         * (the multi-file registration key), so same-module functions and the
+         * module's own local functions link even though the body spells bare
+         * names. Entry functions keep cur_ns NULL (bare-key lookup only). */
+        cg.cur_ns = (fnmod[i] > 0 && nsnames && nsnames[fnmod[i]])
+                        ? nsnames[fnmod[i]] : NULL;
         cg_function(&cg, fns[i]);
     }
+    cg.cur_ns = NULL;
+    free(fnmod);
 
     if (ntops > 0) {
         Node body;
@@ -727,14 +737,20 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     free(fns); free(tops);
 
     /* Closures: every lambda the signature pass named gets its own define.
-     * The bodies are attached here, after the named functions, through the
-     * same get-or-insert path a forward call used when the lambda literal was
-     * boxed — so the symbol cg_funclit declared and called is the one that
-     * gains a body. */
+     * All module files are walked (not just the entry), and every file's
+     * lambda carries its module index in the cname — the fixed form of the
+     * former "module lambdas are a known boundary" note. The bodies are
+     * attached here, after the named functions, through the same get-or-insert
+     * path a forward call used when the lambda literal was boxed — so the
+     * symbol cg_funclit declared and called is the one that gains a body. */
     {
         Node **clos = NULL;
         int nclos = 0, capc = 0;
-        collect_lambdas(prog, &clos, &nclos, &capc);
+        for (int m = 0; m < nmods; m++) {
+            Node *mp = mods[m];
+            if (mp && mp->type == N_PROGRAM)
+                collect_lambdas(mp, &clos, &nclos, &capc);
+        }
         for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
         free(clos);
     }

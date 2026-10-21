@@ -1643,7 +1643,17 @@ Val cg_call(CG *g, Node *n)
         }
 
         name = callee->as.var.name;
-        s = sig_find(&g->sigs, name);
+        s = NULL;
+        if (g->cur_ns) {
+            /* Inside a module function, a plain call spells the bare name but
+             * the multi-file signature table registered it under "<ns>.<name>"
+             * (see codegen_emit_ir_multi pass 1); resolve the module key first,
+             * then fall back to the bare name (entry functions / builtins). */
+            char qname[512];
+            snprintf(qname, sizeof qname, "%s.%s", g->cur_ns, name);
+            s = sig_find(&g->sigs, qname);
+        }
+        if (!s) s = sig_find(&g->sigs, name);
         if (!s) {
             /* Only after sig_find: a script that shadows a builtin name with its
              * own function must still call the script's. */

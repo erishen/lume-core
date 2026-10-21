@@ -72,6 +72,11 @@ typedef struct {
     SDefs  structs;                /* every `type X = {...}`                 */
     Type  *expect;                 /* type the surrounding context wants     */
     Type  *cur_ret;                /* return type of the function emitted    */
+    const char *cur_ns;            /* alias of the module whose function is
+                                    * being emitted (multi-file build): a plain
+                                    * call inside a module body first resolves
+                                    * "<ns>.<name>", then the bare name. NULL
+                                    * for the entry / single file. */
     StructEnt structs_types[MAX_STRUCT_TYPES];
     int    structs_types_n;
 

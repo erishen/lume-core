@@ -1,0 +1,14 @@
+// Entry for the nested-local-function cname-collision test: this module
+// nests a local function and a lambda of its own, so its __lume_lf_0 /
+// __lume_clo_0 land on the same synthetic names the module uses.
+import "ns-lib-lf.lume" as lib;
+
+func wrap(n) {
+  func twice(x) { return x + 1; }
+  let g = (y) => y * 10;
+  let t = twice(g(n));
+  return lib.apply(n) + t;
+}
+let r = wrap(3);
+print(r);
+print(lib.base());

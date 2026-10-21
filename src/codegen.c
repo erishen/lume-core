@@ -385,7 +385,7 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
     /* Local functions first: stamp cnames and rewrite call sites before any
      * signature table is built (idempotent — the checker already ran this;
      * this is the guard for paths that compile without checking). */
-    if (!lume_resolve_localfns(prog, err, err_size)) {
+    if (!lume_resolve_localfns(prog, 0, err, err_size)) {
         cg_free(&cg);
         return NULL;
     }
@@ -740,7 +740,7 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
     for (int m = 0; m < nmods; m++) {
         Node *mp = mods[m];
         if (!mp || mp->type != N_PROGRAM) continue;
-        if (!lume_resolve_localfns(mp, err, err_size)) {
+        if (!lume_resolve_localfns(mp, m, err, err_size)) {
             cg_free(&cg);
             return NULL;
         }
@@ -828,6 +828,7 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
         nfns += lume_collect_funcs(mp, NULL, 0);
     }
     Node **fns  = nfns > 0 ? xmalloc(sizeof(Node *) * (size_t)nfns) : NULL;
+    int *fnmod = nfns > 0 ? xmalloc(sizeof(int) * (size_t)nfns) : NULL;
     if (nfns > 0) {
         int fi = 0;
         for (int m = 0; m < nmods; m++) {
@@ -835,6 +836,7 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
             if (!mp || mp->type != N_PROGRAM) continue;
             int mn = lume_collect_funcs(mp, NULL, 0);
             if (mn > 0) lume_collect_funcs(mp, fns + fi, mn);
+            for (int k = 0; k < mn; k++) fnmod[fi + k] = m;
             fi += mn;
         }
     }
@@ -940,7 +942,17 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
         EMIT(&cg, "\n");
 
     /* ---- pass 2: one LLVM function per Lume function ---- */
-    for (int i = 0; i < nfns; i++) cg_function(&cg, fns[i]);
+    for (int i = 0; i < nfns; i++) {
+        /* A plain call inside a module function resolves "<ns>.<name>" first
+         * (the multi-file registration key), so same-module functions and the
+         * module's own local functions link even though the body spells bare
+         * names. Entry functions keep cur_ns NULL (bare-key lookup only). */
+        cg.cur_ns = (fnmod[i] > 0 && nsnames && nsnames[fnmod[i]])
+                        ? nsnames[fnmod[i]] : NULL;
+        cg_function(&cg, fns[i]);
+    }
+    cg.cur_ns = NULL;
+    free(fnmod);
 
     Node *top_fn = NULL;
     if (ntops > 0) {
@@ -976,12 +988,17 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
         irbuf_free(&cg.handlers);
     }
     /* Closures: every lambda the signature pass named gets its own define.
-     * (Module functions' lambdas are a known boundary — collect_lambdas
-     * walks the entry only; the pinned fixtures have none in modules.) */
+     * All module files are walked (not just the entry), and every file's
+     * lambda carries its module index in the cname — the fixed form of the
+     * former "module lambdas are a known boundary" note. */
     {
         Node **clos = NULL;
         int nclos = 0, capc = 0;
-        collect_lambdas(prog, &clos, &nclos, &capc);
+        for (int m = 0; m < nmods; m++) {
+            Node *mp = mods[m];
+            if (mp && mp->type == N_PROGRAM)
+                collect_lambdas(mp, &clos, &nclos, &capc);
+        }
         for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
         free(clos);
     }
