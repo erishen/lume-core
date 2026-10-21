@@ -22,9 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Linux deps: libcrypt for -lcrypt, libLLVM for the second emitter,
+      # libsqlite3-dev so the sql cross-backend legs in tests/native_backends.sh
+      # (P6) are real legs on Linux rather than a skip.
       - name: Linux deps (libcrypt for -lcrypt, libLLVM for the second emitter)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
+        run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev libsqlite3-dev
 
       # `make check` is the fast leg: the parser/type checker against every
       # example. `make test` adds the interpreter unit tests, the crypto unit
