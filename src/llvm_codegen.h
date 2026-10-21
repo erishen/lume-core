@@ -11,6 +11,12 @@ struct Node;                  /* the vendored lume AST (upstream/lume.h) */
 /* Initialize libLLVM once — targets, asm printers. Idempotent, main-thread. */
 void llvm_codegen_init_targets(void);
 
+/* Host target triple for the LLVM backend, normalised for Windows mingw
+ * ("x86_64-w64-mingw32" → "x86_64-w64-windows-gnu", the spelling that selects
+ * COFF objects on the msys2/mingw libLLVM). Caller disposes with
+ * LLVMDisposeMessage. */
+char *llvm_cg_host_triple(void);
+
 /* Build (and hand back) the LLVM module for an already type-checked program.
  *
  * The walker never emits IR *text*: values are built through LLVMBuild*, so

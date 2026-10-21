@@ -78,6 +78,45 @@ static char *xstrdup(const char *s)
     return p;
 }
 
+/* Host target triple for the LLVM backend, normalised for Windows mingw.
+ *
+ * The msys2/mingw libLLVM reports its default triple as "x86_64-w64-mingw32".
+ * LLVM parses that spelling with an empty OS component, the object-format
+ * picker falls back to ELF, and the mingw lld refuses to link the emitted
+ * object ("unknown file type"). The canonical "x86_64-w64-windows-gnu"
+ * spelling — what llvm-config --host-target reports for this build —
+ * parses with OS=windows and selects COFF. Normalising here keeps the module
+ * triple and the target-machine triple on the spelling that yields linkable
+ * objects on Windows; other hosts are untouched (caller disposes the result
+ * with LLVMDisposeMessage, which is free()). */
+char *llvm_cg_host_triple(void)
+{
+    char *triple = LLVMGetDefaultTargetTriple();
+    if (!triple) return NULL;
+#ifdef _WIN32
+    char *p = strstr(triple, "-mingw32");
+    if (p) {
+        /* p points at "-mingw32" (8 chars): keep the prefix *through* that
+         * dash (pre+1 bytes), then the canonical "windows-gnu", then whatever
+         * followed "mingw32". */
+        size_t pre = (size_t)(p - triple);
+        const char *tail_src = p + strlen("mingw32") + 1;
+        size_t tail = strlen(tail_src);
+        size_t n = pre + 1 + strlen("windows-gnu") + tail + 1;
+        char *fixed = (char *)malloc(n);
+        if (fixed) {
+            memcpy(fixed, triple, pre + 1);
+            memcpy(fixed + pre + 1, "windows-gnu", strlen("windows-gnu"));
+            strcpy(fixed + pre + 1 + strlen("windows-gnu"), tail_src);
+            LLVMDisposeMessage(triple);
+            return fixed;
+        }
+        /* malloc failed: fall through to the unnormalised triple */
+    }
+#endif
+    return triple;
+}
+
 static void asgs_free(Asgs *a)
 {
     /* name strings are arena memory now (TODO.md P2 Stage 3): only the
@@ -464,8 +503,10 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     cg.i32     = LLVMInt32TypeInContext(ctx);
     cg.mod     = LLVMModuleCreateWithNameInContext(mod_name ? mod_name : "lume", ctx);
     /* The triple comes from libLLVM itself: no TARGET_TRIPLE injection, no
-     * -Woverride-module fight, no generic-target ABI surprises. */
-    char *triple = LLVMGetDefaultTargetTriple();
+     * -Woverride-module fight, no generic-target ABI surprises. llvm_cg_host_triple
+     * additionally normalises the msys2/mingw default spelling so the emitted
+     * objects are COFF, not ELF (see its comment in this file). */
+    char *triple = llvm_cg_host_triple();
     if (triple) { LLVMSetTarget(cg.mod, triple); LLVMDisposeMessage(triple); }
 
     Node **top  = prog->as.program.stmts;

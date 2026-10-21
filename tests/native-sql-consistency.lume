@@ -1,0 +1,48 @@
+// Native sql cross-backend consistency fixture.
+//
+// Requires a build that probed libsqlite3 (HAVE_SQLITE): the interpreter
+// refuses sql_* without it ("unavailable") and the emitters refuse to emit
+// ("call to unknown function"). tests/native_backends.sh probes once, then
+// runs this script through every available leg and diffs the outputs —
+// exactly the same protocol as tests/native-consistency.lume.
+//
+// The database path comes from the SQLITE_DB environment variable (a bare ""
+// falls back to it on all three backends), so every leg shares one scratch
+// DB and the outputs stay machine-independent. Each block starts by emptying
+// the table, keeping the fixture idempotent across legs and reruns. Values
+// that depend on prior rows (sql_write's affected count) are deliberately
+// not printed; only query results and the tx bools are, and those are
+// deterministic.
+
+// sql_write opens READWRITE (no CREATE), so the first statement must come
+// from a tx handle (READWRITE|CREATE) — it both creates the scratch DB and
+// the table, keeping sql_write blocks below on a writable file.
+let create_db: string = sql_tx_begin("");
+sql_tx_exec(create_db, "CREATE TABLE IF NOT EXISTS t (a INTEGER, b TEXT)");
+sql_tx_commit(create_db);
+
+sql_write("", "DELETE FROM t WHERE a > -1");
+sql_write("", "INSERT INTO t (a,b) VALUES (1, 'x')");
+sql_write("", "INSERT INTO t (a,b) VALUES (2, 'y')");
+let q1: list = sql_query("", "SELECT a, b FROM t ORDER BY a");
+print(q1);
+let n1: list = sql_query("", "SELECT count(*) AS n FROM t");
+print(n1);
+
+let boot: string = sql_tx_begin("");
+sql_tx_exec(boot, "INSERT INTO t (a,b) VALUES (3, 'z')");
+print(sql_tx_commit(boot));
+let n2: list = sql_query("", "SELECT count(*) AS n FROM t");
+print(n2);
+
+let rb: string = sql_tx_begin("");
+sql_tx_exec(rb, "INSERT INTO t (a,b) VALUES (4, 'w')");
+print(sql_tx_rollback(rb));
+let n3: list = sql_query("", "SELECT count(*) AS n FROM t");
+print(n3);
+
+let tx: string = sql_tx_begin("");
+sql_tx_exec(tx, "INSERT INTO t (a,b) VALUES (?, ?)", [5, "v"]);
+print(sql_tx_commit(tx));
+let q4: list = sql_query("", "SELECT a, b FROM t WHERE a = 5");
+print(q4);

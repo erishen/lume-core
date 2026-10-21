@@ -651,12 +651,20 @@ static Val cg_builtin(CG *g, Node *n)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v) return (Val){ NULL, NULL, 0 };
-        Val r = val_take(type_prim(TY_INT),
-                         emit_instrf(g, type_prim(TY_INT),
-                                     "call i64 @lume_bi_sql_tx_%s(i8* %s)",
-                                     isc ? "commit" : "rollback", a.v));
-        free(a.v);
-        return r;
+        /* The interpreter's sql_tx_commit/rollback return bool (print shows
+         * "true"/"false"), so the emitted Val must be typed TY_BOOL and its
+         * IR value must be an i1 — print()'s bool arm widens i1 to i64 for
+         * lume_print_bool, and every other bool consumer assumes i1. The
+         * runtime helper returns i64, so truncate after the call. */
+        char *cv = emit_instrf(g, type_prim(TY_INT),
+                               "call i64 @lume_bi_sql_tx_%s(i8* %s)",
+                               isc ? "commit" : "rollback", a.v);
+        if (!cv) { free(a.v); return (Val){ NULL, NULL, 0 }; }
+        char *bv = emit_instrf(g, type_prim(TY_BOOL),
+                               "trunc i64 %s to i1", cv);
+        free(a.v); free(cv);
+        if (!bv) return (Val){ NULL, NULL, 0 };
+        return val_take(type_prim(TY_BOOL), bv);
     }
 #endif /* LUME_HAS_SQLITE */
 

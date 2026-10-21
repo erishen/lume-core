@@ -84,7 +84,12 @@ static LLVMTargetMachineRef make_target_machine(char *err, size_t err_size)
 {
     llvm_codegen_init_targets();
 
-    char *triple = LLVMGetDefaultTargetTriple();
+    /* llvm_cg_host_triple normalises the msys2/mingw default
+     * "x86_64-w64-mingw32" to "x86_64-w64-windows-gnu": the old spelling
+     * parses with an empty OS, so libLLVM emits an ELF object and the mingw
+     * lld refuses it ("unknown file type") — every --compile-llvm link died
+     * on Windows for that reason. The canonical spelling selects COFF. */
+    char *triple = llvm_cg_host_triple();
     if (!triple) {
         snprintf(err, err_size, "libLLVM: cannot determine the target triple");
         return NULL;

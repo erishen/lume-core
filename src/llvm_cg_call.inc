@@ -325,7 +325,6 @@ static Val cg_builtin(CG *g, Node *n)
         int bad = 0;
         for (int i = 0; i < argc; i++) if (!av[i].v) bad = 1;
         if (bad) {
-            for (int i = 0; i < argc; i++) free(av[i].v);
             free(av);
             return (Val){ NULL, NULL, 0 };
         }
@@ -355,7 +354,6 @@ static Val cg_builtin(CG *g, Node *n)
                                                rty, pp, 3),
                                         (LLVMValueRef[]){ dbv, sqlv, pv }, 3,
                                         isq ? "sq" : "sw");
-        for (int i = 0; i < argc; i++) free(av[i].v);
         free(av);
         return val_make(isq ? list_type() : type_prim(TY_INT), r);
     }
@@ -381,7 +379,6 @@ static Val cg_builtin(CG *g, Node *n)
         Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
                           : (Val){ NULL, NULL, 0 };
         if (!a.v || !b.v || (argc == 3 && !c.v)) {
-            free(a.v); free(b.v); free(c.v);
             return (Val){ NULL, NULL, 0 };
         }
         LLVMTypeRef pp[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
@@ -393,7 +390,6 @@ static Val cg_builtin(CG *g, Node *n)
                                                           argc == 3 ? c.v
                                                                     : LLVMConstNull(g->i8ptr) },
                                         3, "txe");
-        free(a.v); free(b.v); free(c.v);
         return val_make(type_prim(TY_INT), r);
     }
     if (strcmp(bname, "sql_tx_commit") == 0 || strcmp(bname, "sql_tx_rollback") == 0) {
@@ -410,7 +406,12 @@ static Val cg_builtin(CG *g, Node *n)
                                                g->i64, pp, 1),
                                         (LLVMValueRef[]){ a.v }, 1,
                                         isc ? "txc" : "txr");
-        return val_make(type_prim(TY_INT), r);
+        /* bool like the interpreter (print -> lume_print_bool), and every
+         * other bool consumer expects an i1 — the helper returns i64, so
+         * truncate to i1. */
+        LLVMValueRef t = LLVMBuildTrunc(g->ab, r, g->i1,
+                                        isc ? "txcb" : "txrb");
+        return val_make(type_prim(TY_BOOL), t);
     }
 #endif /* LUME_HAS_SQLITE */
 

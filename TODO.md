@@ -490,6 +490,19 @@ The four-layer surface if started:
   sqlite_tool.c needs no merge — validation semantics unchanged (the
   guard move to sql_guard.h is behavior-preserving).
 
+  CI leg 2026-10-21: tests/native_backends.sh now runs the sql fixture
+  (tests/native-sql-consistency.lume/.expected, db path from SQLITE_DB)
+  through interpreter/text/llvm and diffs every pair — green on this
+  host. Two latent Windows-LLVM bugs found en route: the msys2/mingw
+  libLLVM default triple "x86_64-w64-mingw32" parses with an empty OS, so
+  EmitToFile emitted ELF objects the mingw lld refuses ("unknown file
+  type") — llvm_cg_host_triple normalises it to "x86_64-w64-windows-gnu"
+  (COFF); and the llvm sql emitters freed LLVMValueRef operands (copied
+  from the text backend's char* free pattern) — heap corruption on every
+  --compile-llvm sql script, now removed. Both made the llvm leg of the
+  parity suite real on Windows; tx bool parity (TY_BOOL + trunc to i1)
+  landed in the same commit.
+
 Interpreter implementation (2026-10-20, user-level override of the
 "deliberately not started / Done when" gate): `sql_tx_begin(path)` →
 handle; `sql_tx_exec(tx, sql[, params])` → affected rows; `sql_tx_commit`

@@ -54,9 +54,10 @@ diag_line() { grep -m1 '^lume:'; }
 # interpreter, which needs neither IR nor a toolchain — and $2 labels the leg
 # and names its files under $WORK.
 check() {
-    local flag=$1 label=$2 bin="$WORK/$2" err rc
+    local flag=$1 label=$2 script=${3:-$SCRIPT} expected=${4:-$EXPECTED}
+    local bin="$WORK/$2" err rc
     if [ -n "$flag" ]; then
-        err=$("$TARGET" "$flag" "$SCRIPT" -o "$bin" 2>&1 >/dev/null); rc=$?
+        err=$("$TARGET" "$flag" "$script" -o "$bin" 2>&1 >/dev/null); rc=$?
         if [ $rc -ne 0 ]; then
             [ -n "$err" ] && echo "$err" | head -5
             fail "$label: $flag exited $rc"
@@ -82,7 +83,7 @@ check() {
         # fixture. It is dropped; anything else on stderr is a failure, because
         # a leg that is quiet on stderr and wrong on stdout is exactly the shape
         # this script exists to catch.
-        "$TARGET" "$SCRIPT" > "$WORK/$label.out" 2> "$WORK/$label.err"
+        "$TARGET" "$script" > "$WORK/$label.out" 2> "$WORK/$label.err"
         err=$(grep -v "script completed without run" "$WORK/$label.err" 2>/dev/null)
         if [ -n "$err" ]; then
             echo "$err" | head -5
@@ -95,11 +96,11 @@ check() {
     # The cross-leg comparison below uses the same normalized files, so a
     # mixed-mode pair cannot false-fail either.
     tr -d '\r' < "$WORK/$label.out" > "$WORK/$label.norm"
-    if ! diff -u "$EXPECTED" "$WORK/$label.norm" > "$WORK/$label.diff"; then
+    if ! diff -u "$expected" "$WORK/$label.norm" > "$WORK/$label.diff"; then
         head -20 "$WORK/$label.diff"
-        fail "$label: output differs from $EXPECTED"
+        fail "$label: output differs from $expected"
     fi
-    pass "$label output matches $EXPECTED"
+    pass "$label output matches $expected"
 }
 
 RAN=()
@@ -350,3 +351,50 @@ for leg in "${RAN[@]}"; do
     }
 done
 pass "propagate: every leg unwraps \`?\` and propagates \`err\` like the interpreter"
+
+# ---- sql cross-backend consistency (needs a HAVE_SQLITE build) -----------
+# The sql builtins are the P6 surface: the native runtime and both emitters
+# were added together, so they get the same three-way treatment as the main
+# fixture — interpreter as reference, every available emitter compiled and
+# diffed, and every pair cross-diffed. On a build without libsqlite3 the
+# interpreter refuses sql_* ("unavailable") and the emitters refuse to emit,
+# so a single probe decides the whole block.
+#
+# The fixture takes its database from SQLITE_DB (a bare "" falls back to it
+# on all three backends), so the block exports one scratch DB per run and the
+# expected file stays machine-independent.
+SQL_SCRIPT=tests/native-sql-consistency.lume
+SQL_EXPECTED=tests/native-sql-consistency.expected
+[ -f "$SQL_EXPECTED" ] || fail "$SQL_EXPECTED missing (generate from the interpreter on a sqlite build)"
+
+# Probe with a tx handle: tx_begin opens READWRITE|CREATE, so the probe both
+# creates its scratch DB and would fail loudly on a build without sqlite.
+SQL_PROBE="$WORK/sql-probe.lume"
+cat > "$SQL_PROBE" <<'LUME'
+let p: string = sql_tx_begin("");
+sql_tx_commit(p);
+LUME
+
+sql_ran=()
+if SQLITE_DB="$WORK/probe.db" "$TARGET" "$SQL_PROBE" >/dev/null 2>&1; then
+    export SQLITE_DB="$WORK/ns-consistency.db"
+    rm -f "$SQLITE_DB"
+    check "" sql-interp "$SQL_SCRIPT" "$SQL_EXPECTED"
+    sql_ran+=("sql-interp")
+    for leg in "${RAN[@]}"; do
+        case "$leg" in
+            text) check --compile-text sql-text "$SQL_SCRIPT" "$SQL_EXPECTED"; sql_ran+=("sql-text") ;;
+            llvm) check --compile-llvm sql-llvm "$SQL_SCRIPT" "$SQL_EXPECTED"; sql_ran+=("sql-llvm") ;;
+        esac
+    done
+    for (( i = 0; i < ${#sql_ran[@]}; i++ )); do
+        for (( j = i + 1; j < ${#sql_ran[@]}; j++ )); do
+            a=${sql_ran[$i]}; b=${sql_ran[$j]}
+            diff -u "$WORK/$a.norm" "$WORK/$b.norm" > "$WORK/sql-$a-vs-$b.diff" ||
+                { head -20 "$WORK/sql-$a-vs-$b.diff"; fail "sql: $a and $b disagree"; }
+            pass "sql: $a and $b agree with each other"
+        done
+    done
+else
+    echo "ok   sql cross-backend: skipped (build has no libsqlite3)"
+fi
