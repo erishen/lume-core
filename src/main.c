@@ -41,6 +41,26 @@ enum { NAT_DEFAULT = 0, NAT_LLVM = 1, NAT_TEXT = 2 };
 static void usage(const char *prog);
 static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
                         const char ****alias_list_out, int **alias_cnt_out);
+
+/* Append (ns -> module t) to alias_list[t] unless already present. The alias
+ * strings are borrowed (entry AST / loader ns_names) and live for the whole
+ * compile; only the vector shells are owned here. Returns 0 on success, -1 on
+ * allocation failure. Declared at file scope (not a GNU nested function) so
+ * the file builds under clang as well as GCC. */
+static int add_module_alias(int n, const char ***alias_list, int *alias_cnt,
+                            int t, const char *ns)
+{
+    if (t < 0 || t >= n || !ns) return 0;
+    for (int k = 0; k < alias_cnt[t]; k++)
+        if (strcmp(alias_list[t][k], ns) == 0) return 0;
+    const char **v = realloc(alias_list[t],
+                             sizeof(char *) * ((size_t)alias_cnt[t] + 1));
+    if (!v) return -1;
+    alias_list[t] = v;
+    alias_list[t][alias_cnt[t]++] = ns;
+    return 0;
+}
+
 /* Collect the entry's import modules (dependency order) plus EVERY alias any
  * loaded module uses for each of them — the entry's `as` names AND each
  * module's own imports (a module importing another module and calling its
@@ -64,20 +84,6 @@ static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
     for (int i = 0; i < n; i++)
         mods[i] = vm->modules[i]->prog;
 
-    /* Append (ns -> module t) to alias_list[t] unless already present. The
-     * alias strings are borrowed (entry AST / loader ns_names) and live for
-     * the whole compile; only the vector shells are owned here. */
-    int add_alias(int t, const char *ns) {
-        if (t < 0 || t >= n || !ns) return 0;
-        for (int k = 0; k < alias_cnt[t]; k++)
-            if (strcmp(alias_list[t][k], ns) == 0) return 0;
-        const char **v = realloc(alias_list[t],
-                                 sizeof(char *) * ((size_t)alias_cnt[t] + 1));
-        if (!v) return -1;
-        alias_list[t] = v;
-        alias_list[t][alias_cnt[t]++] = ns;
-        return 0;
-    }
     int rc = 0;
     for (int m = 0; m < n && rc == 0; m++) {
         Module *mm = vm->modules[m];
@@ -90,7 +96,9 @@ static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
             for (int j = 0; j < n; j++)
                 if (strcmp(mm->import_paths[k], vm->modules[j]->path) == 0)
                     { t = j; break; }
-            if (t >= 0 && add_alias(t, mm->ns_names[k]) != 0) { rc = -1; break; }
+            if (t >= 0 &&
+                add_module_alias(n, alias_list, alias_cnt, t,
+                                mm->ns_names[k]) != 0) { rc = -1; break; }
         }
     }
     if (rc != 0) {
