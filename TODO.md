@@ -245,9 +245,21 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     `scripts/ai-verify-loop.sh` / `make ai-verify-loop` — asserts the
     expected verdicts over the must-pass / must-reject seed sets and
     appends every counter-example to `out/ai-rejects.log` (the payload to
-    log back to the LLM for retry); wired into both CI jobs. Still open:
-    the actual LLM → `.lume` *producer* (the host's tool dispatch /
-    agenthttpd side — the loop is the machine half and reads files only);
+    log back to the LLM for retry); wired into both CI jobs. Producer half
+    closed 2026-10-21: `scripts/ai-gen-programs.sh` (scripted "prompt →
+    .lume" generator: program intents + one template candidate each, with a
+    manifest name|expected accept|reject|prompt) + `scripts/ai-produce.sh`
+    / `make ai-produce` (run every candidate through verify-ai-lume.sh and
+    assert the manifest verdict: accept → READY for tests/, reject →
+    counter-example appended to out/ai-rejects.log, violation → exit 1) —
+    six accept-class candidates (stats / portfolio-sort / summary-stats /
+    json-marshal / enum-match / range-sieve, all on the native backends'
+    covered surface) and one deliberate reject (gen-bad-untyped-tdist:
+    `let p = tdist_cdf(...)` missing `let p: float` — the statistical
+    builtins are not in the native inference tables, and the stderr reason
+    is the counter-example that teaches the LLM to annotate). Wired into
+    both CI jobs after ai-verify-loop; the contract for swapping in the
+    real host tool dispatch is the manifest file. Still open:
     `assert_semantic()` remains an uncommitted open question.
 
 - [x] **P4 gap (cont.) · `server{}` LLVM leg — closed 2026-10-20, including

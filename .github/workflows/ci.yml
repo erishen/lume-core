@@ -117,6 +117,13 @@ jobs:
       # must-pass / must-reject seed sets and keep counter-examples in
       # out/ai-rejects.log, ready to hand back to the LLM for retry.
       - run: make ai-verify-loop
+      # Producer half: the scripted "prompt → .lume" stand-in for the
+      # host's LLM tool dispatch generates candidates, runs them through
+      # the gate and asserts the manifest verdicts (accept → READY for
+      # tests/, reject → counter-example logged, violation → red). This
+      # is the leg that makes "AI writes, machine verifies" a closed
+      # pipeline on CI, not just a file-reader.
+      - run: make ai-produce
 
   # The release tree is produced by `.github/workflows/release.yml` on `v*`
   # tags; this job keeps the release matrix's plain build (no asset upload)

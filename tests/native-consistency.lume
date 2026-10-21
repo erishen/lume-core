@@ -1259,6 +1259,31 @@ print(str(reduce((a, x) => a + x, dbl_ev, 0.0)));  // 7 (filter 产物 double re
 func dbl_sum(xs): float { let d = map((y) => y * 2.0, xs); return reduce((a, y) => a + y, d, 0.0); }
 print(str(dbl_sum(dbl_xs)));              // 20 (函数内 map 产物 reduce)
 
+// ---- unary-minus float elements in HOF lists (P4, 2026-10-21) ------------
+// infer_list_elem used to read only N_LITERAL / N_CTOR / tuple / nested-list
+// elements, so a list holding a negated literal (`-3.2`, which the parser
+// keeps as an OP_NEG wrapper — only the LLONG_MIN overflow case is folded)
+// decayed to list<any>, and HOF dispatch fell back to INT slots: a double
+// list consumed by map/filter/reduce then read its slots as i64 and printed
+// the raw bit patterns (0.4 rendered as 4623226492472524800, a reduce seed
+// summed to 4.6e18). Both emitters now read the operand of an OP_NEG
+// literal, so every line below must agree byte-for-byte. The int variant
+// (`[-7, 3]`) pins the same branch on the int side.
+let um_xs = [12.5, -3.2, 8.7];
+print(um_xs);
+print(map((x) => x * 2.0, um_xs));
+print(filter((x) => x > 0.0, um_xs));
+print(reduce((a, x) => a + x, um_xs, 0.0));
+let um_ev = filter((x) => x > 0.0, um_xs);
+print(um_ev);
+print(str(um_ev));
+let um_sm = map((x) => x * x, um_xs);
+print(um_sm);
+print(reduce((a, x) => a + x, um_sm, 0.0));
+print([-7, 3]);
+print(map((x) => x * 2, [-7, 3]));
+print(filter((x) => x > 0, [-7, 3]));
+
 // Statistical distribution builtins (P4, 2026-10-20): the medical-stats
 // p-value stack (normcdf / erf / tdist_cdf / chisq_cdf + the gamma family
 // they share) must print identically on all three backends — the numbers

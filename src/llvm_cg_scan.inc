@@ -25,6 +25,24 @@ static Type *infer_list_elem(CG *g, Node *lit)
             default: break;
             }
         }
+        else if (e->type == N_UNARY && e->as.unary.op == OP_NEG) {
+            /* `-3.2` / `-7`: a negated literal is still a literal (the parser
+             * only folds the LLONG_MIN overflow case, everything else keeps
+             * the OP_NEG wrapper). Without this a list like [-3.2, 1.5]
+             * decays to list<any>, HOF dispatch falls back to INT slots, and
+             * the double bit patterns print as i64 garbage — the exact drift
+             * this pinning exists to prevent. Mirror of codegen_lit.c's copy. */
+            Node *op = e->as.unary.operand;
+            if (op && op->type == N_LITERAL) {
+                switch (op->as.lit.kind) {
+                case LIT_NUM:   t = type_prim(op->as.lit.is_float ? TY_FLOAT : TY_INT); break;
+                case LIT_STR:   t = type_prim(TY_STRING); break;
+                case LIT_TRUE:
+                case LIT_FALSE: t = type_prim(TY_BOOL);   break;
+                default: break;
+                }
+            }
+        }
         else if (e->type == N_CTOR) {
             /* A bare constructor value (`[Red, Green]`): resolve_ctors
              * stamped the enum's name onto the node, so the element type is

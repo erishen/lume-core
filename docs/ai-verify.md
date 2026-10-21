@@ -63,6 +63,44 @@ supported entry points, in increasing order of automation:
   with `make ai-verify AI_VERIFY_FILE=...` inside the job, or add the file
   to the seed list.
 
+## Producer — closing "AI writes, machine verifies"
+
+The loop above reads files; the pipeline is only closed when something
+*produces* the `.lume` from an LLM reply. The host-side producer is
+agent-httpd's tool dispatch — a model writes a program, the host drops it
+into a candidates directory. The core ships the deterministic stand-in for
+that step plus the produce loop that turns each candidate into an action:
+
+```
+make ai-produce                  # scripts/ai-gen-programs.sh + scripts/ai-produce.sh
+```
+
+- `scripts/ai-gen-programs.sh` — a scripted "prompt → .lume" generator: a
+  list of program intents (the prompts) and one template candidate per
+  intent, written to `out/ai-candidates/` (override `AI_CANDIDATES_DIR`)
+  together with a manifest:
+  `name|expected (accept|reject)|prompt`. Six candidates are accept-class
+  (plausible LLM programs on the native backends' covered surface); one,
+  `gen-bad-untyped-tdist`, is deliberately reject-class — `let p =
+  tdist_cdf(...)` missing the `let p: float` annotation the native
+  backends need (the statistical builtins are not in their inference
+  tables), which is exactly the counter-example the gate teaches the LLM
+  with.
+- `scripts/ai-produce.sh` — runs every candidate through the gate and
+  asserts the manifest verdict: accept → **READY** (commit the file to
+  `tests/`; `make check` + `make fuzz` + `make native-consistency` cover
+  it from then on), reject → **counter-example appended to
+  `out/ai-rejects.log`** (the payload to log back to the model for retry),
+  anything else → verdict violation (exit 1) — a backend drift
+  masquerading as a gate pass shows up here, not in a later test run.
+  Externally dropped candidates without a manifest row default to accept.
+  Exit 0 all verdicts held, 1 a violation, 2 the gate could not judge
+  anything. Runs in both CI jobs after `ai-verify-loop`.
+
+The contract for replacing the scripted generator with real host tool
+dispatch is just the manifest file: write candidates + manifest rows into
+`$AI_CANDIDATES_DIR` and call `scripts/ai-produce.sh`.
+
 ## Seeds kept in the tree
 
 - `examples/ai-generated/norm-stats.lume` — a plausible LLM-generated

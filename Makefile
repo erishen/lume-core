@@ -486,6 +486,18 @@ ai-verify: all
 ai-verify-loop: all
 	@chmod +x scripts/verify-ai-lume.sh scripts/ai-verify-loop.sh && LUME_BIN=./$(TARGET) ./scripts/ai-verify-loop.sh
 
+# P4 producer half (docs/ai-verify.md, "Producer"): scripts/ai-gen-programs.sh
+# is the scripted "prompt → .lume" stand-in for the host's LLM tool dispatch —
+# a list of program intents, one template candidate per intent, each with a
+# manifest row (name|expected accept|reject|prompt). scripts/ai-produce.sh
+# runs every candidate through verify-ai-lume.sh and asserts the manifest
+# verdict: accept → READY for tests/, reject → counter-example appended to
+# out/ai-rejects.log (the LLM retry payload), anything else → violation.
+# Exit 0 all verdicts held, 1 a violation, 2 the gate could not judge any
+# candidate. Still no network / no LLM builtin (scope guard).
+ai-produce: all
+	@chmod +x scripts/ai-gen-programs.sh scripts/ai-produce.sh && LUME_BIN=./$(TARGET) ./scripts/ai-produce.sh
+
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
 # 跑 tests/native-consistency.lume 三种路径(解释器 / 文本 / libLLVM), 各自跟
 # 基线比对, 再互比, 并且把编译器任何 stderr 都当失败 —— 让校验器抱怨的 IR 不算
@@ -925,7 +937,8 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
-         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify ai-verify-loop for-in-gc-test
+         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify ai-verify-loop for-in-gc-test \
+         ai-produce
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \
