@@ -94,8 +94,14 @@ Type *type_func_arity(int min_arity, int variadic, int max_args, Type **params, 
      * emitters' vectors are arena memory, TODO.md P2 — storing the pointer
      * made type_release_all's free depend on who handed the array in, which
      * the arena deleted the way to tell). The Type graph stays malloc'd and
-     * type_release_all frees every t->types unconditionally. */
-    t->types = min_arity > 0 ? malloc((size_t)min_arity * sizeof(Type *)) : NULL;
+     * type_release_all frees every t->types unconditionally.
+     * calloc, not malloc: the builtin arity table seeds every entry with
+     * params == NULL, and a fixed-arity callee's N_CALL branch reads
+     * types[i] for expect_compat — an uninitialised slot there is a
+     * misaligned-load UB under UBSan (ASan's 0xbe fill makes it fire).
+     * NULL means "no static constraint", which expect_compat already
+     * treats as loose, exactly like the old TY_ANY seeding. */
+    t->types = min_arity > 0 ? calloc((size_t)min_arity, sizeof(Type *)) : NULL;
     if (t->types && params)
         memcpy(t->types, params, (size_t)min_arity * sizeof(Type *));
     t->ret = ret;
@@ -460,15 +466,18 @@ const size_t LUME_BUILTIN_COUNT =
  * `argc != K` and `argc > M` guards, so it never rejects a program the
  * interpreter would accept — no regression on valid code. Builtins absent from
  * this table (type words like `type`/`Result`, verb groups like `write`/`read`)
- * keep the old loose TY_ANY seeding. `str`/`int`/`float`/`string` are variadic
- * with min 1 because they also serve as map accessors (str(m,"field") ==
- * str(get(m,"field"))); the LLVM backend's `argc != 1` special case is a
- * pre-existing limitation for that accessor form, not something this table
- * tightens (see codegen_call.c). */
+ * keep the old loose TY_ANY seeding. `str`/`int`/`float`/`string`/`bool` are
+ * variadic with min 1 because they also serve as map accessors
+ * (str(m,"field") == str(get(m,"field")) — builtins.c value_from_map), which
+ * the native backends now lower by desugaring to a get() read (emit_get_call
+ * in codegen_call.c / llvm_cg_call.inc). `json`/`stringify` are variadic for a
+ * different reason: the interpreter accepts extra arguments and ignores them
+ * (native_json / native_stringify only look at args[0]), so the contract
+ * records that rather than rejecting programs the interpreter runs. */
 typedef struct { const char *name; int min; int max; } BuiltinSig;
 static const BuiltinSig LUME_BUILTIN_SIG[] = {
     /* exact arity */
-    {"bool",1,1}, {"len",1,1}, {"keys",1,1}, {"json",1,1}, {"stringify",1,1},
+    {"len",1,1}, {"keys",1,1}, {"json",1,-1}, {"stringify",1,-1},
     {"render",1,1}, {"sort",1,1}, {"str_match",2,2}, {"regex",2,2},
     {"sha256",1,1}, {"base64_encode",1,1}, {"base64_decode",1,1},
     {"pow",2,2}, {"hmac_sha256",2,2}, {"push",2,2}, {"map",2,2}, {"filter",2,2},
@@ -482,7 +491,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"sql_query",1,3}, {"sql_write",1,3},
     /* variadic / optional (runtime: argc < min rejected, extra args accepted) */
     {"print",0,-1}, {"run",0,-1},
-    {"str",1,-1}, {"int",1,-1}, {"float",1,-1}, {"string",1,-1},
+    {"str",1,-1}, {"int",1,-1}, {"float",1,-1}, {"string",1,-1}, {"bool",1,-1},
     {"get",2,-1}, {"range",1,-1}, {"now",0,-1}, {"argv",0,-1},
     {"files",1,-1}, {"read_file",1,-1}, {"read_stdin",0,-1}, {"write_file",2,-1},
     {"mkdir",1,-1}, {"lock_file",1,-1}, {"unlock_file",0,-1}, {"env",1,-1},

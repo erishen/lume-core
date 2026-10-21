@@ -470,6 +470,155 @@ void emit_builtin_declares(CG *g)
 #endif
 }
 
+/* get(m, k[, default]) emission — the shared core of the get() branch in
+ * cg_builtin and of the str()/int()/float()/stringify()/json() accessor
+ * shorthand: the interpreter spells str(m, k[, d]) as str(get(m, k[, d]))
+ * (builtins.c value_from_map), so the casts desugar to a get() read here
+ * too. dnode == NULL is the two-argument form. Kept in step with the llvm
+ * emitter's copy in llvm_cg_call.inc. */
+static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
+                         size_t line)
+{
+    Val m = cg_expr(g, mnode);
+    Val k = cg_expr(g, knode);
+    Val d = dnode ? cg_expr(g, dnode) : (Val){ NULL, NULL, 0 };
+    if (!m.v || !k.v)
+        ERRV(g, "line %zu: get() needs a map, a key and a scalar default", line);
+
+    /* The key's value shape, resolved while the receiver still carries its
+     * declared field list: boxing a named struct into a map below keeps the
+     * field names only at runtime, so the shape has to be read off the SDef
+     * first. NULL for an any/list receiver (map_key_shape needs a struct). */
+    Type *shape = map_key_shape(g, &m, knode);
+
+    /* A named struct is a raw GEP struct with no runtime map header, so the
+     * lume_map_get_* getters would read its first field as the header — a
+     * type confusion that segfaulted both native backends on get(p, "f")
+     * while the interpreter answered correctly. Box it into a real map
+     * first, the conversion print()/str() already use for named structs. */
+    if (m.ty && m.ty->name) {
+        struct_addr(g, &m);
+        Val mm = emit_struct_to_map(g, m.v, m.ty);
+        if (!mm.v) {
+            free(m.v); free(k.v); free(d.v);
+            ERRV(g, "line %zu: get() cannot read struct '%s'",
+                 line, m.ty->name);
+        }
+        free(m.v);
+        m.v = mm.v;
+        m.ty = mm.ty;
+    }
+
+    /* The flavour follows the *shape* of the key when the map's static
+     * type declares it: the value at that key is always the declared
+     * type. A default of a different type could only ever fire for an
+     * absent key, so it is refused here rather than silently reading the
+     * slot through the wrong getter. Without a shape the flavour follows
+     * the *default* — so an unannotated get(m, k) in a bool context stays
+     * an int read rather than silently becoming a string — and the int
+     * read when neither says (an absent key then reads as the zero of
+     * that flavour, spelled below). */
+    const char *fn = "lume_map_get_i";
+    Type *rty = type_prim(TY_INT);
+    if (m.ty && m.ty->kind == TY_ANY) {
+        /* An any-typed map operand: the value is a boxed LumeSlot* whose
+         * tag only exists at runtime, so the read must unpack the slot
+         * before the lookup (lume_slot_get_* in src/rt.c). There is no
+         * static shape to consult, so the flavour follows the default's
+         * static type; without a concrete default the raw slot is read
+         * (kept in step with the llvm emitter's copy). */
+        if (d.v && d.ty && d.ty->kind != TY_ANY) {
+            const char *sfn; Type *srty;
+            if (!get_flavour(d.ty, &sfn, &srty))
+                ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                     line, ty_str(d.ty));
+            if (strcmp(sfn, "lume_map_get_i") == 0)
+                fn = "lume_slot_get_i";
+            else if (strcmp(sfn, "lume_map_get_f") == 0)
+                fn = "lume_slot_get_f";
+            else if (strcmp(sfn, "lume_map_get_s") == 0)
+                fn = "lume_slot_get_s";
+            else if (strcmp(sfn, "lume_map_get_obj") == 0)
+                fn = "lume_slot_get_obj";
+            else
+                ERRV(g, "line %zu: get() cannot read a %s off an any value",
+                     line, ty_str(d.ty));
+            /* The result keeps the default's own type where codegen has one:
+             * a [] default reads a json array back as a list, a {} default an
+             * anonymous map, a string default a string. BOOL keeps the
+             * get_flavour mapping (an int read), matching get() on a typed
+             * map, so `get(j, "ok", false)` prints "1" the same way
+             * `get(m, "ok", false)` does on a literal map. */
+            rty = d.ty && d.ty->kind != TY_BOOL ? d.ty : srty;
+        } else {
+            /* No default (or an any default): read the cell back boxed
+             * as its own tag — the interpreter's dynamic read. Kept in
+             * step with the llvm emitter's copy. */
+            fn = "lume_slot_get_any";
+            rty = type_prim(TY_ANY);
+        }
+    } else if (m.ty && m.ty->kind == TY_LIST) {
+        /* get(list, i[, default]): an index read — the interpreter's
+         * dynamic get() on a list. The element type drives the accessor;
+         * a default of a different scalar kind is refused like the map
+         * path. */
+        Type *et = m.ty->elem;
+        const char *atfn = list_at_fn(et);
+        if (!atfn)
+            ERRV(g, "line %zu: get() cannot index a list of %s",
+                 line, et ? ty_str(et) : "unknown");
+        if (d.v && d.ty && d.ty->kind != TY_ANY &&
+            !(et && d.ty->kind == et->kind) &&
+            !(d.ty->kind == TY_BOOL && et && et->kind == TY_INT))
+            ERRV(g, "line %zu: get() default is %s but the list holds %s",
+                 line, ty_str(d.ty), et ? ty_str(et) : "unknown");
+        const char *art = et && et->kind == TY_STRING ? "i8*" :
+                          et && et->kind == TY_FLOAT ? "double" : "i64";
+        char *call = emit_instrf(g, et ? et : type_prim(TY_INT),
+                                 "call %s @%s(i8* %s, i64 %s)",
+                                 art, atfn, m.v, k.v);
+        free(m.v); free(k.v); free(d.v);
+        return val_take(et ? et : type_prim(TY_INT), call);
+    } else {
+        if (shape && shape->kind != TY_ANY) {
+            const char *sfn; Type *srty;
+            if (!get_flavour(shape, &sfn, &srty))
+                ERRV(g, "line %zu: get() cannot read a value of type %s",
+                     line, ty_str(shape));
+            if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
+                !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
+                !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
+                ERRV(g, "line %zu: get() default is %s but key %s holds %s",
+                     line, ty_str(d.ty), knode->as.lit.text, ty_str(shape));
+            fn = sfn; rty = srty;
+        } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
+            const char *dfn; Type *drty;
+            if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+        }
+    }
+
+    char dflt[96];
+    const char *darg = "i64 0";
+    if (d.v) {
+        if (d.ty->kind == TY_BOOL) d = coerce(g, type_prim(TY_INT), d, line);
+        snprintf(dflt, sizeof dflt, "%s %s", rt_arg_type(d.ty), d.v);
+        darg = dflt;
+        free(d.v);
+    } else if (rty->kind == TY_STRING || rty->kind == TY_NULL ||
+               rty->kind == TY_LIST || rty->kind == TY_STRUCT ||
+               rty->kind == TY_RESULT) {
+        /* The pointer-returning getters take an i8* default; i64 0 would
+         * not verify. */
+        darg = "i8* null";
+    } else if (rty->kind == TY_FLOAT) {
+        darg = "double 0.0";
+    }
+    Val r = rt_call(g, rty, fn, "i8* %s, i8* %s, %s", m.v, k.v, darg);
+    free(m.v); free(k.v);
+    if (!r.v) ERRV(g, "line %zu: get() failed", line);
+    return r;
+}
+
 static Val cg_builtin(CG *g, Node *n)
 {
     const char *bname = n->as.call.callee->as.var.name;
@@ -1249,141 +1398,54 @@ static Val cg_builtin(CG *g, Node *n)
     }
 
     /* get(m, k[, default]) — an absent key yields the default, which is what
-     * the interpreter's three-argument form means. */
+     * the interpreter's three-argument form means. The emission itself lives
+     * in emit_get_call so the cast accessors below can share it. */
     if (strcmp(bname, "get") == 0) {
         if (argc < 2 || argc > 3)
             ERRV(g, "line %zu: get() takes two or three arguments", n->line);
-        Val m = cg_expr(g, n->as.call.args[0]);
-        Val k = cg_expr(g, n->as.call.args[1]);
-        Val d = argc == 3 ? cg_expr(g, n->as.call.args[2])
-                          : (Val){ NULL, NULL, 0 };
-        if (!m.v || !k.v)
-            ERRV(g, "line %zu: get() needs a map, a key and a scalar default", n->line);
-
-        /* The flavour follows the *shape* of the key when the map's static
-         * type declares it: the value at that key is always the declared
-         * type. A default of a different type could only ever fire for an
-         * absent key, so it is refused here rather than silently reading the
-         * slot through the wrong getter. Without a shape the flavour follows
-         * the *default* — so an unannotated get(m, k) in a bool context stays
-         * an int read rather than silently becoming a string — and the int
-         * read when neither says (an absent key then reads as the zero of
-         * that flavour, spelled below). */
-        const char *fn = "lume_map_get_i";
-        Type *rty = type_prim(TY_INT);
-        Type *shape = NULL;
-        if (m.ty && m.ty->kind == TY_ANY) {
-            /* An any-typed map operand: the value is a boxed LumeSlot* whose
-             * tag only exists at runtime, so the read must unpack the slot
-             * before the lookup (lume_slot_get_* in src/rt.c). There is no
-             * static shape to consult, so the flavour follows the default's
-             * static type; without a concrete default the raw slot is read
-             * (kept in step with the llvm emitter's copy). */
-            if (d.v && d.ty && d.ty->kind != TY_ANY) {
-                const char *sfn; Type *srty;
-                if (!get_flavour(d.ty, &sfn, &srty))
-                    ERRV(g, "line %zu: get() cannot read a %s off an any value",
-                         n->line, ty_str(d.ty));
-                if (strcmp(sfn, "lume_map_get_i") == 0)
-                    fn = "lume_slot_get_i";
-                else if (strcmp(sfn, "lume_map_get_f") == 0)
-                    fn = "lume_slot_get_f";
-                else if (strcmp(sfn, "lume_map_get_s") == 0)
-                    fn = "lume_slot_get_s";
-                else if (strcmp(sfn, "lume_map_get_obj") == 0)
-                    fn = "lume_slot_get_obj";
-                else
-                    ERRV(g, "line %zu: get() cannot read a %s off an any value",
-                         n->line, ty_str(d.ty));
-                /* The result keeps the default's own type where codegen has one:
-                 * a [] default reads a json array back as a list, a {} default an
-                 * anonymous map, a string default a string. BOOL keeps the
-                 * get_flavour mapping (an int read), matching get() on a typed
-                 * map, so `get(j, "ok", false)` prints "1" the same way
-                 * `get(m, "ok", false)` does on a literal map. */
-                rty = d.ty && d.ty->kind != TY_BOOL ? d.ty : srty;
-            } else {
-                /* No default (or an any default): read the cell back boxed
-                 * as its own tag — the interpreter's dynamic read. Kept in
-                 * step with the llvm emitter's copy. */
-                fn = "lume_slot_get_any";
-                rty = type_prim(TY_ANY);
-            }
-        } else if (m.ty && m.ty->kind == TY_LIST) {
-            /* get(list, i[, default]): an index read — the interpreter's
-             * dynamic get() on a list. The element type drives the accessor;
-             * a default of a different scalar kind is refused like the map
-             * path. */
-            Type *et = m.ty->elem;
-            const char *atfn = list_at_fn(et);
-            if (!atfn)
-                ERRV(g, "line %zu: get() cannot index a list of %s",
-                     n->line, et ? ty_str(et) : "unknown");
-            if (d.v && d.ty && d.ty->kind != TY_ANY &&
-                !(et && d.ty->kind == et->kind) &&
-                !(d.ty->kind == TY_BOOL && et && et->kind == TY_INT))
-                ERRV(g, "line %zu: get() default is %s but the list holds %s",
-                     n->line, ty_str(d.ty), et ? ty_str(et) : "unknown");
-            const char *art = et && et->kind == TY_STRING ? "i8*" :
-                              et && et->kind == TY_FLOAT ? "double" : "i64";
-            char *call = emit_instrf(g, et ? et : type_prim(TY_INT),
-                                     "call %s @%s(i8* %s, i64 %s)",
-                                     art, atfn, m.v, k.v);
-            free(m.v); free(k.v); free(d.v);
-            return val_take(et ? et : type_prim(TY_INT), call);
-        } else {
-            shape = map_key_shape(g, &m, n->as.call.args[1]);
-            if (shape && shape->kind != TY_ANY) {
-                const char *sfn; Type *srty;
-                if (!get_flavour(shape, &sfn, &srty))
-                    ERRV(g, "line %zu: get() cannot read a value of type %s",
-                         n->line, ty_str(shape));
-                if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
-                    !(d.ty->kind == TY_BOOL && shape->kind == TY_INT) &&
-                    !(d.ty->kind == TY_INT && shape->kind == TY_BOOL))
-                    ERRV(g, "line %zu: get() default is %s but key %s holds %s",
-                         n->line, ty_str(d.ty), n->as.call.args[1]->as.lit.text,
-                         ty_str(shape));
-                fn = sfn; rty = srty;
-            } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
-                const char *dfn; Type *drty;
-                if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
-            }
-        }
-
-        char dflt[96];
-        const char *darg = "i64 0";
-        if (d.v) {
-            if (d.ty->kind == TY_BOOL) d = coerce(g, type_prim(TY_INT), d, n->line);
-            snprintf(dflt, sizeof dflt, "%s %s", rt_arg_type(d.ty), d.v);
-            darg = dflt;
-            free(d.v);
-        } else if (rty->kind == TY_STRING || rty->kind == TY_NULL ||
-                   rty->kind == TY_LIST || rty->kind == TY_STRUCT ||
-                   rty->kind == TY_RESULT) {
-            /* The pointer-returning getters take an i8* default; i64 0 would
-             * not verify. */
-            darg = "i8* null";
-        } else if (rty->kind == TY_FLOAT) {
-            darg = "double 0.0";
-        }
-        Val r = rt_call(g, rty, fn, "i8* %s, i8* %s, %s", m.v, k.v, darg);
-        free(m.v); free(k.v);
-        if (!r.v) ERRV(g, "line %zu: get() failed", n->line);
-        return r;
+        return emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
+                             argc == 3 ? n->as.call.args[2] : NULL, n->line);
     }
 
-    /* str() / int() / float(): which helper they need depends on the operand. */
-    if (strcmp(bname, "str") == 0 || strcmp(bname, "int") == 0 ||
+    /* str() / int() / float(): which helper they need depends on the operand.
+     * `string` is the interpreter's direct alias for str (b_string forwards to
+     * native_str), so it takes the same branch and the same accessor desugar. */
+    if (strcmp(bname, "str") == 0 || strcmp(bname, "string") == 0 ||
+        strcmp(bname, "int") == 0 ||
         strcmp(bname, "float") == 0 || strcmp(bname, "stringify") == 0 ||
         strcmp(bname, "json") == 0) {
-        if (argc != 1)
-            ERRV(g, "line %zu: '%s' takes exactly one argument", n->line, bname);
-        Val a = cg_expr(g, n->as.call.args[0]);
+        if (argc < 1)
+            ERRV(g, "line %zu: '%s' needs an argument", n->line, bname);
+        /* str(m, k[, d]) is the interpreter's accessor shorthand for
+         * str(get(m, k[, d])) — but only in the shape value_from_map
+         * accepts: a map receiver and a string key (builtins.c). Anything
+         * else keeps the interpreter's fallback (serialize args[0]; the
+         * extra arguments are ignored there), so the desugar fires only
+         * when the static types promise that shape. Only str/int/float
+         * take the accessor: stringify/json look at args[0] alone and
+         * ignore the rest (native_stringify / native_json). An any
+         * receiver (a json() parse) reads through the slot getters, which
+         * answer the default for a non-map slot — the interpreter would
+         * serialize the receiver itself there; a corner this shares with
+         * get(). */
+        bool is_str = strcmp(bname, "str") == 0 ||
+                      strcmp(bname, "string") == 0;
+        bool is_json = strcmp(bname, "json") == 0;
+        Type *a0t = infer_node_type(g, n->as.call.args[0]);
+        Type *a1t = argc >= 2 ? infer_node_type(g, n->as.call.args[1]) : NULL;
+        bool accessor = argc >= 2 && a0t && a1t && a1t->kind == TY_STRING &&
+                        (a0t->kind == TY_STRUCT || a0t->kind == TY_ANY) &&
+                        (is_str || strcmp(bname, "int") == 0 ||
+                         strcmp(bname, "float") == 0);
+        Val a = accessor
+                    ? emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
+                                    argc == 3 ? n->as.call.args[2] : NULL,
+                                    n->line)
+                    : cg_expr(g, n->as.call.args[0]);
+        if (!a.v)
+            ERRV(g, "line %zu: '%s' failed to lower", n->line, bname);
         const char *fn = NULL, *pty = NULL, *rty = NULL;
         Type *rt = NULL;
-        bool is_str = strcmp(bname, "str") == 0;
-        bool is_json = strcmp(bname, "json") == 0;
 
         if (is_str || strcmp(bname, "stringify") == 0 || is_json) {
             switch (a.ty ? a.ty->kind : TY_ANY) {
@@ -1477,11 +1539,16 @@ static Val cg_builtin(CG *g, Node *n)
             }
             rty = "i8*"; rt = type_prim(TY_STRING);
         } else if (strcmp(bname, "int") == 0) {
+            /* Identity on an int (the interpreter's IS_NUM branch, and the
+             * shape int(m, "k") takes on an int field); only a float needs
+             * the truncating conversion. */
+            if (a.ty && a.ty->kind == TY_INT) return a;
             if (!a.ty || a.ty->kind != TY_FLOAT)
                 ERRV(g, "line %zu: int() only converts a float here", n->line);
             fn = "@lume_bi_int"; pty = "double"; rty = "i64";
             rt = type_prim(TY_INT);
         } else {
+            if (a.ty && a.ty->kind == TY_FLOAT) return a;
             if (!a.ty || a.ty->kind != TY_INT)
                 ERRV(g, "line %zu: float() only converts an int here", n->line);
             fn = "@lume_bi_float"; pty = "i64"; rty = "double";

@@ -323,7 +323,14 @@ build/%.o: src/%.c src/lume.h $(INT_HDRS) | build $(AH_LIB)
 # llvm_codegen.c 文本包含 llvm_cg_{expr,lit,call,stmt,scan}.inc(不是独立 TU,
 # 静态符号不变式因此不受影响)。.inc 不是 *_internal.h,INT_HDRS 通配抓不到,
 # 显式挂依赖: 改任一 .inc 必须重建 llvm_codegen.o, 否则又是"绿了没生效"。
-build/llvm_codegen.o: $(wildcard src/llvm_cg_*.inc)
+# 四个构建目录全挂: 变体复刻 build-asan/pack/fuzz/%.o 模式规则时最初没带上这条,
+# 改 .inc 后变体二进制继续链旧 .o —— asan 的 libLLVM 腿就这么跑过一次
+# "string 别名已在源码里、报错却照旧"的幻绿(实测: src/llvm_cg_call.inc
+# 20:41 改完, build-asan/llvm_codegen.o 停在 20:30)。HAVE_LLVM=0 时
+# llvm_codegen.c 不在 SRCS, 这条纯前置规则不产生目标, 无害。
+LLVM_INCS := $(wildcard src/llvm_cg_*.inc)
+build/llvm_codegen.o build-asan/llvm_codegen.o \
+build-pack/llvm_codegen.o build-fuzz/llvm_codegen.o: $(LLVM_INCS)
 
 # The vendored regex sources share tre.h + regex.h; INT_HDRS (src/*_internal.h)
 # does not reach into src/compat/regex, so wire the dependency explicitly —

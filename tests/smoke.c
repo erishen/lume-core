@@ -545,9 +545,15 @@ int main(void) {
           " print(render(el(\"script\", {}, \"alert(1)\")));",
           "<a href=\"x?a=1&amp;b=2\">t</a>\n<script>alert(1)</script>\n");
 
-    check_err("el() requires the props argument",
-              "print(render(el(\"p\")));",
+    /* The arity dimension moved to the checker (builtin arity table, 2026-10-21):
+     * a one-argument el() is refused at compile time now, so the runtime case
+     * pins the other half of el()'s guard — the tag has to be a string. */
+    check_err("el() requires a string tag",
+              "print(render(el(42, {})));",
               "el() needs (tag, props, ...children)");
+    reject("el() arity: one argument is refused",
+           "print(render(el(\"p\")));",
+           "at least 2 argument(s)");
 
     /* ---- control flow & closures (docs/SPEC.md §4) --------------------- *
      * The loop variable leaking and the closure write being a shadow are the
@@ -1002,8 +1008,11 @@ int main(void) {
               "print(str(log(0)));", "log(): argument must be positive");
     check_err("math: math builtins reject non-number arguments",
               "print(str(abs(\"3\")));", "expected number argument");
-    check_err("math: min() requires at least one argument",
-              "print(str(min()));", "min() expects at least one number");
+    /* min()'s zero-argument guard is an arity rule, so it lives in the checker
+     * now (builtin arity table, 2026-10-21); the non-number dimension is
+     * already pinned by the abs() case above. */
+    reject("math: min() requires at least one argument",
+           "print(str(min()));", "at least 1 argument(s)");
 
     /* --- --no-fs runtime lock --------------------------------------------
      * Without these, a regression that quietly unguards read_file() would
@@ -1176,7 +1185,7 @@ int main(void) {
     reject("missing struct field",
           "type P = { x: int, y: int };\nfunc p(): P { return { x: 1 }; }",
           "missing field");
-    reject("call arity mismatch", "func f(a: int) { }\nf(1, 2);", "arguments");
+    reject("call arity mismatch", "func f(a: int) { }\nf(1, 2);", "argument(s)");
     reject("map key not in struct",
           "type P = { x: int };\nfunc p(): P { return { x: 1, z: 2 }; }",
           "no field");

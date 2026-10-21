@@ -1308,5 +1308,39 @@ print(chisq_cdf(3.841459, 1.0));
 print(chisq_cdf(5.991465, 2.0));
 print(chisq_cdf(7.814728, 3.0));
 
+// ---- str()/int()/float() map-accessor shorthand (2026-10-21, ROUND11) ----
+// The interpreter spells str(m, k[, d]) as str(get(m, k[, d])) (builtins.c
+// value_from_map); the native backends desugar it the same way. These lines
+// pin the three legs together on every shape the desugar covers: a typed
+// map, the default, int/float fields, an any (json-parsed) map through the
+// slot getters, and the interpreter's ignore-extra-arguments fallback for a
+// scalar receiver, a list receiver and a non-string key.
+let acc_m = { "name": "Alice", "age": 30, "score": 9.5 };
+print(str(acc_m, "name"));
+print(str(acc_m, "missing", "DEFAULT"));
+print(str(acc_m, "age"));
+print(str(acc_m, "score"));
+print(int(acc_m, "score"));
+print(float(acc_m, "age"));
+let acc_j = json("{\"k\": \"vv\"}");
+print(str(acc_j, "k"));
+print(str(acc_j, "nope", "FB"));
+print(str(42, 7));
+print(str([10, 20], 0));
+print(str(acc_m, 42));
+// `string` is the interpreter's direct alias for str (b_string -> native_str),
+// accessor form included.
+print(string(acc_m, "name"));
+print(string(42));
+// A named struct used to segfault both native backends under get()/the cast
+// accessors: it is a raw GEP struct with no runtime map header, so the
+// lume_map_get_* getters read its first field as the header. The emitters now
+// box it into a map first (emit_struct_to_map); these lines pin that.
+type AccP = { name: string, age: int };
+let acc_p: AccP = { name: "Bob", age: 7 };
+print(str(acc_p, "name"));
+print(int(acc_p, "age"));
+print(get(acc_p, "name"));
+
 warmup();
 main();
