@@ -475,6 +475,17 @@ AI_VERIFY_FILE ?= examples/hello.lume
 ai-verify: all
 	@chmod +x scripts/verify-ai-lume.sh && LUME_BIN=./$(TARGET) ./scripts/verify-ai-lume.sh $(AI_VERIFY_FILE)
 
+# Scripted entry point of the loop (docs/ai-verify.md): assert the
+# expected verdicts over the shipped must-pass / must-reject seed sets,
+# and append every counter-example to out/ai-rejects.log — the reason
+# to hand back to the LLM for retry. The loop reads files only (no
+# network, no LLM builtin): the host / an external producer drops
+# candidates into the seed dirs (AI_PASS_DIR / AI_REJECT_DIR) and this
+# target is the machine-verify half. Exit 0 all verdicts held, 1 a
+# verdict was violated, 2 gate could not judge any program.
+ai-verify-loop: all
+	@chmod +x scripts/verify-ai-lume.sh scripts/ai-verify-loop.sh && LUME_BIN=./$(TARGET) ./scripts/ai-verify-loop.sh
+
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
 # 跑 tests/native-consistency.lume 三种路径(解释器 / 文本 / libLLVM), 各自跟
 # 基线比对, 再互比, 并且把编译器任何 stderr 都当失败 —— 让校验器抱怨的 IR 不算
@@ -914,7 +925,7 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
-         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify
+         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify ai-verify-loop
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \

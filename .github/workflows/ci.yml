@@ -105,6 +105,10 @@ jobs:
       - run: make ai-verify AI_VERIFY_FILE="examples/native-fact.lume"
       - run: make ai-verify AI_VERIFY_FILE="examples/stats.lume"
       - run: make ai-verify AI_VERIFY_FILE="examples/lang-basics.lume"
+      # Scripted loop entry point: assert the expected verdicts over the
+      # must-pass / must-reject seed sets and keep counter-examples in
+      # out/ai-rejects.log, ready to hand back to the LLM for retry.
+      - run: make ai-verify-loop
 
   # The release tree is produced by `.github/workflows/release.yml` on `v*`
   # tags; this job keeps the release matrix's plain build (no asset upload)

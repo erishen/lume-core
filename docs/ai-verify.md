@@ -46,6 +46,17 @@ supported entry points, in increasing order of automation:
   - exit 1 → keep the file + the stderr reason as the counter-example and
     re-prompt the LLM for a retry;
   - exit 2 → infrastructure problem, do not blame the program.
+
+  Shipped loop harness (2026-10-21): `scripts/ai-verify-loop.sh` /
+  `make ai-verify-loop` assert the expected verdicts over a must-pass set
+  (`examples/ai-generated/*.lume`, each must exit 0) and a must-reject
+  set (`tests/ai-bad/*.lume`, each must exit 1), and append every
+  counter-example to `out/ai-rejects.log` — the ready-made payload to log
+  back to the LLM for retry. A producer drops candidates into those
+  directories (or overrides `AI_PASS_DIR` / `AI_REJECT_DIR` /
+  `AI_REJECTS_LOG`); the loop reads files only. Exit 0 = all verdicts
+  held, 1 = a verdict was violated, 2 = the gate could not judge any
+  program (toolchain short of two legs). Runs in both CI jobs.
 - **GitHub Actions**: the `ai-verify` job in `.github/workflows/ci.yml`
   runs the gate over the shipped seeds (see below) with the libLLVM leg
   live — the leg most local toolchains skip. Point it at a generated file

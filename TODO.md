@@ -241,9 +241,14 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     interpreter accepts both — backend equivalence is the stricter oracle),
     `tests/ai-bad/type-mismatch.lume` (must REJECT, string for float param),
     `docs/ai-verify.md` (gate usage + three wiring entry points + exit codes +
-    scope guard). Still open: the host-side
-    LLM → `.lume` step and the CI/CD wiring that feeds its output into
-    `make ai-verify`; `assert_semantic()` remains an uncommitted open question.
+    scope guard). Scripted entry point landed 2026-10-21:
+    `scripts/ai-verify-loop.sh` / `make ai-verify-loop` — asserts the
+    expected verdicts over the must-pass / must-reject seed sets and
+    appends every counter-example to `out/ai-rejects.log` (the payload to
+    log back to the LLM for retry); wired into both CI jobs. Still open:
+    the actual LLM → `.lume` *producer* (the host's tool dispatch /
+    agenthttpd side — the loop is the machine half and reads files only);
+    `assert_semantic()` remains an uncommitted open question.
 
 - [x] **P4 gap (cont.) · `server{}` LLVM leg — closed 2026-10-20, including
   `req.*` member access.** env() part closed 2026-10-20: env() now has a

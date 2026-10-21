@@ -87,6 +87,8 @@ jobs:
         run: make ai-verify
       - name: AI gate - generated stats seed
         run: make ai-verify AI_VERIFY_FILE="examples/ai-generated/norm-stats.lume"
+      - name: AI gate - scripted loop (must-pass / must-reject verdicts)
+        run: make ai-verify-loop
 
       - name: Run hello
         run: ./bin/lume-core.exe examples/hello.lume
