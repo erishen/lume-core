@@ -275,6 +275,19 @@ CORE_OBJS := $(filter-out build/main.o, $(OBJS))
 build/bridge_native.o: src/bridge_native.c
 	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) -c $< -o $@
 
+# 变体构建(build-asan / build-pack / build-fuzz)的 bridge_native.o 也必须摘掉
+# -DLUME_HAS_SQLITE=1: 与 build/ 同口径。否则解释器那份 bridge_native.o 会引用
+# rt.c 的容器助手(lume_error_set 等, 仅 backend 链接里存在), HAVE_SQLITE=1 时
+# 变体二进制链接报 undefined reference。普通 build/ 早这么做了, 这里补齐三处。
+# 不能把 filter-out 撒到整条变体 CFLAGS 上 —— 那样会把 builtins_sql.c 需要的
+# -DLUME_HAS_SQLITE=1 也摘掉, 反而是另一种断链。
+build-asan/bridge_native.o: src/bridge_native.c
+	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) $(ASAN_CFLAGS) -c $< -o $@
+build-pack/bridge_native.o: src/bridge_native.c
+	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(PACK_CFLAGS)) -c $< -o $@
+build-fuzz/bridge_native.o: src/bridge_native.c
+	$(FUZZ_CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) -fsanitize=fuzzer-no-link,address,undefined -c $< -o $@
+
 # 内部头:任一 * 片的共享声明变化,所有依赖它的 .o 都要重建
 INT_HDRS := $(wildcard src/*_internal.h)
 
