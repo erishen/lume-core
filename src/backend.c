@@ -208,7 +208,8 @@ int backend_build_native(char *err, size_t err_size)
 }
 
 int backend_emit_ir(const char *src_path, struct Node *prog,
-                    struct Node **mods, const char **nsnames, int nmods,
+                    struct Node **mods, const char ***alias_list,
+                    const int *alias_cnt, int nmods,
                     const char *ll_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -221,8 +222,9 @@ int backend_emit_ir(const char *src_path, struct Node *prog,
     cerr[0] = '\0';
     char *ir;
     if (nmods > 1 && mods)
-        ir = codegen_emit_ir_multi(src_path ? src_path : "lume", mods, nsnames,
-                                   nmods, cerr, sizeof cerr);
+        ir = codegen_emit_ir_multi(src_path ? src_path : "lume", mods,
+                                   alias_list, alias_cnt, nmods, cerr,
+                                   sizeof cerr);
     else
         ir = codegen_emit_ir(src_path ? src_path : "lume", prog,
                              cerr, sizeof cerr);
@@ -242,15 +244,16 @@ int backend_emit_ir(const char *src_path, struct Node *prog,
 }
 
 int backend_native(const char *src_path, struct Node *prog,
-                   struct Node **mods, const char **nsnames, int nmods,
+                   struct Node **mods, const char ***alias_list,
+                   const int *alias_cnt, int nmods,
                    const char *out_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
 
     char ll_path[PATH_MAX];
     snprintf(ll_path, sizeof ll_path, "%s.ll", out_path);
-    if (backend_emit_ir(src_path, prog, mods, nsnames, nmods,
-                        ll_path, err, err_size) != 0)
+    if (backend_emit_ir(src_path, prog, mods, alias_list, alias_cnt,
+                        nmods, ll_path, err, err_size) != 0)
         return 1;
     if (backend_build_rt(err, err_size) != 0)
         return 1;

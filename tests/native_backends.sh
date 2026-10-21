@@ -352,6 +352,32 @@ for leg in "${RAN[@]}"; do
 done
 pass "propagate: every leg unwraps \`?\` and propagates \`err\` like the interpreter"
 
+# ---- ns module chain: entry → A → B (member call + member variable read) ----
+# A module importing another module: A's own alias for B (`b`) must register
+# B's functions and top-level bindings under "<ns>.<name>", not only the
+# entry's aliases. Before the multi-alias fix both native backends refused
+# `b.double` with "call to unknown function"; the interpreter and --check
+# always accepted the chain, so a native-only divergence never surfaced in
+# the single-file fixture. 5 * 2 + 7 = 17 on every leg.
+NS_CHAIN=tests/ns-chain-main.lume
+ns_want=$("$TARGET" "$NS_CHAIN" 2>/dev/null | tr -d '\r')
+ns_ran=()
+for leg in text llvm; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+    esac
+    "$TARGET" "$flag" "$NS_CHAIN" -o "$WORK/ns-chain-$leg" >/dev/null 2>&1 ||
+        fail "ns-chain: $leg refused to compile a legal module chain (entry → A → B)"
+    got=$("$WORK/ns-chain-$leg" 2>/dev/null | tr -d '\r')
+    [ "$got" = "$ns_want" ] || {
+        echo "got: $got"
+        fail "ns-chain: $leg disagrees with the interpreter on the module chain"
+    }
+    ns_ran+=("$leg")
+done
+pass "ns-chain: entry → A → B member call / member read agrees with the interpreter on every leg"
+
 # ---- sql cross-backend consistency (needs a HAVE_SQLITE build) -----------
 # The sql builtins are the P6 surface: the native runtime and both emitters
 # were added together, so they get the same three-way treatment as the main

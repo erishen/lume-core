@@ -477,7 +477,8 @@ static void collect_lambdas(Node *n, Node ***out, int *cnt, int *cap)
 
 /* Build (and hand back) the module. Returns NULL with a message in err. */
 static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
-                                              const char **nsnames, int nmods,
+                                              const char ***alias_list,
+                                              const int *alias_cnt, int nmods,
                                               LLVMContextRef *out_ctx,
                                               char *err, size_t err_size)
 {
@@ -491,6 +492,9 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
 
     CG cg;
     memset(&cg, 0, sizeof cg);
+    cg.alias_list = alias_list;
+    cg.alias_cnt  = alias_cnt;
+    cg.nmods      = nmods;
 
     LLVMContextRef ctx = LLVMContextCreate();
     cg.ctx     = ctx;
@@ -546,9 +550,26 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
                                                  : n->as.func.name;
             char qbuf[512];
             const char *qname = fname;
-            if (m > 0 && nsnames && nsnames[m]) {
-                snprintf(qbuf, sizeof qbuf, "%s.%s", nsnames[m], fname);
-                qname = qbuf;
+            if (m > 0 && alias_list && alias_cnt && alias_cnt[m] > 0) {
+                /* One signature per alias any loaded module uses for this
+                 * module: the entry's `as` name and every module-side import
+                 * alias, so a member call resolves under each referencing
+                 * side's alias (module chains: A imports B, A calls b.fn). */
+                for (int k = 0; k < alias_cnt[m]; k++) {
+                    snprintf(qbuf, sizeof qbuf, "%s.%s", alias_list[m][k],
+                             fname);
+                    sig_push(&cg.sigs, qbuf,
+                             n->as.func.ret, n->as.func.param_types,
+                             n->as.func.arity);
+                    /* The body and the parameter names are what let a call
+                     * site (and the member-call emitter) recover the
+                     * function's own symbol name and signature — a Sig
+                     * without a node cannot name its callee. */
+                    cg.sigs.v[cg.sigs.n - 1].body   = n->as.func.body;
+                    cg.sigs.v[cg.sigs.n - 1].pnames = n->as.func.names;
+                    cg.sigs.v[cg.sigs.n - 1].node   = n;
+                }
+                continue;
             }
             sig_push(&cg.sigs, qname,
                      n->as.func.ret, n->as.func.param_types, n->as.func.arity);
@@ -693,8 +714,9 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
          * (the multi-file registration key), so same-module functions and the
          * module's own local functions link even though the body spells bare
          * names. Entry functions keep cur_ns NULL (bare-key lookup only). */
-        cg.cur_ns = (fnmod[i] > 0 && nsnames && nsnames[fnmod[i]])
-                        ? nsnames[fnmod[i]] : NULL;
+        cg.cur_ns = (fnmod[i] > 0 && alias_list && alias_cnt &&
+                     alias_cnt[fnmod[i]] > 0)
+                        ? alias_list[fnmod[i]][0] : NULL;
         cg_function(&cg, fns[i]);
     }
     cg.cur_ns = NULL;
@@ -839,17 +861,18 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, Node *prog,
 {
     Node *mods[1];
     mods[0] = prog;
-    return llvm_codegen_module_core(mod_name, mods, NULL, 1,
+    return llvm_codegen_module_core(mod_name, mods, NULL, NULL, 1,
                                     out_ctx, err, err_size);
 }
 
 LLVMModuleRef llvm_codegen_module_multi(const char *mod_name, Node **mods,
-                                        const char **nsnames, int nmods,
+                                        const char ***alias_list,
+                                        const int *alias_cnt, int nmods,
                                         LLVMContextRef *out_ctx, char *err,
                                         size_t err_size)
 {
-    return llvm_codegen_module_core(mod_name, mods, nsnames, nmods,
-                                    out_ctx, err, err_size);
+    return llvm_codegen_module_core(mod_name, mods, alias_list, alias_cnt,
+                                    nmods, out_ctx, err, err_size);
 }
 
 #include "llvm_cg_expr.inc"

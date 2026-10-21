@@ -1828,14 +1828,16 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
 /* Multi-file entry: imported module ASTs participate in the signature pass
  * so cross-module calls (`policy.decide(...)`) resolve their callee's
  * signature. mods[0] is the entry program (its unresolved parameters are
- * rejected); mods[1..] are the entry's imported modules, in dependency order,
- * with nsnames[i] the `as` alias the entry uses for mods[i]. Each module's
- * functions are registered under "<ns>.<name>" so a member call resolves
- * unambiguously, and each module's own pass runs with the unresolved-
- * parameter check disabled — an imported module's exported functions have no
- * call site inside the module itself; their untyped parameters are filled by
- * the entry's cross-module call sites. */
-int codegen_infer_signatures_multi(Node **mods, const char **nsnames, int nmods,
+ * rejected); mods[1..] are the imported modules, in dependency order, with
+ * alias_list[m] every alias any loaded module uses for mods[m] — the entry's
+ * `as` names plus module-side imports. Each module's functions are
+ * registered under "<ns>.<name>" for each referencing alias so a member call
+ * resolves unambiguously, and each module's own pass runs with the
+ * unresolved-parameter check disabled — an imported module's exported
+ * functions have no call site inside the module itself; their untyped
+ * parameters are filled by the entry's cross-module call sites. */
+int codegen_infer_signatures_multi(Node **mods, const char ***alias_list,
+                                   const int *alias_cnt, int nmods,
                                    char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -1846,8 +1848,8 @@ int codegen_infer_signatures_multi(Node **mods, const char **nsnames, int nmods,
 
     for (int m = 1; m < nmods && !rc; m++) {
         Node *prog = mods[m];
-        const char *ns = (nsnames && nsnames[m]) ? nsnames[m] : NULL;
-        if (!prog || prog->type != N_PROGRAM || !ns) continue;
+        int na = (alias_list && alias_cnt) ? alias_cnt[m] : 0;
+        if (!prog || prog->type != N_PROGRAM || na <= 0) continue;
         CG g;
         memset(&g, 0, sizeof g);
         g.mod_idx = m;   /* synthetic names in this file carry the module index */
@@ -1861,15 +1863,21 @@ int codegen_infer_signatures_multi(Node **mods, const char **nsnames, int nmods,
                 Node *n = fns[i];
                 const char *fname = n->as.func.cname ? n->as.func.cname
                                                      : n->as.func.name;
-                char *q = xmalloc(strlen(ns) + strlen(fname) + 2);
-                sprintf(q, "%s.%s", ns, fname);
-                sig_push(&shared, q, n->as.func.ret,
-                         n->as.func.param_types, n->as.func.arity);
-                Sig *ss = &shared.v[shared.n - 1];
-                ss->body   = n->as.func.body;
-                ss->pnames = n->as.func.names;
-                ss->node   = n;
-                free(q);
+                /* One key per referencing alias — a module chain (A imports
+                 * B) resolves B's members under A's alias, not only under
+                 * the entry's. */
+                for (int k = 0; k < na; k++) {
+                    const char *ns = alias_list[m][k];
+                    char *q = xmalloc(strlen(ns) + strlen(fname) + 2);
+                    sprintf(q, "%s.%s", ns, fname);
+                    sig_push(&shared, q, n->as.func.ret,
+                             n->as.func.param_types, n->as.func.arity);
+                    Sig *ss = &shared.v[shared.n - 1];
+                    ss->body   = n->as.func.body;
+                    ss->pnames = n->as.func.names;
+                    ss->node   = n;
+                    free(q);
+                }
             }
             free(fns);
         }

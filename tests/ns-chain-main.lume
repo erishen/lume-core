@@ -1,0 +1,7 @@
+// ns-chain-main.lume — entry: imports A as `a`, calls a.triple(5).
+// a.triple → b.double(5) + b.factor = 10 + 7 = 17. Pins the module-side
+// import gap (entry → A → B): the interpreter and --check accept the chain,
+// and both native backends must too.
+import "ns-chain-a.lume" as a;
+
+print(a.triple(5));

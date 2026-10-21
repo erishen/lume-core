@@ -17,16 +17,17 @@ char *codegen_emit_ir(const char *mod_name, struct Node *prog,
                       char *err, size_t err_size);
 
 /* Multi-file variant: imported module ASTs join the emission. mods[0] is the
- * entry program; mods[1..] its imports in dependency order, nsnames[i] the
- * `as` alias the entry uses for mods[i]. Module functions are collected under
- * "<ns>.<name>" for member-call resolution but defined under their own
- * source-name symbols (which is what a member call emits against); module
+ * entry program; mods[1..] its imports in dependency order, alias_list[m]
+ * every alias any loaded module uses for mods[m] (entry `as` names plus
+ * module-side imports). Module functions are collected under "<ns>.<name>"
+ * for each referencing alias (member-call resolution) but defined under their
+ * own source-name symbols (which is what a member call emits against); module
  * type decls join the struct table under their plain names; module top-level
  * statements run first, inside L_top, so a module function body reads its
  * module's tables through the same @lv_ globals the entry uses. */
 char *codegen_emit_ir_multi(const char *mod_name, struct Node **mods,
-                            const char **nsnames, int nmods,
-                            char *err, size_t err_size);
+                            const char ***alias_list, const int *alias_cnt,
+                            int nmods, char *err, size_t err_size);
 
 /* Fill in the `ret` / `params[i]` slots the source left NULL, from the call
  * sites and the `return` statements, and write the result back onto the AST.
@@ -42,12 +43,16 @@ int codegen_infer_signatures(struct Node *prog, char *err, size_t err_size);
 /* Multi-file variant: imported module ASTs join the signature pass so
  * cross-module member calls (`policy.decide(...)`) resolve their callee's
  * signature. mods[0] is the entry program (unresolved parameters rejected);
- * mods[1..] are its imported modules in dependency order, nsnames[i] being
- * the `as` alias the entry uses for mods[i]. Module functions are registered
- * under "<ns>.<name>"; each module's own pass runs with the unresolved-
- * parameter check disabled (its exported functions are typed by the entry's
- * call sites). Same contract as the single-program form otherwise. */
-int codegen_infer_signatures_multi(struct Node **mods, const char **nsnames,
-                                   int nmods, char *err, size_t err_size);
+ * mods[1..] are its imported modules in dependency order. alias_list[m] holds
+ * EVERY alias any loaded module uses for mods[m] — the entry's `as` names plus
+ * module-side imports (a module importing another module and calling its
+ * members) — so a member call resolves under each referencing side's alias.
+ * Module functions are registered under "<ns>.<name>" for each alias; each
+ * module's own pass runs with the unresolved-parameter check disabled (its
+ * exported functions are typed by the call sites). Same contract as the
+ * single-program form otherwise. */
+int codegen_infer_signatures_multi(struct Node **mods, const char ***alias_list,
+                                   const int *alias_cnt, int nmods,
+                                   char *err, size_t err_size);
 
 #endif /* LUMELLVM_CODEGEN_H */

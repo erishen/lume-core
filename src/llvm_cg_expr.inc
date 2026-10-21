@@ -548,6 +548,7 @@ static Val cg_member(CG *g, Node *n)
             LLVMStructSetBody(srv, els, 6, 0);
         }
         Asg *req = asg_find(&g->locals, g->hreq, n->line);
+        if (!req) ERRV(g, "line %zu: no req parameter", n->line);
         if (!req || !req->slot)
             ERRV(g, "line %zu: internal: req parameter missing", n->line);
         LLVMValueRef rp = LLVMBuildBitCast(g->ab, req->slot,
@@ -565,6 +566,35 @@ static Val cg_member(CG *g, Node *n)
                 rt_decl(g, "lume_srv_qp", g->i8ptr, qpt, 3),
                 qa, 3, "qp");
         return val_make(type_prim(TY_STRING), call);
+    }
+
+    /* Module member read: `b.factor` — obj is a module alias (import ns), the
+     * member is that module's top-level binding, lifted into its @lv_<name>
+     * global (every module's top-level statements run inside L_top).
+     * Intercepted before obj evaluation, which would look `b` up as a
+     * variable and fail with "unknown variable 'b'". */
+    if (g->alias_list && n->as.member.obj &&
+        n->as.member.obj->type == N_VAR) {
+        const char *ns = n->as.member.obj->as.var.name;
+        for (int m = 1; m < g->nmods; m++) {
+            int na = g->alias_cnt ? g->alias_cnt[m] : 0;
+            int is_ns = 0;
+            for (int k = 0; k < na; k++)
+                if (strcmp(g->alias_list[m][k], ns) == 0) { is_ns = 1; break; }
+            if (!is_ns) continue;
+            Asg *gv = gvar_find(&g->gvars, n->as.member.name);
+            if (!gv)
+                ERRV(g, "line %zu: module '%s' has no top-level binding '%s'",
+                     n->line, ns, n->as.member.name);
+            if (!ty_of(g, gv->ty))
+                ERRV(g, "line %zu: '%s.%s' has no codegen type",
+                     n->line, ns, n->as.member.name);
+            if (gv->ty->kind == TY_STRUCT && gv->ty->name)
+                return val_make(gv->ty, gv->slot);
+            AT(g);
+            return val_make(gv->ty, LLVMBuildLoad2(g->ab, ty_of(g, gv->ty),
+                                                   gv->slot, "v"));
+        }
     }
 
     Val obj = cg_expr(g, n->as.member.obj);

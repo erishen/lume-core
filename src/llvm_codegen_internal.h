@@ -77,6 +77,14 @@ typedef struct {
                                     * call inside a module body first resolves
                                     * "<ns>.<name>", then the bare name. NULL
                                     * for the entry / single file. */
+
+    /* Multi-file build: every alias any loaded module uses for each module
+     * (alias_list[m] has alias_cnt[m] entries; alias_cnt[0] ignored). Lets a
+     * member read (`b.factor`) resolve a module alias to its module's
+     * top-level binding. NULL for a single-file build. */
+    const char ***alias_list;
+    const int *alias_cnt;
+    int        nmods;
     StructEnt structs_types[MAX_STRUCT_TYPES];
     int    structs_types_n;
 

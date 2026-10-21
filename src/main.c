@@ -40,36 +40,82 @@ enum { NAT_DEFAULT = 0, NAT_LLVM = 1, NAT_TEXT = 2 };
 
 static void usage(const char *prog);
 static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
-                        const char ***nsnames_out);
-/* Collect the entry's import modules (dependency order) plus the alias each
- * entry N_IMPORT uses for it, for the multi-file signature / emit passes.
- * Returns the module count (1 = entry only), or -1 on allocation failure;
- * mods_out / nsnames_out are allocated here and freed by the caller. */
+                        const char ****alias_list_out, int **alias_cnt_out);
+/* Collect the entry's import modules (dependency order) plus EVERY alias any
+ * loaded module uses for each of them — the entry's `as` names AND each
+ * module's own imports (a module importing another module and calling its
+ * members) — for the multi-file signature / emit passes. Returns the module
+ * count (1 = entry only), or -1 on allocation failure; mods_out / alias_list
+ * / alias_cnt are allocated here and freed by the caller. */
 static int compile_mods(VM *vm, Module *entry, Node ***mods_out,
-                        const char ***nsnames_out)
+                        const char ****alias_list_out, int **alias_cnt_out)
 {
     int n = vm->module_count;
+    (void)entry;   /* modules[0] is the entry; the loader registers it first */
     Node **mods = malloc(sizeof(Node *) * (size_t)n);
-    const char **nsnames = malloc(sizeof(char *) * (size_t)n);
-    if (!mods || !nsnames) { free(mods); free(nsnames); return -1; }
+    const char ***alias_list = calloc((size_t)n, sizeof(char **));
+    int *alias_cnt = calloc((size_t)n, sizeof(int));
+    if (!mods || !alias_list || !alias_cnt) {
+        free(mods); free(alias_list); free(alias_cnt);
+        return -1;
+    }
     /* modules[0] is the entry (the loader registers it first); modules[1..]
      * are the imports in dependency order. */
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++)
         mods[i] = vm->modules[i]->prog;
-        nsnames[i] = NULL;
+
+    /* Append (ns -> module t) to alias_list[t] unless already present. The
+     * alias strings are borrowed (entry AST / loader ns_names) and live for
+     * the whole compile; only the vector shells are owned here. */
+    int add_alias(int t, const char *ns) {
+        if (t < 0 || t >= n || !ns) return 0;
+        for (int k = 0; k < alias_cnt[t]; k++)
+            if (strcmp(alias_list[t][k], ns) == 0) return 0;
+        const char **v = realloc(alias_list[t],
+                                 sizeof(char *) * ((size_t)alias_cnt[t] + 1));
+        if (!v) return -1;
+        alias_list[t] = v;
+        alias_list[t][alias_cnt[t]++] = ns;
+        return 0;
     }
-    Node **top = entry->prog->as.program.stmts;
-    for (int i = 0; i < entry->prog->as.program.count; i++) {
-        Node *st = top[i];
-        if (st && st->type == N_IMPORT) {
-            for (int j = 1; j < n; j++)
-                if (strcmp(st->as.imp.path, vm->modules[j]->path) == 0)
-                    nsnames[j] = st->as.imp.ns;
+    int rc = 0;
+    for (int m = 0; m < n && rc == 0; m++) {
+        Module *mm = vm->modules[m];
+        if (!mm || !mm->prog) continue;
+        /* The loader keeps each module's imports in ns_names / import_paths
+         * (collect_imports); walk them rather than re-scanning N_IMPORT, so
+         * module-side imports are covered the same way as the entry's. */
+        for (int k = 0; k < mm->import_count; k++) {
+            int t = -1;
+            for (int j = 0; j < n; j++)
+                if (strcmp(mm->import_paths[k], vm->modules[j]->path) == 0)
+                    { t = j; break; }
+            if (t >= 0 && add_alias(t, mm->ns_names[k]) != 0) { rc = -1; break; }
         }
     }
+    if (rc != 0) {
+        for (int i = 0; i < n; i++) free(alias_list[i]);
+        free(mods); free(alias_list); free(alias_cnt);
+        return -1;
+    }
     *mods_out = mods;
-    *nsnames_out = nsnames;
+    *alias_list_out = alias_list;
+    *alias_cnt_out = alias_cnt;
     return n;
+}
+
+/* Free the vectors compile_mods allocated: the per-module alias shells and
+ * the two top-level arrays. The alias strings are borrowed (entry AST /
+ * loader ns_names), so only the shells are freed. */
+static void lume_free_aliases(Node **mods, const char ***alias_list,
+                              int *alias_cnt, int nmods)
+{
+    if (alias_list) {
+        for (int i = 0; i < nmods; i++) free((void *)alias_list[i]);
+        free(alias_list);
+    }
+    free(alias_cnt);
+    free(mods);
 }
 
 static void usage(const char *prog) {
@@ -573,12 +619,14 @@ int main(int argc, char **argv) {
             vm_teardown(&vm);
             return 1;
         }
-        /* The entry's import modules (dependency order) plus the alias each
-         * entry N_IMPORT uses for it — shared by the multi-file signature pass
-         * and the multi-file emit below. NULL/0 for a single-file compile. */
+        /* The entry's import modules (dependency order) plus EVERY alias any
+         * loaded module uses for each of them — the entry's `as` names and
+         * module-side imports — shared by the multi-file signature pass and
+         * the multi-file emit below. NULL/0 for a single-file compile. */
         Node **mods = NULL;
-        const char **nsnames = NULL;
-        int nmods = compile_mods(&vm, entry, &mods, &nsnames);
+        const char ***alias_list = NULL;
+        int *alias_cnt = NULL;
+        int nmods = compile_mods(&vm, entry, &mods, &alias_list, &alias_cnt);
         if (nmods < 0) {
             fprintf(stderr, "lume: out of memory collecting import modules\n");
             vm_teardown(&vm);
@@ -593,8 +641,8 @@ int main(int argc, char **argv) {
         char ierr[512] = {0};
         int sig_rc;
         if (nmods > 1) {
-            sig_rc = codegen_infer_signatures_multi(mods, nsnames, nmods,
-                                                    ierr, sizeof ierr);
+            sig_rc = codegen_infer_signatures_multi(mods, alias_list, alias_cnt,
+                                                    nmods, ierr, sizeof ierr);
         } else {
             sig_rc = codegen_infer_signatures(entry->prog, ierr, sizeof ierr);
         }
@@ -668,17 +716,16 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "lume: note: --no-pass: lowering the IR without "
                                 "running the optimisation pipeline\n");
             }
-            if (backend_llvm_native(script, entry->prog, mods, nsnames, nmods,
-                                    bin, berr, sizeof(berr)) != 0) {
+            if (backend_llvm_native(script, entry->prog, mods, alias_list,
+                                    alias_cnt, nmods, bin, berr,
+                                    sizeof(berr)) != 0) {
                 fprintf(stderr, "lume: %s\n", berr[0] ? berr : "libLLVM compile failed");
-                free(mods);
-                free((void *)nsnames);
+                lume_free_aliases(mods, alias_list, alias_cnt, nmods);
                 vm_teardown(&vm);
                 return 1;
             }
             printf("wrote %s (libLLVM backend)\n", bin);
-            free(mods);
-            free((void *)nsnames);
+            lume_free_aliases(mods, alias_list, alias_cnt, nmods);
             /* No note printed here. The default used to carry one, because
              * this path could not run LLVM's optimisation passes and a
              * compute-bound binary came out one to two orders of magnitude
@@ -694,17 +741,15 @@ int main(int argc, char **argv) {
             return 0;
         }
 #endif
-        if (backend_native(script, entry->prog, mods, nsnames, nmods,
-                           bin, berr, sizeof(berr)) != 0) {
+        if (backend_native(script, entry->prog, mods, alias_list,
+                           alias_cnt, nmods, bin, berr, sizeof(berr)) != 0) {
             fprintf(stderr, "lume: %s\n", berr[0] ? berr : "native compile failed");
-            free(mods);
-            free((void *)nsnames);
+            lume_free_aliases(mods, alias_list, alias_cnt, nmods);
             vm_teardown(&vm);
             return 1;
         }
         printf("wrote %s (IR text backend)\n", bin);
-        free(mods);
-        free((void *)nsnames);
+        lume_free_aliases(mods, alias_list, alias_cnt, nmods);
         vm_teardown(&vm);
         return 0;
     }

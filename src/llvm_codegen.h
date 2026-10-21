@@ -41,14 +41,17 @@ LLVMModuleRef llvm_codegen_module(const char *mod_name, struct Node *prog,
                                   size_t err_size);
 
 /* Multi-file variant: mods[0] is the entry program, mods[1..] its imports in
- * dependency order with nsnames[i] the `as` alias the entry uses for mods[i]
- * (nsnames[0] ignored; pass NULL/0 for a single-file compile). Module
- * functions are collected under "<ns>.<name>" for member-call resolution but
- * defined under their own source-name symbols; module type decls join the
- * struct table under their plain names; module top-level statements run
- * first, inside L_top. Same contract as llvm_codegen_module otherwise. */
+ * dependency order with alias_list[m] every alias any loaded module uses for
+ * mods[m] — the entry's `as` names plus module-side imports (alias_cnt[0]
+ * ignored; pass NULL/0 for a single-file compile). Module functions are
+ * collected under "<ns>.<name>" for each referencing alias for member-call
+ * resolution but defined under their own source-name symbols; module type
+ * decls join the struct table under their plain names; module top-level
+ * statements run first, inside L_top. Same contract as llvm_codegen_module
+ * otherwise. */
 LLVMModuleRef llvm_codegen_module_multi(const char *mod_name, struct Node **mods,
-                                        const char **nsnames, int nmods,
+                                        const char ***alias_list,
+                                        const int *alias_cnt, int nmods,
                                         LLVMContextRef *out_ctx, char *err,
                                         size_t err_size);
 

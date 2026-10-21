@@ -1,0 +1,10 @@
+// ns-chain-a.lume — module A, imported by the entry as `a`; A itself imports
+// module B as `b` and calls B's member function AND reads B's member variable.
+// The multi-file passes must register B's functions/vars under A's alias `b`
+// (not only under the entry's aliases), or the native backends refuse
+// `b.double` / `b.factor` here. 5 * 2 + 7 = 17.
+import "ns-chain-b.lume" as b;
+
+export func triple(n: int) {
+  return b.double(n) + b.factor;
+}

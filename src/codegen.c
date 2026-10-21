@@ -702,18 +702,20 @@ char *codegen_emit_ir(const char *mod_name, Node *prog, char *err, size_t err_si
  * same @lv_ globals the entry uses.
  *
  * mods[0] is the entry program; mods[1..] are its imports in dependency
- * order, nsnames[i] the `as` alias the entry uses for mods[i] (nsnames[0]
- * is ignored). Module functions are collected under "<ns>.<name>" for
- * member-call resolution but defined under their own source-name symbols
- * (cg_function's @L_<fname>), which is what the member call emits against.
+ * order, alias_list[m] every alias any loaded module uses for mods[m] — the
+ * entry's `as` names plus module-side imports (alias_list[0] ignored).
+ * Module functions are collected under "<ns>.<name>" for each referencing
+ * alias (member-call resolution) but defined under their own source-name
+ * symbols (cg_function's @L_<fname>), which is what the member call emits
+ * against.
  * Module type decls join the struct table under their plain names (a
  * `d.decision` member access has no namespace to qualify with), and module
  * top-level statements run first, inside L_top, before the entry's own — the
  * native mirror of the loader executing imported module top levels in
  * dependency order. */
 char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
-                            const char **nsnames, int nmods,
-                            char *err, size_t err_size)
+                            const char ***alias_list, const int *alias_cnt,
+                            int nmods, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
     if (!mods || nmods <= 0 || !mods[0] || mods[0]->type != N_PROGRAM)
@@ -722,6 +724,9 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
     Node *prog = mods[0];
     CG cg;
     memset(&cg, 0, sizeof cg);
+    cg.alias_list = alias_list;
+    cg.alias_cnt  = alias_cnt;
+    cg.nmods      = nmods;
 
     IrBuf ir;
     irbuf_init(&ir);
@@ -762,9 +767,21 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
                                                  : n->as.func.name;
             char qbuf[512];
             const char *qname = fname;
-            if (m > 0 && nsnames && nsnames[m]) {
-                snprintf(qbuf, sizeof qbuf, "%s.%s", nsnames[m], fname);
-                qname = qbuf;
+            if (m > 0 && alias_list && alias_cnt && alias_cnt[m] > 0) {
+                /* One signature per alias any loaded module uses for this
+                 * module: the entry's `as` name and every module-side import
+                 * alias, so a member call resolves under each referencing
+                 * side's alias (module chains: A imports B, A calls b.fn). */
+                for (int k = 0; k < alias_cnt[m]; k++) {
+                    snprintf(qbuf, sizeof qbuf, "%s.%s", alias_list[m][k],
+                             fname);
+                    sig_push(&cg.sigs, qbuf, n->as.func.ret,
+                             n->as.func.param_types, n->as.func.arity);
+                    cg.sigs.v[cg.sigs.n - 1].body   = n->as.func.body;
+                    cg.sigs.v[cg.sigs.n - 1].pnames = n->as.func.names;
+                    cg.sigs.v[cg.sigs.n - 1].node   = n;
+                }
+                continue;
             }
             sig_push(&cg.sigs, qname, n->as.func.ret,
                      n->as.func.param_types, n->as.func.arity);
@@ -795,7 +812,7 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
      * back-filled from the entry's call sites; idempotent, and shared with the
      * libLLVM backend (the driver runs it before picking an emitter). */
     if (nmods > 1) {
-        if (codegen_infer_signatures_multi(mods, nsnames, nmods,
+        if (codegen_infer_signatures_multi(mods, alias_list, alias_cnt, nmods,
                                            cg.err, sizeof cg.err) != 0) {
             if (err && err_size) snprintf(err, err_size, "%s", cg.err);
             cg_free(&cg);
@@ -947,8 +964,9 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
          * (the multi-file registration key), so same-module functions and the
          * module's own local functions link even though the body spells bare
          * names. Entry functions keep cur_ns NULL (bare-key lookup only). */
-        cg.cur_ns = (fnmod[i] > 0 && nsnames && nsnames[fnmod[i]])
-                        ? nsnames[fnmod[i]] : NULL;
+        cg.cur_ns = (fnmod[i] > 0 && alias_list && alias_cnt &&
+                     alias_cnt[fnmod[i]] > 0)
+                        ? alias_list[fnmod[i]][0] : NULL;
         cg_function(&cg, fns[i]);
     }
     cg.cur_ns = NULL;

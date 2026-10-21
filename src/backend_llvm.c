@@ -146,7 +146,8 @@ void backend_llvm_set_no_pass(int no_pass) { g_no_pass = no_pass ? 1 : 0; }
 /* --------------------------------------------------------------- emit ------ */
 
 int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
-                         struct Node **mods, const char **nsnames, int nmods,
+                         struct Node **mods, const char ***alias_list,
+                         const int *alias_cnt, int nmods,
                          const char *ll_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -159,8 +160,9 @@ int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
     cerr[0] = '\0';
     LLVMContextRef ctx = NULL;
     LLVMModuleRef mod = (nmods > 1 && mods)
-        ? llvm_codegen_module_multi(src_path ? src_path : "lume", mods, nsnames,
-                                    nmods, &ctx, cerr, sizeof cerr)
+        ? llvm_codegen_module_multi(src_path ? src_path : "lume", mods,
+                                    alias_list, alias_cnt, nmods, &ctx, cerr,
+                                    sizeof cerr)
         : llvm_codegen_module(src_path ? src_path : "lume", prog,
                               &ctx, cerr, sizeof cerr);
     if (!mod) {
@@ -183,7 +185,8 @@ int backend_llvm_emit_ir(const char *src_path, struct Node *prog,
 }
 
 int backend_llvm_native(const char *src_path, struct Node *prog,
-                        struct Node **mods, const char **nsnames, int nmods,
+                        struct Node **mods, const char ***alias_list,
+                        const int *alias_cnt, int nmods,
                         const char *out_path, char *err, size_t err_size)
 {
     if (err && err_size) err[0] = '\0';
@@ -197,8 +200,9 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
     cerr[0] = '\0';
     LLVMContextRef ctx = NULL;
     LLVMModuleRef mod = (nmods > 1 && mods)
-        ? llvm_codegen_module_multi(src_path ? src_path : "lume", mods, nsnames,
-                                    nmods, &ctx, cerr, sizeof cerr)
+        ? llvm_codegen_module_multi(src_path ? src_path : "lume", mods,
+                                    alias_list, alias_cnt, nmods, &ctx, cerr,
+                                    sizeof cerr)
         : llvm_codegen_module(src_path ? src_path : "lume", prog,
                               &ctx, cerr, sizeof cerr);
     if (!mod) {

@@ -1,0 +1,8 @@
+// ns-chain-b.lume — module B, imported by module A (not by the entry).
+// Member *variable* reads cross modules too: b.factor is B's top-level
+// binding, lifted into @lv_factor by the multi-file pass.
+export let factor = 7;
+
+export func double(n) {
+  return n * 2;
+}

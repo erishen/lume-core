@@ -140,6 +140,14 @@ typedef struct {
                              * module body first resolves "<ns>.<name>", then
                              * the bare name. NULL for the entry / single file. */
 
+    /* Multi-file build: every alias any loaded module uses for each module
+     * (alias_list[m] has alias_cnt[m] entries; alias_cnt[0] ignored). Lets a
+     * member read (`b.factor`) resolve a module alias to its module's
+     * top-level binding. NULL for a single-file build. */
+    const char ***alias_list;
+    const int *alias_cnt;
+    int        nmods;
+
     /* Set while the driver pre-scans / emits the synthetic L_top: the scan
      * then lifts every top-level `let` and for-in variable into `gvars` (an
      * @lv_ global) instead of a fresh stack slot, and cg_def reuses the
@@ -209,8 +217,9 @@ void cg_closure(CG *g, Node *fn);
 const char *list_at_fn(Type *ty);
 Type *elem_rty(Type *ty);
 int codegen_infer_signatures(Node *prog, char *err, size_t err_size);
-int codegen_infer_signatures_multi(Node **mods, const char **nsnames,
-                                   int nmods, char *err, size_t err_size);
+int codegen_infer_signatures_multi(Node **mods, const char ***alias_list,
+                                   const int *alias_cnt, int nmods,
+                                   char *err, size_t err_size);
 Val coerce(CG *g, Type *to, Val v, size_t line);
 void emit_builtin_declares(CG *g);
 char *emit_instrf(CG *g, Type *ty, const char *fmt, ...);

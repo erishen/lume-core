@@ -987,6 +987,38 @@ static Val cg_member(CG *g, Node *n)
         strcmp(n->as.member.obj->as.member.name, "query_params") == 0)
         return cg_handler_qp_field(g, n);
 
+    /* Module member read: `b.factor` — obj is a module alias (import ns), the
+     * member is that module's top-level binding, lifted into its @lv_<name>
+     * global (every module's top-level statements run inside L_top).
+     * Intercepted before obj evaluation, which would look `b` up as a
+     * variable and fail with "unknown variable 'b'". */
+    if (g->alias_list && n->as.member.obj &&
+        n->as.member.obj->type == N_VAR) {
+        const char *ns = n->as.member.obj->as.var.name;
+        for (int m = 1; m < g->nmods; m++) {
+            int na = g->alias_cnt ? g->alias_cnt[m] : 0;
+            int is_ns = 0;
+            for (int k = 0; k < na; k++)
+                if (strcmp(g->alias_list[m][k], ns) == 0) { is_ns = 1; break; }
+            if (!is_ns) continue;
+            Asg *gv = gvar_find(&g->gvars, n->as.member.name);
+            if (!gv)
+                ERRV(g, "line %zu: module '%s' has no top-level binding '%s'",
+                     n->line, ns, n->as.member.name);
+            const char *lt = llvm_type_of(gv->ty);
+            if (!lt)
+                ERRV(g, "line %zu: '%s.%s' has no codegen type",
+                     n->line, ns, n->as.member.name);
+            if (gv->ty->kind == TY_STRUCT && gv->ty->name)
+                return val_make(gv->ty, gv->slot);
+            char *r = emit_instrf(g, gv->ty, "load %s, %s* %s",
+                                  lt, lt, gv->slot);
+            if (!r) ERRV(g, "line %zu: cannot load '%s.%s'",
+                         n->line, ns, n->as.member.name);
+            return val_take(gv->ty, r);
+        }
+    }
+
     Val obj = cg_expr(g, n->as.member.obj);
     if (!obj.v) ERRV(g, "line %zu: bad struct operand", n->line);
 

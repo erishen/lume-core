@@ -381,8 +381,23 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   reads the Sig's live return type (same as the member-call branch).
   Pinned by tests/ns-lf.lume + tests/ns-lib-lf.lume: entry and module both
   nest a local function and a lambda; interp/text/libLLVM all print
-  39/10. Remaining ns note: a module function calling *another module's*
-  member (module-side imports) is still untyped territory.
+  39/10.
+  **Module-side imports closed 2026-10-21**: a module function calling
+  *another module's* member (`b.double(n)`) and reading its member
+  variables (`b.factor`) now works on both native backends. The root gap
+  was that the multi-file passes registered every module's functions under
+  only the *entry's* alias for it — a module A importing B as `b` left B's
+  functions registered under bare names, so `b.double` failed with "call to
+  unknown function". The entry-alias table (`nsnames`) is now a per-module
+  alias list (`alias_list[m]`/`alias_cnt[m]`), collected in main.c's
+  compile_mods from every loaded module's imports (loader ns_names), and
+  every register point (codegen pass 1, llvm pass 1, the multi-file
+  signature pass) registers one "<ns>.<name>" key per referencing alias;
+  module member *reads* (`b.factor`) resolve the object as a module alias
+  to the module's @lv_ top-level binding in both cg_member emitters.
+  Pinned by tests/ns-chain-main.lume (entry → A → B: `a.triple(5)` = 
+  `b.double(5)+b.factor` = 17) across interp/text/libLLVM in
+  tests/native_backends.sh.
 - [x] **P4 · Statistical distribution builtins (filed 2026-10-19, driven by
   medical-stats p-values; closed 2026-10-20).** medical-stats' next step is
   descriptive stats → inference: p-values for the correlation matrix,
