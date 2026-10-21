@@ -124,6 +124,13 @@ typedef struct Type {
     char **names;           /* struct field names (TY_STRUCT) */
     Type **types;           /* field types (TY_STRUCT) or param types (TY_FUNC) */
     int count;
+    int variadic;           /* TY_FUNC: when set, the callee accepts argc >= count
+                             * (a variadic / lower-bounded contract from the
+                             * builtin arity table); the call checker enforces
+                             * argc >= count instead of == count. */
+    int max_args;           /* TY_FUNC: upper arity bound for bounded variadics
+                             * (e.g. sql_write min=1,max=3). -1 means unbounded.
+                             * Only consulted when variadic is set. */
     int cap;
     Type *ret;              /* TY_FUNC return type */
     struct Node *func;      /* TY_FUNC only: the node (N_FUNC_LIT or
@@ -142,6 +149,7 @@ Type *type_struct(const char *name);   /* named reference, resolved by checker *
 Type *type_anon_struct(void);
 Type *type_enum(const char *name);     /* enum reference, resolved by checker */
 Type *type_func(int arity, Type **params, Type *ret);
+Type *type_func_arity(int min_arity, int variadic, int max_args, Type **params, Type *ret);
 Type *type_result(void);
 void type_add_member(Type *t, const char *name, Type *ty);
 void type_print(Type *t);              /* type text into stdout (debug) */

@@ -81,17 +81,23 @@ Type *type_enum(const char *name) {
 }
 
 Type *type_func(int arity, Type **params, Type *ret) {
+    return type_func_arity(arity, 0, arity, params, ret);
+}
+
+Type *type_func_arity(int min_arity, int variadic, int max_args, Type **params, Type *ret) {
     Type *t = calloc(1, sizeof(Type));
     t->kind = TY_FUNC;
+    t->variadic = variadic ? 1 : 0;
+    t->max_args = max_args;
+    t->count = min_arity;
     /* Own the param vector: copy it out of the caller (the parser's and the
      * emitters' vectors are arena memory, TODO.md P2 — storing the pointer
      * made type_release_all's free depend on who handed the array in, which
      * the arena deleted the way to tell). The Type graph stays malloc'd and
      * type_release_all frees every t->types unconditionally. */
-    t->types = arity > 0 ? malloc((size_t)arity * sizeof(Type *)) : NULL;
+    t->types = min_arity > 0 ? malloc((size_t)min_arity * sizeof(Type *)) : NULL;
     if (t->types && params)
-        memcpy(t->types, params, (size_t)arity * sizeof(Type *));
-    t->count = arity;
+        memcpy(t->types, params, (size_t)min_arity * sizeof(Type *));
     t->ret = ret;
     ty_keep(t);
     return t;
@@ -435,6 +441,74 @@ const char *const LUME_BUILTIN_NAMES[] = {
 const size_t LUME_BUILTIN_COUNT =
     sizeof(LUME_BUILTIN_NAMES) / sizeof(LUME_BUILTIN_NAMES[0]);
 
+/* Builtin arity contract — the single source of truth for how many arguments
+ * each builtin accepts, transcribed from the runtime implementations in
+ * builtins*.c (every b_* wrapper forwards to a native_* that guards on argc).
+ *
+ * Previously every builtin was seeded into the type scope as TY_ANY, so the
+ * call checker skipped arity entirely and `str()` (zero args) compiled and
+ * only failed at the LLVM backend. Seeding the listed builtins as TY_FUNC lets
+ * the checker enforce arity up front.
+ *
+ *   max == -1 : variadic — at least `min` args required, extra args accepted
+ *               (the runtime ignores them, e.g. print()/min()/get(m,k,d)).
+ *   max == min: exactly that many args.
+ *   otherwise  : bounded optional upper, mirroring the runtime's `argc > max`
+ *               ceiling (sql_query / sql_write).
+ *
+ * The contract is deliberately derived from the runtime's own `argc < min`,
+ * `argc != K` and `argc > M` guards, so it never rejects a program the
+ * interpreter would accept — no regression on valid code. Builtins absent from
+ * this table (type words like `type`/`Result`, verb groups like `write`/`read`)
+ * keep the old loose TY_ANY seeding. `str`/`int`/`float`/`string` are variadic
+ * with min 1 because they also serve as map accessors (str(m,"field") ==
+ * str(get(m,"field"))); the LLVM backend's `argc != 1` special case is a
+ * pre-existing limitation for that accessor form, not something this table
+ * tightens (see codegen_call.c). */
+typedef struct { const char *name; int min; int max; } BuiltinSig;
+static const BuiltinSig LUME_BUILTIN_SIG[] = {
+    /* exact arity */
+    {"bool",1,1}, {"len",1,1}, {"keys",1,1}, {"json",1,1}, {"stringify",1,1},
+    {"render",1,1}, {"sort",1,1}, {"str_match",2,2}, {"regex",2,2},
+    {"sha256",1,1}, {"base64_encode",1,1}, {"base64_decode",1,1},
+    {"pow",2,2}, {"hmac_sha256",2,2}, {"push",2,2}, {"map",2,2}, {"filter",2,2},
+    {"reduce",3,3}, {"igamma",2,2}, {"ibeta",3,3}, {"tdist_cdf",2,2}, {"chisq_cdf",2,2},
+    {"sql_tx_begin",1,1}, {"sql_tx_exec",2,3}, {"sql_tx_commit",1,1}, {"sql_tx_rollback",1,1},
+    {"normcdf",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
+    {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
+    {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
+    {"strftime",2,2}, {"replace",3,3}, {"put",3,3},
+    /* bounded optional upper (runtime: argc > max rejected) */
+    {"sql_query",1,3}, {"sql_write",1,3},
+    /* variadic / optional (runtime: argc < min rejected, extra args accepted) */
+    {"print",0,-1}, {"run",0,-1},
+    {"str",1,-1}, {"int",1,-1}, {"float",1,-1}, {"string",1,-1},
+    {"get",2,-1}, {"range",1,-1}, {"now",0,-1}, {"argv",0,-1},
+    {"files",1,-1}, {"read_file",1,-1}, {"read_stdin",0,-1}, {"write_file",2,-1},
+    {"mkdir",1,-1}, {"lock_file",1,-1}, {"unlock_file",0,-1}, {"env",1,-1},
+    {"el",2,-1}, {"html",1,-1}, {"min",1,-1}, {"max",1,-1},
+    {"tools",0,-1}, {"skills",0,-1}, {"mcps",0,-1},
+    {"discovery_endpoints",0,-1}, {"catalog",0,-1},
+    {"upper",1,-1}, {"lower",1,-1}, {"capitalize",1,-1}, {"trim",1,-1},
+    {"contains",2,-1}, {"split",2,-1}, {"join",2,-1}, {"substr",2,-1},
+    {"crypt_sha512",1,-1},
+    {"http_get",1,-1}, {"http_post",1,-1}, {"http_put",1,-1},
+    {"http_patch",1,-1}, {"http_delete",1,-1},
+    {"try",1,-1},
+};
+static const size_t LUME_BUILTIN_SIG_COUNT =
+    sizeof(LUME_BUILTIN_SIG) / sizeof(LUME_BUILTIN_SIG[0]);
+
+static bool builtin_sig(const char *name, int *min, int *max) {
+    for (size_t i = 0; i < LUME_BUILTIN_SIG_COUNT; i++)
+        if (strcmp(LUME_BUILTIN_SIG[i].name, name) == 0) {
+            *min = LUME_BUILTIN_SIG[i].min;
+            *max = LUME_BUILTIN_SIG[i].max;
+            return true;
+        }
+    return false;
+}
+
 bool is_builtin_name(const char *name) {
     for (size_t i = 0; i < LUME_BUILTIN_COUNT; i++)
         if (strcmp(LUME_BUILTIN_NAMES[i], name) == 0) return true;
@@ -767,9 +841,24 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
     c.mods = mods;
     c.mod_count = mod_count;
 
-    /* builtins are loose */
-    for (size_t i = 0; i < sizeof(LUME_BUILTIN_NAMES) / sizeof(LUME_BUILTIN_NAMES[0]); i++)
-        scope_put(c.scope, LUME_BUILTIN_NAMES[i], any_type());
+    /* Builtins get a real function type (arity from LUME_BUILTIN_SIG) so the
+     * call checker enforces argument count up front; builtins absent from the
+     * table (type words / verb groups) keep the old loose TY_ANY seeding. */
+    for (size_t i = 0; i < LUME_BUILTIN_COUNT; i++) {
+        int mn, mx;
+        if (builtin_sig(LUME_BUILTIN_NAMES[i], &mn, &mx)) {
+            /* mn = lower bound, mx = upper bound (-1 = unbounded).
+             * variadic is set whenever the contract accepts more than mn
+             * (either unbounded or a bounded range), so the call checker
+             * enforces argc >= mn and (for bounded) argc <= mx. */
+            int variadic = (mx == -1 || mx != mn) ? 1 : 0;
+            int maxargs = (mx == -1) ? -1 : mx;
+            scope_put(c.scope, LUME_BUILTIN_NAMES[i],
+                      type_func_arity(mn, variadic, maxargs, NULL, any_type()));
+        } else {
+            scope_put(c.scope, LUME_BUILTIN_NAMES[i], any_type());
+        }
+    }
 
     /* Pass A: register every struct name before resolving any body, so
      * forward references between structs work. The def Type keeps the name:

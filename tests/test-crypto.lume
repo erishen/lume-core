@@ -69,13 +69,12 @@ check("确定性：同输入同输出",
       sha256("determinism") == sha256("determinism")
         && hmac_sha256("k", "determinism") == hmac_sha256("k", "determinism"));
 
-// ---- 负例：非 string / 参数个数 ----
+// ---- 负例：类型错误 ----
+// 注：arity（参数个数）错误已升至编译期（typecheck 签名表，见 src/typecheck.c
+// 的 LUME_BUILTIN_SIG + tests/arity-bad/），不再靠运行时 try() 捕获；
+// 此处仅保留"类型错误"这类运行时才能触发的维度。
 let e1 = try(() => sha256(42));
 check("sha256 非字符串参数报错", get(e1, "err", null) != null);
-let e2 = try(() => sha256());
-check("sha256 零参数报错", get(e2, "err", null) != null);
-let e3 = try(() => hmac_sha256("onlykey"));
-check("hmac 单参数报错", get(e3, "err", null) != null);
 let e4 = try(() => hmac_sha256(1, "m"));
 check("hmac 非字符串参数报错", get(e4, "err", null) != null);
 

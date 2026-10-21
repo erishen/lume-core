@@ -1,0 +1,4 @@
+// 变参(min=2)少参：get(m) 缺 key。
+// 期望 --check 拒绝："function expects at least 2 argument(s), got 1"
+let m = {};
+let x = get(m);

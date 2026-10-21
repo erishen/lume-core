@@ -1,0 +1,3 @@
+// 变参(min=1)少参：str() 缺参。
+// 期望 --check 拒绝："function expects at least 1 argument(s), got 0"
+let x = str();

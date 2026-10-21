@@ -682,7 +682,7 @@ letexpr-test: all
 	done; \
 	echo "==> letexpr 单测通过"
 
-test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
+test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
       native native-text treecheck sci-test
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -968,6 +968,24 @@ crypto-test: all
 		echo "==> crypto 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> crypto 单测全部通过"
 
+# 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
+# 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝
+# 且诊断关键字钉死（改措辞/改分支都会在这里红）。
+arity-test: all
+	@set -e; \
+	check_arity() { f=$$1; key=$$2; \
+	  rc=0; ./$(TARGET) --check tests/arity-bad/$$f.lume > /tmp/lume-arity-bad.out 2>&1 || rc=$$?; \
+	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-arity-bad.out; then \
+	    echo "==> arity 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-arity-bad.out; exit 1; fi; \
+	  echo "ok   arity-bad $$f: 拒绝且诊断准确"; }; \
+	check_arity fixed-1 "expects 1 argument(s), got 0"; \
+	check_arity fixed-2 "expects 2 argument(s), got 1"; \
+	check_arity fixed-3 "expects 3 argument(s), got 2"; \
+	check_arity variadic-1 "expects at least 1 argument(s), got 0"; \
+	check_arity variadic-2 "expects at least 2 argument(s), got 1"; \
+	check_arity bounded-over "expects at most 3 argument(s), got 4"; \
+	echo "==> arity 编译期闸门回归通过"
+
 # sort() / str_match() / regex() 通用内建回归(解释器路径, 与 json() 一致)。
 builtins-test: all
 	@./$(TARGET) tests/builtins-sort-regex.lume > /tmp/lume-builtins-test.out 2>&1; \
@@ -1016,7 +1034,7 @@ trailing-closure-test: all
 	check_bad_tc bad-param "trailing closure parameters must be plain names"; \
 	check_bad_tc unclosed "expected }, got end of input"; \
 	check_bad_tc bad-annotation "unknown type 'nosuchtype'"; \
-	check_bad_tc extra-arg "function expects 0 arguments, got 1"; \
+	check_bad_tc extra-arg "function expects 0 argument(s), got 1"; \
 	echo "==> trailing-closure 单测全部通过"
 
 # enum + match (2026-10-12): 解释器 19 断言全 PASS; 8 个编译期拒绝各断言

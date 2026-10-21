@@ -1,0 +1,3 @@
+// 固定 arity（3 参）少参：replace("a","b") 缺第三参。
+// 期望 --check 拒绝："function expects 3 argument(s), got 2"
+let x = replace("a", "b");

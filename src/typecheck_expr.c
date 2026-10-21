@@ -659,15 +659,35 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                     ck_expr(c, n->as.call.args[i], NULL);
                 return any_type();
             }
-            if (callee_t->count != n->as.call.argc) {
-                ck_fail(c, n->line, "function expects %d arguments, got %d",
+            if (callee_t->variadic) {
+                if (n->as.call.argc < callee_t->count) {
+                    ck_fail(c, n->line,
+                            "function expects at least %d argument(s), got %d",
+                            callee_t->count, n->as.call.argc);
+                    return any_type();
+                }
+                if (callee_t->max_args >= 0
+                    && n->as.call.argc > callee_t->max_args) {
+                    ck_fail(c, n->line,
+                            "function expects at most %d argument(s), got %d",
+                            callee_t->max_args, n->as.call.argc);
+                    return any_type();
+                }
+                /* Variadic builtins accept any extra argument up to the upper
+                 * bound; their native implementations handle the surplus, so
+                 * the arguments are type-checked loosely. */
+                for (int i = 0; i < n->as.call.argc; i++)
+                    ck_expr(c, n->as.call.args[i], NULL);
+            } else if (callee_t->count != n->as.call.argc) {
+                ck_fail(c, n->line, "function expects %d argument(s), got %d",
                         callee_t->count, n->as.call.argc);
                 return any_type();
+            } else {
+                for (int i = 0; i < n->as.call.argc; i++)
+                    expect_compat(c, ck_expr(c, n->as.call.args[i],
+                                             callee_t->types[i]),
+                                  callee_t->types[i], n->line, "argument");
             }
-            for (int i = 0; i < n->as.call.argc; i++)
-                expect_compat(c, ck_expr(c, n->as.call.args[i],
-                                         callee_t->types[i]),
-                              callee_t->types[i], n->line, "argument");
 
             Type *ret = callee_t->ret ? callee_t->ret : any_type();
             if (n->as.call.propagate) {

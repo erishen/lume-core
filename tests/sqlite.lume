@@ -203,11 +203,11 @@ func main(): int {
   check("tx drop rejects", get(bad, "err", null) != null);
   check("tx stays open after error", sql_tx_rollback(txs) == true);
 
-  // 参数错误: 非句柄 / 缺参
+  // 参数错误: 非句柄（arity 错误已升至编译期, 见 tests/arity-bad/ 回归）
   let notx = try(() => { sql_tx_exec("oops", "SELECT 1"); return "ok"; });
   check("tx exec non-handle rejects", get(notx, "err", null) != null);
-  let noarg = try(() => { sql_tx_commit(); return "ok"; });
-  check("tx commit missing arg rejects", get(noarg, "err", null) != null);
+  let noarg = try(() => { sql_tx_commit("oops"); return "ok"; });
+  check("tx commit non-handle rejects", get(noarg, "err", null) != null);
 
   return 0;
 }
