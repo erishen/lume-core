@@ -496,7 +496,7 @@ ai-verify-loop: all
 # Exit 0 all verdicts held, 1 a violation, 2 the gate could not judge any
 # candidate. Still no network / no LLM builtin (scope guard).
 ai-produce: all
-	@chmod +x scripts/ai-gen-programs.sh scripts/ai-produce.sh && LUME_BIN=./$(TARGET) ./scripts/ai-produce.sh
+	@chmod +x scripts/ai-gen-programs.sh scripts/ai-produce.sh scripts/verify-ai-lume.sh && LUME_BIN=./$(TARGET) ./scripts/ai-produce.sh
 
 # 两个 IR 发射器(手写文本 vs LLVM C API)的横向一致性。tests/native_backends.sh
 # 跑 tests/native-consistency.lume 三种路径(解释器 / 文本 / libLLVM), 各自跟

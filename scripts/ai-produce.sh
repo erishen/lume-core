@@ -81,7 +81,11 @@ for f in "${files[@]}"; do
             echo "READY $name — accepted, candidate for tests/" ;;
         reject:1)
             reject_n=$((reject_n + 1))
-            echo "ok    $name — rejected as expected (counter-example logged)" ;;
+            echo "ok    $name — rejected as expected (counter-example logged)"
+            {
+                echo "---- counter-example: $f (expected $expect, gate said $rc)"
+                echo "$err" | sed 's/^/    /'
+            } >> "$REJECTS_LOG" ;;
         *)
             viol_n=$((viol_n + 1))
             echo "VIOLATE $name — expected $expect, gate said rc=$rc"
