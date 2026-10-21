@@ -1,0 +1,37 @@
+// tests/for-in-gc.lume — interpreter regression for the for-in
+// inline-temp GC-root bug (TODO.md chinese/server.lume trace, core
+// half, closed 2026-10-21).
+//
+// Shape: the iterable is a *temporary expression* (range(...)), so the
+// only reference to the list/map object is the C-level pointer in
+// exec_statement_for. The old code popped the iterable off the VM
+// stack right after eval — the stack is a GC root and the popped slot
+// is no longer rooted — so any allocation inside the body that trips a
+// collection freed the object under the pointer: use-after-free on the
+// next round (0xC0000005 repro before the fix; a `let xs = ...`
+// binding is safe because env keeps the object rooted). The fix keeps
+// the iterable on the stack for the whole loop (body statements are
+// stack-balanced, so the slot stays valid).
+//
+// Runs on the interpreter only: the native backends have no GC, so
+// this class of bug cannot occur there. Output must be deterministic.
+let total = 0;
+for (x in range(60000)) {
+    let junk = range(60);       // body allocations -> GC over the loop
+    total = total + 1;
+}
+let m = { "a": 1, "b": 2, "c": 3 };
+let keys = "";
+for (k in m) { keys = keys + k; }           // map keys while allocating
+let inner = 0;
+for (a in range(2000)) {                    // nested for-in keeps both
+    for (b in range(5)) { let j2 = range(8); inner = inner + 1; }
+}
+print("total", total);
+print("keys", keys);
+print("inner", inner);
+if (total == 60000 && keys == "abc" && inner == 10000) {
+    print("PASS for-in GC root regression");
+} else {
+    print("FAIL for-in GC root regression");
+}

@@ -323,7 +323,7 @@ long long lume_bi_lock_file(const char *path, long long wait_ms)
     for (;;) {
         if (lume_flock(fd, LOCK_EX | LOCK_NB) == 0) break;
 #if defined(_WIN32)
-        _sleep(25);
+        Sleep(25);   /* _sleep is deprecated under mingw-w64 */
 #else
         usleep(25000);
 #endif

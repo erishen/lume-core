@@ -1111,11 +1111,22 @@ static void exec_statement_for(VM *vm, Node *n, Env *env) {
     bool saved_brk = vm->loop_break, saved_cont = vm->loop_continue;
     vm->loop_break = vm->loop_continue = false;
     if (n->as.fors.is_in) {
-        /* for (x in xs) — iterate a list's items or a map's keys */
+        /* for (x in xs) — iterate a list's items or a map's keys.
+         * The iterable value stays ON the VM stack for the whole loop:
+         * the stack is a GC root and the iterable is the loop's only
+         * reference to the list/map object. The old code popped it
+         * right after eval, so any allocation inside the body that
+         * tripped a collection freed the object under the C-level
+         * pointer — use-after-free on the next round (the inline-temp
+         * shape behind TODO chinese/server.lume's crashes; a `let`
+         * binding is safe because env keeps the object rooted).
+         * Body statements are stack-balanced, so the slot stays valid. */
         eval_expr(vm, n->as.fors.iterable, env);
         if (vm->error) goto done;
-        Value it = vm_pop(vm);
+        int it_slot = vm->stack_count - 1;   /* rooted under the body */
+        Value it = vm->stack[it_slot];
         if (!IS_OBJ(it)) {
+            vm_pop(vm);
             vm_set_error(vm, "line %zu: for-in expects a list or map", n->line);
             goto done;
         }
@@ -1124,10 +1135,16 @@ static void exec_statement_for(VM *vm, Node *n, Env *env) {
         if (o->type == OBJ_LIST) n_items = o->as.list.count;
         else if (o->type == OBJ_MAP) n_items = o->as.map.count;
         if (n_items < 0) {
+            vm_pop(vm);
             vm_set_error(vm, "line %zu: for-in expects a list or map", n->line);
             goto done;
         }
         for (int i = 0; i < n_items && !vm->error; i++) {
+            /* Defensive: bodies must be balanced, so stack[it_slot] is
+             * the iterable. If a body ever leaks stack depth (an
+             * interpreter bug), drop the surplus rather than reading a
+             * shifted slot as the iterable. */
+            if (vm->stack_count > it_slot + 1) vm->stack_count = it_slot + 1;
             Value item = (o->type == OBJ_LIST)
                              ? o->as.list.items[i]
                              : make_string_cstr(vm, o->as.map.keys[i]);
@@ -1137,6 +1154,7 @@ static void exec_statement_for(VM *vm, Node *n, Env *env) {
             if (vm->loop_break) { vm->loop_break = false; break; }
             if (vm->loop_continue) vm->loop_continue = false;
         }
+        vm_pop(vm);   /* drop the rooted iterable */
     } else {
         /* for (init; cond; incr) — C-style, all three optional */
         if (n->as.fors.init) {

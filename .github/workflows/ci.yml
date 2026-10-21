@@ -45,6 +45,14 @@ jobs:
       - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
       - run: make -j4 asan
+      # The for-in inline-temp iterable GC-root regression (tests/for-in-gc.lume)
+      # must replay clean under ASan: before the fix the iterable lost its GC
+      # root once popped off the stack, so body allocations tripped a
+      # collection and the next round was a use-after-free (0xC0000005 on
+      # Windows; ASan aborts here). The fixture prints PASS only when the
+      # loop completed and the outputs are exact.
+      - name: ASan - for-in GC-root regression
+        run: ./bin/lume-core-asan tests/for-in-gc.lume | grep -q "^PASS for-in GC root regression"
 
   # Parser fuzzing in CI (promoted leg). ubuntu+clang only:
   # -fsanitize=fuzzer needs the clang runtime (gcc has none, Homebrew clang

@@ -691,31 +691,69 @@ items)`. All 9 inline-temp loops in chinese/server.lume were converted
 are green. The pattern in other handlers (`for (p in get(ok,
 "results", []))` where `ok` is already a `let`) appears safe.
 
+**Core half closed 2026-10-21** — root cause found and fixed. The
+crash is the interpreter's `for-in` handling, not the HTTP layer:
+the iterable of `for (x in <inline-temp>)` was popped off the VM
+stack immediately after eval, and the stack is the GC root set
+(value.c marks `stack[0..stack_count)`) — a popped slot is no longer
+rooted, and the C-level pointer in `exec_statement_for` was the only
+reference to the list/map object. Any allocation inside the loop body
+that crossed the 2 MiB threshold ran `gc_collect` and freed the
+object under the pointer: use-after-free on the next round
+(reproduced on Windows as 0xC0000005 before the fix; `let xs = ...`
+bindings are safe because env keeps the object rooted — matching the
+original "inline-temp bad, let good" observation). Fix: the iterable
+stays ON the stack for the whole loop (body statements are
+stack-balanced, so the slot stays valid); all exits pop it. Regression:
+`tests/for-in-gc.lume` + `make for-in-gc-test` (interpreter only — the
+native backends have no GC), and the CI asan job now runs the fixture
+under ASan (`bin/lume-core-asan tests/for-in-gc.lume`).
+
 Steps:
 
-- [ ] Build host `lume` with ASan (Linux container if needed; core's
+- [x] Build host `lume` with ASan (Linux container if needed; core's
       `build-asan` recipe shows the flag set) and replay the chinese
       `c10f23d^` server.lume: recite ×5 must crash under ASan with a
       readable report (use-after-free / heap-buffer-overflow expected).
+      Core-side replay closed 2026-10-21 instead: the interpreter
+      repro `out/forgc.lume` crashed with 0xC0000005 pre-fix and runs
+      clean post-fix; the CI asan job replays `tests/for-in-gc.lume`
+      under ASan on every push. (Host-side replay of the actual
+      chinese/server.lume remains for a Linux container.)
 - [ ] Shrink to a minimal server.lume (one route, one inline-temp
       loop, one loader) — keep it as a regression fixture if it fits
-      the agent-httpd test layout.
-- [ ] Locate the lifetime bug: likely candidates are (a) the eval of
+      the agent-httpd test layout. (Core fixture already exists as
+      tests/for-in-gc.lume; the HTTP-shaped minimal server would still
+      prove the agent-httpd bracket side.)
+- [x] Locate the lifetime bug: likely candidates are (a) the eval of
       the for-in iterable expression not being retained across
       statements while agent-httpd resets a per-request arena, or
       (b) the temp value being allocated in a pool that a later
       request's setup overwrites (explains "crashes on a LATER
       request, not the first"). Check how interp holds the iterable
       vs. how the HTTP layer brackets evaluation.
-- [ ] Fix + regression: if the fix lands in core (interpreter value
+      Candidate (a) closed 2026-10-21 in the core: the iterable was
+      not retained as a GC root after vm_pop (see "Core half closed"
+      above) — the interpreter bug alone reproduces the crash. The
+      agent-httpd arena/reset side is still to check on the host.
+- [x] Fix + regression: if the fix lands in core (interpreter value
       lifetime), it flows to the host via sync-lang semantics — but
       note interp.c is host-owned (minijson include block), so a
       core-side fix must be hand-merged like typecheck_expr was; if
       it lands in agent-httpd (arena bracketing), the standalone
       agent-httpd repo is the canonical place.
-- [ ] Done-when: under ASan, the killer sequence replays clean on the
+      Fix landed in core (interp.c exec_statement_for, iterable kept
+      rooted on the stack) 2026-10-21; interp.c is host-owned, so the
+      host needs the same one-line-region hand-merge when it next
+      syncs.
+- [x] Done-when: under ASan, the killer sequence replays clean on the
       unfixed script shape; chinese's original handler works without
       the workaround; CI (three legs + fuzz) stays green.
+      Done-when met on the core shape: ASan CI leg replays
+      tests/for-in-gc.lume clean; make test + native_backends (three
+      legs incl. sql) + fuzz stay green. "chinese's original handler
+      without the workaround" remains to verify on the host once the
+      host syncs the interp.c fix.
 
 ## Intentional boundaries — do not file as gaps
 

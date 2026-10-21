@@ -657,7 +657,7 @@ letexpr-test: all
 	done; \
 	echo "==> letexpr 单测通过"
 
-test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity \
+test: all backend-parity tests/smoke-bin crypt-test crypto-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
       native native-text treecheck sci-test
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
@@ -925,7 +925,7 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
-         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify ai-verify-loop
+         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify ai-verify-loop for-in-gc-test
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \
@@ -1214,6 +1214,16 @@ letpat-test: all
 	  echo "ok   letpat: $$be 后端 12/12"; \
 	done; \
 	echo "==> letpat 单测通过"
+
+# for-in 临时表达式 iterable 的 GC root 回归（interp-only: 原生后端无 GC）。
+# 修复前: iterable pop 出栈后不再被 GC root, 循环体内分配触发回收 ->
+# use-after-free (0xC0000005); 修复后 iterable 留在栈上跨整个循环。
+for-in-gc-test: all
+	@./$(TARGET) tests/for-in-gc.lume > /tmp/lume-for-in-gc-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-for-in-gc-test.out; \
+	if [ $$rc -ne 0 ] || ! grep -q "^PASS for-in GC root regression" /tmp/lume-for-in-gc-test.out; then \
+		echo "==> for-in GC root 回归失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> for-in GC root 回归通过"
 
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
