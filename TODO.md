@@ -747,11 +747,19 @@ Steps:
       clean post-fix; the CI asan job replays `tests/for-in-gc.lume`
       under ASan on every push. (Host-side replay of the actual
       chinese/server.lume remains for a Linux container.)
-- [ ] Shrink to a minimal server.lume (one route, one inline-temp
+- [x] Shrink to a minimal server.lume (one route, one inline-temp
       loop, one loader) — keep it as a regression fixture if it fits
       the agent-httpd test layout. (Core fixture already exists as
       tests/for-in-gc.lume; the HTTP-shaped minimal server would still
-      prove the agent-httpd bracket side.)
+      prove the agent-httpd bracket side.) — Closed 2026-10-21 on the
+      host: agent-httpd's tests/ are C-only (test_*.c, no .lume runner),
+      so the fixture landed in the host tree where the live-server test
+      harness lives — `examples/minimal-server-gc.lume` (server{} +
+      GET /gc handler running for (x in range(60000)) with an
+      inline-temp range(60) per round) + a `tests/run_all.sh` leg (4e)
+      that boots the server, curls `/gc` and asserts the answer
+      (`minimal gc ok: 1799970000`) over real HTTP on every push —
+      covering the per-request arena/bracket side end to end.
 - [x] Locate the lifetime bug: likely candidates are (a) the eval of
       the for-in iterable expression not being retained across
       statements while agent-httpd resets a per-request arena, or
