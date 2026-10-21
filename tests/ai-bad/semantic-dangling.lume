@@ -1,0 +1,16 @@
+// ai-bad/semantic-dangling.lume — must REJECT via the semantic layer
+// (scripts/verify-ai-semantics.sh), not via the type checker: the
+// //@semantic declaration refers to `xs`, which the program never
+// defines. The program itself type-checks and would run fine — that is
+// the point: backend equivalence alone cannot see a declaration that
+// dangles, only the static validator can.
+//
+//   make ai-verify-loop   (must-reject)
+//
+// The counter-example fed back to the LLM: a semantic invariant may only
+// refer to names the program actually defines.
+
+//@semantic total: sum(xs) == 24
+
+let ys = [1, 2, 3];
+print("ys = " + str(ys));

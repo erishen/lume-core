@@ -1,0 +1,16 @@
+// ai-bad/semantic-unclaimed.lume — must REJECT via the semantic layer:
+// the //@semantic declaration names `margin`, which the program defines,
+// but nothing prints it — the invariant is never claimed by the
+// program's output. A contract nothing honors is not a contract.
+//
+//   make ai-verify-loop   (must-reject)
+//
+// The counter-example fed back to the LLM: every declared invariant must
+// be claimed by at least one print(...) mentioning the label or one of
+// the identifiers it refers to.
+
+//@semantic margin: margin > 0
+
+let margin = 4.5;
+let fees = 1.2;
+print("fees = " + str(fees));

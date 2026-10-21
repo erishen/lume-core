@@ -207,11 +207,13 @@ and `make fuzz-driver` (the P1 Windows seed replay).
      `prompt → .lume` generator) and runs it through `native-consistency`
      + `fuzz`. Pass → commit to `tests/`; fail → reject + log the counter-example
      back to the LLM for retry. This closes "AI writes, machine verifies."
-  2. **Optional / open: an `assert_semantic()` DSL builtin** — let `.lume` code
-     declare invariants (`assert_semantic(x => x >= 0 && x <= 1)`) that a
-     *host-side* validator can check against LLM output without running it,
-     turning the program into its own spec. Keep this OUT of the core (same
-     host/interpreter split as above). Open question, not committed.
+  2. **Semantic layer (closed 2026-10-21, NOT a language builtin)** — the
+     committed design is a static declaration contract checked without
+     running the program (verify-ai-semantics.sh): `//@semantic <label>:
+     <expr>` with defined-and-claimed rules and a pure-computation shape
+     guard, folded into the gate as a pre-leg reject step. See the P4
+     semantic-layer item above; this row is kept only as the history of
+     the decision to keep the DSL OUT of the core.
   Scope guard: do NOT add a "LLM builtin" into the core interpreter (it stays
   host-independent / no-network). The LLM step lives in the **host** (agenthttpd's
   tool dispatch) or in an external CI script; core only does the deterministic
@@ -259,8 +261,22 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     builtins are not in the native inference tables, and the stderr reason
     is the counter-example that teaches the LLM to annotate). Wired into
     both CI jobs after ai-verify-loop; the contract for swapping in the
-    real host tool dispatch is the manifest file. Still open:
-    `assert_semantic()` remains an uncommitted open question.
+    real host tool dispatch is the manifest file.
+- [x] **P4 semantic layer — `assert_semantic()` closed 2026-10-21.** The
+    old "optional / open" DSL builtin (below) was deliberately NOT added
+    to the language; the open question is instead committed as a static
+    declaration contract, `scripts/verify-ai-semantics.sh`, that the gate
+    runs before the equivalence legs and that never executes the program:
+    `//@semantic <label>: <expr>` — every referenced identifier must be
+    defined (dangling rejects), every label must be claimed by a
+    print(...) (unclaimed rejects), and the program must be a pure
+    computation (no server{} / run()) the host executor can run
+    unsupervised. Pass seeds: examples/ai-generated/norm-stats.lume +
+    semantic-sort.lume; reject seeds: tests/ai-bad/semantic-dangling.lume
+    + semantic-unclaimed.lume. The retry loop reuses the same exit-1
+    counter-example contract. Remaining host-side (scope guard): the real
+    LLM tool dispatch, whose contract is the manifest file plus this
+    declaration language.
 
 - [x] **P4 gap (cont.) · `server{}` LLVM leg — closed 2026-10-20, including
   `req.*` member access.** env() part closed 2026-10-20: env() now has a

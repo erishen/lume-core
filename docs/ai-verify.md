@@ -119,6 +119,47 @@ agent-httpd's tool dispatch or an external CI script — and only the
 deterministic verify (this gate) lives in the core. Same boundary as
 `server{}`: LLM in, verify out.
 
-`assert_semantic()` (declaring invariants in the program that a host-side
-validator checks without running it) remains an **uncommitted open
-question** — deliberately not part of this gate.
+## Semantic layer — committed (2026-10-21)
+
+Backend equivalence is *self-consistency*: three legs agreeing says the
+program is deterministic and compilable, not that it does what it
+claims. `assert_semantic()` — the old open question — is now closed as a
+**static declaration contract** enforced by
+`scripts/verify-ai-semantics.sh`, which the gate runs before any leg.
+The validator never executes the program; it checks the source:
+
+```
+//@semantic <label>: <expr>
+```
+
+e.g.
+
+```
+//@semantic p-bound: 0 < p < 1
+//@semantic sorted: the portfolio is sorted ascending
+```
+
+Three rules hold a declaration to the program:
+
+1. **Defined** — every identifier the `expr` refers to must be defined in
+   the program (`let <name> = ...`, a function parameter, a function
+   name). A dangling reference rejects.
+2. **Claimed** — at least one `print(...)` must mention the label or one
+   of the identifiers it refers to: an invariant the program never
+   prints is not being honored.
+3. **Safe shape** — the program is a pure computation the host executor
+   can run unsupervised: no `server{}` block, no `run()` HTTP bridge.
+
+A program with no declarations passes (empty contract). A rejection
+surfaces as the same exit-1 counter-example the gate already returns to
+the LLM, so the retry loop teaches the model *why* a declaration dangles
+or goes unclaimed. Seeds: `examples/ai-generated/norm-stats.lume` and
+`semantic-sort.lume` must pass; `tests/ai-bad/semantic-dangling.lume`
+and `semantic-unclaimed.lume` must reject (each for exactly the reason
+its name says).
+
+This closes TODO P4's `assert_semantic()` open question. The remaining
+"real LLM dispatch" (the host asking an actual model and running the
+producer on its reply) is still host-side by the same scope guard; the
+core's contract is just the manifest file plus, now, this declaration
+language.

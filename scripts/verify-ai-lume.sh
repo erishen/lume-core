@@ -55,6 +55,19 @@ verify_one() {
     fi
     pass "$name: type check ok"
 
+    # 1b. semantic layer (verify-ai-semantics.sh): the program's own
+    #     //@semantic declarations are checked statically, without
+    #     running it — dangling references, unclaimed labels and unsafe
+    #     shapes (server{} / run()) reject here, before any leg runs.
+    if [ -f scripts/verify-ai-semantics.sh ]; then
+        if ! bash scripts/verify-ai-semantics.sh "$f"; then
+            fail "$name: semantic declarations rejected"
+        fi
+        pass "$name: semantic declarations ok"
+    else
+        echo "note $name: semantic validator missing — declaration contract not enforced"
+    fi
+
     # 2. run on every available leg; any compiler diagnostic is a reject.
     #    leg: "" (interp) | --compile-text | --compile-llvm
     local legs="$dir/legs"; : > "$legs"

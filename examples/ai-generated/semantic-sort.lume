@@ -1,0 +1,26 @@
+// ai-generated/semantic-sort.lume — a second AI-written seed whose point
+// is the SEMANTIC layer of the P4 gate: a program that declares its own
+// invariants (//@semantic) and prints the quantities those invariants
+// name, so the static validator can hold the program to its contract
+// without running it. Backend equivalence (verify-ai-lume.sh) still
+// applies on top.
+//
+//   scripts/verify-ai-lume.sh examples/ai-generated/semantic-sort.lume
+//
+// The three declarations:
+//   sorted  — refers to sorted_returns (defined via let, printed);
+//   total   — refers to total (defined via let, printed);
+//   spread  — refers to hi and lo (both defined and printed).
+// Nothing is declared that the program does not define and print.
+
+//@semantic sorted: sorted_returns is ascending
+//@semantic total: total == reduce((a, x) => a + x, returns, 0.0)
+
+let returns = [3.5, -1.2, 2.8, 0.0, -4.6];
+
+let sorted_returns = sort(returns);
+let total = reduce((a, x) => a + x, returns, 0.0);
+
+print("returns = " + str(returns));
+print("sorted  = " + str(sorted_returns));
+print("total   = " + str(total));

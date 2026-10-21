@@ -9,6 +9,15 @@
 // LLM-slop shapes are included on purpose — a re-derived t-statistic, a
 // redundant conditional, a magic-threshold comparison — because the gate
 // judges backend equivalence, not code aesthetics.
+//
+// Semantic declarations (P4, verify-ai-semantics.sh): the program states
+// its own invariants; the validator checks them statically, without
+// running it. t-ratio refers to t, mean_diff and se — all defined below,
+// and t is printed — so it holds. p-bound refers to p, which is defined
+// and printed.
+
+//@semantic t_ratio: t == mean_diff / se
+//@semantic p_bound: 0 < p < 1
 
 func t_stat(mean_diff: float, se: float): float {
   return mean_diff / se;
