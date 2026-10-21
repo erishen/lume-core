@@ -127,13 +127,18 @@ func main(): int {
   // CTE 内 WHERE 不豁免主体无 WHERE UPDATE(校验作用于主体文本, 非整句)
   let n1 = try(() => { sql_write(db, "WITH c AS (SELECT 1 WHERE 1) UPDATE t SET score = 0"); return "ok"; });
   check("cte where not exempt body update", get(n1, "err", null) != null);
-  // CTE 内 DML 无 RETURNING / 无 WHERE
+  // CTE 内 DML: 一律直拒。SQLite 任何版本都没有"数据修改 CTE"——2026-10-21
+  // 用系统库 3.51.0 实证, 连文档里的 PostgreSQL 形状
+  // (WITH u AS (UPDATE ... RETURNING ...) SELECT ...) 都在 prepare 期报
+  // near "UPDATE" 语法错。3.35 加的是顶层 DML 的 RETURNING, 不是 CTE 内 DML。
+  // 守卫早先为想象中的"RETURNING DML 头"开过口子, 放行的语句到 prepare 才死,
+  // 报错是一句没名字的引擎语法错误; 现在在护栏层就给名字明确的拒绝。
   let n2 = try(() => { sql_write(db, "WITH c AS (INSERT INTO t (name) VALUES ('x')) SELECT 1"); return "ok"; });
-  check("cte dml no returning rejects", get(n2, "err", null) != null);
+  check("cte insert body rejected", get(n2, "err", null) != null);
   let n3 = try(() => { sql_write(db, "WITH c AS (UPDATE t SET score = 0 RETURNING name) SELECT 1"); return "ok"; });
-  check("cte update no where rejects", get(n3, "err", null) != null);
+  check("cte update body rejected", get(n3, "err", null) != null);
   let n4 = try(() => { sql_write(db, "WITH c AS (DELETE FROM t RETURNING name) SELECT 1"); return "ok"; });
-  check("cte delete no where rejects", get(n4, "err", null) != null);
+  check("cte delete body rejected", get(n4, "err", null) != null);
   // CTE 内危险词 / 主体非白名单 / 无尾语句 / 多语句
   let n5 = try(() => { sql_write(db, "WITH c AS (DROP TABLE t) INSERT INTO t (name) VALUES ('x')"); return "ok"; });
   check("cte drop rejects", get(n5, "err", null) != null);
@@ -143,18 +148,24 @@ func main(): int {
   check("with no trailing stmt rejects", get(n7, "err", null) != null);
   let n8 = try(() => { sql_write(db, "WITH c AS (SELECT 1) INSERT INTO t (name) VALUES ('x'); DROP TABLE t"); return "ok"; });
   check("with multi-statement rejects", get(n8, "err", null) != null);
-  // DML-in-CTE + RETURNING(SQLite 3.35+ 数据修改 CTE): 单语句原子写。
-  // 宿主 sqlite3 < 3.35 时此句 prepare 期报错属环境版本差异, 白名单本身
-  // 接受该形状(驱动矩阵已验); 其余用例版本无关。
+  // 顶层 RETURNING (SQLite 3.35+): 单语句原子写。sql_write 排空 RETURNING
+  // 行后按 changes 计数。更新侧与插入侧各一条: UPDATE ... RETURNING /
+  // INSERT ... SELECT ... RETURNING。注意 CTE 内 DML 的形状(上方负例已拒)
+  // 在 SQLite 里根本不存在, 别再用 "WITH u AS (UPDATE ... RETURNING ...)
+  // INSERT ..." 表达"更新后按回行插入"——单语句做不到, 分两句即可。
   let dc1 = try(() => {
-    sql_write(db,
-      "WITH u AS (UPDATE t SET score = ? WHERE name = ? RETURNING name) INSERT INTO t (name) SELECT name FROM u",
-      [8.8, "张三"]);
+    sql_write(db, "UPDATE t SET score = ? WHERE name = ? RETURNING name", [8.8, "张三"]);
     return "ok";
   });
-  check("with update-returning atomic", get(dc1, "err", null) == null);
+  check("update-returning atomic", get(dc1, "err", null) == null);
   let sc = sql_query(db, "SELECT score FROM t WHERE name = '张三' AND score IS NOT NULL");
   check("atomic update visible", len(sc) == 1 && get(sc[0], "score") == 8.8);
+  let dc2 = try(() => {
+    sql_write(db,
+      "INSERT INTO t (name, score) SELECT name, 0.0 FROM t WHERE name = '张三' AND score IS NOT NULL LIMIT 1 RETURNING name");
+    return "ok";
+  });
+  check("insert-returning atomic", get(dc2, "err", null) == null);
   check("atomic insert visible", len(sql_query(db, "SELECT name FROM t WHERE name = '张三'")) == 2);
 
   // 非 list 参数拒绝

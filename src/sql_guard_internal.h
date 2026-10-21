@@ -10,7 +10,8 @@
  * only a bare SELECT; write path allows INSERT / UPDATE / DELETE
  * (UPDATE/DELETE must carry WHERE), CREATE TABLE, the strictly-shaped
  * additive ALTER TABLE ADD COLUMN, and a WITH prefix whose subqueries are
- * read-only (SELECT/VALUES) or RETURNING DML and whose trailing statement
+ * read-only (SELECT/VALUES, nested WITH allowed — SQLite has no
+ * data-modifying CTE; see sql_cte_body_ok) and whose trailing statement
  * passes the same bare-write whitelist. Everything else is rejected.
  */
 
@@ -153,13 +154,16 @@ static inline const char *sql_validate_alter_add(const char *b) {
  * A WITH prefix is accepted: WITH [RECURSIVE] name [(cols)]
  * AS (read-only subquery) [, ...] <one whitelisted write statement>.
  * Subqueries must be SELECT/VALUES (a nested WITH is allowed) and may
- * not contain write or dangerous keywords; the trailing statement is
- * checked by the exact same single-statement whitelist as a bare write.
- * Because the WHERE-must-exist check runs on the trailing statement text
- * only, a WHERE inside a subquery never exempts a WHERE-less UPDATE or
- * DELETE. The whole thing is still one statement (no ';'), so SQLite
- * runs the entire CTE write atomically inside the single per-call
- * connection — the stateless/fork-safe/guardrail contracts all hold. */
+ * not contain write or dangerous keywords — SQLite has no data-modifying
+ * CTE, so a write verb inside a subquery is rejected outright rather
+ * than waved through to a prepare-time syntax error (see the 2026-10-21
+ * note in sql_cte_body_ok). The trailing statement is checked by the
+ * exact same single-statement whitelist as a bare write. Because the
+ * WHERE-must-exist check runs on the trailing statement text only, a
+ * WHERE inside a subquery never exempts a WHERE-less UPDATE or DELETE.
+ * The whole thing is still one statement (no ';'), so SQLite runs the
+ * entire CTE write atomically inside the single per-call connection —
+ * the stateless/fork-safe/guardrail contracts all hold. */
 
 /* Skip whitespace and SQL comments (both -- line and block forms). */
 static inline const char *sql_skip_ws_comment(const char *p) {
@@ -217,26 +221,27 @@ static inline const char *sql_match_paren(const char *p) {
 }
 
 /* Validate one WITH subquery body [s, end).
- *  - SELECT/VALUES/nested-WITH head: the body must be read-only — DML
- *    words are rejected at any depth.
- *  - DML head (INSERT/UPDATE/DELETE, SQLite 3.35+ data-modifying CTE):
- *    a top-level RETURNING is mandatory; an UPDATE/DELETE must carry a
- *    top-level WHERE before that RETURNING (a WHERE nested in a
- *    parenthesized expression never exempts it — the whole point of the
- *    gray zone is that a WHERE-less UPDATE inside a WITH is still a
- *    WHERE-less UPDATE). One DML verb per body; DML inside a nested
- *    expression is rejected.
+ *  - Head: SELECT/VALUES/nested-WITH only. SQLite has no data-modifying
+ *    CTE: verified 2026-10-21 against the system library (3.51.0), even
+ *    the PostgreSQL-style shape `WITH u AS (UPDATE ... RETURNING ...)
+ *    SELECT ...` dies at prepare with `near "UPDATE": syntax error` — on
+ *    every release, not just old ones. An earlier revision of this guard
+ *    opened a "RETURNING DML" head here, assuming 3.35 had added the
+ *    feature (3.35 added RETURNING on top-level DML only); the statements
+ *    it waved through reached prepare and surfaced as engine syntax
+ *    errors. Reject the shape here instead, with a message naming the
+ *    rule.
+ *  - The body must be read-only: write keywords (insert/update/delete)
+ *    are rejected at any depth, so a nested subquery cannot smuggle a
+ *    write either.
  *  - Dangerous words (DROP/PRAGMA/ALTER/CREATE/...) are rejected at any
  *    depth. Strings and comments are skipped everywhere. */
 static inline const char *sql_cte_body_ok(const char *s, const char *end) {
     const char *p = sql_skip_ws_comment(s);
     if (p >= end) return "empty WITH subquery";
 
-    int head = 0; /* 0 = select/values/with, 1 = insert, 2 = update/delete */
-    if (kw_at(p, "insert")) head = 1;
-    else if (kw_at(p, "update") || kw_at(p, "delete")) head = 2;
-    else if (!kw_at(p, "select") && !kw_at(p, "values") && !kw_at(p, "with"))
-        return "WITH subquery must be SELECT/VALUES or a RETURNING DML";
+    if (!kw_at(p, "select") && !kw_at(p, "values") && !kw_at(p, "with"))
+        return "WITH subquery must be a read-only SELECT/VALUES query";
 
     static const char *const dml_words[] = {
         "insert", "update", "delete", NULL };
@@ -245,51 +250,22 @@ static inline const char *sql_cte_body_ok(const char *s, const char *end) {
         "reindex", "pragma", "grant", "revoke", "copy",
         "alter", "create", "begin", "commit", "rollback", NULL };
 
-    int depth = 0, top_ret = 0, top_where = 0, first = 1;
     for (p = s; p < end; ) {
         p = sql_skip_ws_comment(p);
         if (p >= end) break;
         if (*p == '\'' || *p == '"') { p = sql_skip_string(p); continue; }
-        if (*p == '(') { depth++; p++; continue; }
-        if (*p == ')') { depth--; p++; continue; }
         if (!(isalnum((unsigned char)*p) || *p == '_')) { p++; continue; }
 
-        if (head == 0 && depth >= 0) {
-            for (int i = 0; dml_words[i]; i++)
-                if (kw_at(p, dml_words[i]))
-                    return "write keyword in read-only WITH subquery";
-        }
-        if (depth > 0) {
-            for (int i = 0; dml_words[i]; i++)
-                if (kw_at(p, dml_words[i]))
-                    return "DML inside a WITH subquery expression";
-        }
-        if (head > 0 && depth == 0 && !first) {
-            for (int i = 0; dml_words[i]; i++)
-                if (kw_at(p, dml_words[i]))
-                    return "only one statement per WITH subquery";
-        }
-        if (depth == 0) {
-            if (kw_at(p, "where")) {
-                if (head == 2 && top_ret)
-                    return "WHERE after RETURNING in WITH subquery";
-                top_where = 1;
-            } else if (kw_at(p, "returning")) {
-                if (head == 2 && !top_where)
-                    return "UPDATE/DELETE in WITH must carry a WHERE clause";
-                top_ret = 1;
-            }
-        }
+        for (int i = 0; dml_words[i]; i++)
+            if (kw_at(p, dml_words[i]))
+                return "write keyword in read-only WITH subquery";
         for (int i = 0; forb[i]; i++)
             if (kw_at(p, forb[i]))
                 return "dangerous statement rejected (DROP/TRUNCATE/…)";
 
         p = sql_scan_ident(p);
         if (!p) return "bad token in WITH subquery";
-        first = 0;
     }
-    if (head > 0 && !top_ret)
-        return "DML in WITH must carry RETURNING";
     return NULL;
 }
 

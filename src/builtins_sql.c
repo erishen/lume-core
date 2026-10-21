@@ -28,7 +28,7 @@
  */
 
 #include "builtins_internal.h"
-#include "sql_guard.h"
+#include "sql_guard_internal.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -315,7 +315,13 @@ static int sql_write_exec_impl(const char *db, const char *sql,
         sqlite3_close(sq);
         return 1;
     }
-    int rc = sqlite3_step(st);
+    /* A top-level RETURNING clause (SQLite 3.35+) makes the first step
+     * answer SQLITE_ROW, not SQLITE_DONE — the write has already
+     * happened, the rows are the RETURNING output. Draining them keeps
+     * sql_write(db, "UPDATE ... RETURNING ...") working instead of
+     * failing with sqlite3_errmsg's "not an error". */
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         snprintf(err, errsz, "%s", sqlite3_errmsg(sq));
@@ -488,7 +494,10 @@ void native_sql_tx_exec(VM *vm, int argc, Value *args, Value *out) {
         free_sql_params(params, nparams);
         return;
     }
-    int rc = sqlite3_step(st);
+    /* Same RETURNING drain as sql_write_exec_impl: a top-level RETURNING
+     * (SQLite 3.35+) answers SQLITE_ROW on the first step. */
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         vm_set_error(vm, "sql_tx_exec: %s", sqlite3_errmsg(sq));

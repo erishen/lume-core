@@ -6,6 +6,29 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed — sql guardrail: CTE bodies are read-only; top-level RETURNING writes work
+
+- The write-CTE whitelist (0.9.4) opened a "RETURNING DML" head inside WITH
+  subqueries on the assumption that SQLite 3.35 had added data-modifying
+  CTEs. It had not — 3.35 added RETURNING on *top-level* DML only. Verified
+  against the system library (3.51.0): even the documented
+  PostgreSQL-style shape `WITH u AS (UPDATE … RETURNING …) SELECT …` fails
+  at prepare with `near "UPDATE": syntax error`, on every release. The
+  guard now rejects any write verb inside a CTE body outright ("write
+  keyword in read-only WITH subquery"), so the impossible shape gets a
+  named rejection instead of an engine syntax error at prepare time.
+- `sql_write` / `sql_tx_exec` stepped the statement once and required
+  `SQLITE_DONE`, so a top-level `UPDATE … RETURNING` / `INSERT …
+  RETURNING` (valid since 3.35) failed with sqlite3's "not an error".
+  Both runtimes now drain the RETURNING rows before the DONE check; the
+  return value stays the affected-row count.
+- `tests/sqlite.lume`: the three cases that encoded the impossible
+  DML-in-CTE shape (`with update-returning atomic` and its two visibility
+  checks — previously misattributed to a host sqlite < 3.35) are rewritten
+  to the real thing: top-level `UPDATE … RETURNING` and
+  `INSERT … SELECT … RETURNING` single-statement atomic writes, plus a
+  negative case pinning the new CTE-body rejection.
+
 ### Added — sort() on the native backends
 
 - `sort(l)` is now three-backend uniform: `--compile-text` / `--compile-llvm`

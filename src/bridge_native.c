@@ -802,7 +802,7 @@ void lume_srv_run(void)
  * build probed libsqlite3 (backend.c passes -DLUME_HAS_SQLITE=1 and the
  * SQLITE_PREFIX include path). Same semantics as the interpreter's
  * builtins_sql.c: query returns a list of row maps (rows capped at 200);
- * write goes through the same single-statement whitelist (sql_guard.h,
+ * write goes through the same single-statement whitelist (sql_guard_internal.h,
  * shared with the interpreter) and returns the affected count; tx_begin
  * opens READWRITE|CREATE + BEGIN and returns an opaque handle.
  *
@@ -817,7 +817,7 @@ void lume_srv_run(void)
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include "sql_guard.h"
+#include "sql_guard_internal.h"
 
 /* rt.c container/error helpers referenced by the native sql builtins. */
 extern int64_t lume_list_len(const void *l);
@@ -990,7 +990,11 @@ long long lume_bi_sql_write(const char *db, const char *sql, void *params)
         return -1;
     }
     sql_bind_params(st, params);
-    int rc = sqlite3_step(st);
+    /* RETURNING drain (mirrors lume_bi_sql_write): a top-level RETURNING
+     * clause answers SQLITE_ROW on the first step; the write has already
+     * happened, so drain the rows and require DONE afterwards. */
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         lume_sql_errf("sql_write: %s", sqlite3_errmsg(sq));
@@ -1053,7 +1057,9 @@ long long lume_bi_sql_tx_exec(void *tx, const char *sql, void *params)
         return -1;
     }
     sql_bind_params(st, params);
-    int rc = sqlite3_step(st);
+    /* Same RETURNING drain as lume_bi_sql_write. */
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) { /* drain RETURNING */ }
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
         /* Transaction stays open; the caller decides commit vs rollback. */

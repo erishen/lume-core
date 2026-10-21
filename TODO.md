@@ -535,8 +535,8 @@ The four-layer surface if started:
   emitters — the whole sql builtin set now emits on both native
   backends, not just the tx four. Makefile probes libsqlite3
   (`SQLITE_PREFIX` → `HAVE_SQLITE=1`, isolated include/lib dirs),
-  `src/sql_guard.h` shares the interpreter's validation verbatim with
-  the native runtime (`bridge_native.c` `#if LUME_HAS_SQLITE`: query
+  `src/sql_guard_internal.h` shares the interpreter's validation verbatim
+  with the native runtime (`bridge_native.c` `#if LUME_HAS_SQLITE`: query
   read-only, write read-write, tx per-handle connection + BEGIN; errors
   via `lume_error_set`), `codegen_call.c` + `llvm_cg_call.inc`
   dispatch the two forms `(sql[,params])` vs `(path,sql[,params])`.
@@ -548,9 +548,12 @@ The four-layer surface if started:
   stores the string pointer verbatim), which corrupted TEXT values and
   crashed the smoke program. Verified: `native-sql-smoke` on the text
   and llvm backends prints the interpreter's exact expected output;
-  sqlite regression 58 PASS + 3 known sqlite<3.35 DML-CTE diffs. Host
+  sqlite regression 62 PASS + 0 known diffs (2026-10-21: the three
+  "sqlite<3.35 DML-CTE diffs" were misattributed — the system library is
+  3.51.0 and rejects CTE-body DML on every release; the guard now rejects
+  that shape outright and the cases use top-level RETURNING). Host
   sqlite_tool.c needs no merge — validation semantics unchanged (the
-  guard move to sql_guard.h is behavior-preserving).
+  guard move to sql_guard_internal.h is behavior-preserving).
 
   CI leg 2026-10-21: tests/native_backends.sh now runs the sql fixture
   (tests/native-sql-consistency.lume/.expected, db path from SQLITE_DB)
