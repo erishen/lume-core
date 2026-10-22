@@ -302,6 +302,13 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
     LLVMDisposeModule(mod);
     LLVMContextDispose(ctx);
 
+    if (backend_build_rt(err, err_size) != 0)
+        return 1;
+    if (backend_build_native(err, err_size) != 0)
+        return 1;
+    if (backend_build_regex(err, err_size) != 0)
+        return 1;
+
     char cmd[PATH_MAX * 3];
     /* -lm is not optional: rt.c pulls in sqrt()/pow(), which libSystem exports
      * implicitly on macOS (so this quietly worked there) but glibc does not

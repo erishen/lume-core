@@ -49,4 +49,10 @@ int backend_build_rt(char *err, size_t err_size);
  * must link it, not just the text backend. */
 int backend_build_native(char *err, size_t err_size);
 
+/* Same bookkeeping for the compat regex objects (build/compat/regex/…)
+ * that rt.c's lume_str_match_* needs on platforms with no system regex
+ * library. Compiled from the source tree next to LUME_RT_SRC and cached by
+ * mtime — an installed binary has no prebuilt objects to link. */
+int backend_build_regex(char *err, size_t err_size);
+
 #endif /* LUME_BACKEND_H */

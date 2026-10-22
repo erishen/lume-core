@@ -27,9 +27,18 @@
 # guard in TODO P4: the core interpreter stays host-independent, no
 # network). This script is the deterministic verify side only.
 set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$(dirname "$0")/.."
 
-TARGET="${LUME_BIN:-bin/lume-core}"
+# Installed mode: the gate scripts ship in the same dir as lume-core (which
+# is on PATH), so resolve the binary there first; the repo mode (scripts/ in
+# a checkout) falls back to bin/lume-core. AI_SEMANTICS_SH lets a wrapper
+# point at the semantic validator when it does not sit next to this script.
+TARGET="${LUME_BIN:-}"
+if [ -z "$TARGET" ]; then
+    TARGET="$(command -v lume-core 2>/dev/null || echo bin/lume-core)"
+fi
+SEMANTICS="${AI_SEMANTICS_SH:-$HERE/verify-ai-semantics.sh}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -59,8 +68,8 @@ verify_one() {
     #     //@semantic declarations are checked statically, without
     #     running it — dangling references, unclaimed labels and unsafe
     #     shapes (server{} / run()) reject here, before any leg runs.
-    if [ -f scripts/verify-ai-semantics.sh ]; then
-        if ! bash scripts/verify-ai-semantics.sh "$f"; then
+    if [ -f "$SEMANTICS" ]; then
+        if ! bash "$SEMANTICS" "$f"; then
             fail "$name: semantic declarations rejected"
         fi
         pass "$name: semantic declarations ok"

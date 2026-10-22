@@ -29,8 +29,16 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-TARGET="${LUME_BIN:-bin/lume-core}"
-GATE="${AI_VERIFY_SH:-scripts/verify-ai-lume.sh}"
+# Installed mode: resolve lume-core and the gate from PATH / this dir first
+# (see verify-ai-lume.sh); repo mode keeps the checkout-relative defaults.
+TARGET="${LUME_BIN:-}"
+if [ -z "$TARGET" ]; then
+    TARGET="$(command -v lume-core 2>/dev/null || echo bin/lume-core)"
+fi
+GATE="${AI_VERIFY_SH:-}"
+if [ -z "$GATE" ]; then
+    if [ -x "$(dirname "$0")/verify-ai-lume.sh" ]; then GATE="$(dirname "$0")/verify-ai-lume.sh"; else GATE="$(dirname "$0")/lume-ai-verify"; fi
+fi
 CAND_DIR="${AI_CANDIDATES_DIR:-out/ai-candidates}"
 MANIFEST="$CAND_DIR/manifest.txt"
 REJECTS_LOG="${AI_REJECTS_LOG:-out/ai-rejects.log}"

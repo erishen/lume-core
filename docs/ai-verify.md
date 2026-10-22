@@ -184,3 +184,32 @@ This closes TODO P4's `assert_semantic()` open question. The remaining
 producer on its reply) is still host-side by the same scope guard; the
 core's contract is just the manifest file plus, now, this declaration
 language.
+
+## Installed mode — gate as first-class shell commands (2026-10-22)
+
+`install.sh` (and the `make pack` release tarball) ship the gate scripts
+next to `lume-core`, so an installed machine verifies AI-written programs
+without a checkout:
+
+```
+lume-ai-verify <file.lume>              # one program through the full gate
+lume-ai-verify-loop                     # assert must-pass / must-reject sets
+lume-ai-produce                         # judge producer candidates vs manifest
+```
+
+- The scripts resolve `lume-core` from PATH and their own siblings; they
+  also run unchanged inside a checkout (repo mode keeps
+  `scripts/verify-ai-lume.sh` + `bin/lume-core` defaults).
+- `lume-ai-verify-loop` / `lume-ai-produce` default their input dirs to
+  checkout-relative paths, so installed use passes them explicitly:
+  `AI_PASS_DIR=... AI_REJECT_DIR=... lume-ai-verify-loop`,
+  `AI_CANDIDATES_DIR=... lume-ai-produce` (seeds also ship under
+  `$PREFIX/share/lume-core/{examples/ai-generated,tests/ai-bad}`).
+- The gate compiles its runtime helper objects (rt.c, bridge_native.c and
+  the compat regex objects) from source next to `LUME_RT_SRC` on first
+  use, so an installed binary — which carries no prebuilt `build/` — runs
+  the interp + libLLVM legs as well. `LUME_BIN`, `AI_VERIFY_SH` and
+  `AI_SEMANTICS_SH` override the resolution when the layout differs.
+- text leg (clang) and parser fuzz leg (`make fuzz-driver`) stay optional;
+  the gate still demands at least two legs, exactly as in repo mode.
+

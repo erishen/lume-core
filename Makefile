@@ -770,9 +770,19 @@ pack: all $(PACK_BIN)
 	@mkdir -p dist
 	# tar 只能有一个 -C, 而文档在仓库根、产物在 build-pack/, 先归拢到同一处
 	@cp README.md README.zh.md CHANGELOG.md build-pack/
+	@mkdir -p build-pack/scripts build-pack/docs build-pack/examples build-pack/tests
+	@cp scripts/verify-ai-lume.sh scripts/verify-ai-semantics.sh \
+	    scripts/ai-verify-loop.sh scripts/ai-gen-programs.sh scripts/ai-produce.sh \
+	    build-pack/scripts/
+	@cp docs/ai-verify.md build-pack/docs/
+	@cp -R examples/ai-generated build-pack/examples/
+	@cp -R tests/ai-bad build-pack/tests/
 	tar -czf dist/$(PKG_NAME).tar.gz -C build-pack \
-	    README.md README.zh.md CHANGELOG.md bin/lume-core
-	@echo "==> packed dist/$(PKG_NAME).tar.gz (bin/lume-core + docs)"
+	    README.md README.zh.md CHANGELOG.md bin/lume-core \
+	    scripts/verify-ai-lume.sh scripts/verify-ai-semantics.sh \
+	    scripts/ai-verify-loop.sh scripts/ai-gen-programs.sh scripts/ai-produce.sh \
+	    docs/ai-verify.md examples/ai-generated tests/ai-bad
+	@echo "==> packed dist/$(PKG_NAME).tar.gz (bin/lume-core + docs + AI gate scripts + seeds)"
 	@./scripts/check-pack-privacy.sh dist/$(PKG_NAME).tar.gz
 	@echo "==> packcheck passed: no build-machine paths in dist/$(PKG_NAME).tar.gz"
 

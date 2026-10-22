@@ -189,6 +189,40 @@ int backend_build_rt(char *err, size_t err_size)
     return 0;
 }
 
+/* Compile the compat regex objects rt.c's lume_str_match_* needs, next to
+ * LUME_RT_SRC (src/compat/regex/…). The lume build links these into the
+ * binary itself, but an installed lume-core has no prebuilt objects — the
+ * gate must compile them on the fly, cached by mtime like backend_build_rt. */
+int backend_build_regex(char *err, size_t err_size)
+{
+    char dir[PATH_MAX];
+    src_compat_inc(dir, sizeof dir, LUME_RT_SRC);   /* <srcdir>/compat/regex */
+    static const char *srcs[] = { "regcomp.c", "regexec.c", "regerror.c", "tre-mem.c" };
+    lume_mkdir("build");               /* single-level mkdir: make each */
+    lume_mkdir("build/compat");        /* layer by hand, no -p guarantee */
+    lume_mkdir("build/compat/regex");
+    for (size_t i = 0; i < sizeof srcs / sizeof srcs[0]; i++) {
+        char src[PATH_MAX], obj[PATH_MAX];
+        snprintf(src, sizeof src, "%s/%s", dir, srcs[i]);
+        snprintf(obj, sizeof obj, "build/compat/regex/%.*s.o",
+                 (int)(strlen(srcs[i]) - 2), srcs[i]);   /* strip ".c" */
+        struct stat s, o;
+        if (stat(src, &s) != 0) {
+            snprintf(err, err_size, "compat regex source not found: %s", src);
+            return 1;
+        }
+        if (stat(obj, &o) == 0 && o.st_mtime >= s.st_mtime) continue;
+        char cmd[PATH_MAX * 2];
+        snprintf(cmd, sizeof cmd, "%s -O2 -I%s -c %s -o %s",
+                 pick_cc(), dir, src, obj);
+        if (run_cmd(cmd) != 0) {
+            snprintf(err, err_size, "compiling %s failed", srcs[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Compile the native server runtime (bridge_native.c) once per build,
  * rebuilt when the source is newer. Backend-neutral, like backend_build_rt:
  * both native backends link it for lume_srv_*, lume_bi_now and lume_bi_env. */
@@ -285,6 +319,8 @@ int backend_native(const char *src_path, struct Node *prog,
     if (backend_build_rt(err, err_size) != 0)
         return 1;
     if (backend_build_native(err, err_size) != 0)
+        return 1;
+    if (backend_build_regex(err, err_size) != 0)
         return 1;
 
     /* Two steps, not one: compiling the IR and linking it must be separate so

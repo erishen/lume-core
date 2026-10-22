@@ -98,21 +98,45 @@ binpath=$(find "$stage" -type f -name lume-core -path '*/bin/*' | head -1)
 chmod +x "$binpath"
 mv "$binpath" "$BINDIR/lume-core"
 
+# AI self-verification gate as first-class shell commands (docs/ai-verify.md):
+# an installed machine can verify an AI-written program without a checkout.
+# verify-ai-lume.sh finds its siblings + lume-core via PATH / same dir.
+root=$(dirname "$(dirname "$binpath")")
+for pair in "verify-ai-lume.sh:lume-ai-verify" \
+            "ai-verify-loop.sh:lume-ai-verify-loop" \
+            "ai-produce.sh:lume-ai-produce"; do
+  src=${pair%%:*}; dst=${pair##*:}
+  if [ -f "$root/scripts/$src" ]; then
+    cp "$root/scripts/$src" "$BINDIR/$dst" && chmod +x "$BINDIR/$dst"
+  fi
+done
+if [ -f "$root/scripts/verify-ai-semantics.sh" ]; then
+  cp "$root/scripts/verify-ai-semantics.sh" "$BINDIR/" && \
+    chmod +x "$BINDIR/verify-ai-semantics.sh"
+fi
+if [ -f "$root/scripts/ai-gen-programs.sh" ]; then
+  cp "$root/scripts/ai-gen-programs.sh" "$BINDIR/" && \
+    chmod +x "$BINDIR/ai-gen-programs.sh"
+fi
+
 # Carry the examples + docs along so an installed binary can run the bundled
 # scripts out of the box (lume-core has no server, so this is just files).
-toplevel=$(dirname "$binpath")
 sharedir="$PREFIX/share/lume-core"
-if [ -d "$toplevel/examples" ] || [ -d "$toplevel/docs" ] || \
-   [ -f "$toplevel/README.md" ] || [ -f "$toplevel/CHANGELOG.md" ]; then
+if [ -d "$root/examples" ] || [ -d "$root/docs" ] || [ -d "$root/tests" ] || \
+   [ -f "$root/README.md" ] || [ -f "$root/CHANGELOG.md" ]; then
   mkdir -p "$sharedir"
-  cp -R "$toplevel/examples" "$toplevel/docs" \
-        "$toplevel/README.md" "$toplevel/README.zh.md" "$toplevel/CHANGELOG.md" \
+  cp -R "$root/examples" "$root/docs" "$root/tests" \
+        "$root/README.md" "$root/README.zh.md" "$root/CHANGELOG.md" \
         "$sharedir/" 2>/dev/null || true
-  echo "==> lume-core-install: examples + docs in $sharedir"
+  echo "==> lume-core-install: examples + docs + seeds in $sharedir"
 fi
 rm -rf "$stage"
 echo "==> lume-core-install: installed $BINDIR/lume-core"
 echo "    run: $BINDIR/lume-core examples/hello.lume   (or cd $sharedir)"
+if [ -x "$BINDIR/lume-ai-verify" ]; then
+  echo "    verify AI-written programs: $BINDIR/lume-ai-verify <file.lume>"
+  echo "    (full loop: lume-ai-verify-loop; producer: lume-ai-produce — see docs/ai-verify.md)"
+fi
 
 case ":$PATH:" in
   *":$BINDIR:"*) ;;

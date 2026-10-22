@@ -30,10 +30,19 @@
 # LLM → .lume producer stays in the host / an external tool, writing
 # candidates into these directories (or any dir passed in).
 set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$(dirname "$0")/.."
 
-TARGET="${LUME_BIN:-bin/lume-core}"
-GATE="${AI_VERIFY_SH:-scripts/verify-ai-lume.sh}"
+# Installed mode: resolve lume-core and the gate from PATH / this dir first
+# (see verify-ai-lume.sh); repo mode keeps the checkout-relative defaults.
+TARGET="${LUME_BIN:-}"
+if [ -z "$TARGET" ]; then
+    TARGET="$(command -v lume-core 2>/dev/null || echo bin/lume-core)"
+fi
+GATE="${AI_VERIFY_SH:-}"
+if [ -z "$GATE" ]; then
+    if [ -x "$HERE/verify-ai-lume.sh" ]; then GATE="$HERE/verify-ai-lume.sh"; else GATE="$HERE/lume-ai-verify"; fi
+fi
 PASS_DIR="${AI_PASS_DIR:-examples/ai-generated}"
 REJECT_DIR="${AI_REJECT_DIR:-tests/ai-bad}"
 REJECTS_LOG="${AI_REJECTS_LOG:-out/ai-rejects.log}"
