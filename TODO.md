@@ -864,3 +864,50 @@ pointed at 195cfaf (pre-0b43aa6). The implementation (0b43aa6 /
   the submodule lacked the field; the host had only compiled because
   the submodule working copy sat on `win-local-chain`. SSR-relay
   images are now buildable on any machine.
+## P11 — 2026-10-22 memory-safety audit (php2shell-class review)
+
+Status: open (filed 2026-10-22). A post-CVE-2026-109618/109619
+pass over `lume-core/src` (arena, rt, codegen, interp, bridge,
+main.c) and the agent-httpd request path. Findings, all
+contextual — none of them is a php2shell-shaped UAF or stale
+global pointer surviving across requests in a long-lived worker:
+
+- **arena.c** is deliberately single-threaded and reset-wholesale;
+  the LSP path obeys the contract (one document version at a time).
+  No fine-grained free, so no UAF surface.
+- **rt.c** exits on OOM (`exit(70)`) — no half-initialised state
+  leaks into a follow-up call (the failure mode CVE-2026-109618
+  exploits).
+- **rt.c statics** (`g_index_failed`, `g_in_try`, `g_native_err`)
+  are reset per-lookup and the native backend runs in a spawned
+  process, so they cannot leak state across requests.
+
+Remaining action items:
+
+### Confirm no global pointers survive a failed/aborted VM run
+
+`interp.c` + `value.c` GC is the one unreviewed part of this pass.
+The P9 (for-in heap corruption under agent-httpd) precedent shows
+state can outlive a malformed script. The question is whether a
+`lume_exec()` that returns an error leaves any VM-owned pointer
+reachable from a subsequent `lume_exec()` on the same VM handle:
+
+- [ ] Add a unit test: run a script that aborts mid-execution
+      (type error / OOM injection / a deliberately malformed
+      closure), then immediately run a second script on the same
+      VM under ASAN; assert no read-after-free and no leak beyond
+      the intentional arena lifetime.
+- [ ] If the VM is not currently reset between runs, add an
+      explicit `vm_free(vm)` contract between script executions
+      and document it in `docs/NATIVE.md`.
+
+### Extend ASAN/LSAN to the LSP + codegen paths
+
+P1 closes only the *parser* fuzz leg; the LLVM backend and LSP
+bridge (`bridge_lsp.c`) have no sanitizer target yet:
+
+- [ ] Add `make test-asan-codegen` covering `native_backends.sh`
+      under ASAN (new suppressions file scoped to `llvm_cg_*.inc`
+      so backend-specific noise is trackable).
+- [ ] Add a `lume-lsp --check` smoke under LSAN to catch
+      doc-lifetime leaks on document-switch.
