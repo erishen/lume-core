@@ -30,6 +30,19 @@ All notable changes to Lume are documented here. The format follows
 - `tests/native-consistency.lume`: +57 pinned lines covering the whole
   accessor table (found string/bool/container, cross-type defaults,
   any-receiver slot path, bool accessor, named-struct boxing).
+- **ASan leak in `--compile-text`.** Two emit sites returned the `emit_instrf`
+  result through `val_make` (which copies the register name) and never freed
+  the original: `cg_index`'s tagged-any subscript (`j["k"]` / `j[i]`) and
+  `cg_builtin`'s `json()` lowerer. Each leaked one ~7-byte `%tNNN` name per
+  call; LSan reported 28 bytes / 4 allocations when compiling
+  `tests/native-consistency.lume`. Both now use `val_take` (transfer
+  ownership, no extra copy), matching `rt_call` / the binary-arith loads.
+- **`tests/native_backends.sh` ns-chain leg skipped — not failed — without
+  libLLVM.** The ns-chain block hardcoded `for leg in text llvm` while every
+  other block walks `RAN` (the availability-filtered leg set), so a build
+  with no libLLVM still attempted `--compile-llvm` and failed. It now
+  iterates `RAN` with the same `text`/`llvm`/`*`-skip `case`, so an
+  unavailable llvm leg is skipped like the `propagate` block already did.
 
 ## [0.10.0] - 2026-10-22
 

@@ -1744,7 +1744,7 @@ static Val cg_builtin(CG *g, Node *n)
                     if (!jv) { free(a.v);
                                ERRV(g, "line %zu: json() failed to lower", n->line); }
                     free(a.v);
-                    return val_make(type_prim(TY_ANY), jv);
+                    return val_take(type_prim(TY_ANY), jv);
                 }
                 fn = "@lume_rt_quote_str"; pty = "i8*"; break;
             case TY_LIST:

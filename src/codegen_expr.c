@@ -899,7 +899,7 @@ static Val cg_index(CG *g, Node *n)
         EMIT(g, "L%d:\n", lok);
         char *jv = emit_instrf(g, any_type(), "load i8*, i8* %s", jslot);
         if (!jv) ERRV(g, "line %zu: index read failed to lower", n->line);
-        return val_make(any_type(), jv);
+        return val_take(any_type(), jv);
     }
 
     /* A read whose result the static type cannot pin down -- a list of

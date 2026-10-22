@@ -362,10 +362,14 @@ pass "propagate: every leg unwraps \`?\` and propagates \`err\` like the interpr
 NS_CHAIN=tests/ns-chain-main.lume
 ns_want=$("$TARGET" "$NS_CHAIN" 2>/dev/null | tr -d '\r')
 ns_ran=()
-for leg in text llvm; do
+# Walk the legs that actually built (RAN), not a hardcoded list: on a runner
+# built without libLLVM the llvm leg is unavailable and must be skipped, not
+# failed — the same skip logic the propagate block already uses.
+for leg in "${RAN[@]}"; do
     case "$leg" in
         text) flag=--compile-text ;;
         llvm) flag=--compile-llvm ;;
+        *)    continue ;;
     esac
     "$TARGET" "$flag" "$NS_CHAIN" -o "$WORK/ns-chain-$leg" >/dev/null 2>&1 ||
         fail "ns-chain: $leg refused to compile a legal module chain (entry → A → B)"
