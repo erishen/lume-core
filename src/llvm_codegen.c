@@ -788,11 +788,26 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     {
         LLVMValueRef ltop = LLVMGetNamedFunction(cg.mod, "L_top");
 
+        /* argv() support: the entry receives the process arguments and stashes
+         * them (lume_cli_init in src/rt.c, which skips argv[0] the way the
+         * interpreter keeps only the trailing script arguments) before any
+         * top-level statement runs, so compiled programs expose argv()
+         * exactly as the text backend and the interpreter do. In opaque-pointer
+         * mode i8** is just ptr, so the second parameter is cg.i8ptr. */
+        LLVMTypeRef  mparams[2] = { cg.i32, cg.i8ptr };
         LLVMValueRef cmain = LLVMGetNamedFunction(cg.mod, "main");
         if (!cmain) cmain = LLVMAddFunction(cg.mod, "main",
-                                            LLVMFunctionType(cg.i32, NULL, 0, 0));
+                                            LLVMFunctionType(cg.i32, mparams, 2, 0));
         LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, cmain, "entry");
         LLVMPositionBuilderAtEnd(cg.ab, entry);
+
+        {
+            LLVMTypeRef  cparams[2] = { cg.i32, cg.i8ptr };
+            LLVMTypeRef  cty = LLVMFunctionType(cg.void_ty, cparams, 2, 0);
+            LLVMValueRef cfn = rt_decl(&cg, "lume_cli_init", cg.void_ty, cparams, 2);
+            LLVMValueRef cargs[2] = { LLVMGetParam(cmain, 0), LLVMGetParam(cmain, 1) };
+            LLVMBuildCall2(cg.ab, cty, cfn, cargs, 2, "");
+        }
 
         if (ltop && tops_main) {
             /* L_top carries an i64, like every other lume int: the status is

@@ -339,6 +339,21 @@ static Val cg_builtin(CG *g, Node *n)
     const Bi *b = builtin_find(bname);
     AT(g);
 
+    /* argv(): the script's trailing CLI arguments as a string list. Zero
+     * arguments, so the table path — which requires argc >= 1 — cannot serve
+     * it; the list the runtime hands back is stashed by lume_cli_init in the
+     * generated entry point (see llvm_codegen.c). Mirrors the text backend's
+     * argv() handling in codegen_call.c. */
+    if (strcmp(bname, "argv") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: argv() takes no arguments", n->line);
+        LLVMTypeRef av_ft = LLVMFunctionType(g->i8ptr, NULL, 0, 0);
+        LLVMValueRef r = LLVMBuildCall2(g->ab, av_ft,
+                                        rt_decl(g, "lume_bi_argv", g->i8ptr, NULL, 0),
+                                        NULL, 0, "b");
+        return val_make(list_type(), r);
+    }
+
     if (b) {
         if (argc < 1)
             ERRV(g, "line %zu: '%s' takes at least one argument", n->line, bname);

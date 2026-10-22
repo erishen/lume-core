@@ -249,6 +249,12 @@ Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
 
+        /* argv() is the script's trailing CLI arguments as a string list.
+         * The native backends need this static type before they can emit the
+         * lume_bi_argv call (see codegen_call.c). */
+        if (strcmp(name, "argv") == 0 && n->as.call.argc == 0)
+            return type_list(type_prim(TY_STRING));
+
         /* now() is epoch seconds. int()/str()/float()/bool() and the
          * string tools answer their own kind whatever the argument's
          * static type — and the argument itself may not be inferable

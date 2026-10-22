@@ -236,6 +236,12 @@ static Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
 
+        /* argv() is the script's trailing CLI arguments as a string list.
+         * The native backends need this static type before they can emit the
+         * lume_bi_argv call (see llvm_cg_call.inc). */
+        if (strcmp(name, "argv") == 0 && n->as.call.argc == 0)
+            return type_list(type_prim(TY_STRING));
+
         /* now() is epoch seconds. int()/str()/float()/bool() and the
          * string tools answer their own kind whatever the argument's
          * static type; read_file() yields a string, or null when the file

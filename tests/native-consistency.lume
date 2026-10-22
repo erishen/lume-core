@@ -1397,5 +1397,14 @@ print(nc_maps[0]);
 print(nc_maps[0] == {"a": 1});
 print(len(nc_maps[0]));
 
+/* argv() — the script's trailing CLI arguments (SPEC 5). The suite runs every
+ * leg with no arguments, so the list is empty here on all three backends: the
+ * interpreter seeds it from the trailing args after the script path, and the
+ * compiled entry stashes everything after argv[0] (lume_cli_init in rt.c).
+ * Pinned: argv() returns a string list that reports empty and joins clean. */
+let nc_argv = argv();
+print(len(nc_argv) == 0);
+print(join(nc_argv, ","));
+
 warmup();
 main();

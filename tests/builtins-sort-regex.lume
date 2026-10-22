@@ -118,6 +118,13 @@ func main(): int {
   check("float str42", float("42") == 42.0);
   check("float int", float(7) == 7.0);
 
+  // --- argv() (SPEC 5, 2026-10-22 ROUND13) ---
+  // 套件不带尾随参数跑本脚本, argv() 应为空表; join 钉住元素是字符串。
+  // 三后端对齐由 native-consistency.lume 的 argv 探针保证(编译入口经
+  // lume_cli_init 只收 argv[0] 之后的部分, 与解释器语义一致)。
+  check("argv() empty without trailing args", len(argv()) == 0);
+  check("argv() joins clean when empty", join(argv(), ",") == "");
+
   return 0;
 }
 main();
