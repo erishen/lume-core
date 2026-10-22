@@ -902,6 +902,41 @@ static Val cg_index(CG *g, Node *n)
         return val_make(any_type(), jv);
     }
 
+    /* A read whose result the static type cannot pin down -- a list of
+     * maps ([{"a":1},{"a":2}]), an anonymous-map subscript (m["k"] where m
+     * is a runtime map), or an any element -- hands back a boxed slot
+     * (lume_index_slot) typed `any`, the same boxed representation a
+     * for-in loop variable over the same container gets (lume_list_at_slot),
+     * so print/len/get/==/str all agree with the interpreter. The typed
+     * accessors (lume_index_int/ptr) would read a string field as an
+     * integer or a container field as a raw pointer. A tuple element whose
+     * static type is an anonymous struct is still a GEP struct at runtime,
+     * so it keeps the raw accessor (its fields are read with `.0`/`.x`). */
+    if (rty->kind == TY_ANY && !(obj.ty && obj.ty->kind == TY_ANY)) {
+        int ix_is_str = ix.ty && ix.ty->kind == TY_STRING;
+        Val r = rt_call(g, any_type(), "lume_index_slot",
+                        "i8* %s, %s %s, i8* %s", obj.v,
+                        ix_is_str ? "i64" : (ix.ty ? rt_arg_type(ix.ty) : "i64"),
+                        ix_is_str ? "0" : ix.v,
+                        ix_is_str ? ix.v : "null");
+        free(ix.v); free(obj.v);
+        if (!r.v) ERRV(g, "line %zu: index read failed", n->line);
+        char flag[48], test[48];
+        snprintf(flag, sizeof flag, "%%c%d", g->tid++);
+        snprintf(test, sizeof test, "%%c%d", g->tid++);
+        EMIT(g, "  %s = call i64 @lume_index_failed()\n", flag);
+        EMIT(g, "  %s = icmp ne i64 %s, 0\n", test, flag);
+        int lbad = g->lid++, lok = g->lid++;
+        EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", test, lbad, lok);
+        EMIT(g, "L%d:\n", lbad);
+        char *what = cg_string_val(g, "index read failed", 17);
+        EMIT(g, "  call void @lume_index_error(i8* %s)\n", what);
+        free(what);
+        EMIT(g, "  br label %%L%d\n", lok);
+        EMIT(g, "L%d:\n", lok);
+        return r;
+    }
+
     const char *pty = rt_arg_type(rty);
 
     const char *fn = strcmp(pty, "double") == 0 ? "lume_index_float"

@@ -253,6 +253,10 @@ const char *rt_arg_type(Type *ty);
 const char *map_get_fn(Type *ty);
 const char *list_push_fn(Type *ty);
 const char *map_put_fn(Type *ty);
+/* from codegen_scan.c: the one value shape a struct's fields share, or
+ * NULL when they disagree. The get() scan case and emit_get_call
+ * (codegen_call.c) both answer with it, so it is not static. */
+Type *struct_common_shape(Type *t);
 /* from typecheck.c — spells a Type for diagnostics; this TU does not include
  * typecheck_internal.h, so the declaration lives here. */
 const char *ty_str(Type *t);

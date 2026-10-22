@@ -95,6 +95,26 @@ static int value_shape_eq(Type *a, Type *b)
     return 1;                     /* every remaining kind is a primitive */
 }
 
+/* The one value shape every field of this struct type shares, or NULL when
+ * they disagree (or it declares nothing at all -- a str_match row, a
+ * json-parsed row). Kept in step with codegen_scan.c's copy: the get()
+ * case below promises `any` exactly when this is NULL, and emit_get_call
+ * (llvm_cg_call.inc) reads the same promise to pick between a typed map
+ * getter and the dynamic slot read. Static because every caller lives in
+ * this translation unit (the .inc files share one); the text backend's
+ * copy is the exported one. */
+static Type *struct_common_shape(Type *t)
+{
+    if (!t) return NULL;
+    Type *first = NULL;
+    for (int i = 0; i < t->count; i++) {
+        if (!t->types[i] || t->types[i]->kind == TY_ANY) continue;
+        if (!first) { first = t->types[i]; continue; }
+        if (!value_shape_eq(first, t->types[i])) return NULL;
+    }
+    return first;
+}
+
 static Type *infer_node_type(CG *g, Node *n)
 {
     if (!n) return NULL;
@@ -216,15 +236,13 @@ static Type *infer_node_type(CG *g, Node *n)
         if (strcmp(name, "env") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
 
-        /* now() is epoch seconds; int()/str() convert to a primitive
-         * whatever the argument's static type; read_file() yields a string,
-         * or null when the file is absent (mirrors codegen_scan.c). */
+        /* now() is epoch seconds. int()/str()/float()/bool() and the
+         * string tools answer their own kind whatever the argument's
+         * static type; read_file() yields a string, or null when the file
+         * is absent (mirrors codegen_scan.c). The cast/string-tool cases
+         * live with sort() below. */
         if (strcmp(name, "now") == 0 && n->as.call.argc == 0)
             return type_prim(TY_INT);
-        if (strcmp(name, "int") == 0 && n->as.call.argc == 1)
-            return type_prim(TY_INT);
-        if (strcmp(name, "str") == 0 && n->as.call.argc == 1)
-            return type_prim(TY_STRING);
         if (strcmp(name, "read_file") == 0 && n->as.call.argc == 1)
             return type_prim(TY_STRING);
         if (strcmp(name, "write_file") == 0 && n->as.call.argc == 2)
@@ -289,6 +307,41 @@ static Type *infer_node_type(CG *g, Node *n)
             return NULL;
         }
 
+        /* String tools (builtins_str.c interpreter parity) and the scalar
+         * casts: the answer kind does not depend on the argument, so
+         * `let parts = split(s, ",")` infers without an annotation the
+         * way the interpreter's dynamic value already does. The accessor
+         * forms str(m,"k") / int(m,"k") / float(m,"k") / bool(m,"k")
+         * answer their own kind too (the field is resolved first, then
+         * converted — builtins.c value_from_map). Kept in step with
+         * codegen_scan.c's copy. */
+        if (n->as.call.argc >= 1) {
+            if ((strcmp(name, "upper") == 0 || strcmp(name, "lower") == 0 ||
+                 strcmp(name, "capitalize") == 0 || strcmp(name, "trim") == 0 ||
+                 strcmp(name, "str") == 0 || strcmp(name, "string") == 0))
+                return type_prim(TY_STRING);
+            if (strcmp(name, "int") == 0) return type_prim(TY_INT);
+            if (strcmp(name, "float") == 0) return type_prim(TY_FLOAT);
+            if (strcmp(name, "bool") == 0) return type_prim(TY_BOOL);
+            if (strcmp(name, "join") == 0 && n->as.call.argc >= 2)
+                return type_prim(TY_STRING);
+            if (strcmp(name, "replace") == 0 && n->as.call.argc == 3)
+                return type_prim(TY_STRING);
+            if (strcmp(name, "substr") == 0 &&
+                n->as.call.argc >= 2 && n->as.call.argc <= 3)
+                return type_prim(TY_STRING);
+            if (strcmp(name, "split") == 0 && n->as.call.argc == 2)
+                return type_list(type_prim(TY_STRING));
+            if ((strcmp(name, "str_match") == 0 || strcmp(name, "regex") == 0) &&
+                n->as.call.argc == 2)
+                return type_list(type_anon_struct());
+            if (strcmp(name, "contains") == 0 && n->as.call.argc == 2)
+                return type_prim(TY_BOOL);
+            if ((strcmp(name, "exp") == 0 || strcmp(name, "log") == 0 ||
+                 strcmp(name, "ln") == 0))
+                return type_prim(TY_FLOAT);
+        }
+
         /* json()/stringify() serialize to a JSON string. json(str) means
          * parse, whose result type is dynamic — NULL here keeps the slot
          * opaque and lets the emit-time diagnostic do the explaining. */
@@ -349,14 +402,8 @@ static Type *infer_node_type(CG *g, Node *n)
              * when every value shares one shape (get(subjects, user, null)
              * in abac's policy), and as `any` when they disagree. */
             if (mt && mt->kind == TY_STRUCT) {
-                Type *first = NULL;
-                for (int i = 0; i < mt->count; i++) {
-                    if (!mt->types[i] || mt->types[i]->kind == TY_ANY) continue;
-                    if (!first) { first = mt->types[i]; continue; }
-                    if (!value_shape_eq(first, mt->types[i])) { first = NULL; break; }
-                }
-                if (first) return first;
-                return any_type();
+                Type *cs = struct_common_shape(mt);
+                return cs ? cs : any_type();
             }
             /* A key that is not a literal, or that the shape does not
              * declare, falls through to NULL -- the explicit-annotation

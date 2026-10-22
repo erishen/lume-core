@@ -871,6 +871,45 @@ static Val cg_index(CG *g, Node *n)
         return val_make(any_type(), sc);
     }
 
+    /* A read whose result the static type cannot pin down -- a list of
+     * maps ([{"a":1},{"a":2}]), an anonymous-map subscript (m["k"] where m
+     * is a runtime map), or an any element -- hands back a boxed slot
+     * (lume_index_slot) typed `any`, the same boxed representation a
+     * for-in loop variable over the same container gets (lume_list_at_slot),
+     * so print/len/get/==/str all agree with the interpreter. The typed
+     * accessors (lume_index_int/ptr) would read a string field as an
+     * integer or a container field as a raw pointer. A tuple element whose
+     * static type is an anonymous struct is still a GEP struct at runtime,
+     * so it keeps the raw accessor (its fields are read with `.0`/`.x`). */
+    if (rty->kind == TY_ANY && !(obj.ty && obj.ty->kind == TY_ANY)) {
+        LLVMTypeRef sp[3] = { g->i8ptr, g->i64, g->i8ptr };
+        LLVMValueRef sv[3];
+        sv[0] = obj.v;
+        if (ix_is_str) { sv[1] = LLVMConstInt(g->i64, 0, 0); sv[2] = ix.v; }
+        else { sv[1] = ix.v; sv[2] = LLVMConstNull(g->i8ptr); }
+        LLVMValueRef sc = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, sp, 3, 0),
+                rt_decl(g, "lume_index_slot", g->i8ptr, sp, 3),
+                sv, 3, "idsl");
+        LLVMBasicBlockRef bb_bad = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "idsl_bad");
+        LLVMBasicBlockRef bb_ok  = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "idsl_ok");
+        LLVMValueRef failed = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, NULL, 0, 0),
+                rt_decl(g, "lume_index_failed", g->i64, NULL, 0), NULL, 0, "idslf");
+        LLVMValueRef fr = LLVMBuildICmp(g->ab, LLVMIntNE, failed,
+                                        LLVMConstInt(g->i64, 0, 0), "idslfr");
+        if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, fr, bb_bad, bb_ok);
+        g->cur = bb_bad; AT(g);
+        LLVMValueRef swhat = cg_string_val(g, "index read failed", 17);
+        LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1, 0),
+                rt_decl(g, "lume_index_error", g->void_ty, (LLVMTypeRef[]){ g->i8ptr }, 1),
+                (LLVMValueRef[]){ swhat }, 1, "");
+        if (!DONE(g->cur)) LLVMBuildBr(g->ab, bb_ok);
+        g->cur = bb_ok; AT(g);
+        return val_make(any_type(), sc);
+    }
+
     LLVMTypeRef iparams[3] = { g->i8ptr, g->i64, g->i8ptr };
     LLVMValueRef iargs[3];
     iargs[0] = obj.v;

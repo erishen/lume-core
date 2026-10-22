@@ -83,6 +83,41 @@ func main(): int {
   check("json string stays parse", get(try(() => { json("not json"); return "ok"; }), "err", null) != null);
   check("json serialize matches stringify", json({k: [1, 2]}) == stringify({k: [1, 2]}));
 
+  // --- string family / math / cast / bool (2026-10-22, ROUND12) ---
+  // 解释器侧回归: task #7 把这些 builtin 移植到了原生后端(text/llvm 走 native
+  // backends 的对应分支), 这里先把解释器的契约钉死。三后端的对齐由
+  // native-consistency.lume 的同名探针保证。
+  check("upper", upper("hello") == "HELLO");
+  check("lower", lower("HELLO") == "hello");
+  check("capitalize", capitalize("hi there") == "Hi there");
+  check("trim", trim("  x  ") == "x");
+  check("contains true", contains("hello", "ell"));
+  check("contains false", !contains("hello", "xyz"));
+  let sp = split("a,b,c", ",");
+  check("split len", len(sp) == 3);
+  check("split elem", sp[0] == "a" and sp[2] == "c");
+  check("join", join(sp, "-") == "a-b-c");
+  check("replace", replace("a.b.c", ".", "/") == "a/b/c");
+  check("substr", substr("hello", 1, 3) == "ell");
+  // exp/log/ln 精确值(1 / 0 / 0), 无浮点漂移
+  check("exp0", exp(0.0) == 1.0);
+  check("log1", log(1.0) == 0.0);
+  check("ln1", ln(1.0) == 0.0);
+  // bool()
+  check("bool true-str", bool("true"));
+  check("bool empty-str", !bool(""));
+  check("bool 1", bool(1));
+  check("bool 0", !bool(0));
+  check("bool float", bool(3.0));
+  check("bool float0", !bool(0.0));
+  // int()/float() cast
+  check("int str12x", int("12x") == 12);
+  check("int str42", int("42") == 42);
+  check("int float", int(3.9) == 3);
+  check("float str15x", float("1.5x") == 1.5);
+  check("float str42", float("42") == 42.0);
+  check("float int", float(7) == 7.0);
+
   return 0;
 }
 main();

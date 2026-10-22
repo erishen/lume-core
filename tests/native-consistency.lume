@@ -1342,5 +1342,60 @@ print(str(acc_p, "name"));
 print(int(acc_p, "age"));
 print(get(acc_p, "name"));
 
+// ---- string family / math / cast / any-read (2026-10-22, ROUND12) ----
+// Pins the three legs together on the builtins task #7/#9 ported the native
+// backends: the string family (upper/lower/capitalize/trim/contains/split/
+// join/replace/substr), exp/log/ln and bool()/cast (int(string), float(string),
+// int(float), float(int)). Plus the any dual-track reads (#9): str_match rows
+// read back through get() (boxed any), a list-of-anon-maps element read back,
+// json() any-field index read, and any-string print. Every line below was
+// checked three-way on a standalone probe before landing here.
+// string family
+print(upper("hello"));
+print(lower("HELLO"));
+print(capitalize("hello world"));
+print(trim("  x  "));
+print(contains("hello", "ell"));
+print(contains("hello", "xyz"));
+let nc_sp = split("a,b,c", ",");
+print(len(nc_sp));
+print(nc_sp[0]);
+print(nc_sp[2]);
+print(join(nc_sp, "-"));
+print(replace("a.b.c", ".", "/"));
+print(substr("hello", 1, 3));
+// exp / log / ln (exact values: 1, 0, 0 — no float-format drift)
+print(exp(0.0));
+print(log(1.0));
+print(ln(1.0));
+// bool()
+print(bool("true"));
+print(bool(""));
+print(bool(1));
+print(bool(0));
+print(bool(3.0));
+print(bool(0.0));
+// int()/float() cast
+print(int("12x"));
+print(int("42"));
+print(int(3.9));
+print(float("1.5x"));
+print(float("42"));
+print(float(7));
+// str_match result reading (boxed any)
+let nc_ms = str_match("[0-9]+", "a12b345");
+print(len(nc_ms));
+print(get(nc_ms[0], "index"));
+print(get(nc_ms[0], "text"));
+print(nc_ms);
+// list-of-anon-maps element read + any print (json any field index)
+let nc_j = json("{\"k\": \"v\", \"n\": 7}");
+print(nc_j["k"]);
+print(str(get(nc_j, "k")));
+let nc_maps = [{"a": 1}, {"a": 2}];
+print(nc_maps[0]);
+print(nc_maps[0] == {"a": 1});
+print(len(nc_maps[0]));
+
 warmup();
 main();

@@ -283,6 +283,13 @@ static void arm_scope_push(CG *g, const char *name, Type *ty);
 static void arm_scope_clear(CG *g);
 static Type *infer_node_type(CG *g, Node *n);
 static Type *for_in_elem_type(CG *g, Node *n);
+/* from llvm_cg_scan.inc: the one value shape a struct's fields share, or
+ * NULL when they disagree. The get() scan case and emit_get_call
+ * (llvm_cg_call.inc) both answer with it, so it is forward-declared here
+ * for the call sites that precede the .inc (static: this header is only
+ * ever included by llvm_codegen.c, the one translation unit that defines
+ * it). */
+static Type *struct_common_shape(Type *t);
 static LLVMValueRef gvar_make(CG *g, const char *name, Type *ty);
 static void scan_stmt(CG *g, Node *n);
 static void scan_block(CG *g, Node *blk);

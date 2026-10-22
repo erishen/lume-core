@@ -353,6 +353,30 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_float(i64)\n");
     EMIT(g, "declare i64 @lume_bi_len_s(i8*)\n");
 
+    /* String tools (interpreter parity, builtins_str.c / builtins.c): string
+     * parameters keep these out of the numeric table above, so they are
+     * declared here and dispatched by name in cg_builtin. split/str_match
+     * hand back a list (i8* to a LumeList), join/replace/substr a string. */
+    EMIT(g, "declare i8* @lume_bi_upper(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_lower(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_capitalize(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_trim(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_contains(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_split(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_join(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_replace(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_substr(i8*, i64, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_str_match(i8*, i8*)\n");
+    EMIT(g, "declare double @lume_bi_exp(double)\n");
+    EMIT(g, "declare double @lume_bi_log(double)\n");
+    EMIT(g, "declare i64 @lume_bi_parse_i64(i8*)\n");
+    EMIT(g, "declare double @lume_bi_parse_double(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_bool_s(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_bool_i(i64)\n");
+    EMIT(g, "declare i64 @lume_bi_bool_f(double)\n");
+    EMIT(g, "declare i64 @lume_bi_bool_obj(i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_bool_slot(i8*)\n");
+
     /* Lists and maps are heap objects the same shape the interpreter hands
      * out, so they travel as opaque pointers. */
     /* One declaration per helper src/rt.c defines. A missing line here does not
@@ -388,6 +412,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_map_get_s(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_get_obj(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_map_get_any(i8*, i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_map_get_slot(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_map_has(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_str_eq(i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_value_eq(i8*, i8*)\n");   /* structural, SPEC 1.8 */
@@ -397,6 +422,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i64 @lume_index_int(i8*, i64, i8*)\n");
     EMIT(g, "declare double @lume_index_float(i8*, i64, i8*)\n");
     EMIT(g, "declare i8* @lume_index_ptr(i8*, i64, i8*)\n");
+    EMIT(g, "declare i8* @lume_index_slot(i8*, i64, i8*)\n");
     EMIT(g, "declare i64 @lume_index_failed()\n");
     EMIT(g, "declare void @lume_index_error(i8*)\n");
     EMIT(g, "declare i8* @lume_map_key_at(i8*, i64)\n");
@@ -591,6 +617,20 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
                 ERRV(g, "line %zu: get() default is %s but key %s holds %s",
                      line, ty_str(d.ty), knode->as.lit.text, ty_str(shape));
             fn = sfn; rty = srty;
+        } else if (m.ty && m.ty->kind == TY_STRUCT && !m.ty->name &&
+                   struct_common_shape(m.ty) == NULL && !d.v) {
+            /* Undeclared struct receiver (a list-of-maps literal element,
+             * a str_match row, a json-parsed row) with no default: no static
+             * field the typed getters could read and no default to infer the
+             * flavour from, so this is the interpreter's dynamic read. Hand
+             * back a boxed slot (any) -- lume_map_get_slot -- the same boxed
+             * representation for-in and get-on-any use. When a default IS
+             * present the next branch picks the typed getter by the default's
+             * type, which is the correct (and verifier-clean) path for a
+             * literal struct like `{ "count": 7 }` whose anon type carries no
+             * field names natively. */
+            fn = "lume_map_get_slot";
+            rty = type_prim(TY_ANY);
         } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
             const char *dfn; Type *drty;
             if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
@@ -823,7 +863,15 @@ static Val cg_builtin(CG *g, Node *n)
         Val *av = (Val *)xmalloc((size_t)argc * sizeof *av);
         for (int i = 0; i < argc; i++) av[i] = cg_expr(g, n->as.call.args[i]);
 
-        int isf = av[0].ty && av[0].ty->kind == TY_FLOAT && b->fn_f;
+        int isf = av[0].ty && b->fn_f &&
+                  (av[0].ty->kind == TY_FLOAT ||
+                   (b->fn_i == NULL && av[0].ty->kind == TY_INT));
+        /* A float-only builtin (sqrt/exp/floor/...) has no int flavour, and
+         * the interpreter's arg_num accepts either kind (native_sqrt tests
+         * IS_NUM), so an int operand takes the float one — refusing
+         * `sqrt(4)` while the interpreter answers 2 was a three-way split.
+         * Only INT promotes: a string still falls through to the
+         * "does not apply" error below rather than reaching coerce(). */
         const char *fn  = isf ? b->fn_f  : b->fn_i;
         const char *pty = isf ? b->pty_f : b->pty_i;
         const char *rty = isf ? b->rty_f : b->rty_i;
@@ -1540,19 +1588,32 @@ static Val cg_builtin(CG *g, Node *n)
             rty = "i8*"; rt = type_prim(TY_STRING);
         } else if (strcmp(bname, "int") == 0) {
             /* Identity on an int (the interpreter's IS_NUM branch, and the
-             * shape int(m, "k") takes on an int field); only a float needs
-             * the truncating conversion. */
+             * shape int(m, "k") takes on an int field); a float truncates;
+             * a string parses a leading number like the interpreter's
+             * atoll on the direct cast path ("12x" -> 12, "abc" -> 0). */
             if (a.ty && a.ty->kind == TY_INT) return a;
-            if (!a.ty || a.ty->kind != TY_FLOAT)
-                ERRV(g, "line %zu: int() only converts a float here", n->line);
-            fn = "@lume_bi_int"; pty = "double"; rty = "i64";
-            rt = type_prim(TY_INT);
+            if (a.ty && a.ty->kind == TY_STRING) {
+                fn = "@lume_bi_parse_i64"; pty = "i8*"; rty = "i64";
+                rt = type_prim(TY_INT);
+            } else if (a.ty && a.ty->kind == TY_FLOAT) {
+                fn = "@lume_bi_int"; pty = "double"; rty = "i64";
+                rt = type_prim(TY_INT);
+            } else {
+                ERRV(g, "line %zu: int() only converts a float or a string here",
+                     n->line);
+            }
         } else {
             if (a.ty && a.ty->kind == TY_FLOAT) return a;
-            if (!a.ty || a.ty->kind != TY_INT)
-                ERRV(g, "line %zu: float() only converts an int here", n->line);
-            fn = "@lume_bi_float"; pty = "i64"; rty = "double";
-            rt = type_prim(TY_FLOAT);
+            if (a.ty && a.ty->kind == TY_STRING) {
+                fn = "@lume_bi_parse_double"; pty = "i8*"; rty = "double";
+                rt = type_prim(TY_FLOAT);
+            } else if (a.ty && a.ty->kind == TY_INT) {
+                fn = "@lume_bi_float"; pty = "i64"; rty = "double";
+                rt = type_prim(TY_FLOAT);
+            } else {
+                ERRV(g, "line %zu: float() only converts an int or a string here",
+                     n->line);
+            }
         }
 
         char tmp[48];
@@ -1588,6 +1649,228 @@ static Val cg_builtin(CG *g, Node *n)
         }
         EMIT(g, "  call void @lume_list_sort(i8* %s)\n", a.v);
         return a;   /* sorted in place; the same list is returned */
+    }
+
+    /* ---- string tools (interpreter parity, builtins_str.c) ----
+     * String parameters keep every one of these out of the numeric
+     * BUILTINS table (that path coerces its arguments to i64/double), so
+     * each gets its own branch, the same shape read_file/env() use. The
+     * helpers live in src/rt.c and mirror the interpreter's native_*
+     * contracts: ASCII-only case mapping, byte-based split/substr, a
+     * 16 MiB result ceiling on replace/join, and str_match's ERE
+     * findall -> [{text, index, groups}]. */
+    if (strcmp(bname, "upper") == 0 || strcmp(bname, "lower") == 0 ||
+        strcmp(bname, "capitalize") == 0 || strcmp(bname, "trim") == 0) {
+        if (argc < 1)
+            ERRV(g, "line %zu: %s() needs a string", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: %s() needs a string", n->line, bname);
+        const char *fn = strcmp(bname, "upper") == 0 ? "lume_bi_upper"
+                       : strcmp(bname, "lower") == 0 ? "lume_bi_lower"
+                       : strcmp(bname, "capitalize") == 0
+                             ? "lume_bi_capitalize" : "lume_bi_trim";
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @%s(i8* %s)", fn, a.v));
+        free(a.v);
+        if (!r.v) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return r;
+    }
+
+    if (strcmp(bname, "contains") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: contains() needs (s, sub)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: contains() needs two strings", n->line);
+        char *iv = emit_instrf(g, type_prim(TY_INT),
+                               "call i64 @lume_bi_contains(i8* %s, i8* %s)",
+                               a.v, b.v);
+        free(a.v); free(b.v);
+        if (!iv) ERRV(g, "line %zu: contains() failed", n->line);
+        char *bv = emit_instrf(g, type_prim(TY_BOOL), "trunc i64 %s to i1", iv);
+        free(iv);
+        if (!bv) ERRV(g, "line %zu: contains() failed", n->line);
+        return val_take(type_prim(TY_BOOL), bv);
+    }
+
+    if (strcmp(bname, "split") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: split() needs (s, sep)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: split() needs two strings", n->line);
+        /* The result is a list of strings: typing the element kind keeps
+         * `for s in split(...)` readable through lume_list_at_s. */
+        Val r = val_take(type_list(type_prim(TY_STRING)),
+                         emit_instrf(g, type_list(type_prim(TY_STRING)),
+                                     "call i8* @lume_bi_split(i8* %s, i8* %s)",
+                                     a.v, b.v));
+        free(a.v); free(b.v);
+        if (!r.v) ERRV(g, "line %zu: split() failed", n->line);
+        return r;
+    }
+
+    if (strcmp(bname, "join") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: join() needs (list, sep)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_LIST || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: join() needs a list and a string", n->line);
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @lume_bi_join(i8* %s, i8* %s)",
+                                     a.v, b.v));
+        free(a.v); free(b.v);
+        if (!r.v) ERRV(g, "line %zu: join() failed", n->line);
+        return r;
+    }
+
+    if (strcmp(bname, "replace") == 0) {
+        if (argc < 3)
+            ERRV(g, "line %zu: replace() needs (s, from, to)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = cg_expr(g, n->as.call.args[2]);
+        if (!a.v || !b.v || !c.v || !a.ty || !b.ty || !c.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING ||
+            c.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: replace() needs three strings", n->line);
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @lume_bi_replace(i8* %s, i8* %s, i8* %s)",
+                                     a.v, b.v, c.v));
+        free(a.v); free(b.v); free(c.v);
+        if (!r.v) ERRV(g, "line %zu: replace() failed", n->line);
+        return r;
+    }
+
+    if (strcmp(bname, "substr") == 0) {
+        if (argc < 2 || argc > 3)
+            ERRV(g, "line %zu: substr() needs (s, start[, len])", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL, 0 };
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_INT ||
+            (argc == 3 && (!c.v || !c.ty || c.ty->kind != TY_INT)))
+            ERRV(g, "line %zu: substr() needs a string and integer bounds",
+                 n->line);
+        /* The two-argument form spells len as -1, which the helper reads
+         * as "to the end of the string" — the interpreter's default. */
+        Val r = val_take(type_prim(TY_STRING),
+                         emit_instrf(g, type_prim(TY_STRING),
+                                     "call i8* @lume_bi_substr(i8* %s, i64 %s, i64 %s)",
+                                     a.v, b.v, argc == 3 ? c.v : "-1"));
+        free(a.v); free(b.v); free(c.v);
+        if (!r.v) ERRV(g, "line %zu: substr() failed", n->line);
+        return r;
+    }
+
+    if (strcmp(bname, "str_match") == 0 || strcmp(bname, "regex") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: %s() needs (pattern, text)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: %s() needs two strings", n->line, bname);
+        /* A list of match maps, each {text, index, groups}. */
+        Val r = val_take(type_list(type_anon_struct()),
+                         emit_instrf(g, type_list(type_anon_struct()),
+                                     "call i8* @lume_bi_str_match(i8* %s, i8* %s)",
+                                     a.v, b.v));
+        free(a.v); free(b.v);
+        if (!r.v) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return r;
+    }
+
+    if (strcmp(bname, "exp") == 0 || strcmp(bname, "log") == 0 ||
+        strcmp(bname, "ln") == 0) {
+        if (argc < 1)
+            ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty ||
+            (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+        a = coerce(g, type_prim(TY_FLOAT), a, n->line);
+        if (!a.v) ERRV(g, "line %zu: %s() failed to lower", n->line, bname);
+        /* exp has no domain check; log/ln refuse a non-positive argument
+         * through the error channel, like the interpreter's native_log. */
+        const char *fn = strcmp(bname, "exp") == 0 ? "lume_bi_exp"
+                                                   : "lume_bi_log";
+        Val r = val_take(type_prim(TY_FLOAT),
+                         emit_instrf(g, type_prim(TY_FLOAT),
+                                     "call double @%s(double %s)", fn, a.v));
+        free(a.v);
+        if (!r.v) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return r;
+    }
+
+    /* bool(x) — value_truthy (value.c) by static type: null and "" are
+     * false, 0/0.0 false, an empty container false, everything else true.
+     * An any value dispatches on its runtime tag (lume_bi_bool_slot), and
+     * bool(m, "k") is the same accessor desugar str()/int()/float() take
+     * (the interpreter checks value_from_map first, builtins.c). */
+    if (strcmp(bname, "bool") == 0) {
+        if (argc < 1)
+            ERRV(g, "line %zu: bool() needs an argument", n->line);
+        Type *a0t = infer_node_type(g, n->as.call.args[0]);
+        Type *a1t = argc >= 2 ? infer_node_type(g, n->as.call.args[1]) : NULL;
+        bool accessor = argc >= 2 && a0t && a1t && a1t->kind == TY_STRING &&
+                        (a0t->kind == TY_STRUCT || a0t->kind == TY_ANY);
+        Val a = accessor
+                    ? emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
+                                    argc == 3 ? n->as.call.args[2] : NULL,
+                                    n->line)
+                    : cg_expr(g, n->as.call.args[0]);
+        if (!a.v)
+            ERRV(g, "line %zu: bool() failed to lower", n->line);
+        if (a.ty && a.ty->kind == TY_BOOL) return a;    /* already i1 */
+        if (a.ty && a.ty->kind == TY_NULL)
+            return val_make(type_prim(TY_BOOL), "false");
+        const char *fn = NULL, *pty = NULL;
+        switch (a.ty ? a.ty->kind : TY_ANY) {
+        case TY_INT:    fn = "lume_bi_bool_i";    pty = "i64";    break;
+        case TY_FLOAT:  fn = "lume_bi_bool_f";    pty = "double"; break;
+        case TY_STRING: fn = "lume_bi_bool_s";    pty = "i8*";    break;
+        case TY_LIST:   fn = "lume_bi_bool_obj";  pty = "i8*";    break;
+        case TY_STRUCT: fn = "lume_bi_bool_obj";  pty = "i8*";    break;
+        case TY_ANY:    fn = "lume_bi_bool_slot"; pty = "i8*";    break;
+        default:
+            ERRV(g, "line %zu: bool() cannot convert this value", n->line);
+        }
+        if (a.ty && a.ty->name) {
+            /* A named struct is a raw GEP record with no map header, so
+             * box it first — the length the helper reads is then the
+             * field count, the interpreter's map truthiness. */
+            struct_addr(g, &a);
+            Val m = emit_struct_to_map(g, a.v, a.ty);
+            if (!m.v) {
+                free(a.v);
+                ERRV(g, "line %zu: bool() cannot convert struct '%s'",
+                     n->line, a.ty->name);
+            }
+            free(a.v);
+            a.v = m.v;
+            a.ty = m.ty;
+        }
+        char *iv = emit_instrf(g, type_prim(TY_INT), "call i64 @%s(%s %s)",
+                               fn, pty, a.v);
+        free(a.v);
+        if (!iv) ERRV(g, "line %zu: bool() failed", n->line);
+        char *bv = emit_instrf(g, type_prim(TY_BOOL), "trunc i64 %s to i1", iv);
+        free(iv);
+        if (!bv) ERRV(g, "line %zu: bool() failed", n->line);
+        return val_take(type_prim(TY_BOOL), bv);
     }
 
     return (Val){ NULL, NULL, 0 };

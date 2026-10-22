@@ -13,6 +13,7 @@
  */
 
 #include <math.h>
+#include <regex.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -792,14 +793,25 @@ const char *lume_list_param_cstr(const LumeList *l, int64_t i)
 }
 
 /* Print a single boxed value the way the interpreter would — used by
- * print(x) when x is an `any`-typed for-in variable. NULL prints the bare
- * word "null" (matching lume_print_null and the interpreter). Reuses
- * slot_emit(), which renders one LumeSlot by its tag (scalars, escaped
- * strings, and nested containers alike), so native and interpreter agree
- * byte-for-byte. */
+ * print(x) when x is an `any`-typed value (a for-in loop variable, a
+ * get()/index read off a json() tree or a str_match row). NULL prints the
+ * bare word "null" (matching lume_print_null and the interpreter).
+ * Reuses slot_emit(), which renders one LumeSlot by its tag (scalars,
+ * escaped strings, and nested containers alike), so native and
+ * interpreter agree byte-for-byte.
+ *
+ * A top-level *string* slot is the one place slot_emit's quoting is
+ * wrong for print(): the interpreter's print() of a string value writes
+ * the bare string, and only a string *inside* a container keeps its
+ * quotes (that is what slot_to_json / container_body implement). Going
+ * through slot_emit here printed `"12"` for `print(get(m, "text"))`
+ * where the interpreter printed `12` — the same rule str() already
+ * applies through lume_slot_str_scalar. */
 int64_t lume_print_slot(const LumeSlot *s)
 {
     if (!s) return emit("null\n");
+    if (s->tag == LUME_SLOT_STR)
+        return emit(s->str ? s->str : "") + emit("\n");
     int n = slot_emit(*s);
     return n + emit("\n");
 }
@@ -1126,6 +1138,20 @@ const char *lume_map_at_strict_str(const LumeMap *m, const char *k, int *ok)
  * flag and calls lume_index_error(). A negative list index counts from the end.
  */
 
+/* The boxed shape of null: an OBJ slot with no payload. Every "absent"
+ * answer in the slot readers hands one back, so print() renders the bare
+ * word "null" the way the interpreter's null does — a NULL pointer would
+ * print the same word but could not be told from a failed read by a
+ * caller that wants to keep going (the emitters' strictness check reads
+ * g_index_failed, not the pointer). */
+static LumeSlot *null_slot_box(void)
+{
+    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+    memset(box, 0, sizeof *box);
+    box->tag = LUME_SLOT_OBJ;
+    return box;
+}
+
 int lume_is_map(void *c)
 {
     return c && ((const LumeList *)c)->kind == LUME_CTR_MAP;
@@ -1169,6 +1195,43 @@ void *lume_index_ptr(void *c, int64_t idx, const char *key)
     if (((const LumeList *)c)->kind == LUME_CTR_LIST)
         return lume_list_at_strict_ptr((const LumeList *)c, idx);
     return lume_map_at_strict_ptr((const LumeMap *)c, key);
+}
+
+/* The slot-flavoured sibling: `l[0]` / `m["k"]` whose result the emitter
+ * types as `any` — a list literal whose elements share no static shape
+ * (`[{"a":1},{"a":2}]`), so list_at_fn has no accessor for them and the
+ * int/pointer flavours would read the element as one scalar kind: an int
+ * read answers 0 for a string field and the raw pointer for a container
+ * one, neither of which is the value. This hands back a boxed copy of the
+ * slot itself, whatever it holds — exactly what a for-in over the same
+ * list gives its loop variable (lume_list_at_slot), and what every
+ * downstream reader of an `any` (print, len, get, ==, str) expects.
+ *
+ * The text emitter used to route an any element through lume_index_int
+ * here and then pass the i64 result where an i8* was declared, which
+ * assembled into reading the element's integer payload as a pointer: the
+ * libLLVM emitter picked lume_index_ptr and got away with the raw
+ * container only because the slot readers below tolerate one. An absent
+ * element sets the failure flag like its siblings and answers the null
+ * slot. */
+void *lume_index_slot(void *c, int64_t idx, const char *key)
+{
+    g_index_failed = 0;
+    if (!c) { g_index_failed = 1; return null_slot_box(); }
+    if (((const LumeList *)c)->kind == LUME_CTR_LIST) {
+        const LumeList *l = (const LumeList *)c;
+        if (idx < 0) idx += l->len;
+        if (idx < 0 || idx >= l->len) { g_index_failed = 1; return null_slot_box(); }
+        LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+        *box = l->items[idx];
+        return box;
+    }
+    const LumeMap *m = (const LumeMap *)c;
+    int64_t i = map_find(m, key);
+    if (i < 0) { g_index_failed = 1; return null_slot_box(); }
+    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+    *box = m->vals[i];
+    return box;
 }
 
 
@@ -1273,6 +1336,32 @@ void *lume_map_get_any(const LumeMap *m, const char *k, void *dflt)
     return NULL;
 }
 
+/* get(m, k) with no default on a map whose static shape declares no
+ * common value type — a str_match row, a json-parsed row, a map literal
+ * the scan side could not type. This is the interpreter's dynamic read:
+ * the value comes back as whatever the cell holds, which for the native
+ * side means a boxed copy of the slot, the same box lume_slot_get_any
+ * hands back for an any receiver, so every downstream reader (print,
+ * len, get, ==, str) treats the two identically. The typed getters above
+ * would answer 0 for a string field and the raw pointer for a container
+ * one — `get(str_match("[0-9]+", "a12")[0], "text")` read 0 where the
+ * interpreter read "12".
+ *
+ * An absent key reads as the null slot, which is what the interpreter
+ * answers for it (the typed getters answer their flavour's zero, the
+ * documented phase-1 difference a three-argument default exists to
+ * close). The third parameter exists only so the call site can pass a
+ * default the way it does for every other flavour; it is ignored here. */
+void *lume_map_get_slot(const LumeMap *m, const char *k, void *dflt)
+{
+    (void)dflt;
+    int64_t i = map_find(m, k);
+    if (i < 0) return null_slot_box();
+    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+    *box = m->vals[i];
+    return box;
+}
+
 /* Does this Result hold an error? `?` branches on it right after the call and
  * before the payload is read, which is the order the interpreter uses
  * (interp.c's propagate branch looks for "err" first and only then reads "ok").
@@ -1310,6 +1399,21 @@ static int ctr_kind(const void *p)
 {
     if (!p) return -1;
     return *(const int *)((const char *)p + 2 * sizeof(int64_t));
+}
+
+/* Is this pointer a boxed LumeSlot* rather than a raw container or a
+ * string? A slot's `tag` and a container's `kind` sit at the same offset
+ * — both follow two int64 fields — and the two value sets are disjoint
+ * (slot tags are 0..4, container kinds 'LI'/'MA'), so one read tells them
+ * apart. An `any` value travels either way: json(), for-in and get-on-any
+ * hand back a box, an index read hands back the raw container, and
+ * lume_any_eq has to compare across both. */
+static int ptr_is_slot(const void *p)
+{
+    if (!p) return 0;
+    int t = *(const int *)((const char *)p + 2 * sizeof(int64_t));
+    return t == LUME_SLOT_INT || t == LUME_SLOT_FLOAT || t == LUME_SLOT_STR ||
+           t == LUME_SLOT_BOOL || t == LUME_SLOT_OBJ;
 }
 
 static int is_ctr_kind(int k)
@@ -1369,21 +1473,71 @@ int64_t lume_value_eq(void *a, void *b)
     return 1;
 }
 
-/* `==` where one side is statically `any`. The any is an opaque i8* with no
- * tag of its own, so the kind probe decides: two containers compare
- * structurally (lume_value_eq), a container against a non-container is never
- * equal, and otherwise both sides are treated as strings — which is what an
- * any holding a string needs, and what the interpreter's values_equal does
- * for the same pair. */
+/* `==` where one side is statically `any`. An any is an opaque i8* with
+ * no tag of its own, and it may travel as a boxed LumeSlot* (json(),
+ * for-in, get-on-any) or as the raw container/string pointer an index
+ * read hands back, so each side is first resolved to the value it
+ * carries. Two containers then compare structurally (lume_value_eq), two
+ * strings by bytes (lume_str_eq — which is what an any holding a string
+ * needs, and what the interpreter's values_equal does for the same
+ * pair), two scalars by tag and payload, a null payload by null, and
+ * anything across those kinds is never equal. */
 int64_t lume_any_eq(void *a, void *b)
 {
     if (a == b) return 1;
-    if (!a || !b) return 0;
-    int ka = ctr_kind(a), kb = ctr_kind(b);
-    int ca = is_ctr_kind(ka), cb = is_ctr_kind(kb);
-    if (ca != cb) return 0;          /* container vs non-container */
-    if (ca) return lume_value_eq(a, b);
-    return lume_str_eq((const char *)a, (const char *)b);
+    const LumeSlot *sa = ptr_is_slot(a) ? (const LumeSlot *)a : NULL;
+    const LumeSlot *sb = ptr_is_slot(b) ? (const LumeSlot *)b : NULL;
+    /* Resolve each side to (tag, payload). A boxed slot carries its own
+     * tag; a raw pointer is a container when it says so at the kind
+     * offset and a string otherwise (the emitters only ever hand a raw
+     * any out as one of those two). */
+    int ta, tb;
+    void *pa, *pb;
+    if (sa) {
+        ta = sa->tag;
+        pa = (void *)(intptr_t)sa->num;
+    } else if (a && is_ctr_kind(ctr_kind(a))) {
+        ta = LUME_SLOT_OBJ;
+        pa = a;
+    } else {
+        ta = LUME_SLOT_STR;
+        pa = a;                       /* the string itself */
+    }
+    if (sb) {
+        tb = sb->tag;
+        pb = (void *)(intptr_t)sb->num;
+    } else if (b && is_ctr_kind(ctr_kind(b))) {
+        tb = LUME_SLOT_OBJ;
+        pb = b;
+    } else {
+        tb = LUME_SLOT_STR;
+        pb = b;
+    }
+    if (ta != tb) return 0;
+    switch (ta) {
+    case LUME_SLOT_OBJ:
+        /* A null payload on either side is the value null: two nulls are
+         * equal, a null never equals a live container. */
+        if (!pa || !pb) return pa == pb;
+        return lume_value_eq(pa, pb);
+    case LUME_SLOT_STR: {
+        const char *xa = sa ? (sa->str ? sa->str : "") : (const char *)pa;
+        const char *xb = sb ? (sb->str ? sb->str : "") : (const char *)pb;
+        return lume_str_eq(xa, xb);
+    }
+    case LUME_SLOT_INT:
+    case LUME_SLOT_BOOL:
+        return sa && sb && sa->num == sb->num;
+    case LUME_SLOT_FLOAT: {
+        if (!sa || !sb) return 0;
+        double da, db;
+        memcpy(&da, &sa->num, sizeof da);
+        memcpy(&db, &sb->num, sizeof db);
+        return da == db;
+    }
+    default:
+        return 0;
+    }
 }
 
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)
@@ -1731,6 +1885,345 @@ char *lume_slot_str_scalar(const LumeSlot *s)
 }
 
 /* ------------------------------------------------------------------ *
+ * String tools and scalar helpers (interpreter parity, 2026-10-21).
+ *
+ * The interpreter's implementations live in builtins_str.c / builtins.c /
+ * builtins_math.c; these are the native-runtime counterparts the two
+ * compile backends lower onto. Same contracts, plain scalars only:
+ *   - case mapping is ASCII-only, exactly like the interpreter's
+ *     native_upper/lower/capitalize (non-ASCII bytes pass through);
+ *   - split/substr are byte-based, and substr's negative start counts
+ *     from the end;
+ *   - replace/join keep the interpreter's 16 MiB result ceiling;
+ *   - str_match/regex are POSIX ERE findall over the same 10-slot
+ *     regmatch_t window, yielding [{text, index, groups}] maps;
+ *   - int("42")/float("1.5") parse a leading number like the
+ *     interpreter's atoll/atof on the direct (non-accessor) path — a
+ *     non-numeric string reads as 0;
+ *   - bool(x) is value_truthy: null -> false, "" -> false, 0 -> false,
+ *     an empty list/map -> false, everything else -> true.
+ * ------------------------------------------------------------------ */
+
+/* Result ceiling shared with replace()/join() in the interpreter. */
+#define LUME_STR_CAP ((size_t)16u << 20)
+
+static char *case_map(const char *s, int dir)
+{
+    if (!s) return dup_str("");
+    size_t n = strlen(s);
+    char *p = malloc(n + 1);
+    if (!p) return NULL;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (dir > 0 && c >= 'a' && c <= 'z') c = (char)(c - 32);
+        else if (dir < 0 && c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        p[i] = c;
+    }
+    p[n] = '\0';
+    return p;
+}
+
+char *lume_bi_upper(const char *s) { return case_map(s, 1); }
+char *lume_bi_lower(const char *s) { return case_map(s, -1); }
+
+/* capitalize(s): first ASCII char uppercased, the rest untouched (the
+ * interpreter does NOT lowercase the tail). */
+char *lume_bi_capitalize(const char *s)
+{
+    if (!s) return dup_str("");
+    char *p = case_map(s, 0);
+    if (p && p[0] >= 'a' && p[0] <= 'z') p[0] = (char)(p[0] - 32);
+    return p;
+}
+
+static int rt_is_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+           c == '\f' || c == '\v';
+}
+
+char *lume_bi_trim(const char *s)
+{
+    if (!s) return dup_str("");
+    size_t n = strlen(s), a = 0;
+    while (a < n && rt_is_space(s[a])) a++;
+    size_t b = n;
+    while (b > a && rt_is_space(s[b - 1])) b--;
+    char *p = malloc(b - a + 1);
+    if (!p) return NULL;
+    memcpy(p, s + a, b - a);
+    p[b - a] = '\0';
+    return p;
+}
+
+/* contains(s, sub): an empty sub is contained in everything, like the
+ * interpreter's native_contains. */
+int64_t lume_bi_contains(const char *s, const char *sub)
+{
+    if (!sub || !*sub) return 1;
+    if (!s) return 0;
+    return strstr(s, sub) != NULL;
+}
+
+/* split(s, sep): byte-based, strstr-driven. An empty sep yields [s]
+ * (the interpreter's rule), and a trailing separator leaves a final
+ * empty piece ("a," -> ["a", ""]). */
+LumeList *lume_bi_split(const char *s, const char *sep)
+{
+    LumeList *out = lume_list_new();
+    if (!out) return NULL;
+    if (!s) s = "";
+    size_t flen = sep ? strlen(sep) : 0;
+    if (flen == 0) {
+        lume_list_push_s(out, dup_str(s));
+        return out;
+    }
+    const char *p = s, *end = s + strlen(s);
+    for (;;) {
+        const char *hit = strstr(p, sep);
+        if (!hit) {
+            lume_list_push_s(out, dup_str(p));
+            return out;
+        }
+        size_t n = (size_t)(hit - p);
+        char *piece = malloc(n + 1);
+        if (!piece) return out;
+        memcpy(piece, p, n);
+        piece[n] = '\0';
+        lume_list_push_s(out, piece);
+        p = hit + flen;
+        if (p > end) p = end;
+    }
+}
+
+/* join(list, sep): the interpreter's str_of_value per element — strings
+ * verbatim, ints %lld, floats %g, bools true/false, containers as the
+ * same compact JSON print() renders. Same 16 MiB ceiling. */
+char *lume_bi_join(const LumeList *l, const char *sep)
+{
+    JsonBuf b = { 0, 0, 0 };
+    if (!l) return dup_str("");
+    size_t flen = sep ? strlen(sep) : 0;
+    for (int64_t i = 0; i < l->len; i++) {
+        if (i && flen) {
+            if (b.len + flen > LUME_STR_CAP) goto too_big;
+            jb_puts(&b, sep);
+        }
+        LumeSlot s = l->items[i];
+        switch (s.tag) {
+        case LUME_SLOT_STR:
+            if (s.str) {
+                size_t n = strlen(s.str);
+                if (b.len + n > LUME_STR_CAP) goto too_big;
+                jb_puts(&b, s.str);
+            }
+            break;
+        case LUME_SLOT_FLOAT:
+        case LUME_SLOT_BOOL:
+        case LUME_SLOT_OBJ:
+        case LUME_SLOT_INT:
+        default:
+            /* Scalars render exactly like the interpreter's str_of_value
+             * (%g for floats, true/false for bools, %lld for ints), and a
+             * container as compact JSON. slot_to_json quotes a string, so
+             * the STR tag is handled above instead. */
+            slot_to_json(&b, s);
+            break;
+        }
+    }
+    jb_putc(&b, '\0');
+    return b.p ? b.p : dup_str("");
+too_big:
+    free(b.p);
+    lume_error_set("join() result too large");
+    return dup_str("");
+}
+
+/* replace(s, from, to): literal global replace, byte-exact like the
+ * interpreter's native_replace. An empty `from` returns s unchanged. */
+char *lume_bi_replace(const char *s, const char *from, const char *to)
+{
+    if (!s) s = "";
+    if (!from || !*from) return dup_str(s);
+    if (!to) to = "";
+    size_t slen = strlen(s), flen = strlen(from), tlen = strlen(to);
+    JsonBuf b = { 0, 0, 0 };
+    const char *p = s, *end = s + slen;
+    int matched = 0;
+    while (p < end) {
+        if ((size_t)(end - p) >= flen && memcmp(p, from, flen) == 0) {
+            if (b.len + tlen > LUME_STR_CAP) goto too_big;
+            jb_puts(&b, to);
+            p += flen;
+            matched = 1;
+        } else {
+            if (b.len + 1 > LUME_STR_CAP) goto too_big;
+            jb_putc(&b, *p);
+            p++;
+        }
+    }
+    if (!matched) { free(b.p); return dup_str(s); }
+    jb_putc(&b, '\0');
+    return b.p ? b.p : dup_str("");
+too_big:
+    free(b.p);
+    lume_error_set("replace() result too large");
+    return dup_str(s);
+}
+
+/* substr(s, start, len): byte-based; a negative start counts from the
+ * end and both bounds clamp. len < 0 means "to the end of the string"
+ * — the spelling the emitters use for the two-argument form, where the
+ * interpreter defaults len to n - start. */
+char *lume_bi_substr(const char *s, int64_t start, int64_t len)
+{
+    if (!s) return dup_str("");
+    int64_t n = (int64_t)strlen(s);
+    if (start < 0) start = n + start;
+    if (start < 0) start = 0;
+    if (start > n) start = n;
+    if (len < 0 || start + len > n) len = n - start;
+    char *p = malloc((size_t)len + 1);
+    if (!p) return NULL;
+    memcpy(p, s + start, (size_t)len);
+    p[len] = '\0';
+    return p;
+}
+
+/* str_match(pattern, text) / regex(pattern, text): POSIX ERE findall.
+ * Each hit becomes {text, index, groups} — groups is the list of
+ * capture groups 1..9, cut at the first unmatched one, exactly like the
+ * interpreter's native_str_match (builtins.c). A zero-width match ends
+ * the scan; an invalid pattern goes through the error channel so
+ * try(str_match, ...) reports it like the interpreter's VM error. */
+LumeList *lume_bi_str_match(const char *pat, const char *txt)
+{
+    LumeList *out = lume_list_new();
+    if (!out) return NULL;
+    if (!pat) pat = "";
+    if (!txt) txt = "";
+    regex_t re;
+    if (regcomp(&re, pat, REG_EXTENDED) != 0) {
+        lume_error_set("str_match(): invalid regex pattern");
+        return out;
+    }
+    const char *p = txt;
+    regmatch_t m[10];               /* m[0] = whole match, m[1..9] = groups */
+    while (regexec(&re, p, 10, m, 0) == 0) {
+        int so = m[0].rm_so, eo = m[0].rm_eo;
+        if (eo <= so) break;        /* zero-width match: stop, like the interpreter */
+        size_t start = (size_t)(p - txt) + (size_t)so;
+        size_t mlen = (size_t)eo - (size_t)so;
+        LumeMap *mo = lume_map_new();
+        char *text = malloc(mlen + 1);
+        if (!mo || !text) { if (mo) free(mo); break; }
+        memcpy(text, txt + start, mlen);
+        text[mlen] = '\0';
+        lume_map_put_s(mo, "text", text);
+        lume_map_put_i(mo, "index", (int64_t)start);
+        LumeList *gs = lume_list_new();
+        for (int gi = 1; gi < 10; gi++) {
+            if (m[gi].rm_so == -1) break;
+            int gso = m[gi].rm_so, geo = m[gi].rm_eo;
+            size_t glen = (size_t)geo - (size_t)gso;
+            char *g = malloc(glen + 1);
+            if (!g) break;
+            memcpy(g, p + gso, glen);
+            g[glen] = '\0';
+            lume_list_push_s(gs, g);
+        }
+        lume_map_put_obj(mo, "groups", gs);
+        lume_list_push_obj(out, mo);
+        p += eo;
+        if (*p == '\0') break;
+    }
+    regfree(&re);
+    return out;
+}
+
+double lume_bi_exp(double x) { return exp(x); }
+
+/* log(x) / ln(x): the interpreter refuses a non-positive argument with
+ * a VM error, so the native flavour goes through the error channel —
+ * inside try() it fills { err: ... }, outside it prints and exits. */
+double lume_bi_log(double x)
+{
+    if (x <= 0.0) {
+        lume_error_set("log(): argument must be positive");
+        return 0.0;
+    }
+    return log(x);
+}
+
+/* int("42") / float("1.5"): the interpreter's direct (non-accessor) cast
+ * path is atoll/atof — a leading number parses, anything else reads as
+ * 0 ("12x" -> 12, "abc" -> 0, "  7 " -> 7). The accessor path
+ * int(m, "k", d) is stricter (whole-string parse, else the default) and
+ * stays on the get() desugar, where the default is applied by
+ * lume_map_get_* instead. */
+int64_t lume_bi_parse_i64(const char *s)
+{
+    return s ? (int64_t)strtoll(s, NULL, 10) : 0;
+}
+
+double lume_bi_parse_double(const char *s)
+{
+    return s ? strtod(s, NULL) : 0.0;
+}
+
+/* bool(x) — value_truthy per static type, so the emitters pick the
+ * flavour from the operand's type the way len() does. The slot flavour
+ * dispatches on the runtime tag for an `any` (json()) value. */
+int64_t lume_bi_bool_s(const char *s) { return s && *s; }
+int64_t lume_bi_bool_i(int64_t v) { return v != 0; }
+int64_t lume_bi_bool_f(double v) { return v != 0.0; }
+int64_t lume_bi_bool_obj(const void *p)
+{
+    if (!p) return 0;
+    return ((const LumeList *)p)->len > 0;
+}
+int64_t lume_bi_bool_slot(const LumeSlot *s)
+{
+    if (!s) return 0;
+    switch (s->tag) {
+    case LUME_SLOT_STR:   return s->str && *s->str;
+    case LUME_SLOT_BOOL:  return s->num != 0;
+    case LUME_SLOT_OBJ:   return lume_bi_bool_obj((const void *)(intptr_t)s->num);
+    case LUME_SLOT_FLOAT: {
+        double d = 0;
+        memcpy(&d, &s->num, sizeof d);
+        return d != 0.0;
+    }
+    case LUME_SLOT_INT:
+    default:              return s->num != 0;
+    }
+}
+
+/* The string tools take a `string` in the source, but an `any` argument
+ * is legal there (the interpreter's native_upper accepts a dynamic
+ * string value — `upper(get(j, "k"))` works), and an any is either a
+ * boxed LumeSlot* or the raw char* an index read hands back. This is the
+ * one place that knows the difference: a string slot (or a raw pointer,
+ * which can only be a string) passes through, and anything else — a
+ * number, a container, a null — goes through the error channel with the
+ * interpreter's wording, so `upper(5)` fails the same way on both paths
+ * instead of silently reading slot bytes as text. */
+const char *lume_bi_str_unwrap(const void *v)
+{
+    if (!v) {
+        lume_error_set("expected string argument");
+        return "";
+    }
+    if (ptr_is_slot(v)) {
+        const LumeSlot *s = (const LumeSlot *)v;
+        if (s->tag == LUME_SLOT_STR) return s->str ? s->str : "";
+        lume_error_set("expected string argument");
+        return "";
+    }
+    return (const char *)v;
+}
+
+/* ------------------------------------------------------------------ *
  * Field/element access on a tagged-any slot (the json()/for-in value).
  * An any value is a boxed LumeSlot*, so get(j, k, d) on one has to
  * unpack the slot before the map lookup — a non-map slot reads the
@@ -1779,15 +2272,16 @@ void *lume_slot_get_obj(const LumeSlot *s, const char *k, void *d)
 LumeSlot *lume_slot_get_any(const LumeSlot *s, const char *k, LumeSlot *dflt)
 {
     (void)dflt;
-    LumeSlot *box = rt_alloc(sizeof(LumeSlot));
-    memset(box, 0, sizeof *box);
-    box->tag = LUME_SLOT_OBJ;
-    if (!s || s->tag != LUME_SLOT_OBJ) return box;
+    if (!s || s->tag != LUME_SLOT_OBJ) return null_slot_box();
     LumeMap *m = (LumeMap *)(intptr_t)s->num;
-    if (!m || m->kind != LUME_CTR_MAP) return box;
+    if (!m || m->kind != LUME_CTR_MAP) return null_slot_box();
     int64_t i = map_find(m, k);
-    if (i >= 0) *box = m->vals[i];
-    return box;
+    if (i >= 0) {
+        LumeSlot *box = rt_alloc(sizeof(LumeSlot));
+        *box = m->vals[i];
+        return box;
+    }
+    return null_slot_box();
 }
 
 /* len() on an any value: a container slot answers with its length, a

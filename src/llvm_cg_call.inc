@@ -298,6 +298,20 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
                 ERRV(g, "line %zu: get() default is %s but key %s holds %s",
                      line, ty_str(d.ty), knode->as.lit.text, ty_str(shape));
             fn = sfn; rty = srty;
+        } else if (m.ty && m.ty->kind == TY_STRUCT && !m.ty->name &&
+                   struct_common_shape(m.ty) == NULL && !d.v) {
+            /* Undeclared struct receiver (a list-of-maps literal element,
+             * a str_match row, a json-parsed row) with no default: no static
+             * field the typed getters could read and no default to infer the
+             * flavour from, so this is the interpreter's dynamic read. Hand
+             * back a boxed slot (any) -- lume_map_get_slot -- the same boxed
+             * representation for-in and get-on-any use. When a default IS
+             * present the next branch picks the typed getter by the default's
+             * type, which is the correct (and verifier-clean) path for a
+             * literal struct like `{ "count": 7 }` whose anon type carries no
+             * field names natively. */
+            fn = "lume_map_get_slot";
+            rty = type_prim(TY_ANY);
         } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
             const char *dfn; Type *drty;
             if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
@@ -675,24 +689,41 @@ static Val cg_builtin(CG *g, Node *n)
             }
             rty = g->i8ptr; rt = type_prim(TY_STRING);
         } else if (strcmp(bname, "int") == 0) {
-            /* Identity on an int (the interpreter's IS_NUM branch, and the
-             * shape int(m, "k") takes on an int field); only a float needs
-             * the truncating conversion. */
+            /* Identity on an int; a float truncates; a string parses a
+             * leading number like the interpreter's atoll on the direct
+             * cast path ("12x" -> 12, "abc" -> 0). */
             if (a.ty && a.ty->kind == TY_INT) return a;
-            if (!a.ty || a.ty->kind != TY_FLOAT)
-                ERRV(g, "line %zu: int() only converts a float here", n->line);
-            ft = LLVMFunctionType(g->i64, &g->dbl, 1, 0); pty = g->dbl; rty = g->i64;
-            rt = type_prim(TY_INT);
+            if (a.ty && a.ty->kind == TY_STRING) {
+                ft = LLVMFunctionType(g->i64, &g->i8ptr, 1, 0); pty = g->i8ptr; rty = g->i64;
+                rt = type_prim(TY_INT);
+            } else if (a.ty && a.ty->kind == TY_FLOAT) {
+                ft = LLVMFunctionType(g->i64, &g->dbl, 1, 0); pty = g->dbl; rty = g->i64;
+                rt = type_prim(TY_INT);
+            } else {
+                ERRV(g, "line %zu: int() only converts a float or a string here", n->line);
+            }
         } else {
             if (a.ty && a.ty->kind == TY_FLOAT) return a;
-            if (!a.ty || a.ty->kind != TY_INT)
-                ERRV(g, "line %zu: float() only converts an int here", n->line);
-            ft = LLVMFunctionType(g->dbl, &g->i64, 1, 0); pty = g->i64; rty = g->dbl;
-            rt = type_prim(TY_FLOAT);
+            if (a.ty && a.ty->kind == TY_STRING) {
+                ft = LLVMFunctionType(g->dbl, &g->i8ptr, 1, 0); pty = g->i8ptr; rty = g->dbl;
+                rt = type_prim(TY_FLOAT);
+            } else if (a.ty && a.ty->kind == TY_INT) {
+                ft = LLVMFunctionType(g->dbl, &g->i64, 1, 0); pty = g->i64; rty = g->dbl;
+                rt = type_prim(TY_FLOAT);
+            } else {
+                ERRV(g, "line %zu: float() only converts an int or a string here", n->line);
+            }
         }
 
         const char *name;
-        if (a.ty && a.ty->kind == TY_ANY)
+        if (a.ty && a.ty->kind == TY_STRING &&
+            (strcmp(bname, "int") == 0 || strcmp(bname, "float") == 0))
+            /* int("12x") / float("1.5x") parse a leading number (atoll/
+             * strtod), the interpreter's direct cast path ("12x" -> 12,
+             * "abc" -> 0). */
+            name = strcmp(bname, "int") == 0 ? "lume_bi_parse_i64"
+                                             : "lume_bi_parse_double";
+        else if (a.ty && a.ty->kind == TY_ANY)
             /* str() of a string slot is the bare string, stringify() keeps the
              * JSON quotes (rt.c lume_slot_str_scalar / lume_slot_str) — the
              * text backend's TY_ANY rule, mirrored. `string` is str's alias. */
@@ -834,6 +865,206 @@ static Val cg_builtin(CG *g, Node *n)
             ERRV(g, "line %zu: get() takes two or three arguments", n->line);
         return emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
                              argc == 3 ? n->as.call.args[2] : NULL, n->line);
+    }
+
+    /* ---- string tools (interpreter parity, builtins_str.c) ----
+     * String parameters keep every one of these out of the numeric
+     * BUILTINS table (that path coerces its arguments to i64/double), so
+     * each gets its own branch, the same shape read_file/env() use. The
+     * helpers live in src/rt.c and mirror the interpreter's native_*
+     * contracts: ASCII-only case mapping, byte-based split/substr, a
+     * 16 MiB result ceiling on replace/join, and str_match's ERE
+     * findall -> [{text, index, groups}]. Mirrors the text backend. */
+    if (strcmp(bname, "upper") == 0 || strcmp(bname, "lower") == 0 ||
+        strcmp(bname, "capitalize") == 0 || strcmp(bname, "trim") == 0) {
+        if (argc < 1)
+            ERRV(g, "line %zu: %s() needs a string", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: %s() needs a string", n->line, bname);
+        const char *fn = strcmp(bname, "upper") == 0 ? "lume_bi_upper"
+                       : strcmp(bname, "lower") == 0 ? "lume_bi_lower"
+                       : strcmp(bname, "capitalize") == 0
+                             ? "lume_bi_capitalize" : "lume_bi_trim";
+        LLVMTypeRef p1[1] = { g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p1, 1, 0),
+                                        rt_decl(g, fn, g->i8ptr, p1, 1),
+                                        (LLVMValueRef[]){ a.v }, 1, "s");
+        if (!r) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return val_make(type_prim(TY_STRING), r);
+    }
+
+    if (strcmp(bname, "contains") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: contains() needs (s, sub)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: contains() needs two strings", n->line);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef iv = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p2, 2, 0),
+                                         rt_decl(g, "lume_bi_contains", g->i64, p2, 2),
+                                         (LLVMValueRef[]){ a.v, b.v }, 2, "c");
+        if (!iv) ERRV(g, "line %zu: contains() failed", n->line);
+        LLVMValueRef bv = LLVMBuildTrunc(g->ab, iv, g->i1, "cb");
+        return val_make(type_prim(TY_BOOL), bv);
+    }
+
+    if (strcmp(bname, "split") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: split() needs (s, sep)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: split() needs two strings", n->line);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p2, 2, 0),
+                                        rt_decl(g, "lume_bi_split", g->i8ptr, p2, 2),
+                                        (LLVMValueRef[]){ a.v, b.v }, 2, "sp");
+        if (!r) ERRV(g, "line %zu: split() failed", n->line);
+        return val_make(list_type(), r);
+    }
+
+    if (strcmp(bname, "join") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: join() needs (list, sep)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_LIST || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: join() needs a list and a string", n->line);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p2, 2, 0),
+                                        rt_decl(g, "lume_bi_join", g->i8ptr, p2, 2),
+                                        (LLVMValueRef[]){ a.v, b.v }, 2, "jn");
+        if (!r) ERRV(g, "line %zu: join() failed", n->line);
+        return val_make(type_prim(TY_STRING), r);
+    }
+
+    if (strcmp(bname, "replace") == 0) {
+        if (argc < 3)
+            ERRV(g, "line %zu: replace() needs (s, from, to)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = cg_expr(g, n->as.call.args[2]);
+        if (!a.v || !b.v || !c.v || !a.ty || !b.ty || !c.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING ||
+            c.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: replace() needs three strings", n->line);
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p3, 3, 0),
+                                        rt_decl(g, "lume_bi_replace", g->i8ptr, p3, 3),
+                                        (LLVMValueRef[]){ a.v, b.v, c.v }, 3, "rp");
+        if (!r) ERRV(g, "line %zu: replace() failed", n->line);
+        return val_make(type_prim(TY_STRING), r);
+    }
+
+    if (strcmp(bname, "substr") == 0) {
+        if (argc < 2 || argc > 3)
+            ERRV(g, "line %zu: substr() needs (s, start[, len])", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL };
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_INT ||
+            (argc == 3 && (!c.v || !c.ty || c.ty->kind != TY_INT)))
+            ERRV(g, "line %zu: substr() needs a string and integer bounds", n->line);
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i64, g->i64 };
+        LLVMValueRef cv = argc == 3 ? c.v : LLVMConstInt(g->i64, -1, 1);
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p3, 3, 0),
+                                        rt_decl(g, "lume_bi_substr", g->i8ptr, p3, 3),
+                                        (LLVMValueRef[]){ a.v, b.v, cv }, 3, "sub");
+        if (!r) ERRV(g, "line %zu: substr() failed", n->line);
+        return val_make(type_prim(TY_STRING), r);
+    }
+
+    if (strcmp(bname, "str_match") == 0 || strcmp(bname, "regex") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: %s() needs (pattern, text)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: %s() needs two strings", n->line, bname);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p2, 2, 0),
+                                        rt_decl(g, "lume_bi_str_match", g->i8ptr, p2, 2),
+                                        (LLVMValueRef[]){ a.v, b.v }, 2, "sm");
+        if (!r) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return val_make(list_type(), r);
+    }
+
+    if (strcmp(bname, "exp") == 0 || strcmp(bname, "log") == 0 ||
+        strcmp(bname, "ln") == 0) {
+        if (argc < 1)
+            ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty ||
+            (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+        a = coerce(g, type_prim(TY_FLOAT), a, n->line);
+        if (!a.v) ERRV(g, "line %zu: %s() failed to lower", n->line, bname);
+        const char *fn = strcmp(bname, "exp") == 0 ? "lume_bi_exp"
+                                                   : "lume_bi_log";
+        LLVMTypeRef p1[1] = { g->dbl };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->dbl, p1, 1, 0),
+                                        rt_decl(g, fn, g->dbl, p1, 1),
+                                        (LLVMValueRef[]){ a.v }, 1, "e");
+        if (!r) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    /* bool(x) — value_truthy by static type. An any value dispatches on its
+     * runtime tag (lume_bi_bool_slot); bool(m, "k") is the same accessor
+     * desugar str()/int()/float() take; a named struct is boxed first. */
+    if (strcmp(bname, "bool") == 0) {
+        if (argc < 1)
+            ERRV(g, "line %zu: bool() needs an argument", n->line);
+        Type *a0t = infer_node_type(g, n->as.call.args[0]);
+        Type *a1t = argc >= 2 ? infer_node_type(g, n->as.call.args[1]) : NULL;
+        int accessor = argc >= 2 && a0t && a1t && a1t->kind == TY_STRING &&
+                        (a0t->kind == TY_STRUCT || a0t->kind == TY_ANY);
+        Val a = accessor
+                    ? emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
+                                    argc == 3 ? n->as.call.args[2] : NULL,
+                                    n->line)
+                    : cg_expr(g, n->as.call.args[0]);
+        if (!a.v)
+            ERRV(g, "line %zu: bool() failed to lower", n->line);
+        if (a.ty && a.ty->kind == TY_BOOL) return a;
+        if (a.ty && a.ty->kind == TY_NULL)
+            return val_make(type_prim(TY_BOOL), LLVMConstInt(g->i1, 0, 0));
+        const char *fn = NULL;
+        LLVMTypeRef pt = NULL;
+        switch (a.ty ? a.ty->kind : TY_ANY) {
+        case TY_INT:    fn = "lume_bi_bool_i";    pt = g->i64;    break;
+        case TY_FLOAT:  fn = "lume_bi_bool_f";    pt = g->dbl;    break;
+        case TY_STRING: fn = "lume_bi_bool_s";    pt = g->i8ptr;  break;
+        case TY_LIST:   fn = "lume_bi_bool_obj";  pt = g->i8ptr;  break;
+        case TY_STRUCT: fn = "lume_bi_bool_obj";  pt = g->i8ptr;  break;
+        case TY_ANY:    fn = "lume_bi_bool_slot"; pt = g->i8ptr;  break;
+        default:
+            ERRV(g, "line %zu: bool() cannot convert this value", n->line);
+        }
+        if (a.ty && a.ty->name) {
+            struct_addr(g, &a);
+            Val m = emit_struct_to_map(g, a.v, a.ty);
+            if (!m.v)
+                ERRV(g, "line %zu: bool() cannot convert struct '%s'",
+                     n->line, a.ty->name);
+            a.v = m.v;
+            a.ty = m.ty;
+        }
+        LLVMTypeRef p1[1] = { pt };
+        LLVMValueRef iv = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, p1, 1, 0),
+                                         rt_decl(g, fn, g->i64, p1, 1),
+                                         (LLVMValueRef[]){ a.v }, 1, "b");
+        if (!iv) ERRV(g, "line %zu: bool() failed", n->line);
+        LLVMValueRef bv = LLVMBuildTrunc(g->ab, iv, g->i1, "bb");
+        return val_make(type_prim(TY_BOOL), bv);
     }
 
     /* try(fn) — SPEC 6.3: call fn with no arguments and wrap the outcome
