@@ -71,7 +71,9 @@ typedef struct ssl_st SSL;
 #define HTTP_DFLT_TIMEOUT_MS 10000L /* 与 fetch_url 的 10 s 窗口一致 */
 #define HTTP_SEC_TO_MS(s)    ((long)((s) * 1000.0))
 #define HTTP_TLS_TIMEOUT_MS  15000L /* 单次 TLS 握手的上限 */
-#define HTTP_MAX_TIMEOUT_MS  60000L
+/* 60s 曾把慢上游(构建统计刷新、重导出类任务)挡死在 502;放宽到 10 min,
+ * 调用方仍可用 opts.timeout 收紧。/socket 读循环有独立窗口,不受此影响。 */
+#define HTTP_MAX_TIMEOUT_MS  600000L
 #define HTTP_DFLT_MAX_BYTES  (16u * 1024u)
 #define HTTP_MAX_MAX_BYTES   (8u << 20) /* 上限本身也要封顶 */
 #define HTTP_MAX_REDIRECTS   5

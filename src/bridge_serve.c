@@ -394,14 +394,21 @@ static const char *status_text(int code)
     }
 }
 
+/* CSP policy from `server { csp = "..." }`, CR/LF-validated at ingest
+ * (a newline would split the response header = injection). Empty string
+ * = built-in default "default-src 'self'" (send_resp). */
+static char g_serve_csp[256];
+
 static void send_resp(SockFd fd, int status, const char *ctype,
                       const char *body, size_t blen, const char *set_cookie)
 {
     /* Default security headers on every response: serve() is a public-facing
      * HTTP surface, so nosniff / frame-deny / referrer-policy cost nothing
      * and harden every content type; CSP is harmless on API responses
-     * (browsers only enforce it on documents) and right on HTML. A future
-     * `server { csp = ... }` option can relax it per-app. */
+     * (browsers only enforce it on documents) and right on HTML.
+     * `server { csp = "..." }` replaces the CSP line (the host's
+     * agent-httpd has the same knob on its agenthttpd_config; both reject
+     * CR/LF at ingest so the value cannot split the header). */
     char hdr[2048];
     int n = snprintf(hdr, sizeof hdr,
                      "HTTP/1.1 %d %s\r\n"
@@ -411,8 +418,9 @@ static void send_resp(SockFd fd, int status, const char *ctype,
                      "X-Content-Type-Options: nosniff\r\n"
                      "X-Frame-Options: DENY\r\n"
                      "Referrer-Policy: no-referrer\r\n"
-                     "Content-Security-Policy: default-src 'self'\r\n",
-                     status, status_text(status), ctype, blen);
+                     "Content-Security-Policy: %s\r\n",
+                     status, status_text(status), ctype, blen,
+                     g_serve_csp[0] ? g_serve_csp : "default-src 'self'");
     if (n > 0 && set_cookie && set_cookie[0]) {
         int n2 = snprintf(hdr + n, (size_t)sizeof hdr - (size_t)n,
                           "Set-Cookie: %s\r\n", set_cookie);
@@ -633,6 +641,12 @@ void bridge_run(VM *vm)
             else if (strcmp(k, "docroot") == 0 && IS_OBJ(v) &&
                      AS_OBJ(v)->type == OBJ_STRING)
                 docroot = obj_string(AS_OBJ(v));
+            else if (strcmp(k, "csp") == 0 && IS_OBJ(v) &&
+                     AS_OBJ(v)->type == OBJ_STRING) {
+                const char *c = obj_string(AS_OBJ(v));
+                if (c[0] && !strpbrk(c, "\r\n"))
+                    snprintf(g_serve_csp, sizeof g_serve_csp, "%s", c);
+            }
         }
     }
 
