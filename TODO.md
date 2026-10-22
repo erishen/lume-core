@@ -841,6 +841,17 @@ pointed at 195cfaf (pre-0b43aa6). The implementation (0b43aa6 /
 - keep the DSL↔agent-httpd config contract in sync when bumping either
   side (a lume-core commit reading a new agent-httpd field must land
   together with the submodule bump + a pushed agent-httpd commit);
-- until agent-httpd pushes react_prefix to origin/main, the lume
+- ~~until agent-httpd pushes react_prefix to origin/main, the lume
   submodule gitlink cannot be committed and SSR-relay images (history)
-  are only buildable on this machine.
+  are only buildable on this machine.~~ — **Closed 2026-10-22**: the
+  react_prefix work (0b43aa6 feat(react) + 47320af feat(fcgi)) was
+  cherry-picked from the local `win-local-chain` branch onto
+  agent-httpd main and pushed (`b998e7f..23b1c4e`); the lume host
+  committed the bumped gitlink (`7e73e91`) and a fresh
+  `clone --recurse-submodules` now checks out 23b1c4e with
+  `react_prefix` in `src/agenthttpd.h`. En-route lesson: an interim
+  gitlink at b998e7f (pre-cherry-pick) briefly made the host
+  uncompilable — `lang/bridge.c:662` reads `cfg.react_prefix` while
+  the submodule lacked the field; the host had only compiled because
+  the submodule working copy sat on `win-local-chain`. SSR-relay
+  images are now buildable on any machine.
