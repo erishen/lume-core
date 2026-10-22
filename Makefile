@@ -272,7 +272,7 @@ CORE_OBJS := $(filter-out build/main.o, $(OBJS))
 # exists for the serve{} runtime (lume_srv_*, self-contained). The backends
 # recompile bridge_native.c themselves with -DLUME_HAS_SQLITE=1 (backend.c),
 # so the real sql symbols are built exactly once, at compile time.
-build/bridge_native.o: src/bridge_native.c
+build/bridge_native.o: src/bridge_native.c | build
 	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) -c $< -o $@
 
 # 变体构建(build-asan / build-pack / build-fuzz)的 bridge_native.o 也必须摘掉
@@ -281,11 +281,11 @@ build/bridge_native.o: src/bridge_native.c
 # 变体二进制链接报 undefined reference。普通 build/ 早这么做了, 这里补齐三处。
 # 不能把 filter-out 撒到整条变体 CFLAGS 上 —— 那样会把 builtins_sql.c 需要的
 # -DLUME_HAS_SQLITE=1 也摘掉, 反而是另一种断链。
-build-asan/bridge_native.o: src/bridge_native.c
+build-asan/bridge_native.o: src/bridge_native.c | build-asan
 	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) $(ASAN_CFLAGS) -c $< -o $@
-build-pack/bridge_native.o: src/bridge_native.c
+build-pack/bridge_native.o: src/bridge_native.c | build-pack
 	$(CC) $(filter-out -DLUME_HAS_SQLITE=1,$(PACK_CFLAGS)) -c $< -o $@
-build-fuzz/bridge_native.o: src/bridge_native.c
+build-fuzz/bridge_native.o: src/bridge_native.c | build-fuzz
 	$(FUZZ_CC) $(filter-out -DLUME_HAS_SQLITE=1,$(CFLAGS)) -fsanitize=fuzzer-no-link,address,undefined -c $< -o $@
 
 # 内部头:任一 * 片的共享声明变化,所有依赖它的 .o 都要重建
