@@ -827,3 +827,20 @@ These are deliberate design decisions; re-proposing them is noise
   (`examples/regex-smoke.lume`).
 - Third-party package managers are not build dependencies: vendor small
   deps instead (musl regex precedent after libgnurx vanished from MSYS2).
+
+## Interface contract — bridge.c ↔ agent-httpd config (filed 2026-10-22)
+
+`lang/bridge.c` reads `agenthttpd_config.react_prefix` (configurable SSR
+relay prefix — history `server.lume` uses `react_prefix = "/"`). The
+field must exist in the pinned agent-httpd submodule or lume fails to
+compile: history's SSR Dockerfile build hit
+`'agenthttpd_config' has no member named 'react_prefix'` when the gitlink
+pointed at 195cfaf (pre-0b43aa6). The implementation (0b43aa6 /
+47320af) exists only on the local `win-local-chain` branch, so:
+
+- keep the DSL↔agent-httpd config contract in sync when bumping either
+  side (a lume-core commit reading a new agent-httpd field must land
+  together with the submodule bump + a pushed agent-httpd commit);
+- until agent-httpd pushes react_prefix to origin/main, the lume
+  submodule gitlink cannot be committed and SSR-relay images (history)
+  are only buildable on this machine.
