@@ -276,7 +276,16 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     + semantic-unclaimed.lume. The retry loop reuses the same exit-1
     counter-example contract. Remaining host-side (scope guard): the real
     LLM tool dispatch, whose contract is the manifest file plus this
-    declaration language.
+    declaration language. — **Real dispatch closed 2026-10-22**:
+    agent-httpd `examples/tools/ai-produce-llm.py` (prompts → OpenAI-
+    compatible chat → ```lume extract → this gate → counter-example retry
+    loop → accept rows into $AI_CANDIDATES_DIR). Verified end to end
+    against the local router (Qwen3-8B): llm-summary-stats + llm-range-
+    sieve generated, gate-accepted, produce-loop READY, committed as
+    must-pass seeds. The loop needed one spec fix the runs exposed —
+    without a few-shot reference program the small model writes Python,
+    which the gate rejects (correctly) but the retry loop alone could
+    not teach it out of.
 
 - [x] **P4 gap (cont.) · `server{}` LLVM leg — closed 2026-10-20, including
   `req.*` member access.** env() part closed 2026-10-20: env() now has a

@@ -101,6 +101,25 @@ The contract for replacing the scripted generator with real host tool
 dispatch is just the manifest file: write candidates + manifest rows into
 `$AI_CANDIDATES_DIR` and call `scripts/ai-produce.sh`.
 
+**Real dispatch shipped (2026-10-22)** — agent-httpd's
+`examples/tools/ai-produce-llm.py` is that host tool: it sends each
+prompt to a real LLM (OpenAI-compatible chat completions; config via
+`LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` — the same names this
+repo's `.env` already carries), extracts the ```lume program, runs this
+gate locally, and on a rejection loops the counter-example back to the
+model for a bounded number of attempts. Accepted programs land in
+`$AI_CANDIDATES_DIR` with `accept` manifest rows — exactly the contract
+above — so `scripts/ai-produce.sh` gives every LLM candidate a second,
+deterministic gate opinion before anything is called READY. The system
+spec ships a few-shot reference program: without it a small model
+produces Python (`range`/`append`/`while:`), which the gate correctly
+rejects and the retry loop feeds back. Two programs produced end to end
+by Qwen3-8B through the local router are committed as
+`examples/ai-generated/llm-summary-stats.lume` and
+`llm-range-sieve.lume` (the must-pass loop covers them from now on).
+The key never leaves the environment; the core repo stays key-free and
+network-free.
+
 ## Seeds kept in the tree
 
 - `examples/ai-generated/norm-stats.lume` — a plausible LLM-generated

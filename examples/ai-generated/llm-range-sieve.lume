@@ -1,0 +1,6 @@
+// Produced END-TO-END by a real LLM (Qwen3-8B via the local router,
+// agent-httpd examples/tools/ai-produce-llm.py) from the Chinese prompt
+// "用筛法求 30 以内的所有质数, 打印列表与个数" — first attempt after the
+// few-shot reference program was added to the producer spec (the two
+// Python-shaped attempts before it were rejected by the gate exactly as
+// designed). Must-pass seed: scripts/ai-verify-loop.sh covers it in CI.
