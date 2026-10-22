@@ -291,6 +291,12 @@ build-fuzz/bridge_native.o: src/bridge_native.c | build-fuzz
 # 内部头:任一 * 片的共享声明变化,所有依赖它的 .o 都要重建
 INT_HDRS := $(wildcard src/*_internal.h)
 
+# 默认目标必须显式钉死: 73bf046 引入的 build/bridge_native.o 显式规则排在
+# 文件最前(原第一条规则是这里的 all), make 会把第一条规则当 .DEFAULT_GOAL ——
+# 裸 `make` 只编一个 .o 就退出 0。本机 build/ bin/ 常驻掩盖了这一点,
+# 只有干净副本(git archive | tar)能暴露。
+.DEFAULT_GOAL := all
+
 all: bin $(TARGET)
 
 # Directory targets: on non-Windows (sh) `mkdir -p` is idempotent and stays
