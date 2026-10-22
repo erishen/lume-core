@@ -332,6 +332,147 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
     return r;
 }
 
+/* Convert an accessor's default expression to the cast's own type —
+ * the same lowerings the direct casts build below (int("12x") parses a
+ * leading number, float(3) widens, str(3) renders). The interpreter
+ * hands the default back verbatim — whatever type it has — but the
+ * static accessor answers in the cast's type, so the default crosses
+ * the same bridge the cast would build. A bool default widens
+ * numerically (the getters' bool defaults always did); a null default
+ * is treated as absent, since null is not representable in a scalar
+ * cast type and the two-argument form's absent-key answer is the
+ * closest static answer. Kept in step with the text emitter's copy. */
+static Val acc_default(CG *g, Type *rty, Val d, size_t line)
+{
+    if (!d.v) return d;
+    if (d.ty && d.ty->kind == TY_NULL) return (Val){ NULL, NULL };
+    /* A bool default travels as the interpreter's bool representation,
+     * i64 — widen it before the same-kind shortcut below can pass an
+     * i1 through to a helper that takes i64. */
+    if (d.ty && d.ty->kind == TY_BOOL && rty->kind == TY_BOOL)
+        return coerce(g, type_prim(TY_INT), d, line);
+    if (!d.ty || d.ty->kind == rty->kind) return d;
+
+    if (d.ty->kind == TY_BOOL &&
+        (rty->kind == TY_INT || rty->kind == TY_FLOAT || rty->kind == TY_BOOL)) {
+        Val i = coerce(g, type_prim(TY_INT), d, line);
+        if (!i.v || rty->kind != TY_FLOAT) return i;
+        return coerce(g, type_prim(TY_FLOAT), i, line);
+    }
+
+    const char *name = NULL;
+    LLVMTypeRef pty = NULL, rt = NULL;
+    switch (rty->kind) {
+    case TY_INT:
+        if (d.ty->kind == TY_STRING)     { name = "lume_bi_parse_i64";    pty = g->i8ptr; rt = g->i64; }
+        else if (d.ty->kind == TY_FLOAT) { name = "lume_bi_int";          pty = g->dbl;   rt = g->i64; }
+        break;
+    case TY_FLOAT:
+        if (d.ty->kind == TY_STRING)     { name = "lume_bi_parse_double"; pty = g->i8ptr; rt = g->dbl; }
+        else if (d.ty->kind == TY_INT)   { name = "lume_bi_float";        pty = g->i64;   rt = g->dbl; }
+        break;
+    case TY_STRING:
+        if (d.ty->kind == TY_INT)        { name = "lume_bi_str_i64";      pty = g->i64;   rt = g->i8ptr; }
+        else if (d.ty->kind == TY_FLOAT) { name = "lume_bi_str_double";   pty = g->dbl;   rt = g->i8ptr; }
+        else if (d.ty->kind == TY_BOOL)  { name = "lume_bi_str_bool";     pty = g->i64;   rt = g->i8ptr; }
+        else if (d.ty->kind == TY_ANY)   { name = "lume_slot_str_scalar"; pty = g->i8ptr; rt = g->i8ptr; }
+        else if (d.ty->kind == TY_LIST ||
+                 (d.ty->kind == TY_STRUCT && !d.ty->name))
+                                        { name = "lume_rt_to_json_obj";  pty = g->i8ptr; rt = g->i8ptr; }
+        break;
+    case TY_BOOL:
+        /* A bool accessor's default crosses by its own truthiness — the
+         * same helpers the direct bool() cast dispatches to (value.c
+         * value_truthy), answering in the interpreter's bool
+         * representation (i64). */
+        if (d.ty->kind == TY_INT)        { name = "lume_bi_bool_i";      pty = g->i64;   rt = g->i64; }
+        else if (d.ty->kind == TY_STRING){ name = "lume_bi_bool_s";      pty = g->i8ptr; rt = g->i64; }
+        else if (d.ty->kind == TY_FLOAT) { name = "lume_bi_bool_f";      pty = g->dbl;   rt = g->i64; }
+        else if (d.ty->kind == TY_ANY)   { name = "lume_bi_bool_slot";   pty = g->i8ptr; rt = g->i64; }
+        else if (d.ty->kind == TY_LIST ||
+                 (d.ty->kind == TY_STRUCT && !d.ty->name))
+                                        { name = "lume_bi_bool_obj";    pty = g->i8ptr; rt = g->i64; }
+        break;
+    default: break;
+    }
+    if (!name)
+        ERRV(g, "line %zu: accessor default cannot convert to %s",
+             line, src_type_name(rty));
+
+    LLVMValueRef v[1] = { d.v };
+    if (d.ty->kind == TY_BOOL && pty == g->i64)
+        v[0] = LLVMBuildZExt(g->ab, d.v, g->i64, "boolarg");
+    LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(rt, &pty, 1, 0),
+                                    rt_decl(g, name, rt, &pty, 1), v, 1, "b");
+    if (!r) ERRV(g, "line %zu: accessor default failed to lower", line);
+    return val_make(rty, r);
+}
+
+/* str/int/float/bool accessor emission: int(m, "k"[, d]) and friends —
+ * the interpreter's value_from_map + native_int/native_float/
+ * native_str/native_bool (src/builtins.c), where the answer is ALWAYS
+ * the cast's own type no matter what the field holds or what the
+ * default is. That is why this exists next to emit_get_call instead of
+ * routing through it: there, a default whose type differs from the
+ * key's declared shape is refused (a get() default of the wrong type
+ * would read the slot through the wrong getter), but for an accessor a
+ * mismatched default is the normal case — `int(acc, "n", 0)` reading
+ * the string "42" is the point of the sugar. The runtime helpers
+ * lume_map_acc_* / lume_slot_acc_* (src/rt.c) carry the interpreter's
+ * whole table, so neither the field's static type nor the default's
+ * type picks the flavour here. Kept in step with the text emitter's
+ * copy in codegen_call.c. */
+static Val emit_acc_call(CG *g, Node *mnode, Node *knode, Node *dnode,
+                         bool is_str, bool is_float, bool is_bool,
+                         bool is_any, size_t line)
+{
+    Val m = cg_expr(g, mnode);
+    Val k = cg_expr(g, knode);
+    Val d = dnode ? cg_expr(g, dnode) : (Val){ NULL, NULL };
+    if (!m.v || !k.v)
+        ERRV(g, "line %zu: accessor needs a map and a key", line);
+
+    /* A named struct is a raw GEP struct with no runtime map header, so
+     * the helper would read its first field as the header — the same
+     * boxing get() does before its getters run. An any receiver is
+     * already the boxed slot the slot helpers unpack. */
+    if (!is_any && m.ty && m.ty->name) {
+        struct_addr(g, &m);
+        Val mm = emit_struct_to_map(g, m.v, m.ty);
+        if (!mm.v)
+            ERRV(g, "line %zu: accessor cannot read struct '%s'",
+                 line, m.ty->name);
+        m.v = mm.v;
+        m.ty = mm.ty;
+    }
+
+    /* The helpers answer the cast's own type; bool answers the
+     * interpreter's bool representation (i64), narrowed to i1 below
+     * like the direct bool() cast does. */
+    Type *rty = is_str ? type_prim(TY_STRING)
+             : is_float ? type_prim(TY_FLOAT)
+                        : type_prim(TY_INT);
+    const char *fn = is_str ? (is_any ? "lume_slot_acc_s" : "lume_map_acc_s")
+                   : is_float ? (is_any ? "lume_slot_acc_f" : "lume_map_acc_f")
+                   : is_bool ? (is_any ? "lume_slot_acc_b" : "lume_map_acc_b")
+                             : (is_any ? "lume_slot_acc_i" : "lume_map_acc_i");
+
+    if (d.v) d = acc_default(g, is_bool ? type_prim(TY_BOOL) : rty, d, line);
+    if (g->err[0]) return (Val){ NULL, NULL };
+
+    LLVMTypeRef ats[3] = { g->i8ptr, g->i8ptr, ty_of(g, rty) };
+    LLVMValueRef vs[3] = { m.v, k.v, d.v ? d.v : get_zero_default(g, rty) };
+    Val r = rt_call(g, rty, fn, 3, ats, vs);
+    if (!r.v) ERRV(g, "line %zu: accessor failed", line);
+    if (is_bool) {
+        LLVMValueRef b = LLVMBuildICmp(g->ab, LLVMIntNE, r.v,
+                                       LLVMConstInt(g->i64, 0, 0), "accb");
+        if (!b) ERRV(g, "line %zu: accessor failed", line);
+        return val_make(type_prim(TY_BOOL), b);
+    }
+    return r;
+}
+
 static Val cg_builtin(CG *g, Node *n)
 {
     const char *bname = n->as.call.callee->as.var.name;
@@ -579,18 +720,21 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "json") == 0) {
         if (argc < 1)
             ERRV(g, "line %zu: '%s' needs an argument", n->line, bname);
-        /* str(m, k[, d]) is the interpreter's accessor shorthand for
-         * str(get(m, k[, d])) — but only in the shape value_from_map
-         * accepts: a map receiver and a string key (builtins.c). Anything
-         * else keeps the interpreter's fallback (serialize args[0]; the
-         * extra arguments are ignored there), so the desugar fires only
-         * when the static types promise that shape. Only str/int/float
-         * take the accessor: stringify/json look at args[0] alone and
-         * ignore the rest (native_stringify / native_json). An any
-         * receiver (a json() parse) reads through the slot getters, which
-         * answer the default for a non-map slot — the interpreter would
-         * serialize the receiver itself there; a corner this shares with
-         * get(). */
+        /* str(m, k[, d]) is the interpreter's accessor shorthand —
+         * value_from_map + the cast (src/builtins.c) — but only in the
+         * shape value_from_map accepts: a map receiver and a string
+         * key. Anything else keeps the interpreter's fallback
+         * (serialize args[0]; the extra arguments are ignored there),
+         * so the desugar fires only when the static types promise
+         * that shape. Only str/int/float take the accessor:
+         * stringify/json look at args[0] alone and ignore the rest
+         * (native_stringify / native_json). Both receiver shapes go
+         * to emit_acc_call — the accessor answers in the cast's own
+         * type whatever the field holds, so neither the field's
+         * declared shape nor the default's type may pick the flavour;
+         * routing through emit_get_call instead would refuse
+         * `int(acc, "n", 0)` on a string field, the sugar's primary
+         * use. */
         bool is_str = strcmp(bname, "str") == 0 ||
                       strcmp(bname, "string") == 0;
         bool is_json = strcmp(bname, "json") == 0;
@@ -600,11 +744,14 @@ static Val cg_builtin(CG *g, Node *n)
                         (a0t->kind == TY_STRUCT || a0t->kind == TY_ANY) &&
                         (is_str || strcmp(bname, "int") == 0 ||
                          strcmp(bname, "float") == 0);
-        Val a = accessor
-                    ? emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
-                                    argc == 3 ? n->as.call.args[2] : NULL,
-                                    n->line)
-                    : cg_expr(g, n->as.call.args[0]);
+        if (accessor) {
+            bool is_flt = strcmp(bname, "float") == 0;
+            return emit_acc_call(g, n->as.call.args[0], n->as.call.args[1],
+                                 argc == 3 ? n->as.call.args[2] : NULL,
+                                 is_str, is_flt, false, a0t->kind == TY_ANY,
+                                 n->line);
+        }
+        Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v)
             ERRV(g, "line %zu: '%s' failed to lower", n->line, bname);
         LLVMTypeRef ft = NULL, pty = NULL, rty = NULL;
@@ -1033,8 +1180,11 @@ static Val cg_builtin(CG *g, Node *n)
     }
 
     /* bool(x) — value_truthy by static type. An any value dispatches on its
-     * runtime tag (lume_bi_bool_slot); bool(m, "k") is the same accessor
-     * desugar str()/int()/float() take; a named struct is boxed first. */
+     * runtime tag (lume_bi_bool_slot); bool(m, "k"[, d]) is the same
+     * accessor desugar the casts take — the interpreter checks
+     * value_from_map first (native_bool, builtins.c) and answers the
+     * truthiness of the found value, or of the default when the key is
+     * absent. A named struct is boxed first. */
     if (strcmp(bname, "bool") == 0) {
         if (argc < 1)
             ERRV(g, "line %zu: bool() needs an argument", n->line);
@@ -1042,11 +1192,13 @@ static Val cg_builtin(CG *g, Node *n)
         Type *a1t = argc >= 2 ? infer_node_type(g, n->as.call.args[1]) : NULL;
         int accessor = argc >= 2 && a0t && a1t && a1t->kind == TY_STRING &&
                         (a0t->kind == TY_STRUCT || a0t->kind == TY_ANY);
-        Val a = accessor
-                    ? emit_get_call(g, n->as.call.args[0], n->as.call.args[1],
-                                    argc == 3 ? n->as.call.args[2] : NULL,
-                                    n->line)
-                    : cg_expr(g, n->as.call.args[0]);
+        if (accessor) {
+            return emit_acc_call(g, n->as.call.args[0], n->as.call.args[1],
+                                 argc == 3 ? n->as.call.args[2] : NULL,
+                                 false, false, true, a0t->kind == TY_ANY,
+                                 n->line);
+        }
+        Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v)
             ERRV(g, "line %zu: bool() failed to lower", n->line);
         if (a.ty && a.ty->kind == TY_BOOL) return a;

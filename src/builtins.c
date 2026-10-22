@@ -92,6 +92,33 @@ int value_from_map(VM *vm, int argc, Value *args, Value *v) {
     return 1;
 }
 
+/* An accessor's fallback answer crosses into the cast's own type over the
+ * same bridge the direct cast builds: int("12x") parses a leading number,
+ * a bool widens (true -> 1), and null / containers have no numeric
+ * reading, so they land on zero. The static emitters do this at compile
+ * time in acc_default (codegen_call.c), and get()'s bool defaults widened
+ * the same way before either existed. Handing the default back verbatim
+ * instead — what this file used to do — let int() answer a bool or null,
+ * the one shape the compiled backends cannot represent, and the accessor
+ * silently disagreed with them on exactly those defaults. */
+static Value acc_default_int(Value v)
+{
+    if (IS_NUM(v)) return val_int((long long)AS_NUM(v));
+    if (IS_BOOL(v)) return val_int(AS_BOOL(v) ? 1 : 0);
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING)
+        return val_int(atoll(obj_string(AS_OBJ(v))));
+    return val_int(0);
+}
+
+static Value acc_default_float(Value v)
+{
+    if (IS_NUM(v)) return val_num(AS_NUM(v));
+    if (IS_BOOL(v)) return val_num(AS_BOOL(v) ? 1.0 : 0.0);
+    if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING)
+        return val_num(atof(obj_string(AS_OBJ(v))));
+    return val_num(0);
+}
+
 static void native_str(VM *vm, int argc, Value *args, Value *out) {
     if (argc < 1) { vm_set_error(vm, "str() needs an argument"); return; }
     Value v;
@@ -115,16 +142,18 @@ static void native_int(VM *vm, int argc, Value *args, Value *out) {
             *out = val_int((long long)AS_NUM(v));
         } else if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING) {
             /* 字符串转 int:非纯数字(如 "abc"、"12x")回落第三参默认值,
-             * 而不是静默变 0——query 参数异常值应回落到脚本给的安全值。 */
+             * 而不是静默变 0——query 参数异常值应回落到脚本给的安全值
+             * (默认值自身也按 cast 的规则转成 int,见 acc_default_int:
+             *  "1" -> 1, true -> 1, null -> 0, 与两个编译后端一致)。 */
             const char *s = obj_string(AS_OBJ(v));
             char *end = NULL;
             long long n = strtoll(s, &end, 10);
             if (end != s && *end == '\0')
                 *out = val_int(n);
             else
-                *out = (argc >= 3 ? args[2] : val_num(0));
+                *out = acc_default_int(argc >= 3 ? args[2] : val_int(0));
         } else {
-            *out = (argc >= 3 ? args[2] : val_num(0));
+            *out = acc_default_int(argc >= 3 ? args[2] : val_int(0));
         }
         return;
     }
@@ -150,9 +179,9 @@ static void native_float(VM *vm, int argc, Value *args, Value *out) {
             if (end != s && *end == '\0')
                 *out = val_num(d);
             else
-                *out = (argc >= 3 ? args[2] : val_num(0));
+                *out = acc_default_float(argc >= 3 ? args[2] : val_num(0));
         } else {
-            *out = (argc >= 3 ? args[2] : val_num(0));
+            *out = acc_default_float(argc >= 3 ? args[2] : val_num(0));
         }
         return;
     }

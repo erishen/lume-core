@@ -6,6 +6,31 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cast accessors (`int/float/str/bool(m, "k"[, d])`) answer in the cast's
+  own type on every backend.** 86cb959's `get()` default fix had routed the
+  accessor sugar through `emit_get_call`, whose shape branch refuses a
+  default whose type differs from the key's declared type — but for an
+  accessor that mismatch is the normal case (`int(acc, "n", 0)` reading the
+  string `"42"` is the point of the sugar), and CI went red on
+  `examples/lang-basics.lume` for five runs. The desugar moved to its own
+  emitter (`emit_acc_call` + `rt.c`'s `lume_map_acc_*` / `lume_slot_acc_*`,
+  which carry the interpreter's whole `value_from_map` table), and the
+  interpreter now converts a fallback default over the same bridge the
+  direct cast builds instead of handing it back verbatim
+  (`int(m, "k", true)` used to answer `true`, `int(m, "k", null)` — `null`).
+- **`/` on two integers types as float in the checker too** — it always was
+  in the interpreter and both emitters. `arith_result` answered INT, so
+  `{ ok: a / b }` typed the slot int and `str()` then rendered the slot's
+  double bits as an integer (`"21 / 7 = 4613937818241073152"`, 3.0's
+  IEEE-754 pattern). Latent behind the accessor compile error above.
+- Text backend: double free in `acc_default`'s bool-default widening
+  (`coerce()` had already consumed the intermediate value).
+- `tests/native-consistency.lume`: +57 pinned lines covering the whole
+  accessor table (found string/bool/container, cross-type defaults,
+  any-receiver slot path, bool accessor, named-struct boxing).
+
 ## [0.10.0] - 2026-10-22
 
 ### Added — namespace multi-file modules

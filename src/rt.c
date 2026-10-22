@@ -1362,6 +1362,110 @@ void *lume_map_get_slot(const LumeMap *m, const char *k, void *dflt)
     return box;
 }
 
+/* ---- cast accessors: int(m,"k"[,d]) / float(m,"k"[,d]) / str(m,"k"[,d]) /
+ * bool(m,"k"[,d]) --
+ * The interpreter's value_from_map + native_int / native_float /
+ * native_str / native_bool (src/builtins.c). The default applies to an
+ * ABSENT key and -- unlike the direct casts -- a found string that does
+ * not whole-string parse also falls back to it ("12x" -> dflt, "42" ->
+ * 42). A found number converts the way the cast converts; a found BOOL
+ * falls back to the default for int/float (the interpreter's IS_NUM is
+ * int|float only, so bool lands in native_int's final else) and takes
+ * its own truthiness for bool(); a found container falls back for
+ * int/float and JSON-renders for str (native_str -> str_of_value). The
+ * accessor's answer is always the cast's own type no matter what the
+ * field holds, which is why these exist next to the typed getters
+ * above: no single lume_map_get_* can express it. */
+int64_t lume_bi_bool_obj(const void *p); /* defined with the bool builtins below */
+int64_t lume_map_acc_i(const LumeMap *m, const char *k, int64_t dflt)
+{
+    int64_t i = map_find(m, k);
+    if (i < 0) return dflt;
+    switch (m->vals[i].tag) {
+    case LUME_SLOT_INT:   return m->vals[i].num;
+    case LUME_SLOT_STR: {
+        const char *s = m->vals[i].str;
+        char *end = NULL;
+        if (s && *s) {
+            long long v = strtoll(s, &end, 10);
+            if (end && end != s && *end == '\0') return (int64_t)v;
+        }
+        return dflt;
+    }
+    case LUME_SLOT_FLOAT: return (int64_t)slot_float_of(m->vals[i]);
+    default:              return dflt;   /* BOOL, null and containers: the interpreter's else */
+    }
+}
+
+double lume_map_acc_f(const LumeMap *m, const char *k, double dflt)
+{
+    int64_t i = map_find(m, k);
+    if (i < 0) return dflt;
+    switch (m->vals[i].tag) {
+    case LUME_SLOT_INT:   return (double)m->vals[i].num;
+    case LUME_SLOT_STR: {
+        const char *s = m->vals[i].str;
+        char *end = NULL;
+        if (s && *s) {
+            double v = strtod(s, &end);
+            if (end && end != s && *end == '\0') return v;
+        }
+        return dflt;
+    }
+    case LUME_SLOT_FLOAT: return slot_float_of(m->vals[i]);
+    default:              return dflt;   /* BOOL, null and containers */
+    }
+}
+
+/* str(m, "k"[, d]): a found scalar serializes exactly as str() of that
+ * value would (the interpreter's native_str -> str_of_value); a found
+ * container JSON-renders (str_of_value -> json_append_value), which is
+ * the one shape the typed getters never served — lume_rt_to_json_obj
+ * renders it here with print()'s rules, the same bytes the three
+ * backends were swept to agree on. A null is an OBJ slot with no
+ * payload and renders the bare word "null".
+ *
+ * The default arrives pre-serialized: the emitters run the default
+ * expression through the same str() conversion the direct call would
+ * use, so this always receives text. A NULL default means the
+ * two-argument form, whose absent-key answer is the interpreter's
+ * str_of_value(null) — the word "null", not empty text. */
+char *lume_map_acc_s(const LumeMap *m, const char *k, const char *dflt)
+{
+    int64_t i = map_find(m, k);
+    if (i < 0) return dup_str(dflt ? dflt : "null");
+    switch (m->vals[i].tag) {
+    case LUME_SLOT_STR:   return dup_str(m->vals[i].str ? m->vals[i].str : "");
+    case LUME_SLOT_INT:   return lume_bi_str_i64(m->vals[i].num);
+    case LUME_SLOT_FLOAT: return lume_bi_str_double(slot_float_of(m->vals[i]));
+    case LUME_SLOT_BOOL:  return lume_bi_str_bool(m->vals[i].num);
+    case LUME_SLOT_OBJ:
+        return m->vals[i].num
+            ? lume_rt_to_json_obj((const void *)(intptr_t)m->vals[i].num)
+            : dup_str("null");
+    default:              return dup_str(dflt ? dflt : "null");
+    }
+}
+
+/* bool(m, "k"[, d]): the interpreter's native_bool -> value_truthy
+ * (value.c) of the found value, or of the default when the key is
+ * absent. Truthiness is defined for every tag — non-empty string,
+ * non-zero number, the bool itself, a non-empty container, null false
+ * — so unlike the numeric accessors there is no conversion and no
+ * fallback: only the found/absent split. */
+int64_t lume_map_acc_b(const LumeMap *m, const char *k, int64_t dflt)
+{
+    int64_t i = map_find(m, k);
+    if (i < 0) return dflt;
+    switch (m->vals[i].tag) {
+    case LUME_SLOT_STR:   return m->vals[i].str && *m->vals[i].str;
+    case LUME_SLOT_BOOL:  return m->vals[i].num != 0;
+    case LUME_SLOT_FLOAT: return slot_float_of(m->vals[i]) != 0.0;
+    case LUME_SLOT_OBJ:   return lume_bi_bool_obj((const void *)(intptr_t)m->vals[i].num);
+    default:              return m->vals[i].num != 0;   /* INT */
+    }
+}
+
 /* Does this Result hold an error? `?` branches on it right after the call and
  * before the payload is read, which is the order the interpreter uses
  * (interp.c's propagate branch looks for "err" first and only then reads "ok").
@@ -2261,6 +2365,47 @@ void *lume_slot_get_obj(const LumeSlot *s, const char *k, void *d)
     LumeMap *m = (LumeMap *)(intptr_t)s->num;
     if (!m || m->kind != LUME_CTR_MAP) return d;
     return lume_map_get_obj(m, k, d);
+}
+
+/* The cast accessors (int/float/str/bool) on a tagged-any receiver — a
+ * json() parse, a for-in value. The interpreter's value_from_map
+ * accepts any runtime map, so an any holding one behaves exactly like
+ * a struct receiver: unpack the slot like the getters above, then run
+ * the same lume_map_acc_* table (found string whole-string-parses or
+ * falls back, found bool/container falls back for int/float, absent
+ * falls back). A non-map slot reads the default; the interpreter would
+ * cast the receiver itself there — the corner get()'s any path already
+ * documents, unchanged. */
+int64_t lume_slot_acc_i(const LumeSlot *s, const char *k, int64_t d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_acc_i(m, k, d);
+}
+
+double lume_slot_acc_f(const LumeSlot *s, const char *k, double d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_acc_f(m, k, d);
+}
+
+const char *lume_slot_acc_s(const LumeSlot *s, const char *k, const char *d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_acc_s(m, k, d);
+}
+
+int64_t lume_slot_acc_b(const LumeSlot *s, const char *k, int64_t d)
+{
+    if (!s || s->tag != LUME_SLOT_OBJ) return d;
+    LumeMap *m = (LumeMap *)(intptr_t)s->num;
+    if (!m || m->kind != LUME_CTR_MAP) return d;
+    return lume_map_acc_b(m, k, d);
 }
 
 /* get(m, k) with no default on an any value: the key reads back as its own

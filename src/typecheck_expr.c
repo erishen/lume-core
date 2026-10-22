@@ -437,6 +437,14 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                 (!type_compat(c, lt, type_prim(TY_FLOAT), n->line) ||
                  !type_compat(c, rt, type_prim(TY_FLOAT), n->line)))
                 ck_fail(c, n->line, "arithmetic needs numbers");
+            /* `/` is floating-point division even on two integers: the
+             * interpreter pushes val_float (interp.c) and both native
+             * emitters widen with sitofp + fdiv (codegen_expr.c /
+             * llvm_cg_expr.inc). The checker used to answer INT here, so
+             * `{ ok: a / b }` typed the ok slot int and str() then rendered
+             * the slot's double bits as an int — lang-basics printed
+             * "21 / 7 = 4613937818241073152" (3.0's IEEE-754 pattern). */
+            if (op == OP_DIV) return type_prim(TY_FLOAT);
             return arith_result(lt, rt);
         }
 

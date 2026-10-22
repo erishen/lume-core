@@ -1342,6 +1342,93 @@ print(str(acc_p, "name"));
 print(int(acc_p, "age"));
 print(get(acc_p, "name"));
 
+// ---- cast accessor semantics: the answer is the cast's own type (ROUND24) ----
+// 86cb959 routed accessors through emit_get_call, whose shape branch refuses
+// a default whose type differs from the key's declared type — but for an
+// ACCESSOR that mismatch is the normal case (int(acc, "n", 0) reading the
+// string "42" is the point of the sugar), and CI went red on lang-basics for
+// five runs before anyone looked. The desugar moved to its own emitter
+// (emit_acc_call + rt.c lume_map_acc_*/lume_slot_acc_*), and the table below
+// is the interpreter's, verbatim: a found string whole-parses or falls back,
+// a found bool/container falls back, and the DEFAULT itself crosses the same
+// bridge the direct cast builds (int("12x") parses a leading number, a bool
+// widens, null lands on zero). The interpreter used to hand the default back
+// verbatim there — int(m, "k", true) answering `true` — which no compiled
+// backend can represent; that is pinned fixed here too.
+type AcsP = { age: string };
+func acs_read_p(p: AcsP): string {
+    return str(int(p, "age", 0)) + "/" + str(p, "age", "?");
+}
+let acs = { name: "ACME", n: "42", amt: 3.5, flag: true,
+            items: [1, 2.5, "x"], sub: { a: 1 } };
+// str accessor: every field shape renders the way str() of the value would
+print(str(acs, "name", ""));
+print(str(acs, "missing", "D"));
+print(str(acs, "n", ""));
+print(str(acs, "amt", ""));
+print(str(acs, "flag", ""));
+print(str(acs, "items", ""));
+print(str(acs, "sub", ""));
+print(str(acs, "missing"));
+// int accessor: found string parses; bool/container fall back; the default
+// converts (bool widens, null zeroes, float truncates, string leading-parses)
+print(int(acs, "n", 0));
+print(int(acs, "missing", 7));
+print(int(acs, "flag", 7));
+print(int(acs, "items", 7));
+print(int(acs, "amt", 0));
+print(int(acs, "name", 9));
+print(int(acs, "missing"));
+print(int(acs, "missing", true));
+print(int(acs, "missing", null));
+print(int(acs, "missing", 2.5));
+print(int(acs, "missing", "12x"));
+print(int(acs, "name", "7"));
+print(int(acs, "flag", true));
+// float accessor: same table in float
+print(float(acs, "amt", 0.0));
+print(float(acs, "n", 0.0));
+print(float(acs, "missing", 1.5));
+print(float(acs, "flag", 1.5));
+print(float(acs, "missing", true));
+print(float(acs, "missing", null));
+print(float(acs, "missing", 7));
+// defaults crossing into str
+print(str(acs, "missing", 5));
+print(str(acs, "missing", null));
+print(str(acs, "missing", true));
+// named struct receiver (boxing path) with a string field read as int
+let acs_p: AcsP = { age: "33" };
+print(acs_read_p(acs_p));
+// any receiver (json parse): the slot-path accessors run the same table
+let acs_j = json("{\"n\": \"42\", \"amt\": 2.5, \"ok\": true, \"deep\": {\"k\": [1,2]}}");
+print(int(acs_j, "n", 0));
+print(float(acs_j, "amt", 0.0));
+print(str(acs_j, "n", ""));
+print(str(acs_j, "ok", ""));
+print(str(acs_j, "deep", ""));
+print(int(acs_j, "zz", 5));
+print(str(acs_j, "zz", "none"));
+print(int(acs_j, "ok", 5));
+print(int(acs_j, "zz", true));
+print(int(acs_j, "zz", null));
+print(float(acs_j, "zz", true));
+print(int(acs_j, "ok", true));
+print(str(acs_j, "missing"));
+// bool accessor: truthiness of the found value, or of the default
+print(bool(acs, "flag", false));
+print(bool(acs, "name", false));
+print(bool(acs, "n", false));
+print(bool(acs, "items", false));
+print(bool(acs, "missing", false));
+print(bool(acs, "missing", true));
+print(bool(acs, "missing", 1));
+print(bool(acs, "missing", "x"));
+print(bool(acs, "missing", ""));
+print(bool(acs, "missing"));
+print(bool(acs_j, "ok", false));
+print(bool(acs_j, "zz", false));
+
 // ---- string family / math / cast / any-read (2026-10-22, ROUND12) ----
 // Pins the three legs together on the builtins task #7/#9 ported the native
 // backends: the string family (upper/lower/capitalize/trim/contains/split/
