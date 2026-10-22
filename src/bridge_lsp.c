@@ -53,6 +53,38 @@ static LspDoc *lsp_doc_put(const char *uri, const char *text) {
     return d;
 }
 
+/* didClose: drop the document from the open set (and free it). A client
+ * closing a document must not leave it resident forever — repeated
+ * open/close cycles on many uris would otherwise grow s_docs unboundedly
+ * (and leak everything at process exit). */
+static void lsp_doc_remove(const char *uri) {
+    LspDoc **pp = &s_docs;
+    while (*pp) {
+        LspDoc *d = *pp;
+        if (strcmp(d->uri, uri) == 0) {
+            *pp = d->next;
+            free(d->uri);
+            free(d->text);
+            free(d);
+            return;
+        }
+        pp = &d->next;
+    }
+}
+
+/* Process exit: the LSP server is stdio-forever, but when the client does
+ * send exit (or stdin EOF), free the open-document set so an LSan run over
+ * a scripted session reports zero leaks instead of one LspDoc per uri. */
+static void lsp_docs_clear(void) {
+    while (s_docs) {
+        LspDoc *d = s_docs;
+        s_docs = d->next;
+        free(d->uri);
+        free(d->text);
+        free(d);
+    }
+}
+
 /* ---- open documents (uri -> latest text) ---- */
 /* ---- LSP framing: Content-Length headers + JSON body ---- */
 static char *lsp_read_frame(void) {
@@ -368,10 +400,22 @@ void lsp_run(VM *vm) {
             /* keep reading; LSP clients send exit next */
         } else if (strcmp(method, "exit") == 0) {
             break;
-        } else if (strcmp(method, "textDocument/didOpen") == 0) {
-            if (params) lsp_did_open(vm, params);
+        } else if (strcmp(method, "textDocument/didOpen") == 0) {            if (params) lsp_did_open(vm, params);
         } else if (strcmp(method, "textDocument/didChange") == 0) {
             if (params) lsp_did_change(vm, params);
+        } else if (strcmp(method, "textDocument/didClose") == 0) {
+            if (params) {
+                int uf = 0;
+                Obj *td = NULL;
+                int tf = 0;
+                Value tv = map_get(vm, params, "textDocument", &tf);
+                if (tf && IS_OBJ(tv) && AS_OBJ(tv)->type == OBJ_MAP) td = AS_OBJ(tv);
+                if (td) {
+                    Value uv = map_get(vm, td, "uri", &uf);
+                    if (uf && IS_OBJ(uv) && AS_OBJ(uv)->type == OBJ_STRING)
+                        lsp_doc_remove(obj_string(AS_OBJ(uv)));
+                }
+            }
         } else if (strcmp(method, "textDocument/hover") == 0) {
             if (params) lsp_hover(vm, params, idv, idf);
             else lsp_error(idv, idf, -32602, "missing params");
@@ -381,5 +425,6 @@ void lsp_run(VM *vm) {
             if (idf) lsp_error(idv, idf, -32601, "method not found");
         }
     }
+    lsp_docs_clear();
     fprintf(stderr, "lume-lsp: stdin EOF, exiting\n");
 }

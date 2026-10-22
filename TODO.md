@@ -904,8 +904,18 @@ reachable from a subsequent `lume_exec()` on the same VM handle:
 P1 closes only the *parser* fuzz leg; the LLVM backend and LSP
 bridge (`bridge_lsp.c`) have no sanitizer target yet:
 
-- [ ] Add `make test-asan-codegen` covering `native_backends.sh`
+- [x] Add `make test-asan-codegen` covering `native_backends.sh`
       under ASAN (new suppressions file scoped to `llvm_cg_*.inc`
       so backend-specific noise is trackable).
-- [ ] Add a `lume-lsp --check` smoke under LSAN to catch
+      **Done (already landed as `asan-compile`)**: the `asan` target's
+      `asan-compile` prerequisite runs `--compile-text`, `--compile-llvm`
+      and `tests/native_backends.sh` under ASan+LSan (Makefile comment
+      block above the target); the existing single `tests/lsan-suppressions.txt`
+      rule is scoped to `LLVMVerifyModule`'s 1-byte string, by function
+      name not library name, so codegen's own leaks still report.
+- [x] Add a `lume-lsp --check` smoke under LSAN to catch
       doc-lifetime leaks on document-switch.
+      **Done 2026-10-22**: `bridge_lsp.c` gained `didClose` (drops the
+      LspDoc from the open set) and exit-time `lsp_docs_clear()`; new
+      `tests/lsp_smoke.sh` drives initialize/open/change/switch/hover/
+      close/shutdown/exit and is wired into `make asan` under LSan.

@@ -970,6 +970,10 @@ asan: $(ASAN_TARGET) tests/smoke-bin-asan asan-compile
 	# leg's leak detection (LSan unsupported); only CI's `asan` job on ubuntu
 	# (and the .linux-build + Docker gcc:12 flow) can actually see leaks.
 	@ASAN_OPTIONS=$(ASAN_BASE_OPTS) ./tests/smoke-bin-asan || exit 1
+	# LSP bridge doc-lifetime gate (P11): initialize/open/change/switch/
+	# hover/close/shutdown under LSan. didClose + exit cleanup are covered
+	# here; a leaked LspDoc per uri shows up as a nonzero exit on Linux CI.
+	@chmod +x tests/lsp_smoke.sh && ASAN_OPTIONS=$(ASAN_BASE_OPTS) LSP_BIN=./$(ASAN_TARGET) ./tests/lsp_smoke.sh || exit 1
 	@echo "ok   ASan/UBSan all passed"
 
 # Emitter / Val-ownership leak gate — the LSan subset of `asan` that exercises
