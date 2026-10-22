@@ -43,6 +43,15 @@ All notable changes to Lume are documented here. The format follows
   with no libLLVM still attempted `--compile-llvm` and failed. It now
   iterates `RAN` with the same `text`/`llvm`/`*`-skip `case`, so an
   unavailable llvm leg is skipped like the `propagate` block already did.
+- **Named LSan emitter gate + Mac blind spot closed (CI/docs).** The
+  `--compile-text` / `--compile-llvm` / `native_backends.sh` LSan checks were
+  inlined in `make asan`; they are now a dedicated `make asan-compile` target
+  that `make asan` delegates to (single source of truth, no drift). LSan only
+  fires on Linux — a Mac local `make asan` runs the emitter paths but its leak
+  detection is a silent no-op — so the `test` job now also runs `make
+  asan-compile` on Linux as a redundant gate, and `CONTRIBUTING.md` documents
+  the rule plus the `scripts/rebuild-linux-build.sh` + Docker `gcc:12` local
+  flow for Mac devs.
 
 ## [0.10.0] - 2026-10-22
 

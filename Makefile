@@ -883,7 +883,7 @@ tests/smoke-bin-asan: tests/smoke.c $(ASAN_CORE_OBJS) build-asan/tests | $(AH_LI
 	$(CC) $(CFLAGS) $(ASAN_CFLAGS) -o $@ tests/smoke.c $(ASAN_CORE_OBJS) $(AH_LIB) $(LDFLAGS) $(ASAN_LDFLAGS) -lm
 
 # tests/tools-bin-asan is not carried in (same reason as tests/tools-bin).
-asan: $(ASAN_TARGET) tests/smoke-bin-asan
+asan: $(ASAN_TARGET) tests/smoke-bin-asan asan-compile
 	@echo "==> ASan/UBSan: --check 全部示例 + lang-basics 直跑 + 单测 + 工具派发"
 	# LSan 现在是开着的 (ASAN_BASE_OPTS 默认为空 = ASan 默认 detect_leaks=1)。
 	# 开放之前的实测基线, 2026-10-03 在 gcc:12 / Ubuntu bookworm arm64 容器里
@@ -937,6 +937,24 @@ asan: $(ASAN_TARGET) tests/smoke-bin-asan
 	# suppressions" 并 exit 1, 连只有规则行的文件也一样)。
 	@for f in $(EXAMPLES); do ASAN_OPTIONS=$(ASAN_BASE_OPTS) ./$(ASAN_TARGET) --check $$f || exit 1; done
 	@ASAN_OPTIONS=$(ASAN_BASE_OPTS) ./$(ASAN_TARGET) examples/lang-basics.lume >/dev/null || exit 1
+	# Emitter / Val-ownership leak gate is delegated to the `asan-compile`
+	# prerequisite (listed on the `asan:` line above): --compile-text,
+	# --compile-llvm and native_backends.sh under LSan. macOS cannot run this
+	# leg's leak detection (LSan unsupported); only CI's `asan` job on ubuntu
+	# (and the .linux-build + Docker gcc:12 flow) can actually see leaks.
+	@ASAN_OPTIONS=$(ASAN_BASE_OPTS) ./tests/smoke-bin-asan || exit 1
+	@echo "ok   ASan/UBSan all passed"
+
+# Emitter / Val-ownership leak gate — the LSan subset of `asan` that exercises
+# the two IR backends (--compile-text / --compile-llvm) and the cross-backend
+# parity harness (native_backends.sh). This is the leg most likely to regress
+# when codegen*.c or Val ownership is touched, and LSan only fires on Linux
+# (macOS: "detect_leaks is not supported on this platform"). Mac devs must run
+# this inside the .linux-build mirror + Docker gcc:12, or rely on CI's `asan`
+# job. `asan` delegates its emitter checks here so they are defined in exactly
+# one place (no drift between the full target and the named gate).
+asan-compile: $(ASAN_TARGET)
+	@echo "==> ASan LSan emitter gate: --compile-text / --compile-llvm / native_backends"
 	# The two IR emitters only run on --compile-*, so without this the native
 	# backends (codegen.c / llvm_codegen.c) are never exercised under a
 	# sanitizer at all.
@@ -944,18 +962,13 @@ asan: $(ASAN_TARGET) tests/smoke-bin-asan
 ifeq ($(HAVE_LLVM),1)
 	@ASAN_OPTIONS=$(ASAN_BASE_OPTS) ./$(ASAN_TARGET) --compile-llvm examples/native-fact.lume >/dev/null || exit 1
 endif
-	# The legs above pin the leak count, but a backend can be leak-clean and
-	# still wrong in a way no exit code sees: IR that compiles, links, exits
-	# 0 and prints nothing (codegen.c once freed the synthetic `top` node
-	# before the entry point read it, and main() lost its `call void @L_top()`
-	# — every leg above stayed green). native_backends.sh diffs each leg
-	# against tests/native-consistency.expected and each pair against the
-	# others, and treats any compiler diagnostic as a failure, so the shape is
-	# caught here instead of becoming a wrong answer elsewhere.
+	# A backend can be leak-clean and still wrong in a way no exit code sees:
+	# IR that compiles, links, exits 0 and prints nothing. native_backends.sh
+	# diffs each leg against tests/native-consistency.expected and each pair
+	# against the others, and treats any compiler diagnostic as a failure.
 	@ASAN_OPTIONS=$(ASAN_BASE_OPTS) LUME_BIN=./$(ASAN_TARGET) \
 		./tests/native_backends.sh || exit 1
-	@ASAN_OPTIONS=$(ASAN_BASE_OPTS) ./tests/smoke-bin-asan || exit 1
-	@echo "ok   ASan/UBSan all passed"
+	@echo "ok   ASan LSan emitter gate passed"
 
 # `build` / `bin` / `build-asan` are listed too even though they are also real
 # directory names: their recipe is just `mkdir -p`, so claiming them phony

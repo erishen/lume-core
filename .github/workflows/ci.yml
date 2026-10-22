@@ -34,6 +34,13 @@ jobs:
       # test, both native emitters and the backend parity check.
       - run: make check
       - run: make test
+      # Redundant LSan emitter gate (A): --compile-text / --compile-llvm /
+      # native_backends.sh under LSan also run here on Linux, so an emitter or
+      # Val-ownership leak is caught even if the dedicated `asan` job is skipped
+      # or renamed. macOS cannot run this (LSan unsupported), hence Linux-only.
+      - name: LSan emitter gate (Linux only)
+        if: runner.os == 'Linux'
+        run: make asan-compile
 
   # Leak detection only works here: LSan is unavailable on macOS (ASan says
   # "detect_leaks is not supported on this platform"), so this is the only
