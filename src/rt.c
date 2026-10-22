@@ -20,6 +20,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Windows CRT defaults stdout/stderr to text mode, translating a '\n' written
+ * by the C runtime into '\r\n'. That makes program output redirected to a file
+ * differ from the LF-terminated expected files the test suite diffs against (and
+ * from POSIX output), so native-text / native-consistency / ai-verify fail on
+ * Windows while the same binaries pass on macOS/Linux. Put redirect/piped
+ * streams into binary mode so output is byte-identical across platforms. This
+ * mirrors the per-entry _setmode calls already in bridge_mcp.c / bridge_lsp.c,
+ * lifted to the shared runtime so the interpreter and every native-compiled
+ * program (both link rt.o) are covered from one place. Guarded to Windows: the
+ * functions and macros below do not exist elsewhere. */
+#if defined(_WIN32)
+#include <io.h>
+#include <fcntl.h>
+static void lume_stdio_binary_init(void) __attribute__((constructor));
+static void lume_stdio_binary_init(void) {
+    if (!_isatty(_fileno(stdout))) _setmode(_fileno(stdout), _O_BINARY);
+    if (!_isatty(_fileno(stderr))) _setmode(_fileno(stderr), _O_BINARY);
+}
+#endif
+
 static int emit(const char *s)
 {
     fputs(s, stdout);

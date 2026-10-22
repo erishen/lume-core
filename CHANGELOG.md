@@ -52,6 +52,20 @@ All notable changes to Lume are documented here. The format follows
   asan-compile` on Linux as a redundant gate, and `CONTRIBUTING.md` documents
   the rule plus the `scripts/rebuild-linux-build.sh` + Docker `gcc:12` local
   flow for Mac devs.
+- **Windows CI: stdout/stderr binary mode for redirected output.** The
+  Windows CRT defaults the C runtime's stdout/stderr to text mode, translating
+  a written `\n` into `\r\n`. Program output redirected to a file (the pattern
+  every `native-text` / `native-consistency` / `ai-verify` / `regex-smoke`
+  test uses) therefore differed from the LF-terminated `tests/*.expected`
+  files, and `diff` failed every such leg on the `Windows (MSYS2)` job while
+  the same binaries passed on macOS/Linux — a hidden, platform-only breakage
+  (the job went red before even reaching fuzz/ai-verify). `rt.c` now installs
+  a `__attribute__((constructor))` that switches any non-TTY stdout/stderr to
+  `_O_BINARY` on `_WIN32` (TTY stays text mode, so interactive display is
+  unaffected). This lifts the per-entry `_setmode` calls already in
+  `bridge_mcp.c` / `bridge_lsp.c` into the shared runtime, so the interpreter
+  and every `--compile-*` native program (both link `rt.o`) are covered from
+  one place.
 
 ## [0.10.0] - 2026-10-22
 
