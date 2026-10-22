@@ -43,6 +43,11 @@
  * backend would link the interpreter's sql-free object and the sql_* calls
  * would dangle as undefined symbols. */
 #define NATIVE_OBJ "build/bridge_native_sql.o"
+/* mingw has no system regex library; rt.c's lume_str_match_* resolve to the
+ * compat regex objects the lume build itself ships (regcomp/regexec/...),
+ * so the helper link must include them wherever the runtime object is used. */
+#define REGEX_OBJS "build/compat/regex/regcomp.o build/compat/regex/regexec.o " \
+                   "build/compat/regex/regerror.o build/compat/regex/tre-mem.o"
 
 static struct { char path[PATH_MAX]; struct stat st; } rt_last;
 
@@ -125,6 +130,21 @@ static int write_file(const char *path, const char *data)
     return w == n;
 }
 
+/* -I path to the compat headers living beside a backend runtime source
+ * (e.g. src/compat/regex for src/rt.c). mingw has no system <regex.h>;
+ * both native runtime helpers include it via the compat layer, so the
+ * helper compile command needs the same include the lume build itself uses. */
+static void src_compat_inc(char *buf, size_t n, const char *src)
+{
+    const char *slash = NULL;
+    for (const char *q = src; *q; q++)
+        if (*q == '/' || *q == '\\') slash = q;
+    if (slash && (size_t)(slash - src) < n - 12)
+        snprintf(buf, n, "%.*s/compat/regex", (int)(slash - src), src);
+    else
+        snprintf(buf, n, "src/compat/regex");
+}
+
 /* Compile the runtime helper once per build. Cheap to call repeatedly: the
  * object is rebuilt only when rt.c itself is newer. Backend-neutral, so both
  * the text and the libLLVM backends share it. */
@@ -152,10 +172,15 @@ int backend_build_rt(char *err, size_t err_size)
     /* Cross-compiling a C helper needs a clang-like driver too: CC may point
      * at gcc, which does not accept -target. */
     const char *cc = xt_target() ? pick_ir_cc() : pick_cc();
-    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s",
+    /* mingw has no system <regex.h>; lume ships its own next to rt.c
+     * (src/compat/regex), and the runtime uses it (lume_str_match_*), so the
+     * helper compile must see the same compat include the lume build uses. */
+    char rinc[PATH_MAX];
+    src_compat_inc(rinc, sizeof rinc, LUME_RT_SRC);
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -I%s -c -o %s %s",
              cc, xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
-             rt_obj_path(), LUME_RT_SRC);
+             rinc, rt_obj_path(), LUME_RT_SRC);
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "compiling the runtime helper failed");
         return 1;
@@ -186,19 +211,21 @@ int backend_build_native(char *err, size_t err_size)
 
     char cmd[PATH_MAX * 2];
     const char *cc = xt_target() ? pick_ir_cc() : pick_cc();
+    char ninc[PATH_MAX];
+    src_compat_inc(ninc, sizeof ninc, LUME_NATIVE_SRC);
 #if LUME_HAS_SQLITE
     /* bridge_native.c carries the native sql_* implementations, which
      * #include <sqlite3.h>; the include path and the LUME_HAS_SQLITE flag
      * come from the lume-core build (Makefile, SQLITE_PREFIX). */
-    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s %s -DLUME_HAS_SQLITE=1",
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -I%s -c -o %s %s %s -DLUME_HAS_SQLITE=1",
              cc, xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
-             nat_obj_path(), LUME_NATIVE_SRC, LUME_SQLITE_INC);
+             ninc, nat_obj_path(), LUME_NATIVE_SRC, LUME_SQLITE_INC);
 #else
-    snprintf(cmd, sizeof cmd, "%s -O2%s%s -c -o %s %s",
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -I%s -c -o %s %s",
              cc, xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
-             nat_obj_path(), LUME_NATIVE_SRC);
+             ninc, nat_obj_path(), LUME_NATIVE_SRC);
 #endif
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "compiling the native server runtime failed");
@@ -292,19 +319,19 @@ int backend_native(const char *src_path, struct Node *prog,
 #if LUME_HAS_SQLITE
     /* sqlite lib dir comes as its own macro (whitespace-free by contract);
      * empty means the compiler's default paths (-lsqlite3 alone). */
-    snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s %s%s -lsqlite3",
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s %s %s%s -lsqlite3",
              pick_ir_cc(), xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
              oname, out_path, rt_obj_path(), nat_obj_path(),
-             win_link ? "-lws2_32" : "-lm",
+             REGEX_OBJS, win_link ? "-lws2_32" : "-lm",
              LUME_SQLITE_LIBDIR[0] ? "-L" : "",
              LUME_SQLITE_LIBDIR[0] ? LUME_SQLITE_LIBDIR : "");
 #else
-    snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s",
+    snprintf(cmd, sizeof cmd, "%s -O2%s%s -o %s %s.o %s %s %s %s",
              pick_ir_cc(), xt_target() ? " -target " : "",
              xt_target() ? xt_target() : "",
              oname, out_path, rt_obj_path(), nat_obj_path(),
-             win_link ? "-lws2_32" : "-lm");
+             REGEX_OBJS, win_link ? "-lws2_32" : "-lm");
 #endif
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (IR kept in %s.ll)",

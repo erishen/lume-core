@@ -35,6 +35,11 @@
  * libsqlite3, the native sql_* runtime. Distinct name from the
  * interpreter's build/bridge_native.o (see backend.c). */
 #define NATIVE_OBJ "build/bridge_native_sql.o"
+/* mingw has no system regex library; rt.c's lume_str_match_* resolve to the
+ * compat regex objects the lume build itself ships (regcomp/regexec/...),
+ * so the helper link must include them wherever the runtime object is used. */
+#define REGEX_OBJS "build/compat/regex/regcomp.o build/compat/regex/regexec.o " \
+                   "build/compat/regex/regerror.o build/compat/regex/tre-mem.o"
 
 /* Requested by --no-pass; reset per process, so a single flag never leaks
  * from one compile into the next. */
@@ -311,14 +316,15 @@ int backend_llvm_native(const char *src_path, struct Node *prog,
 #if LUME_HAS_SQLITE
     /* sqlite lib dir comes as its own macro (whitespace-free by contract);
      * empty means the compiler's default paths (-lsqlite3 alone). */
-    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s %s%s -lsqlite3",
+    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s %s %s%s -lsqlite3",
              pick_cc(), out_path, obj_path, RT_OBJ, NATIVE_OBJ,
-             win_link ? "-lws2_32" : "-lm",
+             REGEX_OBJS, win_link ? "-lws2_32" : "-lm",
              LUME_SQLITE_LIBDIR[0] ? "-L" : "",
              LUME_SQLITE_LIBDIR[0] ? LUME_SQLITE_LIBDIR : "");
 #else
-    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s", pick_cc(), out_path,
-             obj_path, RT_OBJ, NATIVE_OBJ, win_link ? "-lws2_32" : "-lm");
+    snprintf(cmd, sizeof cmd, "%s -O2 -o %s %s %s %s %s %s", pick_cc(), out_path,
+             obj_path, RT_OBJ, NATIVE_OBJ, REGEX_OBJS,
+             win_link ? "-lws2_32" : "-lm");
 #endif
     if (run_cmd(cmd) != 0) {
         snprintf(err, err_size, "linking %s failed (ir kept in %s)",
