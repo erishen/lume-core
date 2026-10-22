@@ -6,6 +6,112 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-22
+
+### Added — namespace multi-file modules
+
+- `import` across files now works end to end on all three backends: module
+  functions, type declarations and top-level bindings join the build. Every
+  referenced alias (entry `as` plus module-side `import`s) is registered per
+  module, module member variables resolve to per-module top-level bindings,
+  and module function cnames carry the module index so cross-file lambdas
+  never collide. Previously `module A import B` only registered B under the
+  entry alias — `b.double` failed with `unknown function`.
+- Module bodies may contain lambdas and local functions (bare-name calls
+  resolve to the module's own `<ns>.<name>` first), and the signature pass
+  reads a lambda's real-time return type instead of the AST slot written
+  after the loop, so `twice(g(n))` arguments type correctly.
+- Pinned by `tests/ns-chain-main.lume` (entry→A→B) and
+  `ns-lf.lume`/`ns-lib-lf.lume`; interpreter/text/libLLVM agree, wired into
+  `native_backends.sh`.
+
+### Added — server{} and env() on the native backends
+
+- `server {}` compiles through the LLVM backend: route-table emission,
+  handler `req.*` member access, `get(req.query_params)`/`int` calls,
+  `now()`/`run()`, verb-group route expansion, and a default response when
+  no handler matches. Handler parameters are type-checked with the same
+  shape on the interpreter and text backends.
+- `env()` is three-backend uniform; compiled binaries can read the same
+  masked environment the interpreter exposes.
+
+### Added — sql transaction builtins (P6)
+
+- `sql_tx_begin/exec/commit/rollback` on all three backends: a runtime
+  transaction object (OBJ_SQLTX with GC mark+release), text/LLVM emitters
+  with the TEXT volatile-pointer lifetime fix, and bool parity (TY_BOOL +
+  `i1` trunc). The native sqlite runtime links via `-DLUME_HAS_SQLITE=1`;
+  a three-backend sql parity leg runs in `native_backends.sh` and CI
+  (libsqlite3-dev on Linux, mingw-w64 sqlite3 on Windows).
+
+### Added — statistical distribution builtins
+
+- `normcdf` / `erf` / `tdist_cdf` / `chisq_cdf` / gamma family, with
+  `examples/stats.lume` exercising them; a unary-minus literal-element
+  inference gap in the signature pass was fixed on the way.
+
+### Added — argv() in compiled binaries
+
+- LLVM-compiled mains take `i32 (i32, ptr)` and initialize through
+  `lume_cli_init(argc, argv)`; `argv()` returns trailing arguments as
+  `list<string>` with interpreter/text-identical semantics.
+  `infer_node_type` gained the argv branch on both `codegen_scan.c` and
+  `llvm_cg_scan.inc`, and the 0-argument builtin path needed a special case
+  past the table's `argc<1` guard.
+
+### Added — compile-time builtin arity contract
+
+- A `LUME_BUILTIN_SIG` signature table (exact / variadic / min-max) drives
+  compile-time call-shape validation: wrong builtin arity is a named error
+  at compile time instead of a runtime crash. `type_func` was split into
+  `type_func_arity`, and the `str/int/float(map, key)` three-argument
+  accessor forms compile three-backend uniform.
+
+### Added — AI self-verification gate (P4)
+
+- `scripts/ai-verify-loop.sh` + `make ai-verify-loop`: must-pass/must-reject
+  seed sets are asserted every run, and each violation appends the file +
+  stderr counter-example to `out/ai-rejects.log` for LLM retry feedback.
+  Wired into `ci.yml` and `windows.yml` (`ai-verify` job);
+  `assert_semantic()` converged to a static declaration contract
+  (`verify-ai-semantics.sh`). The host-side producer (`ai_verify` exec
+  tool) ships in agent-httpd.
+
+### Fixed — for-in over an inline temporary loses the GC root (P9)
+
+- `for x in range(60000)`-style inline-iterable loops crashed under
+  allocation pressure: the iterable was `vm_pop`ped before the body ran, so
+  the GC only rooted the stack below it, and any body allocation past the
+  2 MiB threshold collected the iterable mid-iteration (use-after-free,
+  reproduced as 0xC0000005 on a real server.lume workload). The iterable
+  now stays on the stack across the whole loop — body stack balance keeps
+  the slot valid, and every exit pops it.
+- Regression: `tests/for-in-gc.lume` + `make for-in-gc-test`
+  (interpreter-only; native backends have no GC) + the CI ASan job re-runs
+  the fixture. Containers embedding lume should rebuild to pick this up.
+
+### Fixed — build & portability
+
+- asan/pack/fuzz variant builds drop `-DLUME_HAS_SQLITE=1` for
+  `bridge_native.o` like the main build (the flag pulls references into
+  rt.c symbols the variants do not link).
+- `compile_mods` no longer uses GNU nested functions, so clang builds work.
+- Windows/LLVM: the mingw32 triple normalises to windows-gnu/COFF (mingw
+  lld rejects ELF), and the LLVM sql emitters no longer free LLVMValueRef
+  operands (heap corruption).
+- `LUME_CORE_VERSION` bumped `0.7.0` → `0.10.0` (single source for
+  `lume --version`; the macro had been stale across the 0.8/0.9 releases).
+
+### Changed — three-backend consistency sweep
+
+- String family (upper/lower/capitalize/trim/contains/split/join/replace/
+  substr), `exp`/`log`/`ln`, `bool()`, and int/float casts ported to the
+  native backends; `any` dual-track `get`/`index`/`print`/`==` aligned —
+  with a default value a literal-struct get resolves to the typed getter,
+  without one it takes the boxed-any dynamic read.
+- `make test` / `make asan` green (183 tests, 0 failed) with expected files
+  regenerated from the interpreter.
+
 ### Fixed — sql guardrail: CTE bodies are read-only; top-level RETURNING writes work
 
 - The write-CTE whitelist (0.9.4) opened a "RETURNING DML" head inside WITH
