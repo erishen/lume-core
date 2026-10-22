@@ -464,3 +464,29 @@ C entry **只跑 `L_top` 这一个函数**,按源码顺序;和解释器一样,
 | `tests/native-fact.expected` | `make native` 的期望输出 |
 | `examples/native-bench.lume` | 两后端对比靶子(双层循环,1e8 次内层迭代) |
 | `tests/native-bench.expected` | `make native-bench` 的期望输出(两后端共用) |
+
+## VM 生命周期与嵌入契约(P11 审计)
+
+`lume.h` 是**可嵌入** API(`vm_init` → `bridge_init` → `loader_run` →
+`loader_free` / `vm_free`),CLI 只按「每脚本一个新 VM」用:main 对每个
+脚本 `vm_init` + `loader_run` + `vm_teardown`,失败即退出,所以单进程内
+**不存在**跨执行的存活状态。
+
+但嵌入式宿主(agent-httpd / 长驻 worker)可能在同一 `VM` 句柄上多次
+调用 `loader_run`。契约(2026-10-22 审计修复,`tests/vm_reuse.c` 回归):
+
+- **每次 `loader_run` 开头自重置执行态**:`vm->error` 门闩、`error_msg`、
+  `vm->stack_count` 全部清零(P11 前:一次失败的 exec 会留下 `vm->error`,
+  `exec_program` 见 error 即短路,第二次运行会**静默 no-op**;栈上的半截
+  帧也会残留)。
+- **`vm->globals` 是持久的**:entry env 复用 `vm->globals`(builtins 与
+  route/tool/server 注册都挂它),同 VM 跑第二个脚本会看到第一个脚本留
+  下的顶层绑定 —— 这是设计(模块语义),不是泄漏;不需要的绑定由下一
+  个脚本自己覆盖。
+- **释放对称**:每个 `vm_init` 都必须配 `loader_free` + `vm_free`
+  (+ 编程序号的 `type_release_all`,CLI 的 `vm_teardown` 就是这三步)。
+  失败路径也一样:`loader_run` 返回非 0 后,**不**要复用 globals 做二次
+  执行以外的事,直接走 teardown。
+- 验证:`make vm-reuse-test`(坏脚本 → 好脚本 → 再一个好脚本,同一 VM);
+  ASAN/LSAN 下跑它(`make asan` 一族的 `vm-reuse-test` 前缀)能顺带抓
+  出 arena 生命周期之外的泄漏。

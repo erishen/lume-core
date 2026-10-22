@@ -373,6 +373,14 @@ void loader_free(VM *vm) {
 int loader_run(VM *vm, const char *entry_path, bool check_only,
                char *errbuf, size_t errbuf_size) {
     if (errbuf && errbuf_size) errbuf[0] = '\0';
+    /* Per-run reset (P11 audit): a failed exec must not gate the next run.
+     * The CLI tears the VM down after one script, but an embedded host can
+     * call loader_run twice on the same VM handle — vm->error and the value
+     * stack would otherwise survive an aborted exec, and the second run
+     * would silently no-op (exec_program stops while vm->error is set). */
+    vm->error = false;
+    vm->error_msg[0] = '\0';
+    vm->stack_count = 0;
     vm->modules = NULL;
     vm->module_count = 0;
     vm->load_stack = NULL;

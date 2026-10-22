@@ -360,7 +360,7 @@ $(OBJS): $(LLVM_CONFIG_PATH)
 $(TARGET): $(OBJS) $(AH_LIB) | bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
-check: all crypt-test crypto-test builtins-test
+check: all crypt-test crypto-test builtins-test vm-reuse-test
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -487,6 +487,23 @@ fuzz-driver: $(FUZZ_DRIVER)
 	n=$$(printf '%s\n' "$$files" | wc -l); \
 	./$(FUZZ_DRIVER) $$files >/dev/null; \
 	echo "ok fuzz-driver: $$n seeds replayed (standalone driver, any compiler)"
+
+# --- P11 memory-safety audit: same-VM reuse contract (make vm-reuse-test) --
+# Same standalone-driver shape as fuzz-driver: one main() that calls
+# loader_run twice on a single VM handle — a rejected script first, a clean
+# program second, a third after that — asserting the per-run reset
+# (vm->error latch + value stack) holds for embedded hosts. Any $(CC).
+ifeq ($(IS_WINDOWS),1)
+    VM_REUSE := out/vm-reuse-test.exe
+else
+    VM_REUSE := out/vm-reuse-test
+endif
+$(VM_REUSE): tests/vm_reuse.c $(CORE_OBJS) | out
+	$(CC) $(CFLAGS) -o $@ tests/vm_reuse.c $(CORE_OBJS) $(LDFLAGS) -lm
+
+vm-reuse-test: $(VM_REUSE)
+	@set -e; ./$(VM_REUSE); \
+	echo "ok vm-reuse-test: failed run does not gate/poison the next run on the same VM"
 
 # --- P4 AI self-verification gate (make ai-verify) -----------------------
 # Deterministic acceptance for an LLM-generated .lume program ("AI writes,
@@ -986,7 +1003,7 @@ endif
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
-         treecheck letpat-test fuzz fuzz-ci fuzz-driver ai-verify ai-verify-loop for-in-gc-test \
+         treecheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
          ai-produce
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all

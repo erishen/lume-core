@@ -892,14 +892,12 @@ state can outlive a malformed script. The question is whether a
 `lume_exec()` that returns an error leaves any VM-owned pointer
 reachable from a subsequent `lume_exec()` on the same VM handle:
 
-- [ ] Add a unit test: run a script that aborts mid-execution
-      (type error / OOM injection / a deliberately malformed
-      closure), then immediately run a second script on the same
-      VM under ASAN; assert no read-after-free and no leak beyond
-      the intentional arena lifetime.
-- [ ] If the VM is not currently reset between runs, add an
-      explicit `vm_free(vm)` contract between script executions
-      and document it in `docs/NATIVE.md`.
+- [x] **Closed 2026-10-22**: `loader_run` now resets `vm->error` /
+      `error_msg` / `stack_count` at entry (the error latch made a second
+      run on the same VM silently no-op); contract documented in
+      `docs/NATIVE.md` ("VM 生命周期与嵌入契约"); regression =
+      `make vm-reuse-test` (bad script → good script → good script, one
+      VM, any compiler; ASAN/LSAN runnable).
 
 ### Extend ASAN/LSAN to the LSP + codegen paths
 
