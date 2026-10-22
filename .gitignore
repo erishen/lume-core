@@ -55,3 +55,11 @@ tests/.data/
 # compile-text/compile-llvm output when the shell cwd is src/ (a cwd-dependent
 # sibling of the /out/ entry above); these are build artifacts, not sources
 src/out/
+
+# Local editor / agent tooling config — keep local-only, never commit
+.vscode/
+.claude/
+.trae/
+.agents/
+.codex/
+.cursor/
