@@ -190,7 +190,7 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   in) without inheriting the 1.7M host. Nothing to build; this note exists so
   we stop re-deriving "listen needs to be added" and instead pick the lightest
   endpoint shape.
-- [ ] **P4 · AI self-verification loop (filed 2026-10-20, user goal: "turn Lume into an AI-self-verifying language").**
+- [x] **P4 · AI self-verification loop (filed 2026-10-20, user goal: "turn Lume into an AI-self-verifying language").**
   Goal: any LLM-generated `.lume` program must pass an automated gate before it enters
   the regression corpus — "AI writes, machine verifies."
   Existing base (do NOT rebuild):
