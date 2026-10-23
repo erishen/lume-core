@@ -598,6 +598,10 @@ static const char *ci_find(const char *hay, size_t hlen, const char *needle)
     return NULL;
 }
 
+#if LUME_HAS_SQLITE
+void lume_bi_sql_tx_cleanup(void);
+#endif
+
 void lume_srv_run(void)
 {
 #if defined(_WIN32)
@@ -773,6 +777,15 @@ void lume_srv_run(void)
         int is_json = 0;
         h(&req, &out, &out_len, &is_json);
 
+#if LUME_HAS_SQLITE
+        /* A handler that dropped its sql_tx handle (never committed or
+         * rolled back) must not pin the connection — and the BEGIN lock —
+         * for the life of the process: roll back and close at the request
+         * boundary (the native twin of the interpreter's GC finalizer;
+         * TODO.md P6). */
+        lume_bi_sql_tx_cleanup();
+#endif
+
         if (out) {
             size_t blen = out_len;
             if (out_len == (size_t)-1) {
@@ -853,6 +866,33 @@ typedef struct {
     char *path;
     int state;   /* 0 open, 1 committed, 2 rolled back */
 } LumeSqlTx;
+
+/* Open-handle registry — the native twin of the interpreter's OBJ_SQLTX
+ * GC finalizer. The interpreter reclaims a transaction the script drops
+ * (uncommitted/un-rolled-back) when the GC collects its Obj; the native
+ * handle is a plain heap struct with no such hook, so an abandoned open
+ * transaction pinned its sqlite connection (and the BEGIN lock) until
+ * process exit — a real leak in long-running server{} deployments
+ * (TODO.md P6). Registration lets the serve loop reclaim every
+ * still-open handle at the request boundary. */
+#define SQL_TX_MAX_OPEN 64
+static LumeSqlTx *g_open_tx[SQL_TX_MAX_OPEN];
+static int g_open_tx_n = 0;
+
+static void sql_tx_register(LumeSqlTx *t)
+{
+    if (g_open_tx_n < SQL_TX_MAX_OPEN) g_open_tx[g_open_tx_n++] = t;
+}
+
+static void sql_tx_unregister(LumeSqlTx *t)
+{
+    for (int i = 0; i < g_open_tx_n; i++) {
+        if (g_open_tx[i] == t) {
+            g_open_tx[i] = g_open_tx[--g_open_tx_n];
+            return;
+        }
+    }
+}
 
 /* Busy timeout: same environment knob and defaults as the interpreter's
  * builtins_sql.c. */
@@ -1034,6 +1074,7 @@ void *lume_bi_sql_tx_begin(const char *path)
     tx->db = sq;
     tx->path = strdup(p);
     tx->state = 0;
+    sql_tx_register(tx);
     return tx;
 }
 
@@ -1088,6 +1129,7 @@ static long long sql_tx_end(void *tx, int commit)
     sqlite3_close(t->db);
     t->db = NULL;
     t->state = commit ? 1 : 2;
+    sql_tx_unregister(t);
     free(t->path);
     free(t);
     return 1;
@@ -1095,4 +1137,27 @@ static long long sql_tx_end(void *tx, int commit)
 
 long long lume_bi_sql_tx_commit(void *tx) { return sql_tx_end(tx, 1); }
 long long lume_bi_sql_tx_rollback(void *tx) { return sql_tx_end(tx, 0); }
+
+/* Reclaim every still-open handle: ROLLBACK (so the transaction lock is
+ * released and the journal cleaned) then close + free. Called after each
+ * native serve request — a handler that dropped its handle cannot pin the
+ * connection until process exit. A CLI binary that abandons a handle is
+ * covered by process exit (OS closes the fd and sqlite rolls back). */
+void lume_bi_sql_tx_cleanup(void)
+{
+    for (int i = 0; i < g_open_tx_n; i++) {
+        LumeSqlTx *t = g_open_tx[i];
+        if (t && t->db && t->state == 0) {
+            char *m = NULL;
+            if (sqlite3_exec(t->db, "ROLLBACK", NULL, NULL, &m) != SQLITE_OK)
+                sqlite3_free(m);
+            sqlite3_close(t->db);
+            t->db = NULL;
+            t->state = 2;
+        }
+        free(t->path);
+        free(t);
+    }
+    g_open_tx_n = 0;
+}
 #endif /* LUME_HAS_SQLITE */

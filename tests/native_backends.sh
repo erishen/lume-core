@@ -512,6 +512,45 @@ else
     echo "ok   sql cross-backend: skipped (build has no libsqlite3)"
 fi
 
+# ---- native serve: abandoned sql_tx handle reclaimed at request boundary ----
+# The interpreter's tx handle is an OBJ_SQLTX with a GC finalizer; the native
+# handle is a plain heap struct, so the serve loop rolls back + closes every
+# still-open handle when a request ends (bridge_native.c
+# lume_bi_sql_tx_cleanup). Without that reclaim, the first /open below leaves
+# its transaction (and the BEGIN lock) open and the second /open's
+# sql_tx_begin would time out on SQLITE_BUSY. Two sequential 200s with a
+# fresh "ok" body prove the reclaim. Runs only when the sql probe passed
+# (HAVE_SQLITE build); the port is fixed — the CI jobs that reach this leg
+# run the suites serially on one runner.
+if [ -n "${sql_ran[0]:-}" ]; then
+    TX_SERVE_SRC=tests/native-sql-tx-serve.lume
+    TX_SERVE_BIN="$WORK/tx-serve"
+    if "$TARGET" --compile-text "$TX_SERVE_SRC" -o "$TX_SERVE_BIN" \
+            >"$WORK/tx-serve-build.log" 2>&1; then
+        rm -f /tmp/lume-tx-cleanup.db
+        "$TX_SERVE_BIN" >"$WORK/tx-serve.log" 2>&1 &
+        TX_PID=$!
+        sleep 1
+        r1=$(curl -s -o "$WORK/tx-r1.txt" -w '%{http_code}' \
+             "http://127.0.0.1:18091/open" 2>/dev/null)
+        r2=$(curl -s -o "$WORK/tx-r2.txt" -w '%{http_code}' \
+             "http://127.0.0.1:18091/open" 2>/dev/null)
+        kill "$TX_PID" 2>/dev/null
+        wait "$TX_PID" 2>/dev/null
+        if [ "$r1" = "200" ] && [ "$r2" = "200" ] \
+           && grep -q "ok" "$WORK/tx-r1.txt" \
+           && grep -q "ok" "$WORK/tx-r2.txt"; then
+            pass "sql serve: abandoned tx handle reclaimed at request boundary"
+        else
+            head -20 "$WORK/tx-serve.log"
+            fail "sql serve: tx handle reclaim (r1=$r1 r2=$r2)"
+        fi
+    else
+        head -20 "$WORK/tx-serve-build.log"
+        fail "sql serve: cannot compile $TX_SERVE_SRC"
+    fi
+fi
+
 # ---- statistical builtins cross-backend consistency (P4 native gap) -------
 # The interpreter always had tdist_cdf / normcdf / chisq_cdf / erf / gamma /
 # lgamma / igamma / ibeta; the native emitters had the Bi table and rt.c

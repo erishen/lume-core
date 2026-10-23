@@ -1,0 +1,20 @@
+// Native serve: an abandoned sql_tx handle must be reclaimed at the request
+// boundary (TODO.md P6). The interpreter's tx handle is an OBJ_SQLTX with a
+// GC finalizer; the native handle is a plain heap struct, so the serve loop
+// rolls back + closes every still-open handle when a request ends. Without
+// that reclaim, the FIRST request below would leave its transaction (and the
+// BEGIN lock) open, and the SECOND request's sql_tx_begin would time out on
+// SQLITE_BUSY. Two sequential 200s with a fresh "ok" body prove the reclaim.
+let db = "/tmp/lume-tx-cleanup.db";
+sql_write(db, "create table if not exists t (id int)");
+server {
+  bind = "127.0.0.1";
+  port = 18091;
+};
+get "/open", () => {
+  let t: string = sql_tx_begin(db);
+  sql_tx_exec(t, "insert into t values (1)");
+  /* t is dropped here - never committed, never rolled back. */
+  return "ok";
+};
+run();

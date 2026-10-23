@@ -498,7 +498,7 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   `00204ae` (first server{} leg) — latent since then. LLVM side has its own
   emitter and was not affected.
 
-## P6 — Cross-statement transactions (interpreter closed 2026-10-20; native parity open)
+## P6 — Cross-statement transactions (closed 2026-10-23)
 
 Motivation: lume-nsgm's PayPal variant inserts the order and decrements
 stock as two statements; a crash in between leaves a pending orphan
@@ -561,7 +561,15 @@ The four-layer surface if started:
   One native divergence, structural not a bug: the handle is a plain
   heap struct with no GC finalizer — commit/rollback free it, an
   abandoned open transaction leaks until process exit (the interpreter
-  closes via the OBJ_SQLTX finalizer). Fixed en route: sql row maps
+  closes via the OBJ_SQLTX finalizer). Fixed 2026-10-23: an open-handle
+  registry (`g_open_tx[64]` + register/unregister in bridge_native.c)
+  plus `lume_bi_sql_tx_cleanup()` — the serve loop rolls back + closes
+  every still-open handle at the request boundary, so a handler that
+  drops its handle cannot pin the connection (and the BEGIN lock) for
+  the life of the process. Regression: tests/native_backends.sh serve
+  leg (`tests/native-sql-tx-serve.lume` — two sequential /open requests
+  both get 200 with a fresh "ok" body; without the reclaim the second
+  BEGIN would time out on SQLITE_BUSY). Fixed en route: sql row maps
   must copy `sqlite3_column_text` (a volatile per-step buffer; map_put
   stores the string pointer verbatim), which corrupted TEXT values and
   crashed the smoke program. Verified: `native-sql-smoke` on the text
