@@ -6,6 +6,26 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Statistical builtins infer `float` and emit on the native backends.**
+  `normcdf` / `erf` / `gamma` / `lgamma` / `igamma` / `ibeta` /
+  `tdist_cdf` / `chisq_cdf` had interpreter support and a text-backend Bi
+  table but no inference entry and no libLLVM emit leg, so an unannotated
+  `let p = tdist_cdf(...)` refused to compile natively (the P4
+  counter-example). All eight now infer `TY_FLOAT` (`codegen_scan.c` +
+  `llvm_cg_scan.inc`) and emit through `rt.c`'s `lume_bi_*` helpers
+  (`llvm_cg_call.inc`, arity-checked). `tests/native_backends.sh` gains a
+  stats cross-backend block; the AI-gate counter-example flipped to the
+  type mismatch `let p: string = tdist_cdf(...)`.
+- **P6 sql surface joins the AI self-verification loop.** `gen-sql-tx`
+  seed (tx open → write → query → commit) joins the produce manifest, and
+  `verify-ai-lume.sh` gains an availability probe: a sql-bearing program
+  is judged only where the build has libsqlite3 (scratch `SQLITE_DB`,
+  same protocol as `native_backends.sh`'s sql block) and skipped with a
+  note elsewhere. The ai-verify CI job installs `libsqlite3-dev` so the
+  seed is genuinely judged there.
+
 ### Fixed
 
 - **Cast accessors (`int/float/str/bool(m, "k"[, d])`) answer in the cast's

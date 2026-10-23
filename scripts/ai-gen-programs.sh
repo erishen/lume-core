@@ -14,10 +14,12 @@
 # Every generated candidate carries a manifest row
 #     <name>|<expected verdict: accept|reject>|<prompt>
 # so scripts/ai-produce.sh can assert that the gate judged it the way
-# the producer intended. Six candidates are accept-class (plausible LLM
+# the producer intended. Seven candidates are accept-class (plausible LLM
 # programs, all on the native backends' covered surface — type check +
 # interp/IR-text/libLLVM agreement is the oracle, so any drift in a
-# backend shows as a reject); one is deliberately reject-class: the
+# backend shows as a reject; the sql_tx seed rides the same gate, judged
+# only on sqlite builds via verify-ai-lume.sh's availability probe and
+# skipped with a note elsewhere); one is deliberately reject-class: the
 # statistical builtins now infer float on every backend (so the old
 # "missing annotation" counter-example became a legal program), and the
 # counter-example moved to the mismatch the checker still catches —
