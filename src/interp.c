@@ -1,3 +1,20 @@
+/* ============================================================================
+ * interp.c — Table of Contents
+ *
+ * Tree-walk interpreter (the "Runtime"). See the prose block just below for
+ * the value-stack / longjmp / bridge contract. Navigation anchors are the
+ * dashed section banners already scattered through the file:
+ *
+ *  1. VM plumbing .......................... L44
+ *  2. string literal unescaping ............ L73
+ *  3. function call engine ................. L87
+ *  4. expressions (eval_expr dispatch) ..... L280
+ *  5. expression cases (one fn each) ....... L580
+ *  6. statements (exec_statement dispatch) . L903
+ *  7. statement cases (one fn each) ........ L1125
+ *  8. VM setup & top-level execution ....... L1365
+ * ========================================================================== */
+
 #include "lume.h"
 #include "builtins.h"
 #include <math.h>
