@@ -1395,6 +1395,11 @@ static const char *list_at_fn(Type *ty)
      * inner list as an object. */
     case TY_ENUM:
     case TY_LIST:   return "lume_list_at_obj";
+    /* Same branch as codegen_stmt.c's shared copy: an `any` element (a
+     * str_match / json row) is read back boxed as its own tag —
+     * lume_list_at_slot returns a LumeSlot* so the caller's get/print
+     * chain keeps the same boxed representation the slot getters use. */
+    case TY_ANY:    return "lume_list_at_slot";
     default:        return NULL;
     }
 }

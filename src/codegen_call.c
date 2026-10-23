@@ -558,6 +558,25 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
      * that flavour, spelled below). */
     const char *fn = "lume_map_get_i";
     Type *rty = type_prim(TY_INT);
+    if (m.ty && m.ty->kind == TY_ANY &&
+        knode && knode->type == N_LITERAL && knode->as.lit.kind == LIT_NUM &&
+        !knode->as.lit.is_float) {
+        /* An any receiver with an integer key is a list-element read —
+         * get(j, 0) on a json array, a str_match list. The receiver is a
+         * boxed LumeSlot*; lume_slot_at takes (slot, i64) and returns a
+         * boxed slot, so the read is always `any`. A default would need
+         * the absent-key fallback the slot helper does not offer, so the
+         * three-argument form is refused rather than silently misread.
+         * Kept in step with the llvm emitter's copy. */
+        if (d.v)
+            ERRV(g, "line %zu: get() on an any list with a default is not "
+                    "supported on the native backends", line);
+        Val r = rt_call(g, type_prim(TY_ANY), "lume_slot_at",
+                        "i8* %s, i64 %s", m.v, k.v);
+        free(m.v); free(k.v);
+        if (!r.v) ERRV(g, "line %zu: get() failed", line);
+        return r;
+    }
     if (m.ty && m.ty->kind == TY_ANY) {
         /* An any-typed map operand: the value is a boxed LumeSlot* whose
          * tag only exists at runtime, so the read must unpack the slot
@@ -601,7 +620,10 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
          * a default of a different scalar kind is refused like the map
          * path. */
         Type *et = m.ty->elem;
-        const char *atfn = list_at_fn(et);
+        /* A bare `list` annotation carries no element type: the read is
+         * the dynamic slot path (lume_list_at_slot / any). The default
+         * check below still sees the raw et (NULL skips it, as before). */
+        const char *atfn = et ? list_at_fn(et) : "lume_list_at_slot";
         if (!atfn)
             ERRV(g, "line %zu: get() cannot index a list of %s",
                  line, et ? ty_str(et) : "unknown");
@@ -611,12 +633,14 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
             ERRV(g, "line %zu: get() default is %s but the list holds %s",
                  line, ty_str(d.ty), et ? ty_str(et) : "unknown");
         const char *art = et && et->kind == TY_STRING ? "i8*" :
-                          et && et->kind == TY_FLOAT ? "double" : "i64";
-        char *call = emit_instrf(g, et ? et : type_prim(TY_INT),
+                          et && et->kind == TY_FLOAT ? "double" :
+                          (!et || et->kind == TY_ANY) ? "i8*" : "i64";
+        Type *rty = et && et->kind != TY_ANY ? et : any_type();
+        char *call = emit_instrf(g, rty,
                                  "call %s @%s(i8* %s, i64 %s)",
                                  art, atfn, m.v, k.v);
         free(m.v); free(k.v); free(d.v);
-        return val_take(et ? et : type_prim(TY_INT), call);
+        return val_take(rty, call);
     } else {
         if (shape && shape->kind != TY_ANY) {
             const char *sfn; Type *srty;

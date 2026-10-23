@@ -355,8 +355,8 @@ enum Shape { Circle(r: float) | Rect(w: float, h: float) }
   `s!"t={1==1}"` 得到 `"t=true"`、`s!"n={s!"{7}"}"` 得到 `"n=7"`（嵌套插值）。
 - **三后端一致**：解释器、文本 IR（`--compile-text`）、libLLVM（`--compile-llvm`）
   对插值的输出逐字节相同（tests/native-consistency.lume 的插值探针段钉死）。`str()`
-  对容器（list/map/struct）的格式化在两原生后端尚未实现，故探针段回避
-  `str(container)`——这属原生 `str()` 既有缺口，非插值特性本身。
+  对容器（list/map/struct）的格式化已在三个后端实现（native-consistency.lume 的
+  stringify/str 容器探针段钉死），插值内嵌容器表达式与直接 `str(container)` 行为一致。
 
 ### 3.9 结构体更新 `{ base with ... }`（2026-10-13，借鉴 Lean 的 structure update）
 
@@ -872,7 +872,7 @@ func report(): Result {
 | `stringify(x)` | 1 参 | `string` | 序列化：任意值 → JSON 文本（与 `str()` 的 map/list 路径一致；字符串加引号转义）。三后端一致，命名 struct 同样支持：原生后端按声明字段构造 map 再序列化，与解释器 JSON 一致 |
 | `now()` | 0 参 | `int` | Unix 秒 |
 | `strftime(fmt, ts)` | 2 参 | `string` | ⚠️ **参数序是 `(格式, 时间戳)`**，不是反过来 |
-| `str_match(pattern, text)` | 2 参 | `{text,index,groups}[]` | **正则抽取**：POSIX ERE 全扫描，每条 `{ text: 匹配子串, index: 0-based 偏移, groups: 捕获组[] }`；无匹配返回 `[]`；非法正则置 VM error（可 `try()` 接住）。⚠️ **解释器专属**：匹配列表元素是无名 map，原生后端没有该形状的发射路径，`--compile-text`/`--compile-llvm` 编译期拒绝（`cannot infer a type for ...`）——与 `json(str)` 原同属「动态结果形状」边界（`json(str)` 已通过 tagged-any 槽补齐原生，见 865 行；str_match 的匿名 map 列表形状仍是该边界的残余，见 TODO intentional boundaries） |
+| `str_match(pattern, text)` | 2 参 | `{text,index,groups}[]` | **正则抽取**：POSIX ERE 全扫描，每条 `{ text: 匹配子串, index: 0-based 偏移, groups: 捕获组[] }`；无匹配返回 `[]`；非法正则置 VM error（可 `try()` 接住）。**三后端一致**（2026-10-23 起）：行元素在原生是 boxed OBJ 槽（shape 仅运行时存在），推断把结果定型为 `list(any)`——`get(rows, 0)`（list 索引读）与 `get(r, "text")`/`get(r, "index")`/`get(r, "groups")`（any 槽键读）在 `--compile-text`/`--compile-llvm` 下经 `lume_list_at_slot`/`lume_slot_get_any` 发射，与 `json(str)` 的 tagged-any 槽路径同款（tests/native_backends.sh 的 str-match 块钉死三腿一致性）；`get(j, 0)` 式的 any 列表元素读走 `lume_slot_at`（int 键），带 default 的三参形式在原生仍拒绝（slot helper 无缺省回退）。此前的「解释器专属」标注即本节 §6.2 动态结果形状边界的残余，随 json 槽路径一并闭合 |
 | `regex(pattern, text)` | 2 参 | `{text,index,groups}[]` | `str_match` 的别名（同为解释器专属） |
 
 ⚠️ **`int("abc") == 0` 且不报错**，`float("x") == 0.0` 同理。这是转换类最容易踩的坑：

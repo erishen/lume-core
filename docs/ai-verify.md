@@ -79,10 +79,11 @@ make ai-produce                  # scripts/ai-gen-programs.sh + scripts/ai-produ
   list of program intents (the prompts) and one template candidate per
   intent, written to `out/ai-candidates/` (override `AI_CANDIDATES_DIR`)
   together with a manifest:
-  `name|expected (accept|reject)|prompt`. Seven candidates are accept-class
+  `name|expected (accept|reject)|prompt`. Eight candidates are accept-class
   (plausible LLM programs on the native backends' covered surface — the
   sql_tx seed among them, judged only on sqlite builds via the gate's
-  availability probe); one,
+  availability probe; the str_match seed exercises dynamic-shape rows,
+  which the any-slot accessors put on every backend); one,
   `gen-bad-untyped-tdist`, is deliberately reject-class — the statistical
   builtins (`normcdf` / `erf` / `gamma` / `lgamma` / `igamma` / `ibeta` /
   `tdist_cdf` / `chisq_cdf`) now infer `float` on every backend, so a

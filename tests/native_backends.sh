@@ -477,3 +477,45 @@ for leg in "${RAN[@]}"; do
     stats_ran+=("$leg")
 done
 pass "stats: unannotated statistical builtins agree with the interpreter on every leg"
+
+# ---- str_match cross-backend consistency (dynamic result shape, SPEC 6.2) ----
+# str_match rows are anonymous maps boxed as OBJ slots whose shape exists only
+# at runtime. They used to be interpreter-only: the native emitters had the
+# lume_bi_str_match helper and the slot getters, but NO inference entry for
+# `get(rows, 0)` (list index read) nor for `get(r, "text")` off an anon row,
+# so any program touching a str_match result was refused at compile time
+# (`cannot infer a type for 'r'`) — the last residual of the json(str)-style
+# dynamic-shape boundary. Inference (list element read + anon-row read -> any)
+# and the any-slot accessor (lume_list_at_slot) closed it; this block pins all
+# three legs on the unannotated form, same shape as the stats block above.
+SM_SCRIPT="$WORK/str-match.lume"
+cat > "$SM_SCRIPT" <<'LUME'
+let rows = str_match("(a+)(b+)", "xxaaabbbyy");
+print(len(rows));
+let r = get(rows, 0);
+print(get(r, "text"));
+print(get(r, "index"));
+let g = get(r, "groups");
+print(len(g));
+print(get(g, 0));
+LUME
+sm_want=$("$TARGET" "$SM_SCRIPT" 2>/dev/null | tr -d '\r')
+[ -n "$sm_want" ] ||
+    fail "str-match: the interpreter produced no output for the fixture"
+sm_ran=()
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+        *)    continue ;;
+    esac
+    "$TARGET" "$flag" "$SM_SCRIPT" -o "$WORK/str-match-$leg" >/dev/null 2>&1 ||
+        fail "str-match: $leg refused the str_match row reads (inference gap)"
+    got=$("$WORK/str-match-$leg" 2>/dev/null | tr -d '\r')
+    [ "$got" = "$sm_want" ] || {
+        echo "got: $got"
+        fail "str-match: $leg disagrees with the interpreter on the str_match rows"
+    }
+    sm_ran+=("$leg")
+done
+pass "str-match: str_match rows agree with the interpreter on every leg"

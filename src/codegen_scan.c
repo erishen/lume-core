@@ -356,7 +356,11 @@ Type *infer_node_type(CG *g, Node *n)
                 return type_list(type_prim(TY_STRING));
             if ((strcmp(name, "str_match") == 0 || strcmp(name, "regex") == 0) &&
                 n->as.call.argc == 2)
-                return type_list(type_anon_struct());
+                /* rows are boxed OBJ slots whose shape only exists at
+                 * runtime — type them list(any), the same spelling a json()
+                 * array parses to, so get(len/get/slot reads) infer and
+                 * emit through the any-slot path on the native backends. */
+                return type_list(any_type());
             if (strcmp(name, "contains") == 0 && n->as.call.argc == 2)
                 return type_prim(TY_BOOL);
             if ((strcmp(name, "exp") == 0 || strcmp(name, "log") == 0 ||
@@ -399,6 +403,17 @@ Type *infer_node_type(CG *g, Node *n)
             if (mt && mt->kind == TY_ANY) {
                 if (n->as.call.argc == 3)
                     return infer_node_type(g, n->as.call.args[2]);
+                return any_type();
+            }
+            if (mt && mt->kind == TY_LIST) {
+                /* get(list, idx): a list read yields its element type. An
+                 * `any` element (a str_match / json row) stays any — the
+                 * runtime read is a boxed slot. Kept in step with
+                 * llvm_cg_scan.inc. */
+                Type *et = mt->elem;
+                if (et && et->kind != TY_ANY &&
+                    et->kind != TY_STRUCT && et->kind != TY_LIST)
+                    return et;
                 return any_type();
             }
             Node *kn = n->as.call.args[1];

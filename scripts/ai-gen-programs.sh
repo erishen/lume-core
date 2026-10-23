@@ -14,12 +14,14 @@
 # Every generated candidate carries a manifest row
 #     <name>|<expected verdict: accept|reject>|<prompt>
 # so scripts/ai-produce.sh can assert that the gate judged it the way
-# the producer intended. Seven candidates are accept-class (plausible LLM
+# the producer intended. Eight candidates are accept-class (plausible LLM
 # programs, all on the native backends' covered surface — type check +
 # interp/IR-text/libLLVM agreement is the oracle, so any drift in a
 # backend shows as a reject; the sql_tx seed rides the same gate, judged
 # only on sqlite builds via verify-ai-lume.sh's availability probe and
-# skipped with a note elsewhere); one is deliberately reject-class: the
+# skipped with a note elsewhere; the str_match seed exercises the
+# dynamic-shape rows, which the any-slot accessors put on every backend);
+# one is deliberately reject-class: the
 # statistical builtins now infer float on every backend (so the old
 # "missing annotation" counter-example became a legal program), and the
 # counter-example moved to the mismatch the checker still catches —
@@ -158,6 +160,23 @@ sql_tx_exec(db, "INSERT OR REPLACE INTO t (k, v) VALUES ('a', 'hello')");
 let rows: list = sql_query("", "SELECT v FROM t WHERE k = 'a'");
 print(rows);
 sql_tx_commit(db);
+EOF
+
+gen gen-str-match accept \
+    "正则抽取: str_match 全匹配列表 -> len/get 行 -> 读 text/index/groups, 打印匹配子串" <<'EOF'
+// gen-str-match.lume — LLM-produced "regex extraction" program.
+// str_match rows are dynamic-shape (anonymous maps boxed as slots) and
+// used to be interpreter-only; the native inference + the any-slot
+// accessors (lume_list_at_slot / lume_slot_get_any / lume_slot_at)
+// closed the boundary, so every read below compiles and agrees on all
+// three backends (tests/native_backends.sh str-match block pins it).
+let rows = str_match("(a+)(b+)", "xxaaabbbyy");
+print(len(rows));
+let r = get(rows, 0);
+print(get(r, "text"));
+print(get(r, "index"));
+let g = get(r, "groups");
+print(get(g, 0));
 EOF
 
 gen gen-bad-untyped-tdist reject \

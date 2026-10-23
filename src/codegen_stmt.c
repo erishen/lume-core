@@ -152,6 +152,11 @@ const char *list_at_fn(Type *ty)
      * inner list as an object. */
     case TY_ENUM:
     case TY_LIST:   return "lume_list_at_obj";
+    /* An `any` element (a str_match / json row): the read comes back
+     * boxed as its own tag — lume_list_at_slot returns a LumeSlot* so the
+     * caller's get/print chain keeps the same boxed representation
+     * lume_slot_get_any / lume_slot_at consume. */
+    case TY_ANY:    return "lume_list_at_slot";
     default:        return NULL;
     }
 }
@@ -173,6 +178,8 @@ Type *elem_rty(Type *ty)
     /* Nested list element: at_obj returns the inner list object, which the
      * loop variable keeps typed as that inner list. */
     case TY_LIST:   return type_list(ty->elem);
+    /* Any element: at_slot returns a boxed slot — the read stays `any`. */
+    case TY_ANY:    return any_type();
     default:        return type_prim(TY_INT);
     }
 }

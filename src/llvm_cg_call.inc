@@ -236,6 +236,24 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
      * the *default*, and the int read when neither says. */
     const char *fn = "lume_map_get_i";
     Type    *rty = type_prim(TY_INT);
+    if (m.ty && m.ty->kind == TY_ANY &&
+        knode && knode->type == N_LITERAL && knode->as.lit.kind == LIT_NUM &&
+        !knode->as.lit.is_float) {
+        /* An any receiver with an integer key is a list-element read —
+         * get(j, 0) on a json array, a str_match list. lume_slot_at takes
+         * (slot, i64) and returns a boxed slot, so the read is always
+         * `any`; the three-argument form is refused (the slot helper has
+         * no absent-key fallback). Mirrors the text emitter's copy. */
+        if (d.v)
+            ERRV(g, "line %zu: get() on an any list with a default is not "
+                    "supported on the native backends", line);
+        LLVMTypeRef patA[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef rvA = LLVMBuildCall2(g->ab,
+                            LLVMFunctionType(g->i8ptr, patA, 2, 0),
+                            rt_decl(g, "lume_slot_at", g->i8ptr, patA, 2),
+                            (LLVMValueRef[]){ m.v, k.v }, 2, "gl");
+        return val_make(type_prim(TY_ANY), rvA);
+    }
     if (m.ty && m.ty->kind == TY_ANY) {
         /* A tagged-any value (a json() parse): the runtime shape is only
          * known at runtime, so the read goes through the slot getters
@@ -269,7 +287,10 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
         /* get(list, i[, default]): an index read — mirrors the text
          * emitter's branch. The element type drives the accessor. */
         Type *et = m.ty->elem;
-        const char *atfn = list_at_fn(et);
+        /* A bare `list` annotation carries no element type: the read is
+         * the dynamic slot path (lume_list_at_slot / any). The default
+         * check below still sees the raw et (NULL skips it, as before). */
+        const char *atfn = et ? list_at_fn(et) : "lume_list_at_slot";
         if (!atfn)
             ERRV(g, "line %zu: get() cannot index a list of %s",
                  line, et ? ty_str(et) : "unknown");
@@ -279,13 +300,15 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
             ERRV(g, "line %zu: get() default is %s but the list holds %s",
                  line, ty_str(d.ty), et ? ty_str(et) : "unknown");
         LLVMTypeRef rty_t = et && et->kind == TY_STRING ? g->i8ptr :
-                            et && et->kind == TY_FLOAT ? g->dbl : g->i64;
+                            et && et->kind == TY_FLOAT ? g->dbl :
+                            (!et || et->kind == TY_ANY) ? g->i8ptr : g->i64;
+        Type *rty = et && et->kind != TY_ANY ? et : any_type();
         LLVMTypeRef pat[2] = { g->i8ptr, g->i64 };
         LLVMValueRef rv = LLVMBuildCall2(g->ab,
                             LLVMFunctionType(rty_t, pat, 2, 0),
                             rt_decl(g, atfn, rty_t, pat, 2),
                             (LLVMValueRef[]){ m.v, k.v }, 2, "gl");
-        return val_make(et ? et : type_prim(TY_INT), rv);
+        return val_make(rty, rv);
     } else {
         if (shape && shape->kind != TY_ANY) {
             const char *sfn; Type *srty;
