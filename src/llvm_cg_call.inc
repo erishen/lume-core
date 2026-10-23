@@ -1179,6 +1179,54 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), r);
     }
 
+    /* Statistical CDFs / special functions: normcdf/erf/gamma/lgamma take
+     * one double; igamma/tdist_cdf/chisq_cdf take two; ibeta takes three.
+     * Same helpers the interpreter uses (rt.c lume_bi_*); kept in step with
+     * codegen_call.c's Bi table and the inference lists in codegen_scan.c /
+     * llvm_cg_scan.inc. */
+    {
+        static const struct {
+            const char *name;
+            const char *fn;
+            int arity;
+        } stats[] = {
+            {"normcdf", "lume_bi_normcdf", 1},
+            {"erf",     "lume_bi_erf",     1},
+            {"gamma",   "lume_bi_gamma",   1},
+            {"lgamma",  "lume_bi_lgamma",  1},
+            {"igamma",  "lume_bi_igamma",  2},
+            {"ibeta",   "lume_bi_ibeta",   3},
+            {"tdist_cdf", "lume_bi_tdist_cdf", 2},
+            {"chisq_cdf", "lume_bi_chisq_cdf", 2},
+        };
+        for (size_t i = 0; i < sizeof(stats) / sizeof(stats[0]); i++) {
+            if (strcmp(bname, stats[i].name) == 0) {
+                int na = stats[i].arity;
+                if (argc != na)
+                    ERRV(g, "line %zu: %s() needs %d argument(s)", n->line, bname, na);
+                LLVMValueRef av[3];
+                LLVMTypeRef pt[3];
+                for (int k = 0; k < na; k++) {
+                    Val a = cg_expr(g, n->as.call.args[k]);
+                    if (!a.v || !a.ty ||
+                        (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT))
+                        ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+                    a = coerce(g, type_prim(TY_FLOAT), a, n->line);
+                    if (!a.v)
+                        ERRV(g, "line %zu: %s() failed to lower", n->line, bname);
+                    av[k] = a.v;
+                    pt[k] = g->dbl;
+                }
+                LLVMValueRef r = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->dbl, pt, na, 0),
+                    rt_decl(g, stats[i].fn, g->dbl, pt, na),
+                    av, na, "s");
+                if (!r) ERRV(g, "line %zu: %s() failed", n->line, bname);
+                return val_make(type_prim(TY_FLOAT), r);
+            }
+        }
+    }
+
     /* bool(x) — value_truthy by static type. An any value dispatches on its
      * runtime tag (lume_bi_bool_slot); bool(m, "k"[, d]) is the same
      * accessor desugar the casts take — the interpreter checks

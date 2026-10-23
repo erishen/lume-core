@@ -428,3 +428,52 @@ if SQLITE_DB="$WORK/probe.db" "$TARGET" "$SQL_PROBE" >/dev/null 2>&1; then
 else
     echo "ok   sql cross-backend: skipped (build has no libsqlite3)"
 fi
+
+# ---- statistical builtins cross-backend consistency (P4 native gap) -------
+# The interpreter always had tdist_cdf / normcdf / chisq_cdf / erf / gamma /
+# lgamma / igamma / ibeta; the native emitters had the Bi table and rt.c
+# helpers but NO inference entry, so `let p = tdist_cdf(...)` compiled only
+# with an explicit `: float` annotation — the P4 counter-example that taught
+# the LLM to annotate. Inference + the libLLVM emit leg were added together;
+# this block pins all three legs on the unannotated form. The interpreter
+# output is the reference; every available emitter must compile, run and
+# match it (same shape as the propagate block above).
+STATS_SCRIPT="$WORK/stats.lume"
+cat > "$STATS_SCRIPT" <<'LUME'
+let a = normcdf(1.5);
+let b = erf(0.7);
+let c = gamma(5.0);
+let d = lgamma(10.0);
+let e = igamma(2.0, 3.0);
+let f = ibeta(2.0, 3.0, 0.5);
+let g = tdist_cdf(1.1, 10.0);
+let h = chisq_cdf(4.0, 5.0);
+print(a);
+print(b);
+print(c);
+print(d);
+print(e);
+print(f);
+print(g);
+print(h);
+LUME
+stats_want=$("$TARGET" "$STATS_SCRIPT" 2>/dev/null | tr -d '\r')
+[ -n "$stats_want" ] ||
+    fail "stats: the interpreter produced no output for the fixture"
+stats_ran=()
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+        *)    continue ;;
+    esac
+    "$TARGET" "$flag" "$STATS_SCRIPT" -o "$WORK/stats-$leg" >/dev/null 2>&1 ||
+        fail "stats: $leg refused the unannotated statistical builtins (inference gap)"
+    got=$("$WORK/stats-$leg" 2>/dev/null | tr -d '\r')
+    [ "$got" = "$stats_want" ] || {
+        echo "got: $got"
+        fail "stats: $leg disagrees with the interpreter on the statistical builtins"
+    }
+    stats_ran+=("$leg")
+done
+pass "stats: unannotated statistical builtins agree with the interpreter on every leg"

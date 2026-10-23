@@ -346,6 +346,14 @@ static Type *infer_node_type(CG *g, Node *n)
             if ((strcmp(name, "exp") == 0 || strcmp(name, "log") == 0 ||
                  strcmp(name, "ln") == 0))
                 return type_prim(TY_FLOAT);
+            /* Statistical CDFs / special functions — must stay in step with
+             * codegen_scan.c: inferring these lets `let p = tdist_cdf(...)`
+             * compile on the native backends without a `: float` annotation. */
+            if ((strcmp(name, "normcdf") == 0 || strcmp(name, "erf") == 0 ||
+                 strcmp(name, "gamma") == 0 || strcmp(name, "lgamma") == 0 ||
+                 strcmp(name, "igamma") == 0 || strcmp(name, "ibeta") == 0 ||
+                 strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0))
+                return type_prim(TY_FLOAT);
         }
 
         /* json()/stringify() serialize to a JSON string. json(str) means

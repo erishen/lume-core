@@ -81,11 +81,13 @@ make ai-produce                  # scripts/ai-gen-programs.sh + scripts/ai-produ
   together with a manifest:
   `name|expected (accept|reject)|prompt`. Six candidates are accept-class
   (plausible LLM programs on the native backends' covered surface); one,
-  `gen-bad-untyped-tdist`, is deliberately reject-class — `let p =
-  tdist_cdf(...)` missing the `let p: float` annotation the native
-  backends need (the statistical builtins are not in their inference
-  tables), which is exactly the counter-example the gate teaches the LLM
-  with.
+  `gen-bad-untyped-tdist`, is deliberately reject-class — the statistical
+  builtins (`normcdf` / `erf` / `gamma` / `lgamma` / `igamma` / `ibeta` /
+  `tdist_cdf` / `chisq_cdf`) now infer `float` on every backend, so a
+  missing annotation is a legal program (see `gen-norm-stats`), and the
+  counter-example is the mismatch the checker still catches: `let p:
+  string = tdist_cdf(...)` annotates a float value as string. That is
+  exactly the counter-example the gate teaches the LLM with.
 - `scripts/ai-produce.sh` — runs every candidate through the gate and
   asserts the manifest verdict: accept → **READY** (commit the file to
   `tests/`; `make check` + `make fuzz` + `make native-consistency` cover

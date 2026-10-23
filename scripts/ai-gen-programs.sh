@@ -17,11 +17,13 @@
 # the producer intended. Six candidates are accept-class (plausible LLM
 # programs, all on the native backends' covered surface — type check +
 # interp/IR-text/libLLVM agreement is the oracle, so any drift in a
-# backend shows as a reject); one is deliberately reject-class: a
-# `let p = tdist_cdf(...)` missing the `let p: float` annotation that
-# the native backends need, because the statistical builtins are NOT in
-# their inference tables. That candidate is the counter-example the gate
-# teaches the LLM with — the payload in out/ai-rejects.log.
+# backend shows as a reject); one is deliberately reject-class: the
+# statistical builtins now infer float on every backend (so the old
+# "missing annotation" counter-example became a legal program), and the
+# counter-example moved to the mismatch the checker still catches —
+# `let p: string = tdist_cdf(...)` annotates a float value as string.
+# That candidate is what the gate teaches the LLM with — the payload in
+# out/ai-rejects.log.
 #
 # Scope guard (TODO P4): this script is not an LLM builtin, touches no
 # network and needs no API key; it only writes files into
@@ -46,10 +48,12 @@ gen() {
 gen gen-norm-stats accept \
     "medical p-value 计算: 打印 normcdf/tdist_cdf/chisq_cdf 在常见临界值处的 p 值, 以及 erf/gamma 辅助值" <<'EOF'
 // gen-norm-stats.lume — LLM-produced "medical p-value" program.
-// Statistical builtins are print()'d directly: the print argument is
-// typed by the call, so no `let x: float` annotation is needed here
-// (an untyped `let p = tdist_cdf(...)` would be the reject counter-
-// example, see gen-bad-untyped-tdist).
+// Statistical builtins are in the native inference tables, so an
+// unannotated `let p = tdist_cdf(...)` infers float and compiles on
+// every backend (see gen-bad-untyped-tdist for the still-rejected
+// type-mismatch counter-example).
+let p = tdist_cdf(2.228139, 10.0);
+print(p);
 print(normcdf(1.959963984540054));
 print(normcdf(-1.959963984540054));
 print(tdist_cdf(2.228139, 10.0));
@@ -139,14 +143,16 @@ print(len(sieve(20)));
 EOF
 
 gen gen-bad-untyped-tdist reject \
-    "反例: 漏掉浮点类型注解的统计调用 let p = tdist_cdf(...) —— 原生后端推断表没有该 builtin, 必须拒绝, counter-example 教 LLM 补注解" <<'EOF'
+    "反例: 统计调用的类型注解与返回值不匹配 —— let p: string = tdist_cdf(...) 返回 float, 必须拒绝, counter-example 教 LLM 写对注解类型" <<'EOF'
 // gen-bad-untyped-tdist.lume — the reject counter-example.
-// The interpreter accepts this (runtime types), but the native backends
-// have no inference-table entry for tdist_cdf, so `p` has no type and
-// both emitters refuse to compile. Backend equivalence is the stricter
-// oracle: the program must be REJECTED, and the stderr reason is the
-// counter-example that teaches the LLM to write `let p: float = ...`.
-let p = tdist_cdf(2.228139, 10.0);
+// The statistical builtins ARE in the native inference tables now
+// (normcdf / erf / gamma / lgamma / igamma / ibeta / tdist_cdf /
+// chisq_cdf all infer float, see gen-norm-stats), so a missing
+// annotation is legal on every backend. The counter-example moved to
+// the other failure mode: the annotation does not match the value —
+// tdist_cdf returns a float, `let p: string` is a type error and every
+// backend must refuse it.
+let p: string = tdist_cdf(2.228139, 10.0);
 print(p);
 EOF
 
