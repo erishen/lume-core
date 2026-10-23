@@ -524,20 +524,36 @@ fi
 # run the suites serially on one runner.
 if [ -n "${sql_ran[0]:-}" ]; then
     TX_SERVE_SRC=tests/native-sql-tx-serve.lume
-    TX_SERVE_BIN="$WORK/tx-serve"
+    # MSYS2 bash refuses to exec an extension-less binary (same rule as the
+    # Makefile's Windows TARGET), so a Windows HAVE_SQLITE build needs the
+    # .exe suffix or the serve leg dies on a 127.
+    case "$(uname)" in
+        *MINGW*|*MSYS*) TX_SERVE_BIN="$WORK/tx-serve.exe" ;;
+        *)              TX_SERVE_BIN="$WORK/tx-serve" ;;
+    esac
     if "$TARGET" --compile-text "$TX_SERVE_SRC" -o "$TX_SERVE_BIN" \
             >"$WORK/tx-serve-build.log" 2>&1; then
-        rm -f /tmp/lume-tx-cleanup.db
+        rm -f tx-cleanup.db
         "$TX_SERVE_BIN" >"$WORK/tx-serve.log" 2>&1 &
         TX_PID=$!
-        sleep 1
+        # Give the listener up to ~6s to come up instead of a blind 1s:
+        # compile-linked binaries start fast on Linux but the first accept
+        # can race a tight sleep on a loaded CI runner.
+        ok=0
+        for _ in 1 2 3 4 5 6; do
+            if curl -s -o /dev/null "http://127.0.0.1:18091/open" 2>/dev/null; then
+                ok=1
+                break
+            fi
+            sleep 1
+        done
         r1=$(curl -s -o "$WORK/tx-r1.txt" -w '%{http_code}' \
              "http://127.0.0.1:18091/open" 2>/dev/null)
         r2=$(curl -s -o "$WORK/tx-r2.txt" -w '%{http_code}' \
              "http://127.0.0.1:18091/open" 2>/dev/null)
         kill "$TX_PID" 2>/dev/null
         wait "$TX_PID" 2>/dev/null
-        if [ "$r1" = "200" ] && [ "$r2" = "200" ] \
+        if [ "$ok" = "1" ] && [ "$r1" = "200" ] && [ "$r2" = "200" ] \
            && grep -q "ok" "$WORK/tx-r1.txt" \
            && grep -q "ok" "$WORK/tx-r2.txt"; then
             pass "sql serve: abandoned tx handle reclaimed at request boundary"

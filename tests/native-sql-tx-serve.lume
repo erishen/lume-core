@@ -5,13 +5,18 @@
 // that reclaim, the FIRST request below would leave its transaction (and the
 // BEGIN lock) open, and the SECOND request's sql_tx_begin would time out on
 // SQLITE_BUSY. Two sequential 200s with a fresh "ok" body prove the reclaim.
-let db = "/tmp/lume-tx-cleanup.db";
+// The db is a bare relative name (cwd = the repo root when native_backends.sh
+// runs it): sql_write opens READWRITE without CREATE, so tx_begin creates
+// the file first, and a Windows run has no /tmp to point at.
+let db = "tx-cleanup.db";
+let boot: string = sql_tx_begin(db);
+sql_tx_commit(boot);
 sql_write(db, "create table if not exists t (id int)");
 server {
   bind = "127.0.0.1";
   port = 18091;
 };
-get "/open", () => {
+get "/open", (req) => {
   let t: string = sql_tx_begin(db);
   sql_tx_exec(t, "insert into t values (1)");
   /* t is dropped here - never committed, never rolled back. */

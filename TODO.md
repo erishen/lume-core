@@ -569,7 +569,13 @@ The four-layer surface if started:
   the life of the process. Regression: tests/native_backends.sh serve
   leg (`tests/native-sql-tx-serve.lume` — two sequential /open requests
   both get 200 with a fresh "ok" body; without the reclaim the second
-  BEGIN would time out on SQLITE_BUSY). Fixed en route: sql row maps
+  BEGIN would time out on SQLITE_BUSY). Verified 2026-10-23 with a real
+  libsqlite3 (`SQLITE_PREFIX=/d/Software/mingw64/opt`): sql interp/text/
+  llvm legs and the whole native_backends.sh sql block are green on this
+  host; the serve leg itself cannot run in this session — the local
+  runtime sandbox denies raw socket creation (even Python's socket()
+  fails WSAENOTSOCK 10038), so the listener never comes up. Linux CI
+  runs the serve leg (no sandbox). Fixed en route: sql row maps
   must copy `sqlite3_column_text` (a volatile per-step buffer; map_put
   stores the string pointer verbatim), which corrupted TEXT values and
   crashed the smoke program. Verified: `native-sql-smoke` on the text

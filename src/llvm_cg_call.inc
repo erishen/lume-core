@@ -586,7 +586,7 @@ static Val cg_builtin(CG *g, Node *n)
         if (argc != 1)
             ERRV(g, "line %zu: read_file() takes exactly one argument", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
-        if (!a.v) return (Val){ NULL, NULL, 0 };
+        if (!a.v) return (Val){ NULL, NULL };
         LLVMTypeRef pp[1] = { g->i8ptr };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
                                         LLVMFunctionType(g->i8ptr, pp, 1, 0),
@@ -599,7 +599,7 @@ static Val cg_builtin(CG *g, Node *n)
             ERRV(g, "line %zu: write_file() takes exactly two arguments", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
         Val b = cg_expr(g, n->as.call.args[1]);
-        if (!a.v || !b.v) return (Val){ NULL, NULL, 0 };
+        if (!a.v || !b.v) return (Val){ NULL, NULL };
         LLVMTypeRef pp[2] = { g->i8ptr, g->i8ptr };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
                                         LLVMFunctionType(g->i64, pp, 2, 0),
@@ -612,7 +612,7 @@ static Val cg_builtin(CG *g, Node *n)
             ERRV(g, "line %zu: lock_file() takes a path and a wait (ms)", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
         Val m = cg_expr(g, n->as.call.args[1]);
-        if (!a.v || !m.v) return (Val){ NULL, NULL, 0 };
+        if (!a.v || !m.v) return (Val){ NULL, NULL };
         LLVMTypeRef pp[2] = { g->i8ptr, g->i64 };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
                                         LLVMFunctionType(g->i64, pp, 2, 0),
@@ -645,7 +645,7 @@ static Val cg_builtin(CG *g, Node *n)
         for (int i = 0; i < argc; i++) if (!av[i].v) bad = 1;
         if (bad) {
             free(av);
-            return (Val){ NULL, NULL, 0 };
+            return (Val){ NULL, NULL };
         }
         LLVMValueRef dbv = LLVMConstNull(g->i8ptr);
         LLVMValueRef sqlv, pv = LLVMConstNull(g->i8ptr);
@@ -680,7 +680,7 @@ static Val cg_builtin(CG *g, Node *n)
         if (argc != 1)
             ERRV(g, "line %zu: sql_tx_begin() takes exactly one argument", n->line);
         Val a = cg_expr(g, n->as.call.args[0]);
-        if (!a.v) return (Val){ NULL, NULL, 0 };
+        if (!a.v) return (Val){ NULL, NULL };
         LLVMTypeRef pp[1] = { g->i8ptr };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
                                         LLVMFunctionType(g->i8ptr, pp, 1, 0),
@@ -696,9 +696,9 @@ static Val cg_builtin(CG *g, Node *n)
         Val a = cg_expr(g, n->as.call.args[0]);
         Val b = cg_expr(g, n->as.call.args[1]);
         Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
-                          : (Val){ NULL, NULL, 0 };
+                          : (Val){ NULL, NULL };
         if (!a.v || !b.v || (argc == 3 && !c.v)) {
-            return (Val){ NULL, NULL, 0 };
+            return (Val){ NULL, NULL };
         }
         LLVMTypeRef pp[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -716,7 +716,7 @@ static Val cg_builtin(CG *g, Node *n)
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
-        if (!a.v) return (Val){ NULL, NULL, 0 };
+        if (!a.v) return (Val){ NULL, NULL };
         LLVMTypeRef pp[1] = { g->i8ptr };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
                                         LLVMFunctionType(g->i64, pp, 1, 0),

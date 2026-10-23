@@ -1018,7 +1018,7 @@ static void cg_handler_ret(CG *g, Node *n)
                                            g->void_ty, p3f, 3), fv, 3, "");
                 } else if (vv.ty && vv.ty->kind == TY_STRUCT) {
                     Val s = vv;
-                    vv = (Val){ NULL, NULL, 0 };
+                    vv = (Val){ NULL, NULL };
                     llvm_json_struct(g, s, v->line);
                 } else if (vv.ty && vv.ty->kind == TY_LIST) {
                     /* array: [ sep elem sep elem ... ] — iterate the list
@@ -1120,7 +1120,7 @@ static void cg_handler_ret(CG *g, Node *n)
     }
     if (sv.ty && sv.ty->kind == TY_STRUCT) {
         Val s = sv;
-        sv = (Val){ NULL, NULL, 0 };
+        sv = (Val){ NULL, NULL };
         llvm_json_struct(g, s, n->line);
         LLVMBuildStore(g->ab, LLVMConstInt(g->i32, 1, 0), g->hjson);
         if (!DONE(g->cur)) LLVMBuildRetVoid(g->ab);

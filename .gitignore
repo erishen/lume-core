@@ -65,3 +65,4 @@ src/out/
 .agents/
 .codex/
 .cursor/
+tx-cleanup.db
