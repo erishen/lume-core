@@ -1,3 +1,26 @@
+/* ===================== rt.c — table of contents =====================
+ *
+ *   1. Print helpers (lume_print_i64 / _double / _bool / _str / _null)                 (L66)
+ *   2. String allocation & runtime helpers (LUME_STR_MIN)                              (L143)
+ *   3. Statistical math builtins (normcdf / igamma / ibeta / t / chi-squared CDF)      (L218)
+ *   4. Runtime value types: LumeSlot / LumeList / LumeMap / LumeClosure                (L373)
+ *   5. List runtime: push / grow                                                       (L425)
+ *   6. argv() — CLI trailing arguments (SPEC 5)                                        (L500)
+ *   7. Value rendering: slot / list -> text & JSON (container_body / slot_emit / jb_*) (L548)
+ *   8. Map runtime: grow / find                                                        (L885)
+ *   9. Error handling & list sort                                                      (L978)
+ *  10. Indexing & container type predicates                                            (L1057)
+ *  11. Map put / get / accumulate                                                      (L1293)
+ *  12. Value equality: slot / value / any                                              (L1537)
+ *  13. Map helpers: len / print                                                        (L1702)
+ *  14. JSON parser (text -> tagged-any tree)                                           (L1768)
+ *  15. Builtins: contains / log / parse / bool                                         (L2122)
+ *  16. Slot accessors: get / accumulate / length                                       (L2396)
+ *
+ *  Compiled standalone by backend.c (LUME_RT_SRC) and linted via LINT_SRCS.
+ *  No rt.h: this TU is self-contained; native/LLVM emit code links it.
+ * ==================================================================== */
+
 /* lume runtime (native backend) — non-variadic print helpers.
  *
  * Why this file exists: on macOS/arm64, `va_start` reads an argument save area
@@ -40,6 +63,7 @@ static void lume_stdio_binary_init(void) {
 }
 #endif
 
+/* ============ 1. Print helpers (lume_print_i64 / _double / _bool / _str / _null) ============ */
 static int emit(const char *s)
 {
     fputs(s, stdout);
@@ -116,6 +140,7 @@ int64_t lume_print_null(void)
 
 static char *dup_str(const char *s)
 {
+/* ============ 2. String allocation & runtime helpers (LUME_STR_MIN) ============ */
     /* Every heap string gets at least LUME_STR_MIN zeroed bytes, even a
      * 1-char one: lume_any_eq tells a string from a container by reading the
      * container `kind` tag at a fixed offset, and a short malloc would make
@@ -190,6 +215,7 @@ double lume_bi_round(double v) { return round(v); }
 /* Regularized incomplete Gamma P(a,x), lower tail. Series form, good for
  * x < a+1. The prefactor goes through exp() so huge a or x underflows to
  * zero instead of overflowing to inf. */
+/* ============ 3. Statistical math builtins (normcdf / igamma / ibeta / t / chi-squared CDF) ============ */
 static double igamma_series(double a, double x)
 {
     double lnf = -x + a * log(x) - lgamma(a);
@@ -344,6 +370,7 @@ int64_t lume_bi_len_s(const char *s) { return s ? (int64_t)strlen(s) : 0; }
 #define LUME_SLOT_INT    0
 #define LUME_SLOT_FLOAT  1
 #define LUME_SLOT_STR    2
+/* ============ 4. Runtime value types: LumeSlot / LumeList / LumeMap / LumeClosure ============ */
 /* A nested container: another LumeList or LumeMap, reached through the same
  * opaque i8* everything else travels as. Before this tag every slot held a
  * scalar, so `{ a: { b: 1 } }` and `[[1,2],[3]]` could not be built at all —
@@ -395,6 +422,7 @@ LumeClosure *lume_closure_make(void *fn, void *cap)
     return c;
 }
 
+/* ============ 5. List runtime: push / grow ============ */
 static void list_grow(LumeList *l)
 {
     int64_t cap = l->cap ? l->cap * 2 : 8;
@@ -469,6 +497,7 @@ int64_t lume_list_push_obj(LumeList *l, void *v)
     return ++l->len;
 }
 
+/* ============ 6. argv() — CLI trailing arguments (SPEC 5) ============ */
 /* ---- argv() (SPEC 5): the script's trailing CLI arguments ----
  * The generated entry point calls lume_cli_init once, before any top-level
  * statement runs; lume_bi_argv then hands the stashed list back. Interpreter
@@ -516,6 +545,7 @@ static int slot_emit(LumeSlot s);
  * go through here, so a nested container renders by exactly the same rules as
  * a top-level one and the three cannot drift. The cast to LumeList is safe for
  * both shapes: `kind` is the first int in each and `len`/`cap` follow it. */
+/* ============ 7. Value rendering: slot / list -> text & JSON (container_body / slot_emit / jb_*) ============ */
 static int container_body(const void *p)
 {
     const LumeList *as_list = (const LumeList *)p;
@@ -852,6 +882,7 @@ int64_t lume_list_print(const LumeList *l)
 }
 
 
+/* ============ 8. Map runtime: grow / find ============ */
 /* ---------------------------------------------------------------- maps --- */
 
 static void map_grow(LumeMap *m)
@@ -944,6 +975,7 @@ static int  g_in_try = 0;
 
 void lume_error_begin(void) { g_in_try = 1; g_native_err[0] = '\0'; }
 const char *lume_error_end(void) { g_in_try = 0; return g_native_err[0] ? g_native_err : NULL; }
+/* ============ 9. Error handling & list sort ============ */
 void lume_error_set(const char *msg)
 {
     if (g_in_try) {
@@ -1022,6 +1054,7 @@ int lume_index_failed(void) { return g_index_failed; }
  * fatal runtime condition in the native path does. The interpreter reports
  * the same "index read failed" text (interp.c) so try() captures an identical
  * err string on every backend (SPEC 6.2). */
+/* ============ 10. Indexing & container type predicates ============ */
 void lume_index_error(const char *what)
 {
     if (g_in_try) {
@@ -1257,6 +1290,7 @@ void *lume_index_slot(void *c, int64_t idx, const char *key)
 
 int64_t lume_map_len(const LumeMap *m) { return m ? m->len : 0; }
 
+/* ============ 11. Map put / get / accumulate ============ */
 static int64_t map_put(LumeMap *m, const char *k, int64_t num, const char *str, int tag)
 {
     if (!m) return 0;
@@ -1500,6 +1534,7 @@ int64_t lume_map_has(const LumeMap *m, const char *k)
  * values_equal (strcmp on the bytes), but the emitters spell `==` as an
  * icmp on the two i8* pointers, which only ever agrees by pointer-luck.
  * match's tag dispatch needs the real thing, so it calls this. */
+/* ============ 12. Value equality: slot / value / any ============ */
 int64_t lume_str_eq(const char *a, const char *b)
 {
     if (a == b) return 1;
@@ -1664,6 +1699,7 @@ int64_t lume_any_eq(void *a, void *b)
     }
 }
 
+/* ============ 13. Map helpers: len / print ============ */
 double lume_map_get_f(const LumeMap *m, const char *k, double dflt)
 {
     int64_t i = map_find(m, k);
@@ -1729,6 +1765,7 @@ int64_t lume_map_print(const LumeMap *m)
     if (m->kind != LUME_CTR_MAP) { fputs("(opaque value)\n", stdout); return 0; }
     return emit("{") + container_body(m) + emit("}\n");
 }
+/* ============ 14. JSON parser (text -> tagged-any tree) ============ */
 /* ------------------------------------------------------------------ *
  * JSON parsing (the reverse of slot_to_json): text -> tagged-any tree.
  *
@@ -2082,6 +2119,7 @@ char *lume_bi_trim(const char *s)
 
 /* contains(s, sub): an empty sub is contained in everything, like the
  * interpreter's native_contains. */
+/* ============ 15. Builtins: contains / log / parse / bool ============ */
 int64_t lume_bi_contains(const char *s, const char *sub)
 {
     if (!sub || !*sub) return 1;
@@ -2355,6 +2393,7 @@ const char *lume_bi_str_unwrap(const void *v)
  * flavour from the default's static type, exactly like lume_map_get_*.
  * ------------------------------------------------------------------ */
 
+/* ============ 16. Slot accessors: get / accumulate / length ============ */
 int64_t lume_slot_get_i(const LumeSlot *s, const char *k, int64_t d)
 {
     if (!s || s->tag != LUME_SLOT_OBJ) return d;
