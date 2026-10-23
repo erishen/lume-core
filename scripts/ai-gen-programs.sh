@@ -179,6 +179,26 @@ let g = get(r, "groups");
 print(get(g, 0));
 EOF
 
+gen gen-while-shadow accept \
+    "循环体同名遮蔽: while 条件读外层变量, 体内 let 同名遮蔽后 break, 打印返回值与顶层 if 块的同名遮蔽" <<'EOF'
+// gen-while-shadow.lume — LLM-produced "same-name shadow in a while
+// body" program. The condition reads the ENCLOSING binding even when
+// the body shadows the name on the same line (interp reads the outer
+// value at condition time; both native emitters now hide the body's
+// shadow binds while the condition is generated). The trailing if-block
+// shadow is the flat-env rebinding both the interpreter and the native
+// backends share — printed inner value, by design.
+func countdown(): int {
+  let n = 3;
+  while (n > 0) { let n = 0; break; }
+  return n;
+}
+print(countdown());
+let a = 1;
+if (true) { let a = 2; }
+print(a);
+EOF
+
 gen gen-bad-untyped-tdist reject \
     "反例: 统计调用的类型注解与返回值不匹配 —— let p: string = tdist_cdf(...) 返回 float, 必须拒绝, counter-example 教 LLM 写对注解类型" <<'EOF'
 // gen-bad-untyped-tdist.lume — the reject counter-example.

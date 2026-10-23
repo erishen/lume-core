@@ -254,14 +254,23 @@ and `make fuzz-driver` (the P1 Windows seed replay).
     / `make ai-produce` (run every candidate through verify-ai-lume.sh and
     assert the manifest verdict: accept → READY for tests/, reject →
     counter-example appended to out/ai-rejects.log, violation → exit 1) —
-    six accept-class candidates (stats / portfolio-sort / summary-stats /
-    json-marshal / enum-match / range-sieve, all on the native backends'
-    covered surface) and one deliberate reject (gen-bad-untyped-tdist:
-    `let p = tdist_cdf(...)` missing `let p: float` — the statistical
-    builtins are not in the native inference tables, and the stderr reason
-    is the counter-example that teaches the LLM to annotate). Wired into
-    both CI jobs after ai-verify-loop; the contract for swapping in the
-    real host tool dispatch is the manifest file.
+    eight accept-class candidates (stats / portfolio-sort / summary-stats /
+    json-marshal / enum-match / range-sieve / sql-tx / str-match, all on the
+    native backends' covered surface) and one deliberate reject
+    (gen-bad-untyped-tdist: `let p = tdist_cdf(...)` missing `let p: float`
+    — the statistical builtins are not in the native inference tables, and
+    the stderr reason is the counter-example that teaches the LLM to
+    annotate). Wired into both CI jobs after ai-verify-loop; the contract
+    for swapping in the real host tool dispatch is the manifest file.
+    Seed updated 2026-10-23: ninth accept candidate `gen-while-shadow`
+    (while-condition reads the enclosing binding under a same-line body
+    shadow, plus the flat-env if-block rebind — the exact shape the
+    while-shadow native fix pinned in tests/native-consistency.lume, so a
+    backend drift in either semantics rejects the LLM program).
+    (historical note: the older "sql-tx" and "str-match" seeds were folded
+    into the count above on their respective landing days; the counter-
+    example wording moved from "missing annotation" to "annotation
+    mismatch" when the statistical builtins gained float inference.)
 - [x] **P4 semantic layer — `assert_semantic()` closed 2026-10-21.** The
     old "optional / open" DSL builtin (below) was deliberately NOT added
     to the language; the open question is instead committed as a static
