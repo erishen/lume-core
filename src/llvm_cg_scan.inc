@@ -724,7 +724,22 @@ static void scan_stmt(CG *g, Node *n)
     /* if-let binds are registered at emit time (like match arms); the
      * branches still need walking for their lets/assignments. */
     case N_IF_LET: scan_stmt(g, n->as.iflet.then); scan_stmt(g, n->as.iflet.els); break;
-    case N_WHILE:  scan_stmt(g, n->as.whiles.body); break;
+    /* The condition is scanned BEFORE the body: it sits in the enclosing
+     * scope, so its variable reads must bind to the outer slot — the body's
+     * same-named `let` (a shadow) registers later and would otherwise
+     * capture the condition's read (a read of an uninitialized shadow slot
+     * on the native backends, where interp read the outer value). Emit
+     * also re-hides the body's binds while generating the condition
+     * (cg_while / wh_saved). Kept in step with codegen_scan.c. */
+    case N_WHILE:
+        if (g->wh_idx == g->wh_cap) {
+            g->wh_cap = g->wh_cap ? g->wh_cap * 2 : 16;
+            g->wh_saved = (int *)xrealloc(g->wh_saved,
+                                          (size_t)g->wh_cap * sizeof *g->wh_saved);
+        }
+        g->wh_saved[g->wh_idx++] = g->locals.n;   /* before the body's lets */
+        scan_stmt(g, n->as.whiles.cond);
+        scan_stmt(g, n->as.whiles.body); break;
     default: break;
     }
 }

@@ -167,6 +167,14 @@ typedef struct {
     int   *brk; int nbrk, cbrk;    /* stack of enclosing loop labels */
     int   *cnt; int ncnt, ccnt;
 
+    /* While-statement body-scope marks: scan records locals.n before the
+     * body's shadow `let`s are registered, emit re-hides them while the
+     * condition is generated (the condition sits in the enclosing scope;
+     * a same-line shadow would otherwise capture its reads — interp reads
+     * the outer value at condition time). Indexed by while-statement
+     * occurrence, so nested whiles pair up scan and emit entries. */
+    int   *wh_saved; int wh_cap, wh_idx;
+
     int    capture_main;           /* emitting the synthetic top-level body:
                                     * remember what `main()` returned */
     char   exit_tmp[48];

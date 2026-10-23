@@ -107,6 +107,14 @@ typedef struct {
     LLVMBasicBlockRef *brk; int nbrk, cbrk;   /* enclosing loop exits      */
     LLVMBasicBlockRef *cnt; int ncnt, ccnt;   /* enclosing loop heads      */
 
+    /* While-statement body-scope marks: scan records locals.n before the
+     * body's shadow `let`s are registered, emit re-hides them while the
+     * condition is generated (the condition sits in the enclosing scope;
+     * a same-line shadow would otherwise capture its reads — interp reads
+     * the outer value at condition time). Indexed by while-statement
+     * occurrence, so nested whiles pair up scan and emit entries. */
+    int   *wh_saved; int wh_cap, wh_idx;
+
     /* Synthetic top-level body emitting `main()`: the process status is the
      * value that call returns, so remember it (exit_val) and hand it to the
      * fallback terminator in cg_function — the top level has no explicit

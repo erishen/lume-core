@@ -120,7 +120,16 @@ static void cg_while(CG *g, Node *n)
     EMIT(g, "  br label %%L%d\n", lc);
 
     EMIT(g, "L%d:\n", lc);
+    /* The condition sits in the enclosing scope: the body's shadow `let`s
+     * (wh_saved marks where they start, recorded at scan time) must not
+     * capture its variable reads — interp reads the outer binding at
+     * condition time. Hide them for the condition, restore for the body. */
+    int full_n = g->locals.n;
+    if (g->wh_idx < g->wh_cap)
+        g->locals.n = g->wh_saved[g->wh_idx];
+    g->wh_idx++;
     Val c = cg_expr(g, n->as.whiles.cond);
+    g->locals.n = full_n;
     EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", c.v, lb, le);
     free(c.v);
 
@@ -970,6 +979,12 @@ static void cg_def(CG *g, const char *sym, const char *title,
     } else {
         memset(&g->locals, 0, sizeof g->locals);
     }
+    /* While-statement scope marks pair up per function: the scan below
+     * pushes saved entries from the current global while-count on; reset
+     * the emit counter to the same base so this function's cg_while reads
+     * its own entries (L_top's pre-scan happened in the driver, so its
+     * base is whatever the pre-scan advanced the counter to). */
+    int wh_base = g->wh_idx;
 
     /* A define is its own function: a `break` inside it can never target a
      * loop in whoever is being emitted around it (no loop can span a define
@@ -994,6 +1009,7 @@ static void cg_def(CG *g, const char *sym, const char *title,
         }
     }
     if (!preset) scan_block(g, body);
+    g->wh_idx = wh_base;   /* emit reads this function's saved entries */
 
     /* Phase-2 captures: each captured name gets a `%cap<i>` slot. The creation
      * site (cg_funclit) stored the address of the outer variable's slot into

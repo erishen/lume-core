@@ -1493,5 +1493,18 @@ let nc_argv = argv();
 print(len(nc_argv) == 0);
 print(join(nc_argv, ","));
 
+// while-condition scope: the condition reads the ENCLOSING binding even when
+// the body shadows the same name on the same line. The interpreter reads the
+// outer value at condition time (loop entered -> body binds b=0 -> break ->
+// flat env returns 0). The native backends used to resolve the condition to
+// the body's shadow slot and read uninitialized garbage. Pinned: 0 on all
+// three legs.
+func while_shadow(): int {
+    let b = 10;
+    while (b > 5) { let b = 0; break; }
+    return b;
+}
+print(while_shadow());
+
 warmup();
 main();

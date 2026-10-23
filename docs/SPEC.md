@@ -1218,8 +1218,11 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    native-consistency.lume` 的 `seq_same` / `nest_same`）。
 
    ⚠️ 注意：跨作用域同名 `let`（如 `if (true) { let a = 2; }` 之后 `print(a)`）在解释器里
-   会因遮蔽未恢复而打印内层值（`2 2`），这是**另一个未修的语义问题**，不在本次范围内；
-   本次只消除 IR 冲突，不改动遮蔽语义。
+   会因遮蔽未恢复而打印内层值（`2 2`），这是**平坦 env 的既有语义**（原生后端同此，
+   非 bug）。唯一例外是 **while 条件读外层绑定**：body 的同行遮蔽绝不能捕获条件里的
+   同名读（interp 在条件时刻读外层值）——2026-10-23 修复（`wh_saved` 作用域标记，
+   `codegen_scan.c` / `codegen_stmt.c` 与 llvm 镜像），回归钉在 `tests/
+   native-consistency.lume` 的 `while_shadow`。
 5. 🔴 **[已修复] 在循环里 `push` 当前列表会让原生后端被 OOM 杀掉**（退出码 137）：
 
    ```lume

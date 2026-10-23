@@ -86,8 +86,19 @@ static void cg_while(CG *g, Node *n)
     if (!DONE(g->cur)) LLVMBuildBr(g->ab, c);
 
     g->cur = c; AT(g);
-    LLVMValueRef cond = cg_expr(g, n->as.whiles.cond).v;
-    if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, cond, b, e);
+    /* The condition sits in the enclosing scope: the body's shadow `let`s
+     * (wh_saved marks where they start, recorded at scan time) must not
+     * capture its variable reads — interp reads the outer binding at
+     * condition time. Hide them for the condition, restore for the body. */
+    {
+        int full_n = g->locals.n;
+        if (g->wh_idx < g->wh_cap)
+            g->locals.n = g->wh_saved[g->wh_idx];
+        g->wh_idx++;
+        LLVMValueRef cond = cg_expr(g, n->as.whiles.cond).v;
+        g->locals.n = full_n;
+        if (!DONE(g->cur)) LLVMBuildCondBr(g->ab, cond, b, e);
+    }
 
     g->cur = b; AT(g);
     cg_stmt(g, n->as.whiles.body);
@@ -531,6 +542,12 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
         g->locals = *g->preset_locals;
     else
         memset(&g->locals, 0, sizeof g->locals);
+    /* While-statement scope marks pair up per function: the scan below
+     * pushes saved entries from the current global while-count on; reset
+     * the emit counter to the same base so this function's cg_while reads
+     * its own entries (L_top's pre-scan happened in the driver, so its
+     * base is whatever the pre-scan advanced the counter to). */
+    int wh_base = g->wh_idx;
     LLVMBasicBlockRef *saved_brk = g->brk; int snbrk = g->nbrk, scbrk = g->cbrk;
     LLVMBasicBlockRef *saved_cnt = g->cnt; int sncnt = g->ncnt, sccnt = g->ccnt;
     g->brk = g->cnt = NULL; g->nbrk = g->ncnt = g->cbrk = g->ccnt = 0;
@@ -566,6 +583,7 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
                      capfn->as.funclit.cap_types[i], NULL, 0);
 
     if (!preset) scan_block(g, body);
+    g->wh_idx = wh_base;   /* emit reads this function's saved entries */
 
     /* Entry: one alloca per local, then seed the non-struct parameters. */
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(g->ctx, g->fn, "entry");
