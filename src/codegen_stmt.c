@@ -983,8 +983,14 @@ static void cg_def(CG *g, const char *sym, const char *title,
      * pushes saved entries from the current global while-count on; reset
      * the emit counter to the same base so this function's cg_while reads
      * its own entries (L_top's pre-scan happened in the driver, so its
-     * base is whatever the pre-scan advanced the counter to). */
+     * base is whatever the pre-scan advanced the counter to). Preset mode
+     * (L_top) is special: pass 1.7 recorded L_top's while marks from
+     * counter 0, while every named function re-uses the post-pre-scan
+     * counter as its own base — so preset mode must read from 0 or it
+     * picks up the last emitted function's marks and truncates the locals
+     * table to a foreign size (reading uninitialized Asg entries). */
     int wh_base = g->wh_idx;
+    if (preset) wh_base = 0;
 
     /* A define is its own function: a `break` inside it can never target a
      * loop in whoever is being emitted around it (no loop can span a define

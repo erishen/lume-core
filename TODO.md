@@ -827,7 +827,7 @@ Steps:
       without the workaround" remains to verify on the host once the
       host syncs the interp.c fix.
 
-## P10 — Native compile of large scripts: intermittent SIGSEGV, plain build only (filed 2026-10-23)
+## P10 — Native compile of large scripts: intermittent SIGSEGV, plain build only (filed 2026-10-23, root cause fixed 2026-10-23)
 
 Compiling `tests/native-consistency.lume` (~1.2k lines) with
 `--compile-text` or `--compile-llvm` segfaults intermittently
@@ -841,7 +841,7 @@ left `git stash pop`-equivalent HEAD (`8beb82b`) still crashing
 layout-dependent memory error the sanitizer's allocator happens to
 mask — not an ASan-detectable OOB/UB.
 
-Evidence:
+Evidence (original triage):
 
 - `head -200` of the fixture: stable green (3/3).
 - `head -450`: stable crash on the plain build (3/3), stable green
@@ -856,13 +856,66 @@ Evidence:
   plain, clean under ASan. `native_backends.sh` on a plain build can
   therefore fail intermittently for this reason alone.
 
-To triage: needs a real debugger (gdb under MSYS2, or WinDbg on the
-crash dump); ASan allocator options cannot force the crashing
-layout. Suspects worth a first look: scale-driven realloc patterns
-in codegen (symbol table growth, IRBuf doubling, capture-table
-realloc) that read/write just past a boundary only when the table
-happens to sit at the end of a page; and any `memcpy` whose size is
-derived from a count that grew after the destination was sized.
+**Root cause (located 2026-10-23, fixed in both emitters).** Crash
+stack always lands in `asg_find` (codegen.c) — `strcmp` reading a
+corrupted Asg `name` — with the offending element always the *last*
+entry (`i == n-1`) and its `name`/`slot` bytes being
+uninitialized memory (0xA5 canary bytes / 0 / stale IR-text
+residue), i.e. the locals table was truncated to a `n` *larger*
+than the count of initialized entries. The truncation comes from the
+while-scope machinery: `cg_while` hides the body's shadow binds
+while emitting the condition by restoring `g->locals.n` from
+`g->wh_saved[g->wh_idx]`, the value the scan phase recorded "before
+the body's lets". That pairing is per-function (`cg_function` saves
+`wh_base = g->wh_idx` on entry, restores it on exit), but **preset
+mode (the synthetic `L_top` for top-level statements) broke the
+pairing**: pass 1.7 pre-scans the top-level statements and records
+`L_top`'s while-marks from counter **0**, while every named
+function — emitted before `L_top` in pass 2 — re-uses the
+post-pre-scan counter as its own base. So `L_top`'s `cg_while`
+read `wh_saved[k…]` (the *last emitted function's* marks, or stale
+realloc memory) instead of its own `[0..k)`, truncating `locals.n`
+to a foreign size — often larger than the initialized entries — and
+`asg_find` walked into uninitialized Asg rows until `strcmp`
+dereferenced garbage. Layout dependence (which runs crash) follows
+from what the foreign saved value happens to be; both emitters
+share the scan/emit machinery, hence both crash. **Fix:**
+`cg_function` now sets `int wh_base = g->wh_idx; if (preset)
+wh_base = 0;` in both `src/codegen_stmt.c` and
+`src/llvm_cg_stmt.inc` (symmetric), so `L_top` reads its own
+pass-1.7 marks.
+
+Diagnostics used (for the record, all temporary and reverted):
+arena canary region + `arena_check_canaries`; `AddVectoredExceptionHandler`
+crash dumper (CRT's `SetUnhandledExceptionFilter` is bypassed by the
+mingw CRT converting SEH to SIGSEGV first) writing minidumps +
+StackWalk64 traces, symbolized via `llvm-symbolizer --obj=bin/lume-core.exe
+--demangle 0x140000000+<rva>` (the exe needed `-g` at link time to keep
+DWARF); an `asg_find` guard asserting `arena_contains(name)` which
+surfaced `ASG-NAME-CORRUPT i=n-1` with name bytes 0xA5A5… (canary),
+0x6C25202A… (`"i64* %l"` IR text), and 0x0; an irbuf OOB probe (no
+hits — the IR buffer itself never overran). Dead ends not worth
+re-trying: clang-23 has no `-fanalyzer`; MSYS2 mingw64 ships no
+`gcc.exe`; `-O0` still crashes (source-level bug, not optimizer UB);
+command-line CFLAGS overrides break the RT_DEFS/Include chain (edit
+Makefile instead); `SetUnhandledExceptionFilter` and lldb-on-minidump
+both non-functional on this toolchain.
+
+**Verification (post-fix, plain build):** `head -450` 6/6 and the
+full `tests/native-consistency.lume` 6/6 `--compile-text` (was
+~4/5 crash) and 6/6 `--compile-llvm` rc=0; `tests/native_backends.sh`
+19/19 ok (incl. sql, stats, serve, ns-chain legs). ASan:
+`bin/lume-core-asan` compiles h450 + full fixture 6/6 with zero
+reports. `make asan`'s remaining red is the pre-existing tre-regex
+UBSan misaligned-read noise on the interp leg (`regexec.c:264`,
+documented under P3/P11) — unrelated to this fix. En route the
+`closure-reassign-ok` regression leg in `tests/native_backends.sh`
+gained the same CRLF normalization `check()` uses (the interpreter's
+CRT text-mode stdout ends lines with `\r\n`; compiled binaries emit
+LF), and `tests/smoke.c`'s `mkdir(".data", 0755)` was made
+Windows-portable (CRT `mkdir` is single-argument) so `make asan`
+reaches its `asan-compile` target — the smoke binary previously
+failed to build under mingw.
 
 ## Intentional boundaries — do not file as gaps
 

@@ -328,7 +328,7 @@ LUME
 cro_msg=""
 for leg in "${RAN[@]}"; do
     case "$leg" in
-        interp) "$TARGET" "$CRO" > "$WORK/cro-$leg.out" 2>&1; rc=$? ;;
+        interp) "$TARGET" "$CRO" > "$WORK/cro-$leg.out" 2>/dev/null; rc=$? ;;
         text)   err=$("$TARGET" --compile-text "$CRO" -o "$WORK/cro-$leg" 2>&1 >/dev/null); rc=$? ;;
         llvm)   err=$("$TARGET" --compile-llvm "$CRO" -o "$WORK/cro-$leg" 2>&1 >/dev/null); rc=$? ;;
         *)      continue ;;
@@ -341,6 +341,9 @@ for leg in "${RAN[@]}"; do
         [ -x "$WORK/cro-$leg" ] || fail "closure-reassign-ok: $leg produced no binary"
         cro_out=$("$WORK/cro-$leg" 2>&1)
     fi
+    # Same CRLF normalization as check(): the interpreter's CRT text-mode
+    # stdout ends lines with \r\n while the compiled binaries emit LF.
+    cro_out=$(printf '%s' "$cro_out" | tr -d '\r')
     if [ -z "$cro_msg" ]; then
         cro_msg=$cro_out
     elif [ "$cro_msg" != "$cro_out" ]; then

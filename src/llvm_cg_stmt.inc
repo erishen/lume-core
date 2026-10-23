@@ -546,8 +546,14 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
      * pushes saved entries from the current global while-count on; reset
      * the emit counter to the same base so this function's cg_while reads
      * its own entries (L_top's pre-scan happened in the driver, so its
-     * base is whatever the pre-scan advanced the counter to). */
+     * base is whatever the pre-scan advanced the counter to). Preset mode
+     * (L_top) is special: pass 1.7 recorded L_top's while marks from
+     * counter 0, while every named function re-uses the post-pre-scan
+     * counter as its own base — so preset mode must read from 0 or it
+     * picks up the last emitted function's marks and truncates the locals
+     * table to a foreign size (reading uninitialized Asg entries). */
     int wh_base = g->wh_idx;
+    if (preset) wh_base = 0;
     LLVMBasicBlockRef *saved_brk = g->brk; int snbrk = g->nbrk, scbrk = g->cbrk;
     LLVMBasicBlockRef *saved_cnt = g->cnt; int sncnt = g->ncnt, sccnt = g->ccnt;
     g->brk = g->cnt = NULL; g->nbrk = g->ncnt = g->cbrk = g->ccnt = 0;
