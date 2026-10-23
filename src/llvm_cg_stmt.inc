@@ -1034,9 +1034,9 @@ static void cg_handler_ret(CG *g, Node *n)
                                           g->i64;
                     LLVMBasicBlockRef cur = LLVMGetInsertBlock(g->ab);
                     LLVMValueRef fnv = LLVMGetBasicBlockParent(cur);
-                    LLVMBasicBlockRef lc = LLVMAppendBasicBlock(fnv, "ljc");
-                    LLVMBasicBlockRef lb = LLVMAppendBasicBlock(fnv, "ljb");
-                    LLVMBasicBlockRef le = LLVMAppendBasicBlock(fnv, "lje");
+                    LLVMBasicBlockRef lc = LLVMAppendBasicBlockInContext(g->ctx, fnv, "ljc");
+                    LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(g->ctx, fnv, "ljb");
+                    LLVMBasicBlockRef le = LLVMAppendBasicBlockInContext(g->ctx, fnv, "lje");
                     LLVMValueRef iv = LLVMBuildAlloca(g->ab, g->i64, "jiv");
                     LLVMBuildStore(g->ab, LLVMConstInt(g->i64, 0, 0), iv);
                     LLVMTypeRef p2b[2] = { p2[0], p2[1] };

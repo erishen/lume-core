@@ -32,6 +32,7 @@ jobs:
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-curl
 
       # No external regex package is needed: the POSIX regex used by the
       # str_match/regex builtins is vendored under src/compat/regex (musl
@@ -62,7 +63,10 @@ jobs:
       # compiler diagnostic as a failure. Legs whose toolchain is missing
       # are skipped (text needs clang on PATH, libLLVM needs llvm-config in
       # the build), so the step is green both when the MSYS2 clang group
-      # provides both and when only part of it is present.
+      # provides both and when only part of it is present. With
+      # mingw-w64-ucrt-x86_64-sqlite3 installed, the sql cross-backend
+      # block and the sql_tx serve leg (P6, needs curl - installed above)
+      # run for real under Windows too - the sqlite probe gates them.
       - name: Native consistency (interp + text + llvm)
         run: make native-consistency
 

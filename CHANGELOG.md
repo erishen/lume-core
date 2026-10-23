@@ -28,6 +28,26 @@ All notable changes to Lume are documented here. The format follows
 
 ### Fixed
 
+- **Native `sql_tx` handles are reclaimed at the serve request boundary
+  (P6 close-out, 2026-10-23).** The interpreter's tx handle is an
+  `OBJ_SQLTX` with a GC finalizer; the native handle is a plain heap
+  struct, so a transaction a handler abandoned (never committed or
+  rolled back) pinned its sqlite connection — and the BEGIN lock — for
+  the life of the process: a real leak in long-running `server{}`
+  deployments. `bridge_native.c` now keeps an open-handle registry
+  (`g_open_tx[64]`, register/unregister in `lume_bi_sql_tx_begin` /
+  `sql_tx_end`) and `lume_bi_sql_tx_cleanup()` rolls back + closes every
+  still-open handle after each request. Regression:
+  `tests/native_backends.sh` serve leg (`tests/native-sql-tx-serve.lume`
+  — two sequential /open requests both get 200 with a fresh "ok" body;
+  without the reclaim the second BEGIN would time out on SQLITE_BUSY).
+- **LLVM backend: `(Val){ NULL, NULL, 0 }` initialised the 2-field Val
+  with 3 elements** — `-Wexcess-initializers` (13 warnings on the
+  clang/mingw build) since the LLVM-side struct shrank. All `llvm_cg_*.inc`
+  sites now use `{ NULL, NULL }`; the text backend's 3-field Val is
+  unchanged. The LLVM-23 `LLVMAppendBasicBlock` deprecation is also
+  resolved (`LLVMAppendBasicBlockInContext` with the CG's context) —
+  the mingw/clang build is warning-free.
 - **Cast accessors (`int/float/str/bool(m, "k"[, d])`) answer in the cast's
   own type on every backend.** 86cb959's `get()` default fix had routed the
   accessor sugar through `emit_get_call`, whose shape branch refuses a
