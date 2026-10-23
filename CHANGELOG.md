@@ -106,6 +106,13 @@ All notable changes to Lume are documented here. The format follows
   `bridge_mcp.c` / `bridge_lsp.c` into the shared runtime, so the interpreter
   and every `--compile-*` native program (both link `rt.o`) are covered from
   one place.
+- **AI gate: the gen-sql-tx seed read back inside the transaction.** `sql_query`
+  opens its own read-only connection per call, so rows written in an open tx
+  are invisible to it until commit; `make ai-produce` judged the seed a verdict
+  violation on every platform (reproduced locally: "no such table: t"). The
+  seed now commits before the read-back; `make ai-produce` passes 10/10
+  verdicts (9 ready, 1 rejected-as-expected). The "read your writes inside a
+  transaction" gap is recorded in TODO.md (P6 leftovers).
 
 ## [0.10.0] - 2026-10-22
 

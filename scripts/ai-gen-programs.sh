@@ -147,19 +147,22 @@ print(len(sieve(20)));
 EOF
 
 gen gen-sql-tx accept \
-    "SQLite 事务: 开事务 -> 建表/写入 -> 查询回读 -> 提交, 打印查询结果" <<'EOF'
+    "SQLite 事务: 开事务 -> 建表/写入 -> 提交 -> 查询回读, 打印查询结果" <<'EOF'
 // gen-sql-tx.lume — LLM-produced "SQLite transaction" program (P6 surface).
-// Exercises the tx path: open -> write (idempotent table + upsert) ->
-// query the row back -> commit. The sql_* builtins are optional in the
+// Exercises the tx path: begin -> write (idempotent table + upsert) ->
+// commit -> read the row back. sql_query opens a fresh read-only
+// connection per call (it never shares the tx handle's connection), so
+// the row is only visible to it after commit — the seed reads after
+// commit and prints the result. The sql_* builtins are optional in the
 // build (HAVE_SQLITE); on a build without them the gate's availability
 // probe skips this seed instead of rejecting it. SQLITE_DB supplies the
 // scratch database (empty path falls back to it on every backend).
 let db: string = sql_tx_begin("");
 sql_tx_exec(db, "CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, v TEXT)");
 sql_tx_exec(db, "INSERT OR REPLACE INTO t (k, v) VALUES ('a', 'hello')");
+sql_tx_commit(db);
 let rows: list = sql_query("", "SELECT v FROM t WHERE k = 'a'");
 print(rows);
-sql_tx_commit(db);
 EOF
 
 gen gen-str-match accept \

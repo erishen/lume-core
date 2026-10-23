@@ -610,6 +610,18 @@ sql_query/sql_write). 11 new cases in tests/sqlite.lume cover atomicity
 handle rejection, whitelist enforcement, and error paths. Verified on a
 real sqlite3 build (3.34.0 dev kit at `D:\Software\mingw64\opt`).
 
+Leftover gap (2026-10-23, surfaced by the ai-produce CI failure): the
+tx handle's connection is private to sql_tx_* — `sql_query` opens a
+fresh read-only connection per call and shares no transaction state
+with an open tx, so rows written inside an open transaction are
+invisible to `sql_query` until commit (SQLite's default isolation).
+The gen-sql-tx seed originally read back inside the transaction; the
+machine gate judged it a verdict violation on every platform
+(reproduced locally: "no such table: t"). The seed now commits before
+the read-back. If "read your writes inside a transaction" should be
+expressible, a `sql_tx_query(tx, sql)` builtin (interp + text + llvm +
+guard + tests) is the follow-up.
+
 Gray zone — **done 2026-10-20**: write CTEs are whitelisted in
 `sql_validate_write` (`WITH ... INSERT/UPDATE/DELETE`) — still one
 statement, still stateless, guardrail-only; subqueries must be
