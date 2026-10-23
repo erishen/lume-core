@@ -827,6 +827,43 @@ Steps:
       without the workaround" remains to verify on the host once the
       host syncs the interp.c fix.
 
+## P10 — Native compile of large scripts: intermittent SIGSEGV, plain build only (filed 2026-10-23)
+
+Compiling `tests/native-consistency.lume` (~1.2k lines) with
+`--compile-text` or `--compile-llvm` segfaults intermittently
+(rc=139) on the plain mingw build; the same binary compiles smaller
+scripts (≤ ~200 lines) reliably. Found while closing SPEC §8.1 #9:
+it is **pre-existing** — `git stash` of the in-flight checker change
+left `git stash pop`-equivalent HEAD (`8beb82b`) still crashing
+~75% of runs on `head -450` of the fixture. The ASan build
+(`make asan`'s `bin/lume-core-asan`) compiles the full fixture and
+`head -450` cleanly every time and reports nothing, so this is a
+layout-dependent memory error the sanitizer's allocator happens to
+mask — not an ASan-detectable OOB/UB.
+
+Evidence:
+
+- `head -200` of the fixture: stable green (3/3).
+- `head -450`: stable crash on the plain build (3/3), stable green
+  under ASan (4/4).
+- Middle sizes (400, 480, 500, 510, 520, 535, 550, 600): crash rate
+  between 1/3 and 3/3, no stable boundary — scale-dependent, not
+  content-dependent.
+- Both emitters crash (text and libLLVM), so the fault lives in the
+  shared codegen front-end (codegen.c / codegen_sig.c /
+  codegen_scan.c …), before either emitter's IR is finalized.
+- Full `tests/native-consistency.lume` (1.2k lines): ~4/4 crash on
+  plain, clean under ASan. `native_backends.sh` on a plain build can
+  therefore fail intermittently for this reason alone.
+
+To triage: needs a real debugger (gdb under MSYS2, or WinDbg on the
+crash dump); ASan allocator options cannot force the crashing
+layout. Suspects worth a first look: scale-driven realloc patterns
+in codegen (symbol table growth, IRBuf doubling, capture-table
+realloc) that read/write just past a boundary only when the table
+happens to sit at the end of a page; and any `memcpy` whose size is
+derived from a count that grew after the destination was sized.
+
 ## Intentional boundaries — do not file as gaps
 
 These are deliberate design decisions; re-proposing them is noise

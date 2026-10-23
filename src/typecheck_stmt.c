@@ -363,6 +363,52 @@ void ck_stmt(Checker *c, Node *n) {
                         n->as.assign.name);
                 return;
             }
+            /* Closure-variable reassignment (SPEC §8.1 #9): the variable's
+             * type locks to the FIRST lambda's signature (the back pointer),
+             * every call lowers against it, while the runtime box holds
+             * whatever was assigned last. A lambda of a DIFFERENT signature
+             * is a silent mismatch on the interpreter and refused on the
+             * native backends — reject here so all three agree. Parameters
+             * or returns still unresolved (NULL) defer the verdict to the
+             * native signature pass's fixed point (which propagates the old
+             * signature into the new lambda and compares again). */
+            if (vt->kind == TY_FUNC && vt->func &&
+                vt->func->type == N_FUNC_LIT &&
+                n->as.assign.value &&
+                n->as.assign.value->type == N_FUNC_LIT) {
+                Node *old = vt->func, *new_ = n->as.assign.value;
+                int same = 1, undecided = 0;
+                if (old->as.funclit.arity != new_->as.funclit.arity) {
+                    same = 0;
+                } else {
+                    for (int k = 0; k < old->as.funclit.arity && same; k++) {
+                        Type *a = old->as.funclit.param_types[k];
+                        Type *b = new_->as.funclit.param_types[k];
+                        if (!a || !b) { undecided = 1; same = 0; break; }
+                        a = resolve(c, a, n->line);
+                        b = resolve(c, b, n->line);
+                        if (!(type_compat(c, a, b, n->line) &&
+                              type_compat(c, b, a, n->line)))
+                            same = 0;
+                    }
+                    if (same) {
+                        if (!old->as.funclit.ret || !new_->as.funclit.ret) {
+                            undecided = 1;
+                            same = 0;
+                        } else {
+                            Type *ar = resolve(c, old->as.funclit.ret, n->line);
+                            Type *br = resolve(c, new_->as.funclit.ret, n->line);
+                            if (!(type_compat(c, ar, br, n->line) &&
+                                  type_compat(c, br, ar, n->line)))
+                                same = 0;
+                        }
+                    }
+                }
+                if (!undecided && !same)
+                    ck_fail(c, n->line, "cannot reassign a closure variable "
+                            "with a different signature — the variable keeps "
+                            "the first lambda's signature");
+            }
             Type *it = ck_expr(c, n->as.assign.value, vt);
             if (!type_compat(c, it, vt, n->line))
                 ck_fail(c, n->line, "assignment type mismatch for '%s'",

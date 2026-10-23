@@ -272,6 +272,86 @@ done
 [ -z "$null_msg" ] ||
     pass "null-as-scalar: every emitter refuses it, with the same message"
 
+# A closure variable's type locks to the FIRST lambda's signature, every call
+# lowers against it, and the runtime box holds whatever was assigned last
+# (SPEC 8.1 #9). Reassigning a lambda of a DIFFERENT signature used to be a
+# silent pass on the interpreter and a refusal on the native backends; the
+# checker now refuses it at the assignment itself so all three legs agree.
+CR="$WORK/closure-reassign.lume"
+cat > "$CR" <<'LUME'
+let f = (x: int) => x + 1;
+f = (x: string) => x;
+print(f(3));
+LUME
+cr_msg=""
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        interp) msg=$("$TARGET" "$CR" 2>&1 >/dev/null); rc=$? ;;
+        text)   flag=--compile-text ;;
+        llvm)   flag=--compile-llvm ;;
+        *)      continue ;;
+    esac
+    if [ "$leg" != "interp" ]; then
+        err=$("$TARGET" $flag "$CR" -o "$WORK/cr-$leg" 2>&1 >/dev/null); rc=$?
+        msg=$(printf '%s\n' "$err" | diag_line)
+    fi
+    [ $rc -ne 0 ] ||
+        fail "closure-reassign: $leg accepted a lambda of a different signature"
+    case "$msg" in
+        *"assignment type mismatch for 'f'"*) ;;
+        *) echo "$msg" | head -3
+           fail "closure-reassign: $leg refused with an unexpected message" ;;
+    esac
+    if [ -z "$cr_msg" ]; then
+        cr_msg=$msg
+    elif [ "$msg" != "$cr_msg" ]; then
+        fail "closure-reassign: legs word the refusal differently"
+    fi
+done
+[ -n "$cr_msg" ] ||
+    echo "ok   closure-reassign: no leg ran, nothing to assert"
+[ -z "$cr_msg" ] ||
+    pass "closure-reassign: every leg refuses a lambda of a different signature, with the same message"
+
+# The OTHER half of SPEC 8.1 #9: a lambda of the SAME signature stays legal —
+# the runtime box is re-bound while the type keeps the first signature. Small
+# fixture on purpose: native compiles of large scripts are a separate known
+# flake (see TODO.md), and this check is about closure-reassign, not about
+# scale.
+CRO="$WORK/closure-reassign-ok.lume"
+cat > "$CRO" <<'LUME'
+let g = (x) => x + 1;
+g = (x) => x * 10;
+print(map(g, [1, 2]));
+print(g(5));
+LUME
+cro_msg=""
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        interp) "$TARGET" "$CRO" > "$WORK/cro-$leg.out" 2>&1; rc=$? ;;
+        text)   err=$("$TARGET" --compile-text "$CRO" -o "$WORK/cro-$leg" 2>&1 >/dev/null); rc=$? ;;
+        llvm)   err=$("$TARGET" --compile-llvm "$CRO" -o "$WORK/cro-$leg" 2>&1 >/dev/null); rc=$? ;;
+        *)      continue ;;
+    esac
+    [ $rc -eq 0 ] ||
+        fail "closure-reassign-ok: $leg refused a same-signature reassignment (rc=$rc)"
+    if [ "$leg" = "interp" ]; then
+        cro_out=$(cat "$WORK/cro-$leg.out")
+    else
+        [ -x "$WORK/cro-$leg" ] || fail "closure-reassign-ok: $leg produced no binary"
+        cro_out=$("$WORK/cro-$leg" 2>&1)
+    fi
+    if [ -z "$cro_msg" ]; then
+        cro_msg=$cro_out
+    elif [ "$cro_msg" != "$cro_out" ]; then
+        fail "closure-reassign-ok: legs disagree ($leg: $(printf '%s' "$cro_out"))"
+    fi
+done
+[ -n "$cro_msg" ] ||
+    echo "ok   closure-reassign-ok: no leg ran, nothing to assert"
+[ -z "$cro_msg" ] ||
+    pass "closure-reassign-ok: same-signature reassignment agrees on every leg"
+
 # A string annotation is the one null that stays legal natively (it travels as
 # the same opaque pointer), and it has to *print* like the interpreter prints
 # it. This one is about the emitted code, not the refusal, so it runs:

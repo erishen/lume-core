@@ -1324,20 +1324,28 @@ Lume 有三条执行路径：**解释器**、**原生后端 A（手写 IR 文本
    `native-consistency.lume`——那个 fixture 只 diff 三个 leg 都接受的程序，而这里要断言的正是
    「不运行」。
 
-9. **[开放] 闭包变量重赋值，两个原生后端拒绝**（§4.8 落地时顺带定界）：
+9. **[已修] 闭包变量重赋值（同签名合法，异签名三端一致拒绝）**（2026-10-23 修复）：
 
    ```lume
    let f = (x) => x + 1;
    f = (x) => x * 10;
-   print(map(f, [1, 2]));    // 解释器 [10,20]；两个原生后端拒绝
+   print(map(f, [1, 2]));    // [10,20] —— 三端一致，同签名重赋值合法
    ```
 
    闭包变量的类型回指针记的是**第一个** lambda 的签名，而运行期盒子里装的是**最后一次**
-   赋进去的闭包——两个 lambda 签名一旦不同，调用就会静默按错误签名 lowering。解释器动态
-   无此问题。原生路径在签名 pass 里显式拒绝：`reassigning a closure variable is not
-   supported on the native backends — the variable keeps the first lambda's signature`。
-   修复前这条路径报的是 `internal: lambda was never named...`（第二个 lambda 从未被签名
-   pass 命名，`internal:` 消息泄漏给用户）。
+   赋进去的闭包——两个 lambda 签名一旦不同，调用就会静默按错误签名 lowering（解释器动态
+   无此问题，原生签名 pass 此前在**编译期**拒绝，三端行为不一致）。现在检查器在**赋值点**
+   统一拒绝：`assignment type mismatch for '<name>'`，解释器、text、libLLVM 三端一致。
+
+   修复过程顺带挖出并补上一个**检查器盲区**：语句位置的赋值（`x = ...`）由 parser 包进
+   `N_EXPR_STMT`，而 `ck_expr` 对 `N_ASSIGN` 没有 case（落 default 返回 any）——
+   `let x: int = 5; x = "str";` 一直静默通过，解释器照常重绑定。现在 `ck_expr` 有了
+   `N_ASSIGN`/`N_ASSIGN_MEMBER` 分支：先做普通赋值类型检查（`type_compat` 双向对签名
+   比较），再处理闭包变量异签名场景。同签名（含参数/返回未标注、延后由原生签名 pass
+   fixed point 判定的）仍然放行。
+
+   回归断言见 `tests/native_backends.sh` 的 `closure-reassign`（三腿同消息拒绝）与
+   `tests/native-consistency.lume` 的 `g = (x) => x * 10` 同签名用例（三腿 `[10,20]`）。
 
 10. **[已修] 顶层/外层绑定在函数体内不可见**（预先存在，非闭包引入；2026-10-08 修复）：
 

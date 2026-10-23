@@ -91,6 +91,89 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
             return t;
         }
 
+        /* Assignments arrive inside N_EXPR_STMT (the parser wraps every
+         * statement-position `x = ...` in one), so the checker's statement
+         * N_ASSIGN case was never reached — `let x: int = 5; x = "str";`
+         * type-checked silently and the interpreter happily rebound it.
+         * This is the only N_ASSIGN case the checker actually runs, so the
+         * closure-variable reassignment rule (SPEC §8.1 #9) lives here too:
+         * the variable's type locks to the FIRST lambda's signature, every
+         * call lowers against it while the runtime box holds whatever was
+         * assigned last — a different signature is rejected so all three
+         * backends agree (the native signature pass's fixed point is the
+         * backstop for signatures that are still unresolved here). */
+        case N_ASSIGN: {
+            Type *vt = scope_get(c->scope, n->as.assign.name);
+            if (!vt) {
+                ck_fail(c, n->line, "assignment to undefined variable '%s'",
+                        n->as.assign.name);
+                return any_type();
+            }
+            if (vt->kind == TY_FUNC && vt->func &&
+                vt->func->type == N_FUNC_LIT &&
+                n->as.assign.value &&
+                n->as.assign.value->type == N_FUNC_LIT) {
+                Node *old = vt->func, *new_ = n->as.assign.value;
+                int same = 1, undecided = 0;
+                if (old->as.funclit.arity != new_->as.funclit.arity) {
+                    same = 0;
+                } else {
+                    for (int k = 0; k < old->as.funclit.arity && same; k++) {
+                        Type *a = old->as.funclit.param_types[k];
+                        Type *b = new_->as.funclit.param_types[k];
+                        if (!a || !b) { undecided = 1; same = 0; break; }
+                        a = resolve(c, a, n->line);
+                        b = resolve(c, b, n->line);
+                        if (!(type_compat(c, a, b, n->line) &&
+                              type_compat(c, b, a, n->line)))
+                            same = 0;
+                    }
+                    if (same) {
+                        if (!old->as.funclit.ret || !new_->as.funclit.ret) {
+                            undecided = 1;
+                            same = 0;
+                        } else {
+                            Type *ar = resolve(c, old->as.funclit.ret, n->line);
+                            Type *br = resolve(c, new_->as.funclit.ret, n->line);
+                            if (!(type_compat(c, ar, br, n->line) &&
+                                  type_compat(c, br, ar, n->line)))
+                                same = 0;
+                        }
+                    }
+                }
+                if (!undecided && !same)
+                    ck_fail(c, n->line, "cannot reassign a closure variable "
+                            "with a different signature — the variable keeps "
+                            "the first lambda's signature");
+            }
+            Type *it = ck_expr(c, n->as.assign.value, vt);
+            if (!type_compat(c, it, vt, n->line))
+                ck_fail(c, n->line, "assignment type mismatch for '%s'",
+                        n->as.assign.name);
+            return it;
+        }
+
+        case N_ASSIGN_MEMBER: {
+            Type *ot = ck_expr(c, n->as.assign_mem.obj, NULL);
+            ot = resolve(c, ot, n->line);
+            if (ot->kind == TY_ANY) { ck_expr(c, n->as.assign_mem.value, NULL); return any_type(); }
+            if (ot->kind != TY_STRUCT) {
+                ck_fail(c, n->line, "cannot assign a member on this type");
+                return any_type();
+            }
+            int idx = -1;
+            for (int i = 0; i < ot->count; i++)
+                if (strcmp(n->as.assign_mem.name, ot->names[i]) == 0) { idx = i; break; }
+            if (idx < 0) {
+                ck_fail(c, n->line, "type has no field '%s'",
+                        n->as.assign_mem.name);
+                return any_type();
+            }
+            expect_compat(c, ck_expr(c, n->as.assign_mem.value, ot->types[idx]),
+                          ot->types[idx], n->line, "member assignment");
+            return any_type();
+        }
+
         case N_MAP_LIT: {
             /* single-key { ok: .. } / { err: .. } literals are Results */
             if (n->as.map.count == 1 &&
