@@ -866,7 +866,7 @@ pointed at 195cfaf (pre-0b43aa6). The implementation (0b43aa6 /
   images are now buildable on any machine.
 ## P11 — 2026-10-22 memory-safety audit (php2shell-class review)
 
-Status: open (filed 2026-10-22). A post-CVE-2026-109618/109619
+Status: closed (filed 2026-10-22, all sub-items done 2026-10-22). A post-CVE-2026-109618/109619
 pass over `lume-core/src` (arena, rt, codegen, interp, bridge,
 main.c) and the agent-httpd request path. Findings, all
 contextual — none of them is a php2shell-shaped UAF or stale
