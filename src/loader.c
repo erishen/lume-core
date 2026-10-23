@@ -154,14 +154,29 @@ static char *resolve_import(const char *from_dir, const char *rel,
     char canon[PATH_MAX];
 #ifdef _WIN32
     if (!_fullpath(canon, joined, sizeof(canon))) {
-#else
-    if (!realpath(joined, canon)) {
-#endif
         if (errbuf && errbuf_size)
             snprintf(errbuf, errbuf_size, "cannot resolve import '%s': %s",
                      rel, strerror(errno));
         return NULL;
     }
+    /* _fullpath only normalizes the path — unlike realpath (POSIX) it does
+     * not require the path to exist, so a missing module would sail through
+     * to the loader and report "cannot read ..." instead of the resolve
+     * error every other platform gives. Mirror realpath by checking. */
+    if (access(canon, F_OK) != 0) {
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size, "cannot resolve import '%s': %s",
+                     rel, strerror(errno));
+        return NULL;
+    }
+#else
+    if (!realpath(joined, canon)) {
+        if (errbuf && errbuf_size)
+            snprintf(errbuf, errbuf_size, "cannot resolve import '%s': %s",
+                     rel, strerror(errno));
+        return NULL;
+    }
+#endif
     return strdup(canon);
 }
 
