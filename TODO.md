@@ -906,9 +906,19 @@ full `tests/native-consistency.lume` 6/6 `--compile-text` (was
 ~4/5 crash) and 6/6 `--compile-llvm` rc=0; `tests/native_backends.sh`
 19/19 ok (incl. sql, stats, serve, ns-chain legs). ASan:
 `bin/lume-core-asan` compiles h450 + full fixture 6/6 with zero
-reports. `make asan`'s remaining red is the pre-existing tre-regex
+reports. `make asan`'s remaining red was the pre-existing tre-regex
 UBSan misaligned-read noise on the interp leg (`regexec.c:264`,
-documented under P3/P11) — unrelated to this fix. En route the
+documented under P3/P11) — **fixed 2026-10-23**: the scratch buffer in
+`tre_tnfa_run_parallel` was aligned to `long` (32-bit on Windows
+LLP64) instead of pointer width, so `tre_tnfa_reach_t{state; tags}`
+landed off the 8-byte boundary. `regexec.c` (4 call sites) and
+`tre-mem.c` now use `void *`; `make asan`'s emitter gate is green and
+the interp leg no longer reports UBSan. Windows-local limit (Linux CI
+authoritative): `tests/smoke-bin-asan` still OOMs inside the
+allocation-heavy tests (Windows ASan runtime shadow-map exhaustion,
+"internal allocator is out of memory trying to allocate 0x70 bytes",
+not parameter-fixable) and `tests/lsp_smoke.sh` cannot fork the ASan
+binary under MSYS2. En route the
 `closure-reassign-ok` regression leg in `tests/native_backends.sh`
 gained the same CRLF normalization `check()` uses (the interpreter's
 CRT text-mode stdout ends lines with `\r\n`; compiled binaries emit

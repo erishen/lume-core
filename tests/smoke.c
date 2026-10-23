@@ -37,6 +37,40 @@ static void capture_end(int fd, char *path, char *out, size_t cap) {
     out[n < 0 ? 0 : n] = '\0';
 }
 
+/* CRT mkdir on Windows takes a single argument (the POSIX mode is spelled
+ * _mkdir and is meaningless there anyway). */
+static int mkdir_p(const char *path) {
+#ifdef _WIN32
+    return mkdir(path);
+#else
+    return mkdir(path, 0755);
+#endif
+}
+
+/* Windows-only recursive delete: mingw's system() hands the command to
+ * cmd.exe, which has neither `rm -rf` nor `mkdir -p`. */
+#ifdef _WIN32
+static void rmrf(const char *path) {
+    DIR *d = opendir(path);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+                continue;
+            char p[512];
+            snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+            struct stat st;
+            if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) rmrf(p);
+            else remove(p);
+        }
+        closedir(d);
+        rmdir(path);
+    } else {
+        remove(path);
+    }
+}
+#endif
+
 /* Hand one test's object graph back: the AST (arena_reset reclaims
  * everything the parser built), the GC heap (vm_free), and the Type graph the
  * parser handed to the checker. Every test releases before returning, so the
@@ -126,7 +160,10 @@ static void reject_syntax(const char *name, const char *src, const char *want_su
  * sets up; the driving helper sits below check_err's definition. */
 static bool g_no_fs = false;
 static bool g_no_net = false;
+#ifdef _WIN32
+#else
 static bool g_http_lock_net = false;
+#endif
 
 /* The snippet must fail AT RUNTIME with `want_sub` in the VM error. This is
  * the other half of `reject`: type errors are caught by the checker, but the
@@ -182,13 +219,16 @@ static void check_err_nofs(const char *name, const char *src, const char *want_s
 }
 
 /* The --no-net lock (VM.no_net) for one check_err run, same discipline as the
- * --no-fs one. */
+ * --no-fs one. Only used by the http_* block, which is POSIX-only. */
+#ifdef _WIN32
+#else
 static void check_err_nonet(const char *name, const char *src, const char *want_sub) {
     g_no_fs = false;
     g_no_net = true;
     check_err(name, src, want_sub);
     g_no_net = false;
 }
+#endif
 
 /* http_get 的离线可判定路径:完整跑一段脚本,拿到 print() 的stdout 逐字节比
  * 对。两条用例都不需要出网:
@@ -197,7 +237,10 @@ static void check_err_nonet(const char *name, const char *src, const char *want_
  *  - SSRF 闸门:私有地址在 open_conn 之前就被拒,socket 根本不开,
  *    所以这条断言在无网/CI 里同样确定(不依赖 DNS 与出网)。
  *
- * 期望输出里只断言 err 的要点,别把整句贴进去(措辞会跟着改)。 */
+ * 期望输出里只断言 err 的要点,别把整句贴进去(措辞会跟着改)。
+ * POSIX-only: the Windows/mingw port has no http verbs to exercise. */
+#ifdef _WIN32
+#else
 static void check_http_offline(const char *name, const char *src,
                                const char *expect) {
     tests_run++;
@@ -232,6 +275,7 @@ static void check_http_offline(const char *name, const char *src,
     }
     smoke_release(prog, &vm);
 }
+#endif /* !_WIN32 — check_http_offline is POSIX-only */
 
 
 /* Multi-file module tests (import/export): write `files` (name -> content)
@@ -253,9 +297,15 @@ static void check_modules(const char *name, const char *const files[][2],
     char path[256];
     char dir[256];
     snprintf(dir, sizeof(dir), "/tmp/lume-smoke-modules/%s", name);
+#ifndef _WIN32
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dir, dir);
     if (system(cmd) != 0) {
+#else
+    rmrf(dir);
+    mkdir_p("/tmp/lume-smoke-modules");
+    if (mkdir_p(dir) != 0) {
+#endif
         fprintf(stderr, "FAIL %-32s cannot create scratch dir\n", name);
         tests_failed++;
         goto done;
@@ -329,9 +379,14 @@ done:
  * so the length edge is preserved rather than lowered. */
 static int smk_fs_fixture(void) {
     const char *dir = "/tmp/lume-smoke-files";
+#ifndef _WIN32
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dir, dir);
     if (system(cmd) != 0) {
+#else
+    rmrf(dir);
+    if (mkdir_p(dir) != 0) {
+#endif
         fprintf(stderr, "FAIL %-32s cannot create fixture dir\n",
                 "files: sorted listing");
         tests_failed++;
@@ -1272,7 +1327,10 @@ int main(void) {
                       "cannot resolve import");
     }
 
-    /* --- http_get:离线可判定的两个闸门 (2026-10-04) --- */
+    /* --- http_get:离线可判定的两个闸门 (2026-10-04) ---
+     * Windows/mingw port excludes src/builtins_http.c (see Makefile), so the
+     * verbs are not even registered there — the whole block is POSIX-only. */
+#ifndef _WIN32
     {
         /* 总闸:--no-net / LUME_NO_NET=1 时 http_get 一个字都不发。 */
         check_err_nonet(
@@ -1387,6 +1445,7 @@ int main(void) {
             "print(\"ok=\", get(r, \"ok\", false));\n",
             "ok= false\n");
     }
+#endif /* !_WIN32 — no builtins_http.c in the Windows/mingw port */
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;

@@ -16,9 +16,11 @@
 *.o
 *.a
 
-# C test binaries + their macOS debug symbols
+# C test binaries + their macOS debug symbols (+ .exe on Windows/mingw)
 /tests/smoke-bin
+/tests/smoke-bin.exe
 /tests/smoke-bin-asan
+/tests/smoke-bin-asan.exe
 *.dSYM/
 
 # 开发期手抄的整份二进制副本 (make 产物, 带 -g ⇒ DWARF 里记着编译时的
