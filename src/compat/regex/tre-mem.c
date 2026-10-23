@@ -149,8 +149,10 @@ tre_mem_alloc_impl(tre_mem_t mem, int provided, void *provided_block,
 	}
     }
 
-  /* Make sure the next pointer will be aligned. */
-  size += ALIGN(mem->ptr + size, long);
+  /* Make sure the next pointer will be aligned. The blocks are shared by
+   * structures carrying 64-bit pointers on Windows (LLP64), so alignment
+   * must follow the pointer width, not `long` (32-bit there). */
+  size += ALIGN(mem->ptr + size, void *);
 
   /* Allocate from current block. */
   ptr = mem->ptr;
