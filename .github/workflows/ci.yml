@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang
+      - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang libsqlite3-dev
       - run: make fuzz-driver
       - run: make ai-verify
       - run: make ai-verify AI_VERIFY_FILE="examples/ai-generated/norm-stats.lume"

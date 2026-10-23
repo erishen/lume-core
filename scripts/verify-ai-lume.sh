@@ -58,6 +58,23 @@ verify_one() {
     local f=$1 n=$2 dir="$WORK/$2" name=$(basename "$1")
     mkdir -p "$dir"
 
+    # sql-bearing programs are judged only on builds with libsqlite3, and
+    # run against a scratch DB (SQLITE_DB, same env the P6 fixture uses).
+    # A build without sqlite refuses sql_tx_begin at runtime ("unavailable"),
+    # which would turn a legal seed into an interpreter-stderr reject on
+    # every leg — so probe once and skip the file, same protocol as
+    # tests/native_backends.sh's sql block.
+    if grep -q 'sql_[a-zA-Z_]*(' "$f"; then
+        export SQLITE_DB="$dir/db.sqlite"
+        sql_probe="$dir/sql-probe.lume"
+        printf 'let p: string = sql_tx_begin("");\nsql_tx_commit(p);\n' > "$sql_probe"
+        if ! "$TARGET" "$sql_probe" >/dev/null 2>&1; then
+            echo "note $name: sql builtins unavailable on this build — skipping the sql-bearing program"
+            return 0
+        fi
+        pass "$name: sql builtins available"
+    fi
+
     # 1. type check.
     if ! "$TARGET" --check "$f" >/dev/null 2>&1; then
         fail "$name: type check rejected the program"

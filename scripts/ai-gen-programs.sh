@@ -142,6 +142,22 @@ print(sieve(20));
 print(len(sieve(20)));
 EOF
 
+gen gen-sql-tx accept \
+    "SQLite 事务: 开事务 -> 建表/写入 -> 查询回读 -> 提交, 打印查询结果" <<'EOF'
+// gen-sql-tx.lume — LLM-produced "SQLite transaction" program (P6 surface).
+// Exercises the tx path: open -> write (idempotent table + upsert) ->
+// query the row back -> commit. The sql_* builtins are optional in the
+// build (HAVE_SQLITE); on a build without them the gate's availability
+// probe skips this seed instead of rejecting it. SQLITE_DB supplies the
+// scratch database (empty path falls back to it on every backend).
+let db: string = sql_tx_begin("");
+sql_tx_exec(db, "CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, v TEXT)");
+sql_tx_exec(db, "INSERT OR REPLACE INTO t (k, v) VALUES ('a', 'hello')");
+let rows: list = sql_query("", "SELECT v FROM t WHERE k = 'a'");
+print(rows);
+sql_tx_commit(db);
+EOF
+
 gen gen-bad-untyped-tdist reject \
     "反例: 统计调用的类型注解与返回值不匹配 —— let p: string = tdist_cdf(...) 返回 float, 必须拒绝, counter-example 教 LLM 写对注解类型" <<'EOF'
 // gen-bad-untyped-tdist.lume — the reject counter-example.
