@@ -694,7 +694,8 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   integration, independent of rt.c's gamma loop and ibeta CDF; quant-fuzz
   runs 10 series x 105 rows (1050 checks) with (0,1) share/probability
   and finiteness assertions.
-  Still open: the Bootstrap (resampling) family.
+  Still open: the Bootstrap (resampling) family — the final Monte-Carlo
+  quant direction on the roadmap (pinned as future work in the #45 entry).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
