@@ -68,6 +68,16 @@ All notable changes to Lume are documented here. The format follows
   references) and `tests/quant-fuzz.py` 380 checks (10 series × 38 rows,
   one dataset row per printed value) — all green, byte-identical across
   the interpreter / text / LLVM legs.
+- **`norminv(p)` — inverse standard-normal CDF joins the distribution
+  family.** Acklam's rational approximation (2011, max |error| ~1.15e-9)
+  with dedicated low/high-tail branches, implemented identically in
+  `builtins_math.c` (`bi_norminv`) and `rt.c` (`lume_bi_norminv`) and
+  registered like the other float-only builtins (BUILTINS table +
+  inference in both scan files). `p` outside (0,1) reports an error on
+  the interpreter and answers NAN on the native backends. The reverse
+  round-trip `normcdf(norminv(p)) == p` is exercised at every fuzz
+  dataset (390 checks now) plus fixed values in quant-refcheck (45 cases)
+  and quant-consistency.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

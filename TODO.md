@@ -515,6 +515,13 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   matching the interpreter's (int64_t) cast. quant-refcheck.py now pins
   39 Python-verified cases and quant-fuzz.py runs 10 series x 38 rows
   (380 checks) covering the new family.
+  norminv (2026-10-24): inverse standard-normal CDF joins the
+  distribution family — Acklam rational approximation (2011), identical
+  constants in rt.c lume_bi_norminv and builtins_math.c bi_norminv; p
+  outside (0,1) errors on the interpreter / NAN natively. The reverse
+  round-trip normcdf(norminv(p)) == p runs at every fuzz dataset (RPP 39,
+  390 checks); fixed values are pinned in quant-refcheck (45 cases) and
+  quant-consistency (35 rows).
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

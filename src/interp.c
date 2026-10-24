@@ -1503,6 +1503,7 @@ void bridge_seed_builtins(VM *vm) {
         /* 统计分布内建 (2026-10-20, builtins_math.c + rt.c): normcdf/erf/
          * gamma/lgamma/igamma/ibeta/tdist_cdf/chisq_cdf 三后端一致。 */
         {"normcdf", b_normcdf},
+        {"norminv", b_norminv},
         {"erf", b_erf},
         {"gamma", b_gamma},
         {"lgamma", b_lgamma},

@@ -436,7 +436,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
     "min", "max", "pi", "e",
     /* statistical distribution builtins (2026-10-20, builtins_math.c + rt.c) */
-    "normcdf", "erf", "gamma", "lgamma", "igamma", "ibeta", "tdist_cdf", "chisq_cdf",
+    "normcdf", "norminv", "erf", "gamma", "lgamma", "igamma", "ibeta", "tdist_cdf", "chisq_cdf",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -487,7 +487,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"pow",2,2}, {"hmac_sha256",2,2}, {"push",2,2}, {"map",2,2}, {"filter",2,2},
     {"reduce",3,3}, {"igamma",2,2}, {"ibeta",3,3}, {"tdist_cdf",2,2}, {"chisq_cdf",2,2},
     {"sql_tx_begin",1,1}, {"sql_tx_exec",2,3}, {"sql_tx_commit",1,1}, {"sql_tx_rollback",1,1},
-    {"normcdf",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
+    {"normcdf",1,1}, {"norminv",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},

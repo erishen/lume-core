@@ -371,7 +371,8 @@ Type *infer_node_type(CG *g, Node *n)
              * codegen_call.c Bi table, rt.c lume_bi_* helpers); this is the
              * inference half — without it `let p = tdist_cdf(...)` needs an
              * explicit `: float` annotation (the P4 counter-example). */
-            if ((strcmp(name, "normcdf") == 0 || strcmp(name, "erf") == 0 ||
+            if ((strcmp(name, "normcdf") == 0 || strcmp(name, "norminv") == 0 ||
+                 strcmp(name, "erf") == 0 ||
                  strcmp(name, "gamma") == 0 || strcmp(name, "lgamma") == 0 ||
                  strcmp(name, "igamma") == 0 || strcmp(name, "ibeta") == 0 ||
                  strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0))

@@ -28,9 +28,9 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 38                              # rows per dataset (13 scalars + 5 pct
+RPP = 39                              # rows per dataset (13 scalars + 5 pct
                                       # + skew/kurtosis + 6 rolling_mean +
-                                      # 6 rolling_stddev + 6 ewma)
+                                      # 6 rolling_stddev + 6 ewma + norminv)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -249,6 +249,12 @@ def main():
         lines.append("let ew%da: list = ewma(%s, 0.3);" % (i, da))
         for k, v in enumerate(ewma(x, 0.3)):
             row(v); lines.append("print(ew%da[%d]);" % (i, k))
+        # norminv reverse round-trip: normcdf(norminv(p)) == p for p in the
+        # open interval — the forward direction (norminv(normcdf(x))) would
+        # saturate on the fuzz's large-offset series, so the reverse form
+        # keeps p mid-domain while still exercising both Acklam branches.
+        p = 0.15 + 0.07 * i
+        row(p); lines.append("print(normcdf(norminv(%s)));" % ("%.6f" % p))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

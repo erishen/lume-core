@@ -41,6 +41,7 @@ static const Bi BUILTINS[] = {
     /* Statistical distribution builtins (P4, 2026-10-20): float-only, so the
      * fn_f column carries them; emit_builtin_declares spells the signature. */
     { "normcdf",   NULL, NULL, NULL, 0, "lume_bi_normcdf",   "double", "double", 1 },
+    { "norminv",   NULL, NULL, NULL, 0, "lume_bi_norminv",   "double", "double", 1 },
     { "erf",       NULL, NULL, NULL, 0, "lume_bi_erf",       "double", "double", 1 },
     { "gamma",     NULL, NULL, NULL, 0, "lume_bi_gamma",     "double", "double", 1 },
     { "lgamma",    NULL, NULL, NULL, 0, "lume_bi_lgamma",    "double", "double", 1 },
