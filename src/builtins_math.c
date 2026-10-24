@@ -381,13 +381,16 @@ static void native_variance(VM *vm, int argc, Value *args, Value *out) {
     if (L->count < 2) { vm_set_error(vm, "variance() needs >= 2 elements"); return; }
     int n; double *xs = list_to_doubles(vm, L, &n);
     if (!xs) return;
-    double m = 0.0;
-    for (int i = 0; i < n; i++) m += xs[i];
-    m /= (double)n;
-    double s = 0.0;
-    for (int i = 0; i < n; i++) { double d = xs[i] - m; s += d * d; }
+    /* Welford's single-pass algorithm (mirrors rt.c lume_bi_variance):
+     * stable under large offsets, identical on ordinary data. */
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
     free(xs);
-    *out = val_num(s / (double)(n - 1));   /* sample variance, n-1 */
+    *out = val_num(m2 / (double)(n - 1));   /* sample variance, n-1 */
 }
 
 static void native_stddev(VM *vm, int argc, Value *args, Value *out) {
@@ -396,13 +399,14 @@ static void native_stddev(VM *vm, int argc, Value *args, Value *out) {
     if (L->count < 2) { vm_set_error(vm, "stddev() needs >= 2 elements"); return; }
     int n; double *xs = list_to_doubles(vm, L, &n);
     if (!xs) return;
-    double m = 0.0;
-    for (int i = 0; i < n; i++) m += xs[i];
-    m /= (double)n;
-    double s = 0.0;
-    for (int i = 0; i < n; i++) { double d = xs[i] - m; s += d * d; }
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
     free(xs);
-    *out = val_num(sqrt(s / (double)(n - 1)));
+    *out = val_num(sqrt(m2 / (double)(n - 1)));
 }
 
 static void native_median(VM *vm, int argc, Value *args, Value *out) {
@@ -443,13 +447,17 @@ static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
     int n; double *xs = list_to_doubles(vm, X, &n);
     double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
     if (!ys) { free(xs); return; }
-    double mx = 0.0, my = 0.0;
-    for (int i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
-    mx /= (double)n; my /= (double)n;
-    double s = 0.0;
-    for (int i = 0; i < n; i++) s += (xs[i] - mx) * (ys[i] - my);
+    /* Joint Welford (West form) — identical recurrence to rt.c
+     * lume_bi_covariance so the three legs stay byte-identical. */
+    double mx = 0.0, my = 0.0, c = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dx = xs[i] - mx, dy = ys[i] - my;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        c += dx * (ys[i] - my);
+    }
     free(xs); free(ys);
-    *out = val_num(s / (double)(n - 1));
+    *out = val_num(c / (double)(n - 1));
 }
 
 static void native_correlation(VM *vm, int argc, Value *args, Value *out) {
@@ -462,13 +470,14 @@ static void native_correlation(VM *vm, int argc, Value *args, Value *out) {
     int n; double *xs = list_to_doubles(vm, X, &n);
     double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
     if (!ys) { free(xs); return; }
-    double mx = 0.0, my = 0.0;
-    for (int i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
-    mx /= (double)n; my /= (double)n;
-    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    double mx = 0.0, my = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
     for (int i = 0; i < n; i++) {
         double dx = xs[i] - mx, dy = ys[i] - my;
-        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        sxx += dx * (xs[i] - mx);
+        sxy += dx * (ys[i] - my);
+        syy += dy * (ys[i] - my);
     }
     free(xs); free(ys);
     if (sxx == 0.0 || syy == 0.0) {
@@ -488,13 +497,16 @@ static void native_linreg(VM *vm, int argc, Value *args, Value *out) {
     int n; double *xs = list_to_doubles(vm, X, &n);
     double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
     if (!ys) { free(xs); return; }
-    double mx = 0.0, my = 0.0;
-    for (int i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
-    mx /= (double)n; my /= (double)n;
-    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    /* Joint Welford for sxx/sxy/syy — identical recurrence to rt.c
+     * lume_bi_linreg. */
+    double mx = 0.0, my = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
     for (int i = 0; i < n; i++) {
         double dx = xs[i] - mx, dy = ys[i] - my;
-        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        sxx += dx * (xs[i] - mx);
+        sxy += dx * (ys[i] - my);
+        syy += dy * (ys[i] - my);
     }
     free(xs); free(ys);
     if (sxx == 0.0) { vm_set_error(vm, "linreg(): x is constant"); return; }

@@ -89,8 +89,9 @@ def close(a, b):
 
 
 # --------------------------------------------------------------- data model
-def gen_series(n):
-    kind = rng.randrange(6)
+N_KINDS = 7   # distribution kinds; main() rotates so every kind appears
+
+def gen_series(n, kind):
     if kind == 0:     # uniform floats, mixed sign
         return [round(rng.uniform(-10, 10), 3) for _ in range(n)]
     if kind == 1:     # gaussian
@@ -101,9 +102,17 @@ def gen_series(n):
         return [round(abs(rng.gauss(5, 2)), 2) for _ in range(n)]
     if kind == 4:     # leading zero -> pct_change NAN spot
         return [0.0] + [round(rng.uniform(1, 20), 2) for _ in range(n - 1)]
-    # kind == 5: near-constant (small spread) — covariance/corr still legal
-    v = round(rng.uniform(1, 5), 2)
-    return [v + round(rng.uniform(-0.5, 0.5), 2) for _ in range(n)]
+    if kind == 5:     # near-constant (small spread) — covariance/corr still legal
+        v = round(rng.uniform(1, 5), 2)
+        return [v + round(rng.uniform(-0.5, 0.5), 2) for _ in range(n)]
+    # kind == 6: large offset with small fluctuations — the numerical-
+    # stability family. base * 1e-6 amplitude stays far above ulp(base)
+    # (so the values are representable) but tiny relative to base; the
+    # naive two-pass mean-then-sum-of-squares degrades here, Welford does
+    # not, and Python's two-pass reference still agrees within TOL.
+    base = rng.choice([1e6, 1e8, 1e10])
+    amp = base * 1e-6
+    return [round(base + rng.uniform(-amp, amp), 6) for _ in range(n)]
 
 
 def emit(xs):
@@ -142,7 +151,9 @@ def main():
     textexe = os.path.join(work, "fuzz-text" + (".exe" if os.name == "nt" else ""))
     llvmexe = os.path.join(work, "fuzz-llvm" + (".exe" if os.name == "nt" else ""))
 
-    series = [gen_series(N) for _ in range(N_SERIES)]
+    # one series per distribution kind, rotating so every kind (including
+    # the large-offset stability family) is covered on every run
+    series = [gen_series(N, i % N_KINDS) for i in range(N_SERIES)]
     # pair each series with the next one (cyclic) so corr/cov/linreg see
     # two independent draws
     pairs = [(series[i], series[(i + 1) % N_SERIES]) for i in range(N_SERIES)]

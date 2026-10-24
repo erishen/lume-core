@@ -2569,16 +2569,21 @@ double lume_bi_mean(const LumeList *l)
 
 double lume_bi_variance(const LumeList *l)
 {
-    /* Sample variance (n-1 denominator), the convention quant work uses. */
+    /* Sample variance (n-1 denominator), the convention quant work uses.
+     * Welford's single-pass algorithm: the naive two-pass mean-then-sum
+     * loses the low-order digits when the data rides on a large offset
+     * (prices near 1e9 with ~1e-3 fluctuations), while the running-mean
+     * form keeps the same result on ordinary data. */
     int64_t n; double *xs = bi_num_copy(l, &n);
     if (!xs || n < 2) { free(xs); return NAN; }
-    double m = 0.0;
-    for (int64_t i = 0; i < n; i++) m += xs[i];
-    m /= (double)n;
-    double s = 0.0;
-    for (int64_t i = 0; i < n; i++) { double d = xs[i] - m; s += d * d; }
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
     free(xs);
-    return s / (double)(n - 1);
+    return m2 / (double)(n - 1);
 }
 
 double lume_bi_stddev(const LumeList *l)
@@ -2618,25 +2623,45 @@ double lume_bi_percentile(const LumeList *l, double p)
 
 double lume_bi_covariance(const LumeList *x, const LumeList *y)
 {
+    /* Joint Welford (West form), the pairwise analogue of variance: stable
+     * under large offsets, single pass. The interpreter twin in
+     * builtins_math.c uses the identical recurrence so the three legs stay
+     * byte-identical. */
     int64_t nx, ny;
     double *xs = bi_num_copy(x, &nx), *ys = bi_num_copy(y, &ny);
     if (!xs || !ys || nx < 2 || nx != ny) { free(xs); free(ys); return NAN; }
-    double mx = 0.0, my = 0.0;
-    for (int64_t i = 0; i < nx; i++) { mx += xs[i]; my += ys[i]; }
-    mx /= (double)nx; my /= (double)nx;
-    double s = 0.0;
-    for (int64_t i = 0; i < nx; i++) s += (xs[i] - mx) * (ys[i] - my);
+    double mx = 0.0, my = 0.0, c = 0.0;
+    for (int64_t i = 0; i < nx; i++) {
+        double dx = xs[i] - mx, dy = ys[i] - my;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        c += dx * (ys[i] - my);
+    }
     free(xs); free(ys);
-    return s / (double)(nx - 1);
+    return c / (double)(nx - 1);
 }
 
 double lume_bi_correlation(const LumeList *x, const LumeList *y)
 {
-    double cov = lume_bi_covariance(x, y);
-    if (cov != cov) return NAN;
-    double sx = lume_bi_stddev(x), sy = lume_bi_stddev(y);
-    if (sx != sx || sy != sy || sx == 0.0 || sy == 0.0) return NAN;
-    return cov / (sx * sy);
+    /* sxy/sqrt(sxx*syy) via the same joint-Welford recurrence, so the
+     * native leg matches the interpreter's independent computation
+     * byte-for-byte (a covariance/stddev-based formulation would differ in
+     * the last ulp from the sxx/syy form on some inputs). */
+    int64_t nx, ny;
+    double *xs = bi_num_copy(x, &nx), *ys = bi_num_copy(y, &ny);
+    if (!xs || !ys || nx < 2 || nx != ny) { free(xs); free(ys); return NAN; }
+    double mx = 0.0, my = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (int64_t i = 0; i < nx; i++) {
+        double dx = xs[i] - mx, dy = ys[i] - my;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        sxx += dx * (xs[i] - mx);
+        sxy += dx * (ys[i] - my);
+        syy += dy * (ys[i] - my);
+    }
+    free(xs); free(ys);
+    if (sxx == 0.0 || syy == 0.0) return NAN;
+    return sxy / sqrt(sxx * syy);
 }
 
 /* Least-squares fit y = slope*x + intercept with r^2. A fresh map holds
@@ -2647,13 +2672,16 @@ LumeMap *lume_bi_linreg(const LumeList *x, const LumeList *y)
     int64_t nx, ny;
     double *xs = bi_num_copy(x, &nx), *ys = bi_num_copy(y, &ny);
     if (!xs || !ys || nx < 2 || nx != ny) { free(xs); free(ys); return NULL; }
-    double mx = 0.0, my = 0.0;
-    for (int64_t i = 0; i < nx; i++) { mx += xs[i]; my += ys[i]; }
-    mx /= (double)nx; my /= (double)nx;
-    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    /* Joint Welford for sxx/sxy/syy (West form): slope and r2 inherit the
+     * same large-offset stability as variance/covariance. */
+    double mx = 0.0, my = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
     for (int64_t i = 0; i < nx; i++) {
         double dx = xs[i] - mx, dy = ys[i] - my;
-        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        sxx += dx * (xs[i] - mx);
+        sxy += dx * (ys[i] - my);
+        syy += dy * (ys[i] - my);
     }
     free(xs); free(ys);
     if (sxx == 0.0) return NULL;

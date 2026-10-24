@@ -46,6 +46,11 @@ All notable changes to Lume are documented here. The format follows
   through all three legs, verifying every printed number against Python
   reference implementations plus math-property assertions; both are wired
   into `tests/native_backends.sh` and skipped when no python is found.
+  `variance`/`stddev`/`covariance`/`correlation`/`linreg` use Welford's
+  single-pass recurrences (identical on both the interpreter and native
+  sides) so sums of squares never run through a large precomputed mean —
+  the naive two-pass form degrades on data riding a large offset, which
+  the fuzz's large-offset distribution family now pins down.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

@@ -500,7 +500,12 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   18 rows; three-leg equality + Python reference with TOL=1e-5 + property
   assertions: variance>=0, |corr|<=1, covariance symmetry, r2 in [0,1],
   drawdown>=0), both hooked into native_backends.sh and skipped when no
-  python is available.
+  python is available. Numerical stability: variance/stddev/covariance/
+  correlation/linreg were rewritten on Welford single-pass recurrences
+  (rt.c and builtins_math.c use the identical recurrence); the naive
+  two-pass mean-then-sum-of-squares degrades on large-offset data, and
+  quant-fuzz.py gained a large-offset distribution family (base 1e6-1e10
+  with 1e-6 relative fluctuations) that now pins that family.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now
