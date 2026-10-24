@@ -243,12 +243,19 @@ static void cg_free(CG *cg)
     irbuf_free(&cg->handlers);
     free(cg->brk);
     free(cg->cnt);
+    /* while-shadow scope marks (N_WHILE scan, codegen_scan.c): first while
+     * xreallocs 16 ints (64 B) and nothing after it owned the array — LSan
+     * reported it as a Direct leak on every program with a while loop
+     * (tests/native-consistency.lume, which has one, vs native-fact, which
+     * has none). The llvm emitter's copy shares the fix. */
+    free(cg->wh_saved);
     memset(&cg->sigs, 0, sizeof cg->sigs);
     memset(&cg->structs, 0, sizeof cg->structs);
     memset(&cg->gs, 0, sizeof cg->gs);
     memset(&cg->handlers, 0, sizeof cg->handlers);
     cg->brk = cg->cnt = NULL;
     cg->nbrk = cg->ncnt = cg->cbrk = cg->ccnt = 0;
+    cg->wh_saved = NULL; cg->wh_cap = cg->wh_idx = 0;
 }
 
 /* Collect every lambda the signature pass named, in one pass over the tree.

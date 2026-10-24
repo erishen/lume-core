@@ -854,6 +854,7 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
         LLVMDisposeModule(cg.mod);
         LLVMContextDispose(ctx);
         sigs_free(&cg.sigs); sdefs_free(&cg.structs); free(cg.brk); free(cg.cnt);
+        free(cg.wh_saved);   /* N_WHILE scan marks; see codegen.c cg_free */
         asgs_free(&cg.gvars);
         free(msg);
         return NULL;
@@ -863,6 +864,7 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
     sigs_free(&cg.sigs); sdefs_free(&cg.structs);
     asgs_free(&cg.gvars);
     free(cg.brk); free(cg.cnt);
+    free(cg.wh_saved);   /* N_WHILE scan marks; see codegen.c cg_free */
     /* The module outlives this function, so the context cannot be disposed
      * here — hand it to the caller instead. It is disposed after the module,
      * which owns nothing of its own but every type and value it mentions. */

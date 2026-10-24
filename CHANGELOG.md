@@ -28,6 +28,15 @@ All notable changes to Lume are documented here. The format follows
 
 ### Fixed
 
+- **Sanitizer build: the while-shadow scope-mark array leaked on every
+  program with a `while` loop.** `wh_saved` (e13e420, while 条件读外层绑定)
+  is `xrealloc`'d on the first N_WHILE scan (16 ints, 64 B) and nothing
+  owned it afterwards — `cg_free` never released it, so the ASan CI job
+  failed `make asan-compile` with `Direct leak of 64 byte(s)` on
+  `tests/native-consistency.lume` (which has a while) while
+  `examples/native-fact.lume` (no while) stayed clean. Both emitters'
+  cleanup now free it (`codegen.c` `cg_free`, `llvm_codegen.c` both error
+  and success paths).
 - **Native `sql_tx` handles are reclaimed at the serve request boundary
   (P6 close-out, 2026-10-23).** The interpreter's tx handle is an
   `OBJ_SQLTX` with a GC finalizer; the native handle is a plain heap
