@@ -251,6 +251,8 @@ MASK32 = (1 << 32) - 1
 PCG_MULT = 6364136223846793005
 PCG_INC = 0xda3e39cb94b95bdb
 R2_24 = 2.0 ** -24
+PI = 3.14159265358979323846
+PI2 = 6.28318530717958647693
 R2_25 = 2.0 ** -25
 
 
@@ -413,6 +415,77 @@ def pcg_tri(seed, lo, hi, k):
     return hi - math.sqrt(0.5 * (1.0 - v)) * span
 
 
+def pcg_zipf(seed, n, s, k):
+    """One plain draw at k against the cumulative i^-s mass."""
+    total = 0.0
+    for i in range(1, n + 1):
+        total += i ** -s
+    t = pcg_rand(seed, k) * total
+    acc = 0.0
+    for i in range(1, n + 1):
+        acc += i ** -s
+        if t < acc:
+            return i
+    return n
+
+
+def pcg_nb(seed, r, p, k):
+    """r geometric failure counts starting at absolute draw k."""
+    total = 0
+    lq = math.log(1.0 - p)
+    for _ in range(r):
+        total += int(math.log(pcg_ub(seed, k)) / lq)
+        k += 1
+    return total
+
+
+def pcg_erlang(seed, kk, rate, k):
+    s = 0.0
+    for _ in range(kk):
+        s += -math.log(pcg_ub(seed, k)) / rate
+        k += 1
+    return s
+
+
+def pcg_vm(seed, mu, kappa, k):
+    """Best-Fisher at absolute offset k; returns (value, draws)."""
+    if kappa == 0.0:
+        return mu + (pcg_rand(seed, k) - 0.5) * PI2, 1
+    tau = 1.0 + math.sqrt(1.0 + 4.0 * kappa * kappa)
+    rho = (tau - math.sqrt(2.0 * tau)) / (2.0 * kappa)
+    if rho == 0.0:
+        return mu + (pcg_rand(seed, k) - 0.5) * PI2, 1
+    r = (1.0 + rho * rho) / (2.0 * rho)
+    draws = 0
+    while True:
+        u1 = pcg_rand(seed, k)
+        u2 = pcg_ub(seed, k + 1)
+        k += 2
+        draws += 2
+        z = math.cos(PI * u1)
+        f = (1.0 + r * z) / (r + z)
+        c = kappa * (r - f)
+        if c * (2.0 - c) - u2 > 0.0 or math.log(c / u2) + 1.0 - c >= 0.0:
+            return mu + (-1.0 if u1 < 0.5 else 1.0) * math.acos(f), draws
+
+
+def pcg_multinom(seed, n, probs, k):
+    """n weighted draws starting at absolute offset k; returns counts."""
+    total = sum(probs)
+    m = len(probs)
+    counts = [0] * m
+    for _ in range(n):
+        t = pcg_rand(seed, k) * total
+        k += 1
+        acc = 0.0
+        for i in range(m):
+            acc += probs[i]
+            if t < acc:
+                counts[i] += 1
+                break
+    return counts
+
+
 def pcg_t(seed, df, k):
     """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
     u1 = pcg_ub(seed, k)
@@ -487,6 +560,20 @@ cases += [
     ("rng triangular(0,1) k=15", sixg(pcg_tri(42, 0.0, 1.0, 15)), 0.607849),
     ("rng binom(3,0.2) k=1",     pcg_binom(42, 3, 0.2, 1), 1),
     ("rng lognormal(1,0.5) k=4", sixg(pcg_logn(42, 1.0, 0.5, 4)), 2.72439),
+    # advanced samplers (2026-10-28): negative-binomial three geometric
+    # failure counts (k=2..4); erlang two exponential sums (k=5..6);
+    # von Mises Best-Fisher at k=7 (draws 2, accepted first round on this
+    # stream); multinomial ten weighted draws (k=9..18), first category
+    # count; reseed: von Mises kappa=0 k=2 (uniform circle). rand_zipf is
+    # deliberately absent here: it is a discrete inverse-CDF whose rank can
+    # flip when the draw lands within one ULP of a bucket boundary and the
+    # two libms (mingw pow vs Python UCRT pow) disagree by that ULP — the
+    # [1,n] range is asserted instead by quant-fuzz on every dataset.
+    ("rng negbinom(3,0.3) k=2",  pcg_nb(42, 3, 0.3, 2), 3),
+    ("rng erlang(2,0.5) k=5",    sixg(pcg_erlang(42, 2, 0.5, 5)), 10.7056),
+    ("rng vonmises(0,2) k=7",    sixg(pcg_vm(42, 0.0, 2.0, 7)[0]), -0.17147),
+    ("rng multinom(10) k=9 [0]", pcg_multinom(42, 10, [0.5, 0.3, 0.2], 9)[0], 2),
+    ("rng vonmises(1,0) k=2",    sixg(pcg_vm(42, 1.0, 0.0, 2)[0]), 2.22081),
 ]
 
 fails = 0

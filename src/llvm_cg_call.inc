@@ -604,7 +604,8 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "rand_beta") == 0 || strcmp(bname, "rand_weibull") == 0 ||
         strcmp(bname, "rand_logistic") == 0 || strcmp(bname, "rand_pareto") == 0 ||
         strcmp(bname, "rand_laplace") == 0 || strcmp(bname, "rand_lognormal") == 0 ||
-        strcmp(bname, "rand_gumbel") == 0 || strcmp(bname, "rand_triangular") == 0) {
+        strcmp(bname, "rand_gumbel") == 0 || strcmp(bname, "rand_triangular") == 0 ||
+        strcmp(bname, "rand_von_mises") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -638,6 +639,7 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "rand_laplace") == 0) fn = "lume_bi_rand_laplace";
         else if (strcmp(bname, "rand_lognormal") == 0) fn = "lume_bi_rand_lognormal";
         else if (strcmp(bname, "rand_gumbel") == 0) fn = "lume_bi_rand_gumbel";
+        else if (strcmp(bname, "rand_von_mises") == 0) fn = "lume_bi_rand_von_mises";
         else fn = "lume_bi_rand_triangular";
         LLVMTypeRef p2[2] = { g->dbl, g->dbl };
         LLVMValueRef v2[2] = { a.v, b.v };
@@ -676,15 +678,18 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_INT), r);
     }
     /* rand_binomial(n, p) (2026-10-27): mixed arity — n truncates to i64,
-     * p widens to double, matching the interpreter's casts. */
-    if (strcmp(bname, "rand_binomial") == 0) {
+     * p widens to double, matching the interpreter's casts. rand_zipf /
+     * rand_negative_binomial / rand_erlang (2026-10-28) share the same
+     * (i64, double) signature; erlang answers a double, the rest an i64. */
+    if (strcmp(bname, "rand_binomial") == 0 || strcmp(bname, "rand_zipf") == 0 ||
+        strcmp(bname, "rand_negative_binomial") == 0 || strcmp(bname, "rand_erlang") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: rand_binomial() takes (n, p)", n->line);
+            ERRV(g, "line %zu: %s() takes (n, p)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         Val b = cg_expr(g, n->as.call.args[1]);
         if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
             !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT))
-            ERRV(g, "line %zu: rand_binomial() needs (n, p)", n->line);
+            ERRV(g, "line %zu: %s() needs (n, p)", n->line, bname);
         if (a.ty->kind == TY_FLOAT) {
             LLVMTypeRef p1[1] = { g->dbl };
             LLVMValueRef v1[1] = { a.v };
@@ -699,12 +704,18 @@ static Val cg_builtin(CG *g, Node *n)
                 LLVMFunctionType(g->dbl, p1, 1, 0),
                 rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
         }
+        const char *fn;
+        int is_erlang = 0;
+        if (strcmp(bname, "rand_binomial") == 0) fn = "lume_bi_rand_binomial";
+        else if (strcmp(bname, "rand_zipf") == 0) fn = "lume_bi_rand_zipf";
+        else if (strcmp(bname, "rand_negative_binomial") == 0) fn = "lume_bi_rand_negative_binomial";
+        else { fn = "lume_bi_rand_erlang"; is_erlang = 1; }
         LLVMTypeRef pm[2] = { g->i64, g->dbl };
-        LLVMValueRef vm[2] = { a.v, b.v };
+        LLVMValueRef vm2[2] = { a.v, b.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
-            LLVMFunctionType(g->i64, pm, 2, 0),
-            rt_decl(g, "lume_bi_rand_binomial", g->i64, pm, 2), vm, 2, "bn");
-        return val_make(type_prim(TY_INT), r);
+            LLVMFunctionType(is_erlang ? g->dbl : g->i64, pm, 2, 0),
+            rt_decl(g, fn, is_erlang ? g->dbl : g->i64, pm, 2), vm2, 2, "ad");
+        return val_make(is_erlang ? type_prim(TY_FLOAT) : type_prim(TY_INT), r);
     }
     /* Distribution family (2026-10-25, mirroring the text backend): the one
      * numeric builtins widen an int via lume_bi_float; shuffle passes the
@@ -755,6 +766,31 @@ static Val cg_builtin(CG *g, Node *n)
             LLVMFunctionType(g->i8ptr, p1, 1, 0),
             rt_decl(g, "lume_bi_shuffle", g->i8ptr, p1, 1), v1, 1, "q");
         return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+    /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against a
+     * float list of category weights; answers a fresh int list. n
+     * truncates through lume_bi_ftoi, probs passes as i8*. */
+    if (strcmp(bname, "rand_multinomial") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: rand_multinomial() takes (n, probs)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: rand_multinomial() needs (n, list)", n->line);
+        if (a.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { a.v };
+            a.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "ft");
+        }
+        LLVMTypeRef pm[2] = { g->i64, g->i8ptr };
+        LLVMValueRef vm2[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, pm, 2, 0),
+            rt_decl(g, "lume_bi_rand_multinomial", g->i8ptr, pm, 2), vm2, 2, "mn");
+        return val_make(type_list(type_prim(TY_INT)), r);
     }
 
     /* now(): epoch seconds (SPEC §6.2, matching the interpreter's now() and

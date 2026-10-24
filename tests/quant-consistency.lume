@@ -147,3 +147,17 @@ print(rand_triangular(0.0, 1.0));
 seed(42);
 print(rand_binomial(3, 0.2));
 print(rand_lognormal(1.0, 0.5));
+
+// advanced samplers (2026-10-28): zipf (one plain draw against the
+// cumulative i^-s mass), negative-binomial (r geometric failure counts),
+// erlang (k exponential sums), von Mises (Best-Fisher rejection), and
+// multinomial (n weighted draws, fresh int list).
+seed(42);
+print(rand_zipf(10, 1.5));
+print(rand_negative_binomial(3, 0.3));
+print(rand_erlang(2, 0.5));
+print(rand_von_mises(0.0, 2.0));
+print(rand_multinomial(10, [0.5, 0.3, 0.2]));
+seed(42);
+print(rand_zipf(5, 2.0));
+print(rand_von_mises(1.0, 0.0));

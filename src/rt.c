@@ -605,6 +605,84 @@ double lume_bi_rand_triangular(double lo, double hi)
     return hi - sqrt(0.5 * (1.0 - u)) * span;
 }
 
+/* Advanced samplers (2026-10-28): zipf / negative-binomial / erlang /
+ * von Mises / multinomial on the same deterministic stream. rand_zipf
+ * precomputes the i^-s weights per call and answers one plain draw
+ * against the cumulative mass (O(n) setup; TY_INT); rand_negative_binomial
+ * sums r geometric failure counts (r biased draws; TY_INT); rand_erlang
+ * sums k exponentials (k biased draws); rand_von_mises runs the
+ * Best-Fisher rejection loop — each round consumes exactly two draws (one
+ * plain for z, one biased for the acceptance test), so the data-dependent
+ * round count stays byte-identical across backends; kappa = 0 (and the
+ * vanishing-rho case) falls back to one plain draw on the uniform circle;
+ * rand_multinomial runs n weighted draws against the probs list and
+ * answers a fresh int list (n plain draws; an empty / invalid probs list
+ * answers an empty list, like shuffle's null-array case). */
+int64_t lume_bi_rand_zipf(int64_t n, double s)
+{
+    if (n < 1 || !isfinite(s) || s <= 1.0) return -1;
+    double total = 0.0;
+    for (int64_t i = 1; i <= n; i++) total += pow((double)i, -s);
+    double t = (double)(rng_next() >> 8) * 0.000000059604644775390625 * total;
+    double acc = 0.0;
+    for (int64_t i = 1; i <= n; i++) {
+        acc += pow((double)i, -s);
+        if (t < acc) return i;
+    }
+    return n;
+}
+
+int64_t lume_bi_rand_negative_binomial(int64_t r, double p)
+{
+    if (r < 1 || !isfinite(p) || p <= 0.0 || p >= 1.0) return -1;
+    int64_t k = 0;
+    double lq = log(1.0 - p);
+    for (int64_t i = 0; i < r; i++) {
+        double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        k += (int64_t)(log(ub) / lq);   /* floor: both logs negative */
+    }
+    return k;
+}
+
+double lume_bi_rand_erlang(int64_t k, double rate)
+{
+    if (k < 1 || !isfinite(rate) || rate <= 0.0) return NAN;
+    double s = 0.0;
+    for (int64_t i = 0; i < k; i++) {
+        double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        s += -log(ub) / rate;
+    }
+    return s;
+}
+
+double lume_bi_rand_von_mises(double mu, double kappa)
+{
+    if (!isfinite(mu) || !isfinite(kappa) || kappa < 0.0) return NAN;
+    if (kappa == 0.0) {
+        double u = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+        return mu + (u - 0.5) * 6.28318530717958647693;
+    }
+    double tau = 1.0 + sqrt(1.0 + 4.0 * kappa * kappa);
+    double rho = (tau - sqrt(2.0 * tau)) / (2.0 * kappa);
+    if (rho == 0.0) {   /* kappa so small the Taylor term vanishes: uniform */
+        double u = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+        return mu + (u - 0.5) * 6.28318530717958647693;
+    }
+    double r = (1.0 + rho * rho) / (2.0 * rho);
+    for (;;) {
+        double u1 = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+        double u2 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        double z = cos(3.14159265358979323846 * u1);
+        double f = (1.0 + r * z) / (r + z);
+        double c = kappa * (r - f);
+        if (c * (2.0 - c) - u2 > 0.0 || log(c / u2) + 1.0 - c >= 0.0)
+            return mu + (u1 < 0.5 ? -1.0 : 1.0) * acos(f);
+    }
+}
+
 double lume_bi_lgamma(double x) { return lgamma(x); }
 
 double lume_bi_gamma(double x)  { return exp(lgamma(x)); }
@@ -2884,6 +2962,37 @@ double lume_bi_mean(const LumeList *l)
  * i = n-1 down to 1, swap i with rand_int(0, i). rand_int consumes two
  * PCG32 draws per step, and the fixed stream makes the permutation
  * deterministic across backends and runs. */
+/* rand_multinomial(n, probs) (2026-10-28): n weighted draws against the
+ * probs list, one plain draw per experiment, answered as a fresh int list
+ * (counts per category). Defined here, after the LumeList machinery —
+ * the list-returning samplers live with the list helpers, like shuffle. */
+LumeList *lume_bi_rand_multinomial(int64_t n, const LumeList *probs)
+{
+    LumeList *out = lume_list_new();
+    int64_t m = 0; double *w = bi_num_copy(probs, &m);
+    if (!w || m < 1 || n < 0) { free(w); return out; }
+    double total = 0.0;
+    for (int64_t i = 0; i < m; i++) {
+        if (!isfinite(w[i]) || w[i] < 0.0) { free(w); return out; }
+        total += w[i];
+    }
+    if (!(total > 0.0)) { free(w); return out; }
+    int64_t *cnt = (int64_t *)malloc((size_t)m * sizeof(int64_t));
+    if (!cnt) { free(w); return out; }
+    for (int64_t i = 0; i < m; i++) cnt[i] = 0;
+    for (int64_t j = 0; j < n; j++) {
+        double t = (double)(rng_next() >> 8) * 0.000000059604644775390625 * total;
+        double acc = 0.0;
+        for (int64_t i = 0; i < m; i++) {
+            acc += w[i];
+            if (t < acc) { cnt[i]++; break; }
+        }
+    }
+    for (int64_t i = 0; i < m; i++) lume_list_push_i(out, cnt[i]);
+    free(cnt); free(w);
+    return out;
+}
+
 LumeList *lume_bi_shuffle(const LumeList *l)
 {
     LumeList *out = lume_list_new();

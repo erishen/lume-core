@@ -392,6 +392,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_rand_pareto(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_laplace(double, double)\n");
     EMIT(g, "declare i64 @lume_bi_rand_binomial(i64, double)\n");
+    EMIT(g, "declare i64 @lume_bi_rand_zipf(i64, double)\n");
+    EMIT(g, "declare i64 @lume_bi_rand_negative_binomial(i64, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_erlang(i64, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_von_mises(double, double)\n");
+    EMIT(g, "declare i8* @lume_bi_rand_multinomial(i64, i8*)\n");
     EMIT(g, "declare double @lume_bi_rand_lognormal(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_gumbel(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_rayleigh(double)\n");
@@ -1003,7 +1008,8 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "rand_beta") == 0 || strcmp(bname, "rand_weibull") == 0 ||
         strcmp(bname, "rand_logistic") == 0 || strcmp(bname, "rand_pareto") == 0 ||
         strcmp(bname, "rand_laplace") == 0 || strcmp(bname, "rand_lognormal") == 0 ||
-        strcmp(bname, "rand_gumbel") == 0 || strcmp(bname, "rand_triangular") == 0) {
+        strcmp(bname, "rand_gumbel") == 0 || strcmp(bname, "rand_triangular") == 0 ||
+        strcmp(bname, "rand_von_mises") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -1037,6 +1043,7 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "rand_laplace") == 0) fn = "lume_bi_rand_laplace";
         else if (strcmp(bname, "rand_lognormal") == 0) fn = "lume_bi_rand_lognormal";
         else if (strcmp(bname, "rand_gumbel") == 0) fn = "lume_bi_rand_gumbel";
+        else if (strcmp(bname, "rand_von_mises") == 0) fn = "lume_bi_rand_von_mises";
         else fn = "lume_bi_rand_triangular";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(double %s, double %s)", fn, a.v, b.v);
@@ -1073,16 +1080,21 @@ static Val cg_builtin(CG *g, Node *n)
 
     /* rand_binomial(n, p) (2026-10-27): mixed arity — n is an i64 count
      * (float truncates through lume_bi_ftoi), p a double probability (int
-     * widens through lume_bi_float), matching the interpreter's casts. */
-    if (strcmp(bname, "rand_binomial") == 0) {
+     * widens through lume_bi_float), matching the interpreter's casts.
+     * rand_zipf / rand_negative_binomial / rand_erlang (2026-10-28) share
+     * the same (i64, double) signature — n truncates, the shape/rate/
+     * probability widens — erlang answering a double, the other three an
+     * i64. */
+    if (strcmp(bname, "rand_binomial") == 0 || strcmp(bname, "rand_zipf") == 0 ||
+        strcmp(bname, "rand_negative_binomial") == 0 || strcmp(bname, "rand_erlang") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: rand_binomial() takes (n, p)", n->line);
+            ERRV(g, "line %zu: %s() takes (n, p)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         Val b = cg_expr(g, n->as.call.args[1]);
         if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
             !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT)) {
             free(a.v); free(b.v);
-            ERRV(g, "line %zu: rand_binomial() needs (n, p)", n->line);
+            ERRV(g, "line %zu: %s() needs (n, p)", n->line, bname);
         }
         if (a.ty->kind == TY_FLOAT) {
             char *w = emit_instrf(g, type_prim(TY_INT),
@@ -1096,10 +1108,17 @@ static Val cg_builtin(CG *g, Node *n)
             free(b.v);
             b.v = w;
         }
-        char *t = emit_instrf(g, type_prim(TY_INT),
-                              "call i64 @lume_bi_rand_binomial(i64 %s, double %s)", a.v, b.v);
+        const char *fn;
+        Type *rt;
+        if (strcmp(bname, "rand_binomial") == 0) { fn = "lume_bi_rand_binomial"; rt = type_prim(TY_INT); }
+        else if (strcmp(bname, "rand_zipf") == 0) { fn = "lume_bi_rand_zipf"; rt = type_prim(TY_INT); }
+        else if (strcmp(bname, "rand_negative_binomial") == 0) { fn = "lume_bi_rand_negative_binomial"; rt = type_prim(TY_INT); }
+        else { fn = "lume_bi_rand_erlang"; rt = type_prim(TY_FLOAT); }
+        char *t = emit_instrf(g, rt, "call %s @%s(i64 %s, double %s)",
+                              rt->kind == TY_FLOAT ? "double" : "i64",
+                              fn, a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_prim(TY_INT), t);
+        return val_make(rt, t);
     }
 
     /* Distribution family (2026-10-25): rand_bool(p) / rand_exponential(rate)
@@ -1151,6 +1170,30 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_shuffle(i8* %s)", a.v);
         free(a.v);
         return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+    /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against a
+     * float list of category weights; answers a fresh int list. n
+     * truncates through lume_bi_ftoi, probs passes as i8*. */
+    if (strcmp(bname, "rand_multinomial") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: rand_multinomial() takes (n, probs)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: rand_multinomial() needs (n, list)", n->line);
+        }
+        if (a.ty->kind == TY_FLOAT) {
+            char *w = emit_instrf(g, type_prim(TY_INT),
+                                  "call i64 @lume_bi_ftoi(double %s)", a.v);
+            free(a.v);
+            a.v = w;
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_INT)),
+                              "call i8* @lume_bi_rand_multinomial(i64 %s, i8* %s)", a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_list(type_prim(TY_INT)), t);
     }
 
     /* File builtins (SPEC §6.2): read_file returns the file as a string or

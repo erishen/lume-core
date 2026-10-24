@@ -597,6 +597,25 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   total), quant-refcheck adds 7 absolute-k cases (83 total), quant-fuzz
   runs 10 series x 77 rows (770 checks) with binomial range
   (0..n), positivity and finiteness assertions on the new samplers.
+  Advanced samplers (2026-10-28): rand_zipf(n,s) = one plain draw against
+  the precomputed cumulative i^-s mass (O(n) setup, TY_INT); rand_
+  negative_binomial(r,p) = the sum of r geometric failure counts (r
+  biased draws, TY_INT); rand_erlang(k,rate) = the sum of k exponentials
+  (k biased draws); rand_von_mises(mu,kappa) = Best-Fisher rejection
+  (each round two draws — one plain z, one biased acceptance — so the
+  data-dependent round count stays byte-identical; kappa = 0 and the
+  vanishing-rho case use one plain draw on the uniform circle);
+  rand_multinomial(n,probs) = n weighted draws answered as a fresh int
+  list — the first list-returning sampler, emitted through the shuffle-
+  shaped i8* branch with n truncated via lume_bi_ftoi. The (i64, double)
+  mixed-arity emit block now serves four samplers. Invalid parameters
+  error on the interpreter / answer -1, NAN or an empty list natively.
+  rand_zipf's exact value is not a stable cross-libm contract (mingw pow
+  vs Python UCRT pow differ by 1 ULP at a bucket boundary, flipping the
+  discrete rank), so quant-fuzz asserts the [1,n] range on every dataset
+  instead of exact equality. quant-consistency pins 7 more rows (81
+  total), quant-refcheck adds 5 absolute-k cases (88 total), quant-fuzz
+  runs 10 series x 84 rows (840 checks).
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

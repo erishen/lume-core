@@ -365,17 +365,21 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "rand_weibull") == 0 || strcmp(name, "rand_logistic") == 0 ||
                  strcmp(name, "rand_pareto") == 0 || strcmp(name, "rand_laplace") == 0 ||
                  strcmp(name, "rand_lognormal") == 0 || strcmp(name, "rand_gumbel") == 0 ||
-                 strcmp(name, "rand_rayleigh") == 0 || strcmp(name, "rand_triangular") == 0))
+                 strcmp(name, "rand_rayleigh") == 0 || strcmp(name, "rand_triangular") == 0 ||
+                 strcmp(name, "rand_erlang") == 0 || strcmp(name, "rand_von_mises") == 0))
                 return type_prim(TY_FLOAT);
             /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
              * the seed it was given, rand_int() a bounded draw; the
              * distribution family (2026-10-25): rand_bool() answers 0/1,
              * rand_poisson() a count; inverse-transform (2026-10-26):
              * rand_geometric() a failure count; mixed (2026-10-27):
-             * rand_binomial() a success count. */
+             * rand_binomial() a success count; advanced (2026-10-28):
+             * rand_zipf() a Zipf draw, rand_negative_binomial() a failure
+             * count. */
             if (strcmp(name, "seed") == 0 || strcmp(name, "rand_int") == 0 ||
                 strcmp(name, "rand_bool") == 0 || strcmp(name, "rand_poisson") == 0 ||
-                strcmp(name, "rand_geometric") == 0 || strcmp(name, "rand_binomial") == 0)
+                strcmp(name, "rand_geometric") == 0 || strcmp(name, "rand_binomial") == 0 ||
+                strcmp(name, "rand_zipf") == 0 || strcmp(name, "rand_negative_binomial") == 0)
                 return type_prim(TY_INT);
             /* Quant builtins (2026-10-24) — must stay in step with
              * codegen_scan.c: scalar statistics answer a float, the rolling
@@ -390,6 +394,10 @@ static Type *infer_node_type(CG *g, Node *n)
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||
                 strcmp(name, "shuffle") == 0)
                 return type_list(type_prim(TY_FLOAT));
+            /* rand_multinomial (2026-10-28) builds a fresh int list: the
+             * success counts per category. */
+            if (strcmp(name, "rand_multinomial") == 0)
+                return type_list(type_prim(TY_INT));
             if (strcmp(name, "linreg") == 0)
                 return type_anon_struct();
         }

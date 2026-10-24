@@ -1,12 +1,12 @@
-// mixed-sampler smoke (2026-10-27): binomial / lognormal / gumbel /
-// rayleigh / triangular on the deterministic PCG32 stream (seed 42),
+// advanced-sampler smoke (2026-10-28): zipf / negative-binomial / erlang /
+// von Mises / multinomial on the deterministic PCG32 stream (seed 42),
 // values verified against the independent stateful Python reference.
 seed(42);
-print(rand_binomial(10, 0.5));
-print(rand_lognormal(0.0, 1.0));
-print(rand_gumbel(0.0, 1.0));
-print(rand_rayleigh(1.0));
-print(rand_triangular(0.0, 1.0));
+print(rand_zipf(10, 1.5));
+print(rand_negative_binomial(3, 0.3));
+print(rand_erlang(2, 0.5));
+print(rand_von_mises(0.0, 2.0));
+print(rand_multinomial(10, [0.5, 0.3, 0.2]));
 seed(42);
-print(rand_binomial(3, 0.2));
-print(rand_lognormal(1.0, 0.5));
+print(rand_zipf(5, 2.0));
+print(rand_von_mises(1.0, 0.0));

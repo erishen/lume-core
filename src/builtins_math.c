@@ -309,8 +309,12 @@ static uint64_t bi_rng_state = 0x853c49e6748fea9bULL;
 static uint64_t bi_rng_inc   = 0xda3e39cb94b95bdbULL;
 
 /* native_shuffle is defined after the list helpers (list_to_doubles etc.)
- * that it needs; the b_* wrappers sit earlier, so forward-declare it. */
+ * that it needs; the b_* wrappers sit earlier, so forward-declare it. The
+ * advanced samplers (2026-10-28) — native_rand_multinomial in particular —
+ * are also defined before those list helpers, so forward-declare them too. */
 static void native_shuffle(VM *vm, int argc, Value *args, Value *out);
+static bool arg_list(VM *vm, Value v, ObjList **out);
+static double *list_to_doubles(VM *vm, ObjList *L, int *n);
 
 static uint32_t bi_rng_next(void)
 {
@@ -638,6 +642,136 @@ static void native_rand_triangular(VM *vm, int argc, Value *args, Value *out) {
         *out = val_num(hi - sqrt(0.5 * (1.0 - u)) * span);
 }
 
+/* Advanced samplers (2026-10-28): zipf / negative-binomial / erlang /
+ * von Mises / multinomial mirroring rt.c's lume_bi_* exactly (same
+ * constants, same consume order). rand_multinomial answers a fresh int
+ * list; the rest are scalars (zipf / negative-binomial TY_INT, erlang /
+ * von Mises TY_FLOAT). Invalid parameters error on the interpreter
+ * (native side answers -1 / NAN / an empty list). */
+static void native_rand_zipf(VM *vm, int argc, Value *args, Value *out) {
+    double n, s;
+    if (argc < 2 || !arg_num(vm, args[0], &n) || !arg_num(vm, args[1], &s)) return;
+    if (n < 1.0 || !isfinite(s) || s <= 1.0) {
+        vm_set_error(vm, "rand_zipf(): need n >= 1, s > 1");
+        return;
+    }
+    int64_t nn = (int64_t)n;
+    double total = 0.0;
+    for (int64_t i = 1; i <= nn; i++) total += pow((double)i, -s);
+    double t = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625 * total;
+    double acc = 0.0;
+    int64_t ans = nn;
+    for (int64_t i = 1; i <= nn; i++) {
+        acc += pow((double)i, -s);
+        if (t < acc) { ans = i; break; }
+    }
+    *out = val_num((double)ans);
+}
+
+static void native_rand_negative_binomial(VM *vm, int argc, Value *args, Value *out) {
+    double r, p;
+    if (argc < 2 || !arg_num(vm, args[0], &r) || !arg_num(vm, args[1], &p)) return;
+    if (r < 1.0 || !isfinite(p) || p <= 0.0 || p >= 1.0) {
+        vm_set_error(vm, "rand_negative_binomial(): need r >= 1, p in (0, 1)");
+        return;
+    }
+    int64_t rr = (int64_t)r;
+    int64_t k = 0;
+    double lq = log(1.0 - p);
+    for (int64_t i = 0; i < rr; i++) {
+        double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        k += (int64_t)(log(ub) / lq);
+    }
+    *out = val_num((double)k);
+}
+
+static void native_rand_erlang(VM *vm, int argc, Value *args, Value *out) {
+    double k, rate;
+    if (argc < 2 || !arg_num(vm, args[0], &k) || !arg_num(vm, args[1], &rate)) return;
+    if (k < 1.0 || !isfinite(rate) || rate <= 0.0) {
+        vm_set_error(vm, "rand_erlang(): need k >= 1, rate > 0");
+        return;
+    }
+    int64_t kk = (int64_t)k;
+    double s = 0.0;
+    for (int64_t i = 0; i < kk; i++) {
+        double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        s += -log(ub) / rate;
+    }
+    *out = val_num(s);
+}
+
+static void native_rand_von_mises(VM *vm, int argc, Value *args, Value *out) {
+    double mu, kappa;
+    if (argc < 2 || !arg_num(vm, args[0], &mu) || !arg_num(vm, args[1], &kappa)) return;
+    if (!isfinite(mu) || !isfinite(kappa) || kappa < 0.0) {
+        vm_set_error(vm, "rand_von_mises(): need kappa >= 0");
+        return;
+    }
+    if (kappa == 0.0) {
+        double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+        *out = val_num(mu + (u - 0.5) * 6.28318530717958647693);
+        return;
+    }
+    double tau = 1.0 + sqrt(1.0 + 4.0 * kappa * kappa);
+    double rho = (tau - sqrt(2.0 * tau)) / (2.0 * kappa);
+    if (rho == 0.0) {
+        double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+        *out = val_num(mu + (u - 0.5) * 6.28318530717958647693);
+        return;
+    }
+    double r = (1.0 + rho * rho) / (2.0 * rho);
+    for (;;) {
+        double u1 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+        double u2 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        double z = cos(3.14159265358979323846 * u1);
+        double f = (1.0 + r * z) / (r + z);
+        double c = kappa * (r - f);
+        if (c * (2.0 - c) - u2 > 0.0 || log(c / u2) + 1.0 - c >= 0.0) {
+            *out = val_num(mu + (u1 < 0.5 ? -1.0 : 1.0) * acos(f));
+            return;
+        }
+    }
+}
+
+static void native_rand_multinomial(VM *vm, int argc, Value *args, Value *out) {
+    double n;
+    ObjList *L;
+    if (argc < 2 || !arg_num(vm, args[0], &n) || !arg_list(vm, args[1], &L)) return;
+    if (n < 0.0 || n != n) { vm_set_error(vm, "rand_multinomial(): need n >= 0"); return; }
+    int64_t nn = (int64_t)n;
+    int m; double *w = list_to_doubles(vm, L, &m);
+    if (!w) return;
+    if (m < 1) { free(w); vm_set_error(vm, "rand_multinomial(): need a non-empty probs list"); return; }
+    double total = 0.0;
+    for (int i = 0; i < m; i++) {
+        if (w[i] < 0.0 || w[i] != w[i]) { free(w); vm_set_error(vm, "rand_multinomial(): probs must be non-negative"); return; }
+        total += w[i];
+    }
+    if (!(total > 0.0)) { free(w); vm_set_error(vm, "rand_multinomial(): probs must sum to > 0"); return; }
+    int64_t *cnt = (int64_t *)malloc((size_t)m * sizeof(int64_t));
+    if (!cnt) { free(w); vm_set_error(vm, "out of memory"); return; }
+    for (int i = 0; i < m; i++) cnt[i] = 0;
+    for (int64_t j = 0; j < nn; j++) {
+        double t = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625 * total;
+        double acc = 0.0;
+        for (int i = 0; i < m; i++) {
+            acc += w[i];
+            if (t < acc) { cnt[i]++; break; }
+        }
+    }
+    free(w);
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int i = 0; i < m; i++) list_push(vm, res, val_int(cnt[i]));
+    free(cnt);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -724,6 +858,11 @@ Value b_rand_lognormal(VM *vm, int argc, Value *args)   { return vm_native(vm, a
 Value b_rand_gumbel(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_gumbel); }
 Value b_rand_rayleigh(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_rayleigh); }
 Value b_rand_triangular(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_rand_triangular); }
+Value b_rand_zipf(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_rand_zipf); }
+Value b_rand_negative_binomial(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_negative_binomial); }
+Value b_rand_erlang(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_erlang); }
+Value b_rand_von_mises(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_rand_von_mises); }
+Value b_rand_multinomial(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_multinomial); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

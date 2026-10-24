@@ -168,6 +168,31 @@ All notable changes to Lume are documented here. The format follows
   total); `tests/quant-fuzz.py` grows to 770 checks (10 series × 77 rows)
   with binomial range, positivity and finiteness assertions on the new
   samplers.
+- **Advanced samplers: `rand_zipf` / `rand_negative_binomial` /
+  `rand_erlang` / `rand_von_mises` / `rand_multinomial`.** Five more
+  Monte Carlo builtins on the deterministic PCG32 stream.
+  `rand_zipf(n, s)` precomputes the i^-s weights once per call and answers
+  one plain draw against the cumulative mass (O(n) setup, TY_INT);
+  `rand_negative_binomial(r, p)` sums r geometric failure counts (r biased
+  draws, TY_INT); `rand_erlang(k, rate)` sums k exponentials (k biased
+  draws); `rand_von_mises(mu, kappa)` runs the Best-Fisher rejection loop
+  (each round exactly two draws — one plain for z, one biased for the
+  acceptance test — so the data-dependent round count stays byte-identical
+  across backends; kappa = 0 and the vanishing-rho case fall back to one
+  plain draw on the uniform circle); `rand_multinomial(n, probs)` runs n
+  weighted draws against the probs list and answers a fresh int list —
+  the first list-returning sampler, emitting through the shuffle-shaped
+  i8* branch with n truncated via `lume_bi_ftoi`. All five infer (zipf /
+  negative-binomial TY_INT, erlang / von Mises TY_FLOAT, multinomial a
+  TY_INT list); the (i64, double) mixed-arity emit block now serves four
+  samplers. Invalid parameters error on the interpreter / answer -1, NAN
+  or an empty list natively. `rand_zipf`'s exact value is not pinned in
+  the Python reference (a 1-ULP libm difference between mingw pow and
+  Python's UCRT pow can flip the discrete rank at a bucket boundary), so
+  quant-fuzz keeps a [1,n] range property on every dataset instead.
+  `tests/quant-consistency.lume` pins 7 more rows (81 total);
+  `tests/quant-refcheck.py` adds 5 absolute-k cases (88 total);
+  `tests/quant-fuzz.py` grows to 840 checks (10 series × 84 rows).
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

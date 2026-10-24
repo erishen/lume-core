@@ -28,11 +28,15 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 77                              # rows per dataset (39 quant rows + 38
-                                      # Monte Carlo rows: mixed samplers x7
-                                      # (binomial / lognormal / gumbel /
-                                      # rayleigh / triangular / binom(3,0.2)
-                                      # / lognormal(1,0.5)), inverse-
+RPP = 84                              # rows per dataset (39 quant rows + 45
+                                      # Monte Carlo rows: advanced samplers
+                                      # x7 (zipf / negative-binomial /
+                                      # erlang / von Mises / multinomial[0]
+                                      # / zipf(5) / von Mises kappa=0),
+                                      # mixed samplers x7 (binomial /
+                                      # lognormal / gumbel / rayleigh /
+                                      # triangular / binom(3,0.2) /
+                                      # lognormal(1,0.5)), inverse-
                                       # transform samplers x7 (geometric /
                                       # weibull / logistic / pareto /
                                       # laplace / geo(0.1) / weibull(0.5,3)),
@@ -164,6 +168,8 @@ MASK32 = (1 << 32) - 1
 PCG_MULT = 6364136223846793005
 PCG_INC = 0xda3e39cb94b95bdb
 R2_24 = 2.0 ** -24
+PI = 3.14159265358979323846
+PI2 = 6.28318530717958647693
 R2_25 = 2.0 ** -25
 
 
@@ -332,6 +338,77 @@ def pcg_tri(seed, lo, hi, k):
     return hi - math.sqrt(0.5 * (1.0 - v)) * span
 
 
+def pcg_zipf(seed, n, s, k):
+    """One plain draw at k against the cumulative i^-s mass."""
+    total = 0.0
+    for i in range(1, n + 1):
+        total += i ** -s
+    t = pcg_rand(seed, k) * total
+    acc = 0.0
+    for i in range(1, n + 1):
+        acc += i ** -s
+        if t < acc:
+            return i
+    return n
+
+
+def pcg_nb(seed, r, p, k):
+    """r geometric failure counts starting at absolute draw k."""
+    total = 0
+    lq = math.log(1.0 - p)
+    for _ in range(r):
+        total += int(math.log(pcg_ub(seed, k)) / lq)
+        k += 1
+    return total
+
+
+def pcg_erlang(seed, kk, rate, k):
+    s = 0.0
+    for _ in range(kk):
+        s += -math.log(pcg_ub(seed, k)) / rate
+        k += 1
+    return s
+
+
+def pcg_vm(seed, mu, kappa, k):
+    """Best-Fisher at absolute offset k; returns (value, draws)."""
+    if kappa == 0.0:
+        return mu + (pcg_rand(seed, k) - 0.5) * PI2, 1
+    tau = 1.0 + math.sqrt(1.0 + 4.0 * kappa * kappa)
+    rho = (tau - math.sqrt(2.0 * tau)) / (2.0 * kappa)
+    if rho == 0.0:
+        return mu + (pcg_rand(seed, k) - 0.5) * PI2, 1
+    r = (1.0 + rho * rho) / (2.0 * rho)
+    draws = 0
+    while True:
+        u1 = pcg_rand(seed, k)
+        u2 = pcg_ub(seed, k + 1)
+        k += 2
+        draws += 2
+        z = math.cos(PI * u1)
+        f = (1.0 + r * z) / (r + z)
+        c = kappa * (r - f)
+        if c * (2.0 - c) - u2 > 0.0 or math.log(c / u2) + 1.0 - c >= 0.0:
+            return mu + (-1.0 if u1 < 0.5 else 1.0) * math.acos(f), draws
+
+
+def pcg_multinom(seed, n, probs, k):
+    """n weighted draws starting at absolute offset k; returns counts."""
+    total = sum(probs)
+    m = len(probs)
+    counts = [0] * m
+    for _ in range(n):
+        t = pcg_rand(seed, k) * total
+        k += 1
+        acc = 0.0
+        for i in range(m):
+            acc += probs[i]
+            if t < acc:
+                counts[i] += 1
+                break
+    return counts
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -455,6 +532,34 @@ def main():
         # keeps p mid-domain while still exercising both Acklam branches.
         p = 0.15 + 0.07 * i
         row(p); lines.append("print(normcdf(norminv(%s)));" % ("%.6f" % p))
+        # advanced samplers (2026-10-28): zipf one plain draw against the
+        # cumulative i^-s mass (TY_INT); negative-binomial sums r geometric
+        # failure counts (r biased draws, TY_INT); erlang sums k
+        # exponentials (k biased draws); von Mises runs the Best-Fisher
+        # rejection loop (per round: one plain z draw, one biased
+        # acceptance draw — round count data-dependent but stream-fixed);
+        # multinomial answers an int list, asserted here through [0] (the
+        # first category's count), its stream offset following whatever
+        # von Mises actually consumed.
+        sd = 1000 + i
+        lines.append("seed(%d);" % sd)
+        row(pcg_zipf(sd, 10, 1.5, 1))
+        lines.append("print(rand_zipf(10, 1.5));")
+        row(pcg_nb(sd, 3, 0.3, 2))
+        lines.append("print(rand_negative_binomial(3, 0.3));")
+        row(sixg(pcg_erlang(sd, 2, 0.5, 5)))
+        lines.append("print(rand_erlang(2, 0.5));")
+        vm0, dr = pcg_vm(sd, 0.0, 2.0, 7)
+        row(sixg(vm0))
+        lines.append("print(rand_von_mises(0.0, 2.0));")
+        row(pcg_multinom(sd, 10, [0.5, 0.3, 0.2], 7 + dr)[0])
+        lines.append("print(rand_multinomial(10, [0.5, 0.3, 0.2])[0]);")
+        lines.append("seed(%d);" % sd)
+        row(pcg_zipf(sd, 5, 2.0, 1))
+        lines.append("print(rand_zipf(5, 2.0));")
+        vm1, _ = pcg_vm(sd, 1.0, 0.0, 2)
+        row(sixg(vm1))
+        lines.append("print(rand_von_mises(1.0, 0.0));")
         # mixed samplers (2026-10-27): binomial counts n Bernoulli
         # successes (n plain draws, TY_INT; p=0.5 then p=0.2 after a
         # re-seed); lognormal is exp(Box-Muller) on two biased draws;
@@ -631,11 +736,16 @@ def main():
         total += 1
         got = rows["interp"][i]
         want = flat_exp[i]
-        if not close(got, want):
+        r = i % RPP
+        # zipf is a discrete inverse-CDF: mingw's pow and Python's UCRT
+        # pow can differ by one ULP, which flips the returned rank when the
+        # draw lands within one ULP of a bucket boundary — exact-value
+        # equality is not a stable cross-libm contract here, so those two
+        # rows are range-checked by the property assertions below instead.
+        if r not in (RPP - 45, RPP - 40) and not close(got, want):
             sys.stderr.write("FAIL row %d: lume=%r python=%r\n" % (i, got, want))
             fails += 1
         # property assertions (independent of the formula used)
-        r = i % RPP
         if r in (1, 2) and got < -1e-9:      # variance / stddev >= 0
             sys.stderr.write("FAIL row %d: negative variance/stddev %r\n" % (i, got)); fails += 1
         if r == 8 and abs(got) > 1 + 1e-9:    # correlation in [-1, 1]
@@ -645,7 +755,10 @@ def main():
         if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
             sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
             # vs a positive peak can exceed 100% — the bound is only the sign)
-        # Monte Carlo property rows (span RPP-38 .. RPP-1): the mixed
+        # Monte Carlo property rows (span RPP-45 .. RPP-1): the advanced
+        # samplers at RPP-45..RPP-39 (zipf in [1,n], negative-binomial
+        # >= 0, erlang > 0, von Mises finite, multinomial[0] in [0,n],
+        # reseeded zipf(5) in [1,5], kappa=0 von Mises finite), the mixed
         # samplers at RPP-38..RPP-32 (binomial in [0,n], lognormal /
         # rayleigh > 0, gumbel finite, triangular in [lo,hi]), the
         # inverse-transform samplers at RPP-31..RPP-25 (geometric >= 0,
@@ -658,8 +771,24 @@ def main():
         # closing re-seed row (first rand again) equals the opening rand row
         # — a reproducibility contract no identical-implementation bug could
         # fake, since the round-trip forces a full stream restart.
-        if r >= RPP - 38:
-            if r == RPP - 38 or r == RPP - 33:            # binomial in [0, n]
+        if r >= RPP - 45:
+            if r == RPP - 45 or r == RPP - 40:            # zipf in [1, n]
+                hi_n = 10 if r == RPP - 45 else 5
+                if got < 1.0 or got > hi_n:
+                    sys.stderr.write("FAIL row %d: zipf out of [1,%d] %r\n" % (i, hi_n, got)); fails += 1
+            elif r == RPP - 44:                           # negative-binomial >= 0
+                if got < 0.0:
+                    sys.stderr.write("FAIL row %d: negbinom < 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 43:                           # erlang > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: erlang <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 42 or r == RPP - 39:          # von Mises finite
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite vonmises %r\n" % (i, got)); fails += 1
+            elif r == RPP - 41:                           # multinomial[0] in [0,10]
+                if got < 0.0 or got > 10.0:
+                    sys.stderr.write("FAIL row %d: multinomial[0] out of [0,10] %r\n" % (i, got)); fails += 1
+            elif r == RPP - 38 or r == RPP - 33:          # binomial in [0, n]
                 hi_n = 10 if r == RPP - 38 else 3
                 if got < 0.0 or got > hi_n:
                     sys.stderr.write("FAIL row %d: binomial out of [0,%d] %r\n" % (i, hi_n, got)); fails += 1
