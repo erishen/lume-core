@@ -1476,6 +1476,11 @@ void bridge_seed_builtins(VM *vm) {
         {"linreg", b_linreg},
         {"pct_change", b_pct_change},
         {"max_drawdown", b_max_drawdown},
+        {"skew", b_skew},
+        {"kurtosis", b_kurtosis},
+        {"rolling_mean", b_rolling_mean},
+        {"rolling_stddev", b_rolling_stddev},
+        {"ewma", b_ewma},
         /* 出站 HTTP (2026-10-04, builtins_http.c): raw socket, no libcurl.
          * 私有地址默认拒绝,--no-net / LUME_NO_NET=1 整体关掉。 */
 #if LUME_HAS_HTTP

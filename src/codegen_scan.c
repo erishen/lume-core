@@ -377,14 +377,16 @@ Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0))
                 return type_prim(TY_FLOAT);
             /* Quant builtins (2026-10-24): the scalar statistics answer a
-             * float; pct_change() builds a fresh float list; linreg() a
-             * struct map. Kept in step with llvm_cg_scan.inc. */
+             * float; the rolling helpers and ewma build fresh float lists;
+             * linreg() a struct map. Kept in step with llvm_cg_scan.inc. */
             if ((strcmp(name, "mean") == 0 || strcmp(name, "variance") == 0 ||
                  strcmp(name, "stddev") == 0 || strcmp(name, "median") == 0 ||
                  strcmp(name, "percentile") == 0 || strcmp(name, "covariance") == 0 ||
-                 strcmp(name, "correlation") == 0 || strcmp(name, "max_drawdown") == 0))
+                 strcmp(name, "correlation") == 0 || strcmp(name, "max_drawdown") == 0 ||
+                 strcmp(name, "skew") == 0 || strcmp(name, "kurtosis") == 0))
                 return type_prim(TY_FLOAT);
-            if (strcmp(name, "pct_change") == 0)
+            if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
+                strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0)
                 return type_list(type_prim(TY_FLOAT));
             if (strcmp(name, "linreg") == 0)
                 return type_anon_struct();

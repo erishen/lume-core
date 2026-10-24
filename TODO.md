@@ -506,6 +506,15 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   two-pass mean-then-sum-of-squares degrades on large-offset data, and
   quant-fuzz.py gained a large-offset distribution family (base 1e6-1e10
   with 1e-6 relative fluctuations) that now pins that family.
+  Distribution shape + rolling/EWMA (2026-10-24): skew (adjusted
+  Fisher-Pearson, n≥3) and kurtosis (sample excess Fisher, n≥4) join as
+  scalars; rolling_mean/rolling_stddev (list + window, NAN until the
+  window fills, ddof=1) and ewma (list + alpha∈(0,1], recursive) join as
+  list builders, all three-backend consistent — float windows truncate
+  through the new rt.c `lume_bi_ftoi` helper on both native backends,
+  matching the interpreter's (int64_t) cast. quant-refcheck.py now pins
+  39 Python-verified cases and quant-fuzz.py runs 10 series x 38 rows
+  (380 checks) covering the new family.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

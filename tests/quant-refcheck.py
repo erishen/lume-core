@@ -70,6 +70,63 @@ def max_drawdown(data):
     return mdd
 
 
+def skew(data):
+    """Adjusted Fisher-Pearson sample skewness (pandas / Python statistics
+    default): g1 = T1/(T2*sqrt(T2)) * n/((n-1)(n-2))."""
+    n = len(data)
+    if n < 3:
+        return float("nan")
+    m = sum(data) / n
+    t1 = sum((a - m) ** 3 for a in data)
+    t2 = sum((a - m) ** 2 for a in data)
+    if t2 == 0:
+        return float("nan")
+    return (t1 / (t2 * math.sqrt(t2))) * n / ((n - 1) * (n - 2))
+
+
+def kurtosis(data):
+    """Sample excess kurtosis (Python statistics.kurtosis / pandas kurt
+    default): n(n+1)T1/((n-1)(n-2)(n-3)T2^2) - 3(n-1)^2/((n-2)(n-3))."""
+    n = len(data)
+    if n < 4:
+        return float("nan")
+    m = sum(data) / n
+    t1 = sum((a - m) ** 4 for a in data)
+    t2 = sum((a - m) ** 2 for a in data)
+    if t2 == 0:
+        return float("nan")
+    return (n * (n + 1) * t1 / ((n - 1) * (n - 2) * (n - 3) * t2 * t2)
+            - 3.0 * (n - 1) ** 2 / ((n - 2) * (n - 3)))
+
+
+def rolling_mean(data, w):
+    out = []
+    for i in range(len(data)):
+        out.append(float("nan") if i + 1 < w else sum(data[i + 1 - w:i + 1]) / w)
+    return out
+
+
+def rolling_stddev(data, w):
+    out = []
+    for i in range(len(data)):
+        if i + 1 < w or w < 2:
+            out.append(float("nan"))
+        else:
+            out.append(st.stdev(data[i + 1 - w:i + 1]))
+    return out
+
+
+def ewma(data, alpha):
+    out = []
+    if data:
+        e = data[0]
+        out.append(e)
+        for v in data[1:]:
+            e = alpha * v + (1.0 - alpha) * e
+            out.append(e)
+    return out
+
+
 def close(a, b):
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         if math.isnan(a) and math.isnan(b):
@@ -121,6 +178,24 @@ cases += [
     ("linreg slope",         linreg(bench, closes)[0], 8.88876),
     ("linreg intercept",     linreg(bench, closes)[1], 100.57),
     ("linreg r2",            linreg(bench, closes)[2], 0.91854),
+]
+
+# Third dataset: skew/kurtosis/rolling/ewma family (from
+# tests/quant-consistency.lume's new section and the smoke fixture).
+sk1 = [1, 2, 3, 4, 5, 6, 7, 8]
+sk2 = [1, 1, 1, 4, 4, 4, 7, 7]
+cases += [
+    ("skew symmetric",      skew(sk1),                0),
+    ("kurtosis uniform",    kurtosis(sk1),            -4.82449),
+    ("skew (clusters)",     skew(sk2),                0.0149311),
+    ("kurtosis (clusters)", kurtosis(sk2),            -4.8284),
+    ("rolling_mean w=3",    rolling_mean(sk1, 3),     [float("nan"), float("nan"), 2, 3, 4, 5, 6, 7]),
+    ("rolling_stddev w=3",  rolling_stddev(sk1, 3),   [float("nan"), float("nan"), 1, 1, 1, 1, 1, 1]),
+    ("rolling_mean w=2",    rolling_mean(sk1, 2),     [float("nan"), 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]),
+    ("ewma a=0.5",          ewma(sk1, 0.5),           [1, 1.5, 2.25, 3.125, 4.0625, 5.03125, 6.01562, 7.00781]),
+    ("ewma a=1",            ewma(sk1, 1),             sk1),
+    ("rolling_stddev w=2 (clusters)", rolling_stddev(sk2, 2),
+     [float("nan"), 0, 0, math.sqrt(4.5), 0, 0, math.sqrt(4.5), 0]),
 ]
 
 fails = 0

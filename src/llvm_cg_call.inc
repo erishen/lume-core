@@ -1724,7 +1724,8 @@ static Val cg_builtin(CG *g, Node *n)
      * builtins_math.c. */
     if (strcmp(bname, "mean") == 0 || strcmp(bname, "variance") == 0 ||
         strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
-        strcmp(bname, "max_drawdown") == 0) {
+        strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "skew") == 0 ||
+        strcmp(bname, "kurtosis") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -1734,7 +1735,9 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "variance") == 0 ? "lume_bi_variance"
                        : strcmp(bname, "stddev") == 0 ? "lume_bi_stddev"
                        : strcmp(bname, "median") == 0 ? "lume_bi_median"
-                       : "lume_bi_max_drawdown";
+                       : strcmp(bname, "max_drawdown") == 0 ? "lume_bi_max_drawdown"
+                       : strcmp(bname, "skew") == 0 ? "lume_bi_skew"
+                       : "lume_bi_kurtosis";
         LLVMTypeRef p[1] = { g->i8ptr };
         LLVMValueRef vs[1] = { a.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -1804,6 +1807,63 @@ static Val cg_builtin(CG *g, Node *n)
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->i8ptr, p, 1, 0),
             rt_decl(g, "lume_bi_pct_change", g->i8ptr, p, 1), vs, 1, "q");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
+    /* rolling_mean/rolling_stddev (list, window) and ewma (list, alpha):
+     * one list plus one scalar, returning a fresh float list. The window
+     * is an integer semantic: an int passes straight through as i64, a
+     * float truncates via lume_bi_ftoi — the same truncation the
+     * interpreter applies to its double window argument. */
+    if (strcmp(bname, "rolling_mean") == 0 || strcmp(bname, "rolling_stddev") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (list, window)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: %s() needs a window size", n->line, bname);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { w.v };
+            w.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "wi");
+        }
+        const char *fn = strcmp(bname, "rolling_mean") == 0
+                             ? "lume_bi_rolling_mean" : "lume_bi_rolling_stddev";
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { a.v, w.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p2, 2, 0),
+            rt_decl(g, fn, g->i8ptr, p2, 2), v2, 2, "q");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
+    if (strcmp(bname, "ewma") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: ewma() takes (list, alpha)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: ewma() needs a list", n->line);
+        Val p = cg_expr(g, n->as.call.args[1]);
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: ewma() needs a number for alpha", n->line);
+        }
+        if (p.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { p.v };
+            p.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->dbl };
+        LLVMValueRef v2[2] = { a.v, p.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p2, 2, 0),
+            rt_decl(g, "lume_bi_ewma", g->i8ptr, p2, 2), v2, 2, "q");
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 

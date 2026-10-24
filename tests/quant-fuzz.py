@@ -28,7 +28,9 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 18                               # rows per dataset (13 scalars + 5 pct)
+RPP = 38                              # rows per dataset (13 scalars + 5 pct
+                                      # + skew/kurtosis + 6 rolling_mean +
+                                      # 6 rolling_stddev + 6 ewma)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -69,6 +71,52 @@ def pct_change(data):
         float("nan") if data[i - 1] == 0 else 100.0 * (data[i] - data[i - 1]) / data[i - 1]
         for i in range(1, len(data))
     ]
+
+
+def skew(data):
+    n = len(data)
+    if n < 3:
+        return float("nan")
+    m = sum(data) / n
+    t1 = sum((a - m) ** 3 for a in data)
+    t2 = sum((a - m) ** 2 for a in data)
+    if t2 == 0:
+        return float("nan")
+    return (t1 / (t2 * math.sqrt(t2))) * n / ((n - 1) * (n - 2))
+
+
+def kurtosis(data):
+    n = len(data)
+    if n < 4:
+        return float("nan")
+    m = sum(data) / n
+    t1 = sum((a - m) ** 4 for a in data)
+    t2 = sum((a - m) ** 2 for a in data)
+    if t2 == 0:
+        return float("nan")
+    return (n * (n + 1) * t1 / ((n - 1) * (n - 2) * (n - 3) * t2 * t2)
+            - 3.0 * (n - 1) ** 2 / ((n - 2) * (n - 3)))
+
+
+def rolling_mean(data, w):
+    return [float("nan") if i + 1 < w else sum(data[i + 1 - w:i + 1]) / w
+            for i in range(len(data))]
+
+
+def rolling_stddev(data, w):
+    return [float("nan") if i + 1 < w or w < 2 else st.stdev(data[i + 1 - w:i + 1])
+            for i in range(len(data))]
+
+
+def ewma(data, alpha):
+    out = []
+    if data:
+        e = data[0]
+        out.append(e)
+        for v in data[1:]:
+            e = alpha * v + (1.0 - alpha) * e
+            out.append(e)
+    return out
 
 
 def max_drawdown(data):
@@ -187,6 +235,20 @@ def main():
         lines.append("let pc%da: list = pct_change(%s);" % (i, da))
         for k, v in enumerate(pc):
             row(v); lines.append("print(pc%da[%d]);" % (i, k))
+        # distribution shape + rolling/ewma family (2026-10-24):
+        # skew/kurtosis are scalars; rolling_mean/rolling_stddev/ewma emit
+        # N rows each (w=3 window, so rows 0-1 are NAN).
+        row(skew(x));                     lines.append("print(skew(%s));" % da)
+        row(kurtosis(x));                 lines.append("print(kurtosis(%s));" % da)
+        lines.append("let rm%da: list = rolling_mean(%s, 3);" % (i, da))
+        for k, v in enumerate(rolling_mean(x, 3)):
+            row(v); lines.append("print(rm%da[%d]);" % (i, k))
+        lines.append("let rs%da: list = rolling_stddev(%s, 3);" % (i, da))
+        for k, v in enumerate(rolling_stddev(x, 3)):
+            row(v); lines.append("print(rs%da[%d]);" % (i, k))
+        lines.append("let ew%da: list = ewma(%s, 0.3);" % (i, da))
+        for k, v in enumerate(ewma(x, 0.3)):
+            row(v); lines.append("print(ew%da[%d]);" % (i, k))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

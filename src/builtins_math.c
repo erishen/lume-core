@@ -558,6 +558,123 @@ static void native_max_drawdown(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(mdd);
 }
 
+static void native_skew(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 3) { vm_set_error(vm, "skew() needs >= 3 elements"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0;
+    for (int i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double t1 = 0.0, t2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        t1 += d * d * d;
+        t2 += d * d;
+    }
+    free(xs);
+    if (t2 == 0.0) { vm_set_error(vm, "skew(): series is constant"); return; }
+    double g = t1 / (t2 * sqrt(t2));
+    *out = val_num(g * (double)n / ((double)(n - 1) * (double)(n - 2)));
+}
+
+static void native_kurtosis(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 4) { vm_set_error(vm, "kurtosis() needs >= 4 elements"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0;
+    for (int i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double t1 = 0.0, t2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        double d2 = d * d;
+        t1 += d2 * d2;
+        t2 += d2;
+    }
+    free(xs);
+    if (t2 == 0.0) { vm_set_error(vm, "kurtosis(): series is constant"); return; }
+    double k = (double)n * ((double)n + 1.0) * t1
+               / ((double)(n - 1) * (double)(n - 2) * (double)(n - 3) * t2 * t2)
+               - 3.0 * (double)(n - 1) * (double)(n - 1)
+                   / ((double)(n - 2) * (double)(n - 3));
+    *out = val_num(k);
+}
+
+static void native_rolling_mean(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double wd;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &wd)) return;
+    int64_t w = (int64_t)wd;
+    if (w < 1) { vm_set_error(vm, "rolling_mean() needs a positive window"); return; }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (xs) {
+        double s = 0.0;
+        for (int i = 0; i < n; i++) {
+            s += xs[i];
+            if (i >= w) s -= xs[i - w];
+            list_push(vm, res, val_num(i + 1 >= w ? s / (double)w : NAN));
+        }
+        free(xs);
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rolling_stddev(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double wd;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &wd)) return;
+    int64_t w = (int64_t)wd;
+    if (w < 1) { vm_set_error(vm, "rolling_stddev() needs a positive window"); return; }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (xs) {
+        for (int i = 0; i < n; i++) {
+            if (i + 1 < w || w < 2) { list_push(vm, res, val_num(NAN)); continue; }
+            int64_t lo = (int64_t)i + 1 - w;
+            double m = 0.0;
+            for (int64_t j = lo; j <= i; j++) m += xs[j];
+            m /= (double)w;
+            double s = 0.0;
+            for (int64_t j = lo; j <= i; j++) { double d = xs[j] - m; s += d * d; }
+            list_push(vm, res, val_num(sqrt(s / (double)(w - 1))));
+        }
+        free(xs);
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_ewma(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double alpha;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &alpha)) return;
+    if (alpha <= 0.0 || alpha > 1.0) {
+        vm_set_error(vm, "ewma() needs alpha in (0,1]");
+        return;
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (xs) {
+        if (n > 0) {
+            double e = xs[0];
+            list_push(vm, res, val_num(e));
+            for (int i = 1; i < n; i++) {
+                e = alpha * xs[i] + (1.0 - alpha) * e;
+                list_push(vm, res, val_num(e));
+            }
+        }
+        free(xs);
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
 Value b_mean(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_mean); }
 Value b_variance(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_variance); }
 Value b_stddev(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_stddev); }
@@ -568,3 +685,8 @@ Value b_correlation(VM *vm, int argc, Value *args)  { return vm_native(vm, argc,
 Value b_linreg(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_linreg); }
 Value b_pct_change(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_pct_change); }
 Value b_max_drawdown(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_max_drawdown); }
+Value b_skew(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_skew); }
+Value b_kurtosis(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_kurtosis); }
+Value b_rolling_mean(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rolling_mean); }
+Value b_rolling_stddev(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rolling_stddev); }
+Value b_ewma(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_ewma); }

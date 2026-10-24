@@ -2728,3 +2728,116 @@ double lume_bi_max_drawdown(const LumeList *l)
     free(xs);
     return mdd;
 }
+
+/* int -> i64 for the native text emitter (float window / alpha arguments
+ * must truncate before the runtime call; the LLVM leg uses fptosi). */
+int64_t lume_bi_ftoi(double v) { return (int64_t)v; }
+
+/* Sample skewness (adjusted Fisher-Pearson, the pandas / Python
+ * statistics.skew default): g1 = T1/(T2*sqrt(T2)) * n/((n-1)(n-2)) with
+ * T1 = sum((x-m)^3), T2 = sum((x-m)^2). NAN for n<3 or a zero spread. */
+double lume_bi_skew(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 3) { free(xs); return NAN; }
+    double m = 0.0;
+    for (int64_t i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double t1 = 0.0, t2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        t1 += d * d * d;
+        t2 += d * d;
+    }
+    free(xs);
+    if (t2 == 0.0) return NAN;
+    double g = t1 / (t2 * sqrt(t2));
+    return g * (double)n / ((double)(n - 1) * (double)(n - 2));
+}
+
+/* Sample excess kurtosis (Python statistics.kurtosis / pandas kurt
+ * default): n(n+1)*T1/((n-1)(n-2)(n-3)*T2^2) - 3(n-1)^2/((n-2)(n-3)),
+ * T1 = sum((x-m)^4), T2 = sum((x-m)^2). NAN for n<4 or a zero spread. */
+double lume_bi_kurtosis(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 4) { free(xs); return NAN; }
+    double m = 0.0;
+    for (int64_t i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double t1 = 0.0, t2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        double d2 = d * d;
+        t1 += d2 * d2;
+        t2 += d2;
+    }
+    free(xs);
+    if (t2 == 0.0) return NAN;
+    return (double)n * ((double)n + 1.0) * t1
+               / ((double)(n - 1) * (double)(n - 2) * (double)(n - 3) * t2 * t2)
+           - 3.0 * (double)(n - 1) * (double)(n - 1)
+               / ((double)(n - 2) * (double)(n - 3));
+}
+
+/* Rolling window mean: a fresh list of the same length; positions whose
+ * window is not yet full (i < w-1) answer NAN, the rest the arithmetic
+ * mean of xs[i-w+1..i]. A window < 1 gives an empty list (the
+ * interpreter reports an error instead). */
+LumeList *lume_bi_rolling_mean(const LumeList *l, int64_t w)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || w < 1) { free(xs); return out; }
+    double s = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        s += xs[i];
+        if (i >= w) s -= xs[i - w];
+        lume_list_push_f(out, i + 1 >= w ? s / (double)w : NAN);
+    }
+    free(xs);
+    return out;
+}
+
+/* Rolling window sample standard deviation: like rolling_mean but the
+ * window's sample stddev (n-1 denominator, matching variance()). Windows
+ * smaller than 2 (including w==1) answer NAN; w<1 gives an empty list. */
+LumeList *lume_bi_rolling_stddev(const LumeList *l, int64_t w)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || w < 1) { free(xs); return out; }
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 1 < w || w < 2) { lume_list_push_f(out, NAN); continue; }
+        int64_t lo = i + 1 - w;
+        double m = 0.0;
+        for (int64_t j = lo; j <= i; j++) m += xs[j];
+        m /= (double)w;
+        double s = 0.0;
+        for (int64_t j = lo; j <= i; j++) { double d = xs[j] - m; s += d * d; }
+        lume_list_push_f(out, sqrt(s / (double)(w - 1)));
+    }
+    free(xs);
+    return out;
+}
+
+/* Exponentially weighted moving average: out[0] = x[0],
+ * out[i] = alpha*x[i] + (1-alpha)*out[i-1]. alpha in (0,1] (1 keeps the
+ * series, 0 would freeze at the first element and is rejected); an
+ * out-of-range alpha gives an empty list (interpreter reports an error). */
+LumeList *lume_bi_ewma(const LumeList *l, double alpha)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || alpha <= 0.0 || alpha > 1.0) { free(xs); return out; }
+    if (n > 0) {
+        double e = xs[0];
+        lume_list_push_f(out, e);
+        for (int64_t i = 1; i < n; i++) {
+            e = alpha * xs[i] + (1.0 - alpha) * e;
+            lume_list_push_f(out, e);
+        }
+    }
+    free(xs);
+    return out;
+}

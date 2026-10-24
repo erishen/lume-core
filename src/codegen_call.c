@@ -412,6 +412,12 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_linreg(i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_pct_change(i8*)\n");
     EMIT(g, "declare double @lume_bi_max_drawdown(i8*)\n");
+    EMIT(g, "declare double @lume_bi_skew(i8*)\n");
+    EMIT(g, "declare double @lume_bi_kurtosis(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_mean(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_stddev(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_ewma(i8*, double)\n");
+    EMIT(g, "declare i64 @lume_bi_ftoi(double)\n");
 
     EMIT(g, "declare i8* @lume_map_new()\n");
     EMIT(g, "declare i64 @lume_map_len(i8*)\n");
@@ -1894,7 +1900,8 @@ static Val cg_builtin(CG *g, Node *n)
      * native_* contracts in builtins_math.c. */
     if (strcmp(bname, "mean") == 0 || strcmp(bname, "variance") == 0 ||
         strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
-        strcmp(bname, "max_drawdown") == 0) {
+        strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "skew") == 0 ||
+        strcmp(bname, "kurtosis") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -1904,7 +1911,9 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "variance") == 0 ? "lume_bi_variance"
                        : strcmp(bname, "stddev") == 0 ? "lume_bi_stddev"
                        : strcmp(bname, "median") == 0 ? "lume_bi_median"
-                       : "lume_bi_max_drawdown";
+                       : strcmp(bname, "max_drawdown") == 0 ? "lume_bi_max_drawdown"
+                       : strcmp(bname, "skew") == 0 ? "lume_bi_skew"
+                       : "lume_bi_kurtosis";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s)", fn, a.v);
         free(a.v);
@@ -1971,6 +1980,59 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @lume_bi_pct_change(i8* %s)", a.v);
         free(a.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* rolling_mean/rolling_stddev (list, window) and ewma (list, alpha):
+     * list plus one scalar, returning a fresh float list. The window is an
+     * integer semantic — an int argument passes straight through as i64, a
+     * float truncates through lume_bi_ftoi (the same truncation the
+     * interpreter applies). */
+    if (strcmp(bname, "rolling_mean") == 0 || strcmp(bname, "rolling_stddev") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (list, window)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            free(a.v); free(w.v);
+            ERRV(g, "line %zu: %s() needs a window size", n->line, bname);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", w.v);
+            free(w.v);
+            w.v = wi;
+        }
+        const char *fn = strcmp(bname, "rolling_mean") == 0
+                             ? "lume_bi_rolling_mean" : "lume_bi_rolling_stddev";
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @%s(i8* %s, i64 %s)", fn, a.v, w.v);
+        free(a.v); free(w.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    if (strcmp(bname, "ewma") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: ewma() takes (list, alpha)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: ewma() needs a list", n->line);
+        Val p = cg_expr(g, n->as.call.args[1]);
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
+            free(a.v); free(p.v);
+            ERRV(g, "line %zu: ewma() needs a number for alpha", n->line);
+        }
+        if (p.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", p.v);
+            free(p.v);
+            p.v = w;
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_ewma(i8* %s, double %s)", a.v, p.v);
+        free(a.v); free(p.v);
         return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 

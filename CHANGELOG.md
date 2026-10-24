@@ -51,6 +51,23 @@ All notable changes to Lume are documented here. The format follows
   sides) so sums of squares never run through a large precomputed mean —
   the naive two-pass form degrades on data riding a large offset, which
   the fuzz's large-offset distribution family now pins down.
+- **Quant builtins grow a distribution-shape and rolling/EWMA family.**
+  `skew` (adjusted Fisher-Pearson sample skewness, n≥3), `kurtosis`
+  (sample excess Fisher kurtosis, n≥4), `rolling_mean` / `rolling_stddev`
+  (list + window; window not yet full answers NAN; `rolling_stddev` uses
+  ddof=1 like pandas), and `ewma` (list + alpha∈(0,1], recursive
+  alpha·x + (1−alpha)·prev, out[0]=x[0]) join the ten existing quant
+  helpers with the same three-leg contract: interpreter `native_*` in
+  `builtins_math.c`, `lume_bi_*` in `rt.c`, inference + list-arg
+  emission in `codegen_scan.c` / `codegen_call.c` and `llvm_cg_scan.inc`
+  / `llvm_cg_call.inc`. A float window truncates through the new
+  `lume_bi_ftoi` helper on both native backends (matching the
+  interpreter's `(int64_t)` cast); the scalar form of `ewma` alpha
+  widens through the existing `lume_bi_float`. `tests/quant-refcheck.py`
+  now carries 39 fixed cases (Python-verified skew/kurtosis/rolling/ewma
+  references) and `tests/quant-fuzz.py` 380 checks (10 series × 38 rows,
+  one dataset row per printed value) — all green, byte-identical across
+  the interpreter / text / LLVM legs.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

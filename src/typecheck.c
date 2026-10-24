@@ -440,6 +440,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
+    "skew", "kurtosis", "rolling_mean", "rolling_stddev", "ewma",
     /* outbound HTTP (2026-10-04, builtins_http.c) */
     "http_get",
     /* HTTP verbs that carry a body (2026-10-05) */
@@ -492,6 +493,8 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},
     {"percentile",2,2}, {"covariance",2,2}, {"correlation",2,2}, {"linreg",2,2},
     {"pct_change",1,1}, {"max_drawdown",1,1},
+    {"skew",1,1}, {"kurtosis",1,1}, {"rolling_mean",2,2}, {"rolling_stddev",2,2},
+    {"ewma",2,2},
     {"strftime",2,2}, {"replace",3,3}, {"put",3,3},
     /* bounded optional upper (runtime: argc > max rejected) */
     {"sql_query",1,3}, {"sql_write",1,3},

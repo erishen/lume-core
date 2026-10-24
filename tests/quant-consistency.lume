@@ -44,3 +44,22 @@ print(max_drawdown([10.0, 12.0, 9.0, 11.0]));
 let pc: list = pct_change(xs);
 print(pc);
 print(pct_change([0.0, 10.0, 20.0]));
+
+// distribution shape (2026-10-24): skew = adjusted Fisher-Pearson,
+// kurtosis = excess Fisher; NAN below n=3 / n=4 is an error -> use n>=4.
+print(skew([1, 2, 3, 4, 5, 6, 7, 8]));
+print(kurtosis([1, 2, 3, 4, 5, 6, 7, 8]));
+print(skew([1, 1, 1, 4, 4, 4, 7, 7]));
+print(kurtosis([1, 1, 1, 4, 4, 4, 7, 7]));
+
+// rolling window (2026-10-24): window not yet full -> NAN; rolling_stddev
+// uses ddof=1 like pandas; a float window truncates (2.0 -> window 2).
+print(rolling_mean(xs, 3));
+print(rolling_stddev(xs, 3));
+print(rolling_mean(xs, 2.0));
+let rs2: list = rolling_stddev([1, 1, 1, 4, 4, 4, 7, 7], 2);
+print(rs2);
+
+// ewma (2026-10-24): out[0] = x[0], alpha in (0,1]; alpha=1 is identity.
+print(ewma(xs, 0.5));
+print(ewma(xs, 1));
