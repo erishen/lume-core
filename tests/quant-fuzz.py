@@ -28,14 +28,18 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 70                              # rows per dataset (39 quant rows + 31
-                                      # Monte Carlo rows: inverse-transform
-                                      # samplers x7 (geometric / weibull /
-                                      # logistic / pareto / laplace / geo(0.1)
-                                      # / weibull(0.5,3)), continuous
-                                      # samplers x7 (cauchy / gamma / beta /
-                                      # chisq / student_t / gamma<1 / chisq<1),
-                                      # rand x2, rand_range, rand_int x2,
+RPP = 77                              # rows per dataset (39 quant rows + 38
+                                      # Monte Carlo rows: mixed samplers x7
+                                      # (binomial / lognormal / gumbel /
+                                      # rayleigh / triangular / binom(3,0.2)
+                                      # / lognormal(1,0.5)), inverse-
+                                      # transform samplers x7 (geometric /
+                                      # weibull / logistic / pareto /
+                                      # laplace / geo(0.1) / weibull(0.5,3)),
+                                      # continuous samplers x7 (cauchy /
+                                      # gamma / beta / chisq / student_t /
+                                      # gamma<1 / chisq<1), rand x2,
+                                      # rand_range, rand_int x2,
                                       # rand_normal x2, re-seed + first rand
                                       # again, then the distribution family:
                                       # rand_bool x3 (0.5 / 0.0 / 1.0),
@@ -297,6 +301,37 @@ def pcg_lap(seed, mu, b, k):
     return mu - b * s * math.log(1.0 - 2.0 * abs(v - 0.5))
 
 
+def pcg_binom(seed, n, p, k):
+    """n successes of independent Bernoulli(p), n plain draws."""
+    cnt = 0
+    for _ in range(n):
+        if (pcg32_draw(seed, k) >> 8) * R2_24 < p:
+            cnt += 1
+        k += 1
+    return cnt
+
+
+def pcg_logn(seed, mu, sigma, k):
+    """exp(Box-Muller at k), consuming two biased draws."""
+    return math.exp(mu + sigma * pcg_rand_normal(seed, 0.0, 1.0, k))
+
+
+def pcg_gum(seed, mu, beta, k):
+    return mu - beta * math.log(-math.log(pcg_ub(seed, k)))
+
+
+def pcg_ray(seed, scale, k):
+    return scale * math.sqrt(-2.0 * math.log(pcg_ub(seed, k)))
+
+
+def pcg_tri(seed, lo, hi, k):
+    v = pcg_rand(seed, k)
+    span = hi - lo
+    if v < 0.5:
+        return lo + math.sqrt(0.5 * v) * span
+    return hi - math.sqrt(0.5 * (1.0 - v)) * span
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -420,6 +455,28 @@ def main():
         # keeps p mid-domain while still exercising both Acklam branches.
         p = 0.15 + 0.07 * i
         row(p); lines.append("print(normcdf(norminv(%s)));" % ("%.6f" % p))
+        # mixed samplers (2026-10-27): binomial counts n Bernoulli
+        # successes (n plain draws, TY_INT; p=0.5 then p=0.2 after a
+        # re-seed); lognormal is exp(Box-Muller) on two biased draws;
+        # gumbel / rayleigh one biased draw; triangular the symmetric
+        # inverse CDF on one plain draw.
+        sd = 1000 + i
+        lines.append("seed(%d);" % sd)
+        row(pcg_binom(sd, 10, 0.5, 1))
+        lines.append("print(rand_binomial(10, 0.5));")
+        row(sixg(pcg_logn(sd, 0.0, 1.0, 11)))
+        lines.append("print(rand_lognormal(0.0, 1.0));")
+        row(sixg(pcg_gum(sd, 0.0, 1.0, 13)))
+        lines.append("print(rand_gumbel(0.0, 1.0));")
+        row(sixg(pcg_ray(sd, 1.0, 14)))
+        lines.append("print(rand_rayleigh(1.0));")
+        row(sixg(pcg_tri(sd, 0.0, 1.0, 15)))
+        lines.append("print(rand_triangular(0.0, 1.0));")
+        lines.append("seed(%d);" % sd)
+        row(pcg_binom(sd, 3, 0.2, 1))
+        lines.append("print(rand_binomial(3, 0.2));")
+        row(sixg(pcg_logn(sd, 1.0, 0.5, 4)))
+        lines.append("print(rand_lognormal(1.0, 0.5));")
         # inverse-transform samplers (2026-10-26): geometric is the failure
         # count floor(ln(ub)/ln(1-p)) on one draw (p=0.5 and p=0.1, the
         # second block after a re-seed); weibull/logistic/pareto/laplace
@@ -588,19 +645,37 @@ def main():
         if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
             sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
             # vs a positive peak can exceed 100% — the bound is only the sign)
-        # Monte Carlo property rows (span RPP-31 .. RPP-1): the inverse-
-        # transform samplers at RPP-31..RPP-25 (geometric >= 0, weibull /
-        # pareto > 0, logistic/laplace finite), the continuous samplers at
-        # RPP-24..RPP-18 (cauchy/t finite, gamma/chisq > 0, beta in (0,1),
-        # gamma<1/chisq<1 exercise the boost branch), then rand() in
-        # [0,1), rand_range inside its interval, rand_int inside its
-        # inclusive bounds, rand_bool in {0,1}, rand_exponential > 0,
+        # Monte Carlo property rows (span RPP-38 .. RPP-1): the mixed
+        # samplers at RPP-38..RPP-32 (binomial in [0,n], lognormal /
+        # rayleigh > 0, gumbel finite, triangular in [lo,hi]), the
+        # inverse-transform samplers at RPP-31..RPP-25 (geometric >= 0,
+        # weibull / pareto > 0, logistic/laplace finite), the continuous
+        # samplers at RPP-24..RPP-18 (cauchy/t finite, gamma/chisq > 0,
+        # beta in (0,1), gamma<1/chisq<1 exercise the boost branch), then
+        # rand() in [0,1), rand_range inside its interval, rand_int inside
+        # its inclusive bounds, rand_bool in {0,1}, rand_exponential > 0,
         # rand_poisson >= 0, shuffle[0] a member of the series, and the
         # closing re-seed row (first rand again) equals the opening rand row
         # — a reproducibility contract no identical-implementation bug could
         # fake, since the round-trip forces a full stream restart.
-        if r >= RPP - 31:
-            if r == RPP - 31 or r == RPP - 26:            # geometric >= 0
+        if r >= RPP - 38:
+            if r == RPP - 38 or r == RPP - 33:            # binomial in [0, n]
+                hi_n = 10 if r == RPP - 38 else 3
+                if got < 0.0 or got > hi_n:
+                    sys.stderr.write("FAIL row %d: binomial out of [0,%d] %r\n" % (i, hi_n, got)); fails += 1
+            elif r == RPP - 37 or r == RPP - 32:          # lognormal > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: lognormal <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 36:                           # gumbel finite
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite gumbel %r\n" % (i, got)); fails += 1
+            elif r == RPP - 35:                           # rayleigh > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: rayleigh <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 34:                           # triangular in [0,1]
+                if got < -1e-9 or got > 1.0 + 1e-9:
+                    sys.stderr.write("FAIL row %d: triangular out of [0,1] %r\n" % (i, got)); fails += 1
+            elif r == RPP - 31 or r == RPP - 26:          # geometric >= 0
                 if got < 0.0:
                     sys.stderr.write("FAIL row %d: geometric < 0 %r\n" % (i, got)); fails += 1
             elif r == RPP - 30 or r == RPP - 25:          # weibull > 0

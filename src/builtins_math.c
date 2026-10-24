@@ -564,6 +564,80 @@ static void native_rand_laplace(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(mu - b * s * log(1.0 - 2.0 * fabs(ub - 0.5)));
 }
 
+/* Mixed samplers (2026-10-27): binomial / lognormal / gumbel / rayleigh /
+ * triangular mirroring rt.c's lume_bi_* exactly (same constants, same
+ * consume order). rand_binomial takes an integer n and a probability p;
+ * invalid parameters error (native side answers -1 / NAN). */
+static void native_rand_binomial(VM *vm, int argc, Value *args, Value *out) {
+    double n, p;
+    if (argc < 2 || !arg_num(vm, args[0], &n) || !arg_num(vm, args[1], &p)) return;
+    if (n < 0.0 || !isfinite(p) || p < 0.0 || p > 1.0) {
+        vm_set_error(vm, "rand_binomial(): need n >= 0, p in [0, 1]");
+        return;
+    }
+    int64_t nn = (int64_t)n;
+    int64_t k = 0;
+    for (int64_t i = 0; i < nn; i++) {
+        double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+        if (u < p) k++;
+    }
+    *out = val_num((double)k);
+}
+
+static void native_rand_lognormal(VM *vm, int argc, Value *args, Value *out) {
+    double mu, sigma;
+    if (argc < 2 || !arg_num(vm, args[0], &mu) || !arg_num(vm, args[1], &sigma)) return;
+    if (!isfinite(mu) || !isfinite(sigma) || sigma <= 0.0) {
+        vm_set_error(vm, "rand_lognormal(): need sigma > 0");
+        return;
+    }
+    double u1 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double u2 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    *out = val_num(exp(mu + sigma * z));
+}
+
+static void native_rand_gumbel(VM *vm, int argc, Value *args, Value *out) {
+    double mu, beta;
+    if (argc < 2 || !arg_num(vm, args[0], &mu) || !arg_num(vm, args[1], &beta)) return;
+    if (!isfinite(mu) || !isfinite(beta) || beta <= 0.0) {
+        vm_set_error(vm, "rand_gumbel(): need scale beta > 0");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    *out = val_num(mu - beta * log(-log(ub)));
+}
+
+static void native_rand_rayleigh(VM *vm, int argc, Value *args, Value *out) {
+    double scale;
+    if (argc < 1 || !arg_num(vm, args[0], &scale)) return;
+    if (!isfinite(scale) || scale <= 0.0) {
+        vm_set_error(vm, "rand_rayleigh(): need scale > 0");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    *out = val_num(scale * sqrt(-2.0 * log(ub)));
+}
+
+static void native_rand_triangular(VM *vm, int argc, Value *args, Value *out) {
+    double lo, hi;
+    if (argc < 2 || !arg_num(vm, args[0], &lo) || !arg_num(vm, args[1], &hi)) return;
+    if (!isfinite(lo) || !isfinite(hi) || hi <= lo) {
+        vm_set_error(vm, "rand_triangular(): need hi > lo");
+        return;
+    }
+    double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+    double span = hi - lo;
+    if (u < 0.5)
+        *out = val_num(lo + sqrt(0.5 * u) * span);
+    else
+        *out = val_num(hi - sqrt(0.5 * (1.0 - u)) * span);
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -645,6 +719,11 @@ Value b_rand_weibull(VM *vm, int argc, Value *args)     { return vm_native(vm, a
 Value b_rand_logistic(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_logistic); }
 Value b_rand_pareto(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_pareto); }
 Value b_rand_laplace(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_laplace); }
+Value b_rand_binomial(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_binomial); }
+Value b_rand_lognormal(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_rand_lognormal); }
+Value b_rand_gumbel(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_gumbel); }
+Value b_rand_rayleigh(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_rayleigh); }
+Value b_rand_triangular(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_rand_triangular); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

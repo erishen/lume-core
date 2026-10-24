@@ -151,6 +151,23 @@ All notable changes to Lume are documented here. The format follows
   total); `tests/quant-fuzz.py` grows to 700 checks (10 series × 70 rows)
   with non-negativity, positivity and finiteness assertions on the new
   samplers.
+- **Mixed-arity samplers: `rand_binomial` / `rand_lognormal` /
+  `rand_gumbel` / `rand_rayleigh` / `rand_triangular`.** Five more Monte
+  Carlo builtins on the deterministic PCG32 stream. `rand_binomial(n, p)`
+  is the first builtin with a mixed signature `(int64_t, double)` — n
+  truncates through `lume_bi_ftoi`, p widens through `lume_bi_float`, and
+  both call emitters gained a dedicated mixed-arity branch — answering the
+  success count of n independent Bernoulli draws (n plain draws, TY_INT;
+  n<0 or p∉[0,1] errors / answers -1). `rand_lognormal(mu, sigma)` is
+  exp(Box-Muller) on two biased draws; `rand_gumbel(mu, beta)` and
+  `rand_rayleigh(scale)` are closed-form draws on one biased draw (the
+  inner double log has no pole inside the biased domain); `rand_triangular
+  (lo, hi)` is the symmetric inverse CDF on one plain draw (no poles, so
+  the unbiased draw is reused). `tests/quant-consistency.lume` pins 7 more
+  rows (74 total); `tests/quant-refcheck.py` adds 7 absolute-k cases (83
+  total); `tests/quant-fuzz.py` grows to 770 checks (10 series × 77 rows)
+  with binomial range, positivity and finiteness assertions on the new
+  samplers.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

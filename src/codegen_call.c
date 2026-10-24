@@ -391,6 +391,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_rand_logistic(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_pareto(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_laplace(double, double)\n");
+    EMIT(g, "declare i64 @lume_bi_rand_binomial(i64, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_lognormal(double, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_gumbel(double, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_rayleigh(double)\n");
+    EMIT(g, "declare double @lume_bi_rand_triangular(double, double)\n");
     EMIT(g, "declare double @lume_bi_log(double)\n");
     EMIT(g, "declare i64 @lume_bi_parse_i64(i8*)\n");
     EMIT(g, "declare double @lume_bi_parse_double(i8*)\n");
@@ -997,7 +1002,8 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "rand_cauchy") == 0 || strcmp(bname, "rand_gamma") == 0 ||
         strcmp(bname, "rand_beta") == 0 || strcmp(bname, "rand_weibull") == 0 ||
         strcmp(bname, "rand_logistic") == 0 || strcmp(bname, "rand_pareto") == 0 ||
-        strcmp(bname, "rand_laplace") == 0) {
+        strcmp(bname, "rand_laplace") == 0 || strcmp(bname, "rand_lognormal") == 0 ||
+        strcmp(bname, "rand_gumbel") == 0 || strcmp(bname, "rand_triangular") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -1028,7 +1034,10 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "rand_weibull") == 0) fn = "lume_bi_rand_weibull";
         else if (strcmp(bname, "rand_logistic") == 0) fn = "lume_bi_rand_logistic";
         else if (strcmp(bname, "rand_pareto") == 0) fn = "lume_bi_rand_pareto";
-        else fn = "lume_bi_rand_laplace";
+        else if (strcmp(bname, "rand_laplace") == 0) fn = "lume_bi_rand_laplace";
+        else if (strcmp(bname, "rand_lognormal") == 0) fn = "lume_bi_rand_lognormal";
+        else if (strcmp(bname, "rand_gumbel") == 0) fn = "lume_bi_rand_gumbel";
+        else fn = "lume_bi_rand_triangular";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(double %s, double %s)", fn, a.v, b.v);
         free(a.v); free(b.v);
@@ -1062,6 +1071,37 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_INT), t);
     }
 
+    /* rand_binomial(n, p) (2026-10-27): mixed arity — n is an i64 count
+     * (float truncates through lume_bi_ftoi), p a double probability (int
+     * widens through lume_bi_float), matching the interpreter's casts. */
+    if (strcmp(bname, "rand_binomial") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: rand_binomial() takes (n, p)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT)) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: rand_binomial() needs (n, p)", n->line);
+        }
+        if (a.ty->kind == TY_FLOAT) {
+            char *w = emit_instrf(g, type_prim(TY_INT),
+                                  "call i64 @lume_bi_ftoi(double %s)", a.v);
+            free(a.v);
+            a.v = w;
+        }
+        if (b.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", b.v);
+            free(b.v);
+            b.v = w;
+        }
+        char *t = emit_instrf(g, type_prim(TY_INT),
+                              "call i64 @lume_bi_rand_binomial(i64 %s, double %s)", a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_prim(TY_INT), t);
+    }
+
     /* Distribution family (2026-10-25): rand_bool(p) / rand_exponential(rate)
      * / rand_poisson(lambda) take one number — an int widens through
      * lume_bi_float exactly as the interpreter treats its double argument;
@@ -1069,7 +1109,8 @@ static Val cg_builtin(CG *g, Node *n)
      * stream). */
     if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
         strcmp(bname, "rand_poisson") == 0 || strcmp(bname, "rand_chisq") == 0 ||
-        strcmp(bname, "rand_student_t") == 0 || strcmp(bname, "rand_geometric") == 0) {
+        strcmp(bname, "rand_student_t") == 0 || strcmp(bname, "rand_geometric") == 0 ||
+        strcmp(bname, "rand_rayleigh") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes one number", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[0]);
@@ -1084,14 +1125,16 @@ static Val cg_builtin(CG *g, Node *n)
             p.v = w;
         }
         int is_float = strcmp(bname, "rand_exponential") == 0 ||
-                       strcmp(bname, "rand_chisq") == 0 || strcmp(bname, "rand_student_t") == 0;
+                       strcmp(bname, "rand_chisq") == 0 || strcmp(bname, "rand_student_t") == 0 ||
+                       strcmp(bname, "rand_rayleigh") == 0;
         const char *fn;
         if (strcmp(bname, "rand_bool") == 0) fn = "lume_bi_rand_bool";
         else if (strcmp(bname, "rand_exponential") == 0) fn = "lume_bi_rand_exponential";
         else if (strcmp(bname, "rand_poisson") == 0) fn = "lume_bi_rand_poisson";
         else if (strcmp(bname, "rand_chisq") == 0) fn = "lume_bi_rand_chisq";
         else if (strcmp(bname, "rand_student_t") == 0) fn = "lume_bi_rand_student_t";
-        else fn = "lume_bi_rand_geometric";
+        else if (strcmp(bname, "rand_geometric") == 0) fn = "lume_bi_rand_geometric";
+        else fn = "lume_bi_rand_rayleigh";
         Type *rt = is_float ? type_prim(TY_FLOAT) : type_prim(TY_INT);
         const char *pty = is_float ? "double" : "i64";
         char *t = emit_instrf(g, rt, "call %s @%s(double %s)", pty, fn, p.v);

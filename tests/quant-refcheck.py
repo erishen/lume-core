@@ -382,6 +382,37 @@ def pcg_lap(seed, mu, b, k):
     return mu - b * s * math.log(1.0 - 2.0 * abs(v - 0.5))
 
 
+def pcg_binom(seed, n, p, k):
+    """n successes of independent Bernoulli(p), n plain draws."""
+    cnt = 0
+    for _ in range(n):
+        if (pcg32_draw(seed, k) >> 8) * R2_24 < p:
+            cnt += 1
+        k += 1
+    return cnt
+
+
+def pcg_logn(seed, mu, sigma, k):
+    """exp(Box-Muller at k), consuming two biased draws."""
+    return math.exp(mu + sigma * pcg_rand_normal(seed, 0.0, 1.0, k))
+
+
+def pcg_gum(seed, mu, beta, k):
+    return mu - beta * math.log(-math.log(pcg_ub(seed, k)))
+
+
+def pcg_ray(seed, scale, k):
+    return scale * math.sqrt(-2.0 * math.log(pcg_ub(seed, k)))
+
+
+def pcg_tri(seed, lo, hi, k):
+    v = pcg_rand(seed, k)
+    span = hi - lo
+    if v < 0.5:
+        return lo + math.sqrt(0.5 * v) * span
+    return hi - math.sqrt(0.5 * (1.0 - v)) * span
+
+
 def pcg_t(seed, df, k):
     """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
     u1 = pcg_ub(seed, k)
@@ -445,6 +476,17 @@ cases += [
     ("rng laplace(0,1) k=5",     sixg(pcg_lap(42, 0.0, 1.0, 5)), 0.707612),
     ("rng geo(0.1) k=1",         pcg_geo(42, 0.1, 1), 164),
     ("rng weibull(0.5,3) k=2",   sixg(pcg_wei(42, 0.5, 3.0, 2)), 0.399356),
+    # mixed samplers (2026-10-27): binomial counts n Bernoulli successes
+    # (n plain draws, TY_INT); lognormal is exp(Box-Muller) on two biased
+    # draws; gumbel / rayleigh one biased draw; triangular the symmetric
+    # inverse CDF on one plain draw. Offsets mirror the appended fixture.
+    ("rng binom(10,0.5) k=1",    pcg_binom(42, 10, 0.5, 1), 5),
+    ("rng lognormal(0,1) k=11",  sixg(pcg_logn(42, 0.0, 1.0, 11)), 0.710895),
+    ("rng gumbel(0,1) k=13",     sixg(pcg_gum(42, 0.0, 1.0, 13)), 3.89319),
+    ("rng rayleigh(1) k=14",     sixg(pcg_ray(42, 1.0, 14)), 0.477164),
+    ("rng triangular(0,1) k=15", sixg(pcg_tri(42, 0.0, 1.0, 15)), 0.607849),
+    ("rng binom(3,0.2) k=1",     pcg_binom(42, 3, 0.2, 1), 1),
+    ("rng lognormal(1,0.5) k=4", sixg(pcg_logn(42, 1.0, 0.5, 4)), 2.72439),
 ]
 
 fails = 0

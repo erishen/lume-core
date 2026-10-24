@@ -442,6 +442,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "rand_bool", "rand_exponential", "rand_poisson", "shuffle",
     "rand_cauchy", "rand_gamma", "rand_beta", "rand_chisq", "rand_student_t",
     "rand_geometric", "rand_weibull", "rand_logistic", "rand_pareto", "rand_laplace",
+    "rand_binomial", "rand_lognormal", "rand_gumbel", "rand_rayleigh", "rand_triangular",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -497,6 +498,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"rand_bool",1,1}, {"rand_exponential",1,1}, {"rand_poisson",1,1}, {"shuffle",1,1},
     {"rand_cauchy",2,2}, {"rand_gamma",2,2}, {"rand_beta",2,2}, {"rand_chisq",1,1}, {"rand_student_t",1,1},
     {"rand_geometric",1,1}, {"rand_weibull",2,2}, {"rand_logistic",2,2}, {"rand_pareto",2,2}, {"rand_laplace",2,2},
+    {"rand_binomial",2,2}, {"rand_lognormal",2,2}, {"rand_gumbel",2,2}, {"rand_rayleigh",1,1}, {"rand_triangular",2,2},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},

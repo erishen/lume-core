@@ -382,16 +382,19 @@ Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "rand_beta") == 0 || strcmp(name, "rand_chisq") == 0 ||
                  strcmp(name, "rand_student_t") == 0 ||
                  strcmp(name, "rand_weibull") == 0 || strcmp(name, "rand_logistic") == 0 ||
-                 strcmp(name, "rand_pareto") == 0 || strcmp(name, "rand_laplace") == 0))
+                 strcmp(name, "rand_pareto") == 0 || strcmp(name, "rand_laplace") == 0 ||
+                 strcmp(name, "rand_lognormal") == 0 || strcmp(name, "rand_gumbel") == 0 ||
+                 strcmp(name, "rand_rayleigh") == 0 || strcmp(name, "rand_triangular") == 0))
                 return type_prim(TY_FLOAT);
             /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
              * the seed it was given, rand_int() a bounded draw; the
              * distribution family (2026-10-25): rand_bool() answers 0/1,
              * rand_poisson() a count; inverse-transform (2026-10-26):
-             * rand_geometric() a failure count. */
+             * rand_geometric() a failure count; mixed (2026-10-27):
+             * rand_binomial() a success count. */
             if (strcmp(name, "seed") == 0 || strcmp(name, "rand_int") == 0 ||
                 strcmp(name, "rand_bool") == 0 || strcmp(name, "rand_poisson") == 0 ||
-                strcmp(name, "rand_geometric") == 0)
+                strcmp(name, "rand_geometric") == 0 || strcmp(name, "rand_binomial") == 0)
                 return type_prim(TY_INT);
             /* Quant builtins (2026-10-24): the scalar statistics answer a
              * float; the rolling helpers and ewma build fresh float lists;

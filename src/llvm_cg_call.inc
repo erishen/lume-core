@@ -603,7 +603,8 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "rand_cauchy") == 0 || strcmp(bname, "rand_gamma") == 0 ||
         strcmp(bname, "rand_beta") == 0 || strcmp(bname, "rand_weibull") == 0 ||
         strcmp(bname, "rand_logistic") == 0 || strcmp(bname, "rand_pareto") == 0 ||
-        strcmp(bname, "rand_laplace") == 0) {
+        strcmp(bname, "rand_laplace") == 0 || strcmp(bname, "rand_lognormal") == 0 ||
+        strcmp(bname, "rand_gumbel") == 0 || strcmp(bname, "rand_triangular") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -634,7 +635,10 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "rand_weibull") == 0) fn = "lume_bi_rand_weibull";
         else if (strcmp(bname, "rand_logistic") == 0) fn = "lume_bi_rand_logistic";
         else if (strcmp(bname, "rand_pareto") == 0) fn = "lume_bi_rand_pareto";
-        else fn = "lume_bi_rand_laplace";
+        else if (strcmp(bname, "rand_laplace") == 0) fn = "lume_bi_rand_laplace";
+        else if (strcmp(bname, "rand_lognormal") == 0) fn = "lume_bi_rand_lognormal";
+        else if (strcmp(bname, "rand_gumbel") == 0) fn = "lume_bi_rand_gumbel";
+        else fn = "lume_bi_rand_triangular";
         LLVMTypeRef p2[2] = { g->dbl, g->dbl };
         LLVMValueRef v2[2] = { a.v, b.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -671,12 +675,44 @@ static Val cg_builtin(CG *g, Node *n)
             rt_decl(g, "lume_bi_rand_int", g->i64, p2, 2), v2, 2, "ri");
         return val_make(type_prim(TY_INT), r);
     }
+    /* rand_binomial(n, p) (2026-10-27): mixed arity — n truncates to i64,
+     * p widens to double, matching the interpreter's casts. */
+    if (strcmp(bname, "rand_binomial") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: rand_binomial() takes (n, p)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: rand_binomial() needs (n, p)", n->line);
+        if (a.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { a.v };
+            a.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "ft");
+        }
+        if (b.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { b.v };
+            b.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        LLVMTypeRef pm[2] = { g->i64, g->dbl };
+        LLVMValueRef vm[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i64, pm, 2, 0),
+            rt_decl(g, "lume_bi_rand_binomial", g->i64, pm, 2), vm, 2, "bn");
+        return val_make(type_prim(TY_INT), r);
+    }
     /* Distribution family (2026-10-25, mirroring the text backend): the one
      * numeric builtins widen an int via lume_bi_float; shuffle passes the
      * list through as i8*. */
     if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
         strcmp(bname, "rand_poisson") == 0 || strcmp(bname, "rand_chisq") == 0 ||
-        strcmp(bname, "rand_student_t") == 0 || strcmp(bname, "rand_geometric") == 0) {
+        strcmp(bname, "rand_student_t") == 0 || strcmp(bname, "rand_geometric") == 0 ||
+        strcmp(bname, "rand_rayleigh") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes one number", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[0]);
@@ -690,14 +726,16 @@ static Val cg_builtin(CG *g, Node *n)
                 rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
         }
         int is_float = strcmp(bname, "rand_exponential") == 0 ||
-                       strcmp(bname, "rand_chisq") == 0 || strcmp(bname, "rand_student_t") == 0;
+                       strcmp(bname, "rand_chisq") == 0 || strcmp(bname, "rand_student_t") == 0 ||
+                       strcmp(bname, "rand_rayleigh") == 0;
         const char *fn;
         if (strcmp(bname, "rand_bool") == 0) fn = "lume_bi_rand_bool";
         else if (strcmp(bname, "rand_exponential") == 0) fn = "lume_bi_rand_exponential";
         else if (strcmp(bname, "rand_poisson") == 0) fn = "lume_bi_rand_poisson";
         else if (strcmp(bname, "rand_chisq") == 0) fn = "lume_bi_rand_chisq";
         else if (strcmp(bname, "rand_student_t") == 0) fn = "lume_bi_rand_student_t";
-        else fn = "lume_bi_rand_geometric";
+        else if (strcmp(bname, "rand_geometric") == 0) fn = "lume_bi_rand_geometric";
+        else fn = "lume_bi_rand_rayleigh";
         LLVMTypeRef p1[1] = { g->dbl };
         LLVMValueRef v1[1] = { p.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,

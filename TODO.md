@@ -578,6 +578,25 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   adds 7 absolute-k cases (76 total), quant-fuzz runs 10 series x 70 rows
   (700 checks) with non-negativity/positivity/finiteness assertions on
   the new samplers.
+  Mixed samplers (2026-10-27): rand_binomial(n,p) = the success count of
+  n independent Bernoulli draws (n plain draws, TY_INT) — the first
+  builtin with a mixed (int64_t, double) signature, truncating n via
+  lume_bi_ftoi and widening p via lume_bi_float in both call emitters'
+  dedicated mixed-arity branches, mirroring the interpreter's casts;
+  n<0 or p outside [0,1] errors on the interpreter / -1 natively.
+  rand_lognormal(mu,sigma) = exp(Box-Muller) on two biased draws;
+  rand_gumbel(mu,beta) = mu - beta*ln(-ln(ub)) and rand_rayleigh(scale) =
+  scale*sqrt(-2*ln(ub)) each on one biased draw (the inner double log has
+  no pole inside the biased domain); rand_triangular(lo,hi) = the
+  symmetric inverse CDF (lo + sqrt(0.5u)*span below the midpoint, the
+  mirror above) on one plain draw (no poles, so the unbiased draw is
+  reused). Invalid parameters error on the interpreter / NAN natively.
+  Both scans infer (binomial joins the TY_INT group, the rest TY_FLOAT),
+  both call emitters extend the 2-param / 1-param branches plus the
+  binomial mixed-arity block. quant-consistency pins 7 more rows (74
+  total), quant-refcheck adds 7 absolute-k cases (83 total), quant-fuzz
+  runs 10 series x 77 rows (770 checks) with binomial range
+  (0..n), positivity and finiteness assertions on the new samplers.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

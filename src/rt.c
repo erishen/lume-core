@@ -550,6 +550,61 @@ double lume_bi_rand_laplace(double mu, double b)
     return mu - b * s * log(1.0 - 2.0 * fabs(ub - 0.5));
 }
 
+/* Mixed samplers (2026-10-27): binomial / lognormal / gumbel / rayleigh /
+ * triangular on the same deterministic stream. rand_binomial consumes n
+ * plain draws (u < p counts a success, matching rand_bool); rand_lognormal
+ * is exp(Box-Muller) on two biased draws; gumbel / rayleigh are one biased
+ * draw (double log has no pole inside the biased domain); triangular is
+ * the symmetric inverse CDF on one plain draw (no poles). Invalid
+ * parameters answer -1 / NAN natively (the interpreter reports errors). */
+int64_t lume_bi_rand_binomial(int64_t n, double p)
+{
+    if (n < 0 || !isfinite(p) || p < 0.0 || p > 1.0) return -1;
+    int64_t k = 0;
+    for (int64_t i = 0; i < n; i++) {
+        double u = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+        if (u < p) k++;
+    }
+    return k;
+}
+
+double lume_bi_rand_lognormal(double mu, double sigma)
+{
+    if (!isfinite(mu) || !isfinite(sigma) || sigma <= 0.0) return NAN;
+    double u1 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double u2 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    return exp(mu + sigma * z);
+}
+
+double lume_bi_rand_gumbel(double mu, double beta)
+{
+    if (!isfinite(mu) || !isfinite(beta) || beta <= 0.0) return NAN;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    return mu - beta * log(-log(ub));
+}
+
+double lume_bi_rand_rayleigh(double scale)
+{
+    if (!isfinite(scale) || scale <= 0.0) return NAN;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    return scale * sqrt(-2.0 * log(ub));
+}
+
+double lume_bi_rand_triangular(double lo, double hi)
+{
+    if (!isfinite(lo) || !isfinite(hi) || hi <= lo) return NAN;
+    double u = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+    double span = hi - lo;
+    if (u < 0.5)
+        return lo + sqrt(0.5 * u) * span;
+    return hi - sqrt(0.5 * (1.0 - u)) * span;
+}
+
 double lume_bi_lgamma(double x) { return lgamma(x); }
 
 double lume_bi_gamma(double x)  { return exp(lgamma(x)); }
