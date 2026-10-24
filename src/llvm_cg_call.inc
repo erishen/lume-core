@@ -935,6 +935,71 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 
+    /* Bootstrap family (2026-10-30, mirroring the text backend's branches):
+     * list + scalars. The three CI builtins take (list, n_iter, alpha) — the
+     * list passes as i8*, the scalars widen through lume_bi_float — and
+     * answer a fresh two-element float list; bootstrap_se_mean takes (list,
+     * n_iter) and answers a double. All values are live LLVMValueRefs. */
+    if (strcmp(bname, "bootstrap_mean_ci") == 0 ||
+        strcmp(bname, "bootstrap_median_ci") == 0 ||
+        strcmp(bname, "bootstrap_stddev_ci") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: %s() takes (list, n_iter, alpha)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        const char *fn = strcmp(bname, "bootstrap_mean_ci") == 0
+                             ? "lume_bi_bootstrap_mean_ci"
+                         : strcmp(bname, "bootstrap_median_ci") == 0
+                             ? "lume_bi_bootstrap_median_ci"
+                             : "lume_bi_bootstrap_stddev_ci";
+        LLVMTypeRef pt[3] = { g->i8ptr, g->dbl, g->dbl };
+        LLVMValueRef pv[3] = { a.v, NULL, NULL };
+        for (int i = 0; i < 2; i++) {
+            Val s = cg_expr(g, n->as.call.args[i + 1]);
+            if (!s.v || !s.ty ||
+                (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT))
+                ERRV(g, "line %zu: %s() needs numbers for n_iter/alpha", n->line, bname);
+            if (s.ty->kind == TY_INT) {
+                LLVMTypeRef p1[1] = { g->i64 };
+                LLVMValueRef v1[1] = { s.v };
+                pv[i + 1] = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->dbl, p1, 1, 0),
+                    rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+            } else {
+                pv[i + 1] = s.v;
+            }
+        }
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, pt, 3, 0),
+            rt_decl(g, fn, g->i8ptr, pt, 3), pv, 3, "bsci");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
+    if (strcmp(bname, "bootstrap_se_mean") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: bootstrap_se_mean() takes (list, n_iter)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: bootstrap_se_mean() needs a list", n->line);
+        Val s = cg_expr(g, n->as.call.args[1]);
+        if (!s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: bootstrap_se_mean() needs a number for n_iter", n->line);
+        if (s.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { s.v };
+            s.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        LLVMTypeRef pt[2] = { g->i8ptr, g->dbl };
+        LLVMValueRef pv[2] = { a.v, s.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, pt, 2, 0),
+            rt_decl(g, "lume_bi_bootstrap_se_mean", g->dbl, pt, 2), pv, 2, "bse");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
     /* Black-Scholes pricing family (2026-10-28): five doubles in, one
      * double out. */
     if (strcmp(bname, "bs_call") == 0 || strcmp(bname, "bs_put") == 0 ||

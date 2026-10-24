@@ -1427,6 +1427,145 @@ static void native_percentile(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(v);
 }
 
+/* ---- bootstrap / resampling family (2026-10-30) ----
+ * Mirrors rt.c bi_bootstrap_* step for step: each replicate picks n iid
+ * uniform indices over [0,n) (one bi_rng_next per position — the
+ * rand_multinomial convention), the statistic is evaluated on the
+ * resampled series (mean / median / sample stddev), the sorted
+ * replicates answer the alpha/2 and 1-alpha/2 quantiles by the pandas
+ * linear interpolation (the percentile rule above); se_mean answers the
+ * sample stddev (n-1) of the replicate means (the Efron convention).
+ * Invalid parameters error here, empty list / NAN natively. */
+
+static double boot_mean(const double *xs, int64_t n)
+{
+    double s = 0.0;
+    for (int64_t i = 0; i < n; i++) s += xs[i];
+    return s / (double)n;
+}
+
+static double boot_stddev(const double *xs, int64_t n)
+{
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    return sqrt(m2 / (double)(n - 1));
+}
+
+static double boot_median(double *xs, int64_t n)
+{
+    /* sorts in place: xs is a freshly-resampled temporary array */
+    qsort(xs, (size_t)n, sizeof(double), cmp_d);
+    return (n % 2) ? xs[n / 2] : 0.5 * (xs[n / 2 - 1] + xs[n / 2]);
+}
+
+static double *boot_resample(const double *xs, int64_t n)
+{
+    double *r = (double *)malloc((size_t)n * sizeof(double));
+    if (!r) return NULL;
+    for (int64_t j = 0; j < n; j++) {
+        int64_t idx = (int64_t)((double)(bi_rng_next() >> 8) *
+                                0.000000059604644775390625 * (double)n);
+        r[j] = xs[idx];
+    }
+    return r;
+}
+
+static double boot_pctl_sorted(const double *v, int64_t m, double p100)
+{
+    double r = p100 / 100.0 * (double)(m - 1);
+    int64_t lo = (int64_t)r;
+    double frac = r - (double)lo;
+    return lo + 1 < m ? v[lo] + frac * (v[lo + 1] - v[lo]) : v[lo];
+}
+
+static void native_bootstrap_ci(VM *vm, ObjList *L, double n_iter, double alpha,
+                                int which, const char *name, Value *out) {
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2 || !isfinite(n_iter) || n_iter < 1.0 || !isfinite(alpha) ||
+        alpha <= 0.0 || alpha >= 1.0) {
+        free(xs); vm_set_error(vm, "%s(): invalid parameters (n >= 2, n_iter >= 1, alpha in (0,1))", name);
+        return;
+    }
+    int64_t it = (int64_t)n_iter;
+    double *vals = (double *)malloc((size_t)it * sizeof(double));
+    if (!vals) { free(xs); vm_set_error(vm, "out of memory"); return; }
+    for (int64_t r = 0; r < it; r++) {
+        double *bs = boot_resample(xs, n);
+        if (!bs) { free(vals); free(xs); vm_set_error(vm, "out of memory"); return; }
+        vals[r] = (which == 1) ? boot_median(bs, n)
+                 : (which == 2) ? boot_stddev(bs, n)
+                                : boot_mean(bs, n);
+        free(bs);
+    }
+    free(xs);
+    qsort(vals, (size_t)it, sizeof(double), cmp_d);
+    double lo = boot_pctl_sorted(vals, it, 50.0 * alpha);
+    double hi = boot_pctl_sorted(vals, it, 100.0 - 50.0 * alpha);
+    free(vals);
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    list_push(vm, res, val_num(lo));
+    list_push(vm, res, val_num(hi));
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_bootstrap_mean_ci(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double n_iter, alpha;
+    if (argc < 3 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &n_iter) ||
+        !arg_num(vm, args[2], &alpha)) return;
+    native_bootstrap_ci(vm, L, n_iter, alpha, 0, "bootstrap_mean_ci", out);
+}
+
+static void native_bootstrap_median_ci(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double n_iter, alpha;
+    if (argc < 3 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &n_iter) ||
+        !arg_num(vm, args[2], &alpha)) return;
+    native_bootstrap_ci(vm, L, n_iter, alpha, 1, "bootstrap_median_ci", out);
+}
+
+static void native_bootstrap_stddev_ci(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double n_iter, alpha;
+    if (argc < 3 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &n_iter) ||
+        !arg_num(vm, args[2], &alpha)) return;
+    native_bootstrap_ci(vm, L, n_iter, alpha, 2, "bootstrap_stddev_ci", out);
+}
+
+static void native_bootstrap_se_mean(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double n_iter;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &n_iter)) return;
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2 || !isfinite(n_iter) || n_iter < 1.0) {
+        free(xs); vm_set_error(vm, "bootstrap_se_mean(): invalid parameters (n >= 2, n_iter >= 1)");
+        return;
+    }
+    int64_t it = (int64_t)n_iter;
+    double *vals = (double *)malloc((size_t)it * sizeof(double));
+    if (!vals) { free(xs); vm_set_error(vm, "out of memory"); return; }
+    for (int64_t r = 0; r < it; r++) {
+        double *bs = boot_resample(xs, n);
+        if (!bs) { free(vals); free(xs); vm_set_error(vm, "out of memory"); return; }
+        vals[r] = boot_mean(bs, n);
+        free(bs);
+    }
+    free(xs);
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < it; i++) {
+        double d = vals[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (vals[i] - m);
+    }
+    free(vals);
+    if (it < 2) { vm_set_error(vm, "bootstrap_se_mean(): need n_iter >= 2"); return; }
+    *out = val_num(sqrt(m2 / (double)(it - 1)));
+}
+
 static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
     ObjList *X, *Y;
     if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
@@ -1680,3 +1819,7 @@ Value b_kurtosis(VM *vm, int argc, Value *args)     { return vm_native(vm, argc,
 Value b_rolling_mean(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rolling_mean); }
 Value b_rolling_stddev(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rolling_stddev); }
 Value b_ewma(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_ewma); }
+Value b_bootstrap_mean_ci(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_bootstrap_mean_ci); }
+Value b_bootstrap_median_ci(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bootstrap_median_ci); }
+Value b_bootstrap_stddev_ci(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bootstrap_stddev_ci); }
+Value b_bootstrap_se_mean(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_bootstrap_se_mean); }

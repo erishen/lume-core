@@ -694,8 +694,26 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   integration, independent of rt.c's gamma loop and ibeta CDF; quant-fuzz
   runs 10 series x 105 rows (1050 checks) with (0,1) share/probability
   and finiteness assertions.
-  Still open: the Bootstrap (resampling) family — the final Monte-Carlo
-  quant direction on the roadmap (pinned as future work in the #45 entry).
+- [x] **Bootstrap / resampling family (2026-10-31).**
+  `bootstrap_mean_ci(list, n_iter, alpha)` / `bootstrap_median_ci` /
+  `bootstrap_stddev_ci` answer [lo, hi] by the percentile method: each
+  replicate resamples the list with n iid plain-uniform indices
+  ((int64)(u*n), u = top-24 unbiased draw), evaluates mean / median
+  (even count averaged) / Welford sample stddev (n-1), sorts the n_iter
+  values and linearly interpolates the alpha/2 and 1-alpha/2 quantiles
+  (pandas rule, identical to lume_bi_percentile) — a two-element float
+  list out. `bootstrap_se_mean(list, n_iter)` returns the sample stddev
+  (n-1) of the replicate means (Efron convention) as a double. Invalid
+  parameters (n<2, n_iter<1, alpha outside (0,1), non-finite) answer an
+  empty list / NAN. tests/bs-smoke.lume pins 7 rows of one continuous
+  seed-42 stream; quant-consistency re-seeds 42 before every call and
+  pins 5 more rows (125 total, three legs byte-identical);
+  quant-refcheck adds 5 absolute-stream cases (132 total) — pcg_bootstrap
+  _ci / pcg_bootstrap_se replay idx = int(u*n) position-by-position,
+  independent of rt.c's qsort and Welford loops; quant-fuzz runs 10
+  series x 110 rows (1100 checks) with finite / positivity assertions.
+  The Monte-Carlo / quant roadmap is now complete; future directions sit
+  with higher-level portfolio / backtest builtins.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

@@ -3470,6 +3470,142 @@ LumeList *lume_bi_pct_change(const LumeList *l)
     return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* Bootstrap / resampling family (2026-10-30): percentile-method CIs and
+ * the bootstrap standard error, all on the deterministic PCG32 stream.
+ * One replicate = n iid uniform draws over [0,n) pick indices (plain u,
+ * one rng_next per position — the same convention as rand_multinomial),
+ * the chosen elements form the resampled series, and the requested
+ * statistic is evaluated on it. The n_iter replicates are collected,
+ * sorted, and the alpha/2 and 1-alpha/2 quantiles answer [lo, hi] with
+ * the pandas linear interpolation (lume_bi_percentile's rule). Invalid
+ * parameters answer an empty list natively (NAN for se_mean); the
+ * interpreter twin in builtins_math.c mirrors every step so the three
+ * legs stay byte-identical. */
+
+static double bi_bs_mean(const double *xs, int64_t n)
+{
+    double s = 0.0;
+    for (int64_t i = 0; i < n; i++) s += xs[i];
+    return s / (double)n;
+}
+
+static double bi_bs_stddev(const double *xs, int64_t n)
+{
+    /* Welford sample stddev (n-1), identical to lume_bi_variance. */
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    return sqrt(m2 / (double)(n - 1));
+}
+
+static double bi_bs_median(double *xs, int64_t n)
+{
+    /* Sorts in place: xs is a freshly-resampled temporary array, safe to
+     * mutate. Same rule as lume_bi_median. */
+    qsort(xs, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    return (n % 2) ? xs[n / 2] : 0.5 * (xs[n / 2 - 1] + xs[n / 2]);
+}
+
+/* One bootstrap replicate: n iid uniform draws over [0,n). The plain u
+ * is < 1 (top-24 bits), so u*n < n and idx stays in [0, n-1]. */
+static double *bi_resample(const double *xs, int64_t n)
+{
+    double *r = (double *)malloc((size_t)n * sizeof(double));
+    if (!r) return NULL;
+    for (int64_t j = 0; j < n; j++) {
+        int64_t idx = (int64_t)((double)(rng_next() >> 8) *
+                                0.000000059604644775390625 * (double)n);
+        r[j] = xs[idx];
+    }
+    return r;
+}
+
+/* Linear interpolation on an already-sorted array (the pandas default,
+ * the same rule as lume_bi_percentile). m >= 1. */
+static double bi_percentile_sorted(const double *v, int64_t m, double p100)
+{
+    double r = p100 / 100.0 * (double)(m - 1);
+    int64_t lo = (int64_t)r;
+    double frac = r - (double)lo;
+    return lo + 1 < m ? v[lo] + frac * (v[lo + 1] - v[lo]) : v[lo];
+}
+
+/* Bootstrap confidence interval by the percentile method. which: 0 mean,
+ * 1 median, 2 sample stddev. */
+static LumeList *bi_bootstrap_ci(const LumeList *l, double n_iter, double alpha,
+                                 int which)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !isfinite(n_iter) || n_iter < 1.0 ||
+        !isfinite(alpha) || alpha <= 0.0 || alpha >= 1.0) { free(xs); return out; }
+    int64_t it = (int64_t)n_iter;
+    double *vals = (double *)malloc((size_t)it * sizeof(double));
+    if (!vals) { free(xs); return out; }
+    for (int64_t r = 0; r < it; r++) {
+        double *bs = bi_resample(xs, n);
+        if (!bs) { free(vals); free(xs); return out; }
+        vals[r] = (which == 1) ? bi_bs_median(bs, n)
+                 : (which == 2) ? bi_bs_stddev(bs, n)
+                                : bi_bs_mean(bs, n);
+        free(bs);
+    }
+    free(xs);
+    qsort(vals, (size_t)it, sizeof(double), bi_quant_cmp_d);
+    double lo = bi_percentile_sorted(vals, it, 50.0 * alpha);
+    double hi = bi_percentile_sorted(vals, it, 100.0 - 50.0 * alpha);
+    free(vals);
+    lume_list_push_f(out, lo);
+    lume_list_push_f(out, hi);
+    return out;
+}
+
+LumeList *lume_bi_bootstrap_mean_ci(const LumeList *l, double n_iter, double alpha)
+{
+    return bi_bootstrap_ci(l, n_iter, alpha, 0);
+}
+
+LumeList *lume_bi_bootstrap_median_ci(const LumeList *l, double n_iter, double alpha)
+{
+    return bi_bootstrap_ci(l, n_iter, alpha, 1);
+}
+
+LumeList *lume_bi_bootstrap_stddev_ci(const LumeList *l, double n_iter, double alpha)
+{
+    return bi_bootstrap_ci(l, n_iter, alpha, 2);
+}
+
+double lume_bi_bootstrap_se_mean(const LumeList *l, double n_iter)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !isfinite(n_iter) || n_iter < 1.0) { free(xs); return NAN; }
+    int64_t it = (int64_t)n_iter;
+    double *vals = (double *)malloc((size_t)it * sizeof(double));
+    if (!vals) { free(xs); return NAN; }
+    for (int64_t r = 0; r < it; r++) {
+        double *bs = bi_resample(xs, n);
+        if (!bs) { free(vals); free(xs); return NAN; }
+        vals[r] = bi_bs_mean(bs, n);
+        free(bs);
+    }
+    free(xs);
+    /* Bootstrap standard error = sample stddev (n-1) of the replicate
+     * means, the Efron convention used by quant work. */
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < it; i++) {
+        double d = vals[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (vals[i] - m);
+    }
+    free(vals);
+    if (it < 2) return NAN;
+    return sqrt(m2 / (double)(it - 1));
+}
+
 /* Max drawdown of a price series, as a positive percentage: the largest
  * peak-to-trough drop, 0 for a monotonically rising series, NAN for n<2. */
 double lume_bi_max_drawdown(const LumeList *l)

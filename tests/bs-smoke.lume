@@ -1,0 +1,17 @@
+// bootstrap / resampling family cross-backend smoke (2026-10-31)
+// bootstrap_mean_ci / bootstrap_median_ci / bootstrap_stddev_ci / bootstrap_se_mean
+// one seed-42 stream: every backend must emit the same rows byte-for-byte;
+// the pinned absolute-stream values live in tests/quant-consistency.expected
+// and are checked against the Python reference in tests/quant-refcheck.py.
+seed(42);
+let c0 = bootstrap_mean_ci([10, 12, 14, 16, 18], 20, 0.05);
+print(c0[0]);
+print(c0[1]);
+let c1 = bootstrap_median_ci([10, 12, 14, 16, 18], 20, 0.05);
+print(c1[0]);
+print(c1[1]);
+let c2 = bootstrap_stddev_ci([10, 12, 14, 16, 18], 20, 0.05);
+print(c2[0]);
+print(c2[1]);
+seed(42);
+print(bootstrap_se_mean([10, 12, 14, 16, 18], 20));

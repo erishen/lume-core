@@ -728,6 +728,65 @@ def pcg_t(seed, df, k):
     return z / math.sqrt(2.0 * v / df)
 
 
+def pcg_bootstrap_ci(seed, data, n_iter, alpha, which, k):
+    """Percentile-method bootstrap CI. Each replicate draws n iid plain
+    uniform u (top-24 bits, < 1) and takes idx = int(u * n); the statistic
+    (0 mean, 1 median, 2 sample stddev) is evaluated on the resample; the
+    n_iter values are sorted and the alpha/2 and 1-alpha/2 quantiles
+    answered by the pandas linear interpolation (same rule as
+    lume_bi_percentile). Returns ([lo, hi], next_k)."""
+    n = len(data)
+    stats = []
+    for _ in range(n_iter):
+        bs = []
+        for _ in range(n):
+            idx = int(pcg_rand(seed, k) * n)
+            k += 1
+            bs.append(data[idx])
+        if which == 1:
+            b = sorted(bs)
+            stats.append(b[n // 2] if n % 2 else 0.5 * (b[n // 2 - 1] + b[n // 2]))
+        elif which == 2:
+            m = 0.0
+            m2 = 0.0
+            for i, v in enumerate(bs):
+                d = v - m
+                m += d / (i + 1)
+                m2 += d * (v - m)
+            stats.append(math.sqrt(m2 / (n - 1)))
+        else:
+            stats.append(sum(bs) / n)
+    stats = sorted(stats)
+    def pctl(p100):
+        r = p100 / 100.0 * (len(stats) - 1)
+        lo = int(r)
+        frac = r - lo
+        return (stats[lo] + frac * (stats[lo + 1] - stats[lo])
+                if lo + 1 < len(stats) else stats[lo])
+    return [pctl(50.0 * alpha), pctl(100.0 - 50.0 * alpha)], k
+
+
+def pcg_bootstrap_se(seed, data, n_iter, k):
+    """Bootstrap standard error of the mean: sample stddev (n-1) of the
+    n_iter replicate means (Efron convention)."""
+    n = len(data)
+    means = []
+    for _ in range(n_iter):
+        s = 0.0
+        for _ in range(n):
+            idx = int(pcg_rand(seed, k) * n)
+            k += 1
+            s += data[idx]
+        means.append(s / n)
+    m = 0.0
+    m2 = 0.0
+    for i, v in enumerate(means):
+        d = v - m
+        m += d / (i + 1)
+        m2 += d * (v - m)
+    return math.sqrt(m2 / (n_iter - 1)), k
+
+
 g21, ka = pcg_gamma(42, 2.0, 2)      # rand_gamma(2,1) row
 ga, kb = pcg_gamma(42, 2.0, ka)      # beta's first gamma(2)
 gb, kc = pcg_gamma(42, 3.0, kb)      # beta's second gamma(3)
@@ -861,6 +920,17 @@ cases += [
     ("mv t_copula[0]",       sixg(pcg_t_copula(42, 0.5, 4.0, 2, 1)[0][0]), 0.0826892),
     ("mv t_copula[2]",       sixg(pcg_t_copula(42, 0.5, 4.0, 2, 1)[0][2]), 0.148959),
     ("mv t_copula neg rho",  sixg(pcg_t_copula(42, -0.3, 8.0, 2, 1)[0][0]), 0.0588266),
+    # bootstrap / resampling (2026-10-31): percentile-method CIs replay each
+    # call from the absolute start of the seed-42 stream (every consistency
+    # row re-seeds first) — each replicate consumes exactly n plain uniform
+    # draws, the statistic is mean / median / sample stddev of the resample,
+    # and the CI rows answer pandas-linear-interpolated quantiles; the
+    # standard error is the sample stddev (n-1) of the replicate means.
+    ("bs mean_ci lo",     sixg(pcg_bootstrap_ci(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05, 0, 1)[0][0]), 11.39),
+    ("bs mean_ci hi",     sixg(pcg_bootstrap_ci(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05, 0, 1)[0][1]), 15.81),
+    ("bs median_ci lo",   sixg(pcg_bootstrap_ci(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05, 1, 1)[0][0]), 10),
+    ("bs stddev_ci hi",   sixg(pcg_bootstrap_ci(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05, 2, 1)[0][1]), 3.57771),
+    ("bs se_mean",        sixg(pcg_bootstrap_se(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 1)[0]), 1.47556),
 ]
 
 fails = 0

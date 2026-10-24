@@ -287,6 +287,30 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Bootstrap / resampling family: `bootstrap_mean_ci` /
+  `bootstrap_median_ci` / `bootstrap_stddev_ci` / `bootstrap_se_mean`.**
+  The percentile-method bootstrap now sits on the deterministic PCG32
+  stream: each replicate resamples the input by drawing exactly n iid
+  plain uniform indices `(int64)(u·n)` (u is the top-24 unbiased draw, so
+  the index stays in [0, n−1] and every call is a pure function of the
+  stream position), evaluates the statistic (mean / median with the even
+  count averaged / Welford sample stddev, n−1), sorts the n_iter
+  replicate values and answers the α/2 and 1−α/2 quantiles with the
+  pandas linear interpolation already pinned by `lume_bi_percentile`
+  (`r = p/100·(m−1)`, `v[lo] + frac·(v[lo+1]−v[lo])`); the CIs return a
+  fresh two-element float list, `bootstrap_se_mean` returns the sample
+  stddev (n−1) of the replicate means (Efron convention) as a double.
+  Invalid parameters (n<2, n_iter<1, α∉(0,1), non-finite) answer an
+  empty list / NAN. `tests/bs-smoke.lume` pins 7 rows of one continuous
+  seed-42 stream across all three legs; `tests/quant-consistency.lume`
+  re-seeds 42 before every call so the five new rows (125 total) replay
+  from the absolute start of the stream, byte-identical on interp / text
+  / LLVM; `tests/quant-refcheck.py` adds five cases (132 total) —
+  `pcg_bootstrap_ci` / `pcg_bootstrap_se` replay the same absolute stream
+  position-by-position (`idx = int(u·n)`, sorted, linear-interpolated
+  quantiles), so agreement is independent of rt.c's qsort and Welford
+  loops; `tests/quant-fuzz.py` grows to 1100 checks (10 series × 110
+  rows) with positivity / finite assertions on the new rows.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

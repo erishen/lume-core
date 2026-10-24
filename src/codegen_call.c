@@ -405,6 +405,10 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_rand_binormal(double, double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_rand_gauss_copula(double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_rand_t_copula(double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_bootstrap_mean_ci(i8*, double, double)\n");
+    EMIT(g, "declare i8* @lume_bi_bootstrap_median_ci(i8*, double, double)\n");
+    EMIT(g, "declare i8* @lume_bi_bootstrap_stddev_ci(i8*, double, double)\n");
+    EMIT(g, "declare double @lume_bi_bootstrap_se_mean(i8*, double)\n");
     EMIT(g, "declare i8* @lume_bi_sim_bridge(double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_ou(double, double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_merton(double, double, double, double, double, double, double, i64)\n");
@@ -1358,6 +1362,74 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)), "%s", buf);
         free(buf);
         return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* Bootstrap family (2026-10-30): list + scalars. The three CI builtins
+     * take (list, n_iter, alpha) — the list passes as i8*, the scalars widen
+     * through lume_bi_float — and answer a fresh two-element float list;
+     * bootstrap_se_mean takes (list, n_iter) and answers a double. */
+    if (strcmp(bname, "bootstrap_mean_ci") == 0 ||
+        strcmp(bname, "bootstrap_median_ci") == 0 ||
+        strcmp(bname, "bootstrap_stddev_ci") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: %s() takes (list, n_iter, alpha)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        }
+        const char *fn = strcmp(bname, "bootstrap_mean_ci") == 0
+                             ? "lume_bi_bootstrap_mean_ci"
+                         : strcmp(bname, "bootstrap_median_ci") == 0
+                             ? "lume_bi_bootstrap_median_ci"
+                             : "lume_bi_bootstrap_stddev_ci";
+        Val scal[2];
+        for (int i = 0; i < 2; i++) {
+            scal[i] = cg_expr(g, n->as.call.args[i + 1]);
+            if (!scal[i].v || !scal[i].ty ||
+                (scal[i].ty->kind != TY_INT && scal[i].ty->kind != TY_FLOAT)) {
+                free(a.v); free(scal[0].v);
+                if (i == 1) free(scal[1].v);
+                ERRV(g, "line %zu: %s() needs numbers for n_iter/alpha", n->line, bname);
+            }
+            if (scal[i].ty->kind == TY_INT) {
+                char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                      "call double @lume_bi_float(i64 %s)", scal[i].v);
+                free(scal[i].v);
+                scal[i].v = w;
+            }
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @%s(i8* %s, double %s, double %s)",
+                              fn, a.v, scal[0].v, scal[1].v);
+        free(a.v); free(scal[0].v); free(scal[1].v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    if (strcmp(bname, "bootstrap_se_mean") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: bootstrap_se_mean() takes (list, n_iter)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: bootstrap_se_mean() needs a list", n->line);
+        }
+        Val ni = cg_expr(g, n->as.call.args[1]);
+        if (!ni.v || !ni.ty || (ni.ty->kind != TY_INT && ni.ty->kind != TY_FLOAT)) {
+            free(a.v); free(ni.v);
+            ERRV(g, "line %zu: bootstrap_se_mean() needs a number for n_iter", n->line);
+        }
+        if (ni.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", ni.v);
+            free(ni.v);
+            ni.v = w;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_bootstrap_se_mean(i8* %s, double %s)",
+                              a.v, ni.v);
+        free(a.v); free(ni.v);
+        return val_make(type_prim(TY_FLOAT), t);
     }
 
     /* Black-Scholes pricing family (2026-10-28): five doubles in, one

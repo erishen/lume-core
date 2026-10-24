@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 105                             # rows per dataset. The layout mirrors the
+RPP = 110                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -295,6 +295,65 @@ def pcg_t(seed, df, k):
     z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
     v, k2 = pcg_gamma(seed, df / 2.0, k + 2)
     return z / math.sqrt(2.0 * v / df), k2
+
+
+def pcg_bootstrap_ci(seed, data, n_iter, alpha, which, k):
+    """Percentile-method bootstrap CI. Each replicate draws n iid plain
+    uniform u (top-24 bits, < 1) and takes idx = int(u * n); the statistic
+    (0 mean, 1 median, 2 sample stddev) is evaluated on the resample; the
+    n_iter values are sorted and the alpha/2 and 1-alpha/2 quantiles
+    answered by the pandas linear interpolation (same rule as
+    lume_bi_percentile). Returns ([lo, hi], next_k)."""
+    n = len(data)
+    stats = []
+    for _ in range(n_iter):
+        bs = []
+        for _ in range(n):
+            idx = int(pcg_rand(seed, k) * n)
+            k += 1
+            bs.append(data[idx])
+        if which == 1:
+            b = sorted(bs)
+            stats.append(b[n // 2] if n % 2 else 0.5 * (b[n // 2 - 1] + b[n // 2]))
+        elif which == 2:
+            m = 0.0
+            m2 = 0.0
+            for i, v in enumerate(bs):
+                d = v - m
+                m += d / (i + 1)
+                m2 += d * (v - m)
+            stats.append(math.sqrt(m2 / (n - 1)))
+        else:
+            stats.append(sum(bs) / n)
+    stats = sorted(stats)
+    def pctl(p100):
+        r = p100 / 100.0 * (len(stats) - 1)
+        lo = int(r)
+        frac = r - lo
+        return (stats[lo] + frac * (stats[lo + 1] - stats[lo])
+                if lo + 1 < len(stats) else stats[lo])
+    return [pctl(50.0 * alpha), pctl(100.0 - 50.0 * alpha)], k
+
+
+def pcg_bootstrap_se(seed, data, n_iter, k):
+    """Bootstrap standard error of the mean: sample stddev (n-1) of the
+    n_iter replicate means (Efron convention)."""
+    n = len(data)
+    means = []
+    for _ in range(n_iter):
+        s = 0.0
+        for _ in range(n):
+            idx = int(pcg_rand(seed, k) * n)
+            k += 1
+            s += data[idx]
+        means.append(s / n)
+    m = 0.0
+    m2 = 0.0
+    for i, v in enumerate(means):
+        d = v - m
+        m += d / (i + 1)
+        m2 += d * (v - m)
+    return math.sqrt(m2 / (n_iter - 1)), k
 
 
 def pcg_geo(seed, p, k):
@@ -994,6 +1053,25 @@ def main():
         lines.append("seed(%d);" % sd)
         row(sixg(pcg_t_copula(sd, 0.5, 4.0, 1, 1)[0][0]))
         lines.append("print(rand_t_copula(0.5, 4.0, 1)[0]);")
+        # bootstrap / resampling (2026-10-31): percentile-method CIs on the
+        # series (n_iter=20, alpha=0.05) and the standard error of the mean;
+        # each row re-seeds so the absolute-k reference (1-based) replays
+        # from the start of the stream — every replicate consumes exactly
+        # n plain uniform draws, mirroring the appended consistency section.
+        lines.append("seed(%d);" % sd)
+        cim = pcg_bootstrap_ci(sd, x, 20, 0.05, 0, 1)[0]
+        lines.append("let bc%da: list = bootstrap_mean_ci(%s, 20, 0.05);" % (i, da))
+        row(sixg(cim[0])); lines.append("print(bc%da[0]);" % i)
+        row(sixg(cim[1])); lines.append("print(bc%da[1]);" % i)
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_bootstrap_ci(sd, x, 20, 0.05, 1, 1)[0][0]))
+        lines.append("print(bootstrap_median_ci(%s, 20, 0.05)[0]);" % da)
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_bootstrap_ci(sd, x, 20, 0.05, 2, 1)[0][1]))
+        lines.append("print(bootstrap_stddev_ci(%s, 20, 0.05)[1]);" % da)
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_bootstrap_se(sd, x, 20, 1)[0]))
+        lines.append("print(bootstrap_se_mean(%s, 20));" % da)
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:
