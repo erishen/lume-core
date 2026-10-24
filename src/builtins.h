@@ -129,6 +129,7 @@ Value b_sim_gbm(VM *vm, int argc, Value *args);
 Value b_sim_bridge(VM *vm, int argc, Value *args);
 Value b_sim_ou(VM *vm, int argc, Value *args);
 Value b_sim_merton(VM *vm, int argc, Value *args);
+Value b_sim_portfolio(VM *vm, int argc, Value *args);
 Value b_bs_call(VM *vm, int argc, Value *args);
 Value b_bs_put(VM *vm, int argc, Value *args);
 Value b_bs_delta_call(VM *vm, int argc, Value *args);

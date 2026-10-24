@@ -423,6 +423,7 @@ Type *infer_node_type(CG *g, Node *n)
                 strcmp(name, "shuffle") == 0 ||
                 strcmp(name, "sim_gbm") == 0 || strcmp(name, "sim_bridge") == 0 ||
                 strcmp(name, "sim_ou") == 0 || strcmp(name, "sim_merton") == 0 ||
+                strcmp(name, "sim_portfolio") == 0 ||
                 strcmp(name, "rand_dirichlet") == 0 || strcmp(name, "rand_binormal") == 0 ||
                 strcmp(name, "rand_gauss_copula") == 0 || strcmp(name, "rand_t_copula") == 0 ||
                 strcmp(name, "bootstrap_mean_ci") == 0 || strcmp(name, "bootstrap_median_ci") == 0 ||

@@ -1653,6 +1653,72 @@ static void native_sortino_ratio(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num((m - rf) / ds);
 }
 
+/* ---- portfolio layer (2026-11-01) ----
+ * Mirrors rt.c lume_bi_sim_portfolio step for step: paths is a list of
+ * equal-length strictly-positive finite price paths (each a list, length
+ * >= 2), weights is a list of finite numbers, one per path (the sum is
+ * not normalised); the answer is the portfolio-return series
+ * r_t = sum_i w_i * (p_{i,t} / p_{i,t-1} - 1) as a fresh float list,
+ * ready to feed the #48 risk metrics. Invalid shapes error here, empty
+ * list natively. */
+static ObjList *interp_list_at_list(Value v)
+{
+    if (!IS_OBJ(v)) return NULL;
+    Obj *o = AS_OBJ(v);
+    if (o->type != OBJ_LIST) return NULL;
+    return &o->as.list;
+}
+
+static void native_sim_portfolio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *P, *W;
+    if (argc < 2 || !arg_list(vm, args[0], &P) || !arg_list(vm, args[1], &W)) return;
+    if (P->count < 1 || W->count != P->count) {
+        vm_set_error(vm, "sim_portfolio() needs equal-length paths and weights");
+        return;
+    }
+    int m = P->count, n = -1;
+    for (int i = 0; i < m; i++) {
+        ObjList *p = interp_list_at_list(P->items[i]);
+        if (!p || p->count < 2) {
+            vm_set_error(vm, "sim_portfolio() paths must be lists of at least two prices");
+            return;
+        }
+        if (n < 0) n = p->count;
+        else if (p->count != n) {
+            vm_set_error(vm, "sim_portfolio() paths must be equal length");
+            return;
+        }
+        for (int j = 0; j < n; j++) {
+            double v = AS_NUM(p->items[j]);
+            if (!isfinite(v) || v <= 0.0) {
+                vm_set_error(vm, "sim_portfolio() prices must be finite and positive");
+                return;
+            }
+        }
+    }
+    for (int i = 0; i < m; i++) {
+        double w = AS_NUM(W->items[i]);
+        if (!isfinite(w)) {
+            vm_set_error(vm, "sim_portfolio() weights must be finite");
+            return;
+        }
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int t = 1; t < n; t++) {
+        double r = 0.0;
+        for (int i = 0; i < m; i++) {
+            ObjList *p = interp_list_at_list(P->items[i]);
+            double prev = AS_NUM(p->items[t - 1]);
+            double cur = AS_NUM(p->items[t]);
+            r += AS_NUM(W->items[i]) * (cur / prev - 1.0);
+        }
+        list_push(vm, res, val_num(r));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
 static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
     ObjList *X, *Y;
     if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
@@ -1914,3 +1980,4 @@ Value b_value_at_risk(VM *vm, int argc, Value *args)       { return vm_native(vm
 Value b_expected_shortfall(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_expected_shortfall); }
 Value b_sharpe_ratio(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_sharpe_ratio); }
 Value b_sortino_ratio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sortino_ratio); }
+Value b_sim_portfolio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sim_portfolio); }

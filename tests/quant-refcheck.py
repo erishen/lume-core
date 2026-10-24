@@ -82,6 +82,15 @@ def sortino_ratio_ref(data, rf):
     return (m - rf) / (dd ** 0.5)
 
 
+def sim_portfolio_ref(paths, weights):
+    """weighted combination of price paths into a return series:
+    r_t = sum_i w_i * (p_{i,t} / p_{i,t-1} - 1), t = 1..len-1."""
+    n = len(paths[0])
+    return [sum(w * (paths[i][t] / paths[i][t - 1] - 1.0)
+                for i, w in enumerate(weights))
+            for t in range(1, n)]
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -965,6 +974,15 @@ cases += [
     ("sortino rf=0",      sixg(sortino_ratio_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 0.0)), 0.404145),
     ("var 1%",            sixg(-percentile([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 1.0)), 0.01955),
     ("es 1%",             sixg(-es_tail([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 1.0)), 0.02),
+    # portfolio layer (2026-11-01, #49): deterministic combination of
+    # equal-length price paths — sim_portfolio_ref recomputes the weighted
+    # return series in Python, then the #48 metrics eat it.
+    ("pf r[0]",           sixg(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.5, 0.5])[0]), 0.02),
+    ("pf r[1]",           sixg(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.5, 0.5])[1]), -0.00980392),
+    ("pf r[2]",           sixg(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.5, 0.5])[2]), 0.0272277),
+    ("pf sharpe 60/40",   sixg(sharpe_ratio_ref(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.6, 0.4]), 0.0)), 0.633063),
+    ("pf var 25%",        sixg(-percentile(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.6, 0.4]), 25.0)), -0.00509804),
+    ("pf es 25%",         sixg(-es_tail(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.6, 0.4]), 25.0)), 0.00980392),
 ]
 
 fails = 0

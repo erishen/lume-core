@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 114                             # rows per dataset. The layout mirrors the
+RPP = 119                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -70,7 +70,10 @@ RPP = 114                             # rows per dataset. The layout mirrors the
                                       # se_mean), then the portfolio rows x4
                                       # (value_at_risk / expected_shortfall /
                                       # sharpe_ratio / sortino_ratio — fixed
-                                      # level 0.05 / rf 0.0)
+                                      # level 0.05 / rf 0.0), then the
+                                      # portfolio rows x5 (two seeded
+                                      # positive price paths, equal
+                                      # weights, 5 period returns)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -101,6 +104,15 @@ def sortino_ratio_ref(data, rf):
     m = sum(data) / n
     dd = sum((x - rf) ** 2 for x in data if x < rf) / n
     return float('nan') if dd <= 0 else (m - rf) / (dd ** 0.5)
+
+
+def sim_portfolio_ref(paths, weights):
+    """weighted combination of price paths into a return series:
+    r_t = sum_i w_i * (p_{i,t} / p_{i,t-1} - 1), t = 1..len-1."""
+    n = len(paths[0])
+    return [sum(w * (paths[i][t] / paths[i][t - 1] - 1.0)
+                for i, w in enumerate(weights))
+            for t in range(1, n)]
 
 
 def sample_cov(x, y):
@@ -1109,6 +1121,17 @@ def main():
         lines.append("print(sharpe_ratio(%s, 0.0));" % da)
         row(sixg(sortino_ratio_ref(x, 0.0)))
         lines.append("print(sortino_ratio(%s, 0.0));" % da)
+        # portfolio layer (2026-11-01, #49): two seeded positive price
+        # paths (prices must be strictly positive, so they do not depend
+        # on the series kind), equal weights, 5 period returns — the rows
+        # feed sim_portfolio_ref recomputed in Python.
+        pa = [round(rng.uniform(50, 150), 2) for _ in range(6)]
+        pb = [round(rng.uniform(10, 60), 2) for _ in range(6)]
+        pfr = sim_portfolio_ref([pa, pb], [0.5, 0.5])
+        lines.append("let pf%da: list = sim_portfolio(%s, [0.5, 0.5]);" % (i, emit([pa, pb])))
+        for k, v in enumerate(pfr):
+            row(sixg(v))
+            lines.append("print(pf%da[%d]);" % (i, k))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

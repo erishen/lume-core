@@ -1,0 +1,11 @@
+// portfolio layer smoke (2026-11-01, #49)
+let a = [100.0, 102.0, 101.0, 103.5];
+let b = [50.0, 51.0, 50.5, 52.0];
+let pr: list = sim_portfolio([a, b], [0.5, 0.5]);
+print(pr[0]);
+print(pr[1]);
+print(pr[2]);
+let rs: list = sim_portfolio([a, b], [0.6, 0.4]);
+print(sharpe_ratio(rs, 0.0));
+print(value_at_risk(rs, 0.25));
+print(expected_shortfall(rs, 0.25));

@@ -287,6 +287,26 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Portfolio layer: `sim_portfolio(paths, weights)`.** A deterministic
+  (no RNG) combination of several equal-length price paths into one
+  portfolio-return series: `paths` is a list of strictly-positive finite
+  price paths (each a list, length ≥ 2), `weights` one finite number per
+  path (the sum is NOT normalised — equal weight means passing
+  `[1/n]*n`), and the answer is a fresh float list of
+  `r_t = Σᵢ wᵢ·(pᵢ,ₜ/pᵢ,ₜ₋₁ − 1)` for t = 1..len−1 — designed to feed
+  directly into the #48 risk metrics and `max_drawdown`. Invalid shapes
+  (empty / mismatched lengths / non-positive or non-finite prices /
+  non-finite weights) error on the interpreter and answer an empty list
+  natively. Nested-list reading on the native side walks
+  `LUME_SLOT_OBJ` slots through a new `bi_list_at_list` helper, and the
+  emission shape is two `i8*` list arguments returning a fresh `i8*`
+  list on both backends (inference joined to the sim_* list group).
+  `tests/pf-smoke.lume` pins 6 rows across all three legs;
+  `tests/quant-consistency.lume` grows to 137 rows (deterministic, no
+  re-seeding); `tests/quant-refcheck.py` adds six cases (144 total) —
+  `sim_portfolio_ref` recomputes the weighted returns in Python;
+  `tests/quant-fuzz.py` grows to 1190 checks (10 series × 119 rows)
+  with two seeded positive price paths per series.
 - **Portfolio / risk metrics: `value_at_risk` / `expected_shortfall` /
   `sharpe_ratio` / `sortino_ratio`.** Four deterministic metrics over a
   return series (no RNG — pure functions of the list, so no stream

@@ -783,6 +783,25 @@ static Val cg_builtin(CG *g, Node *n)
             rt_decl(g, "lume_bi_rand_dirichlet", g->i8ptr, p1, 1), v1, 1, "dir");
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
+    /* sim_portfolio(paths, weights) (2026-11-01): two list arguments — a
+     * list of equal-length price paths and one finite weight per path —
+     * answering the portfolio-return series as a fresh float list. */
+    if (strcmp(bname, "sim_portfolio") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: sim_portfolio() takes (paths, weights)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: sim_portfolio() needs a list of paths", n->line);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || w.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: sim_portfolio() needs a list of weights", n->line);
+        LLVMTypeRef pt[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef pv[2] = { a.v, w.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, pt, 2, 0),
+            rt_decl(g, "lume_bi_sim_portfolio", g->i8ptr, pt, 2), pv, 2, "pf");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
     /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against a
      * float list of category weights; answers a fresh int list. n
      * truncates through lume_bi_ftoi, probs passes as i8*. */

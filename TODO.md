@@ -734,6 +734,24 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   backtest direction called out after the bootstrap family lands; the
   natural next step is sim-portfolio composition on top of the existing
   path simulators and these metrics.
+- [x] **Portfolio layer: `sim_portfolio(paths, weights)` (2026-11-01).**
+  Deterministic (no RNG) combination of equal-length price paths into a
+  portfolio-return series: paths is a list of strictly-positive finite
+  price paths (each a list, length >= 2), weights one finite number per
+  path (sum NOT normalised — equal weight means [1/n]*n); answers a
+  fresh float list of r_t = sum_i w_i * (p_{i,t}/p_{i,t-1} - 1), t =
+  1..len-1, feeding the #48 metrics and max_drawdown. Invalid shapes
+  error on the interpreter, empty list natively. Native nested reads
+  walk LUME_SLOT_OBJ slots via bi_list_at_list; emission is two i8*
+  list args -> fresh i8* list on both backends. tests/pf-smoke.lume
+  pins 6 rows on all three legs; quant-consistency grows to 137 rows
+  (deterministic, no re-seeding); quant-refcheck adds 6 cases (144
+  total) — sim_portfolio_ref recomputes weighted returns in Python;
+  quant-fuzz grows to 10 series x 119 rows (1190 checks, two seeded
+  positive price paths per series). The quant/portfolio surface now
+  covers simulation, statistics, risk metrics and composition; the next
+  natural step is backtesting-shaped builtins (rolling portfolio
+  evaluation on windowed returns) or the P6 sql_tx_query leftover.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

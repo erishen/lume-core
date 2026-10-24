@@ -1539,6 +1539,7 @@ void bridge_seed_builtins(VM *vm) {
         {"sim_bridge", b_sim_bridge},
         {"sim_ou", b_sim_ou},
         {"sim_merton", b_sim_merton},
+        {"sim_portfolio", b_sim_portfolio},
         {"bs_call", b_bs_call},
         {"bs_put", b_bs_put},
         {"bs_delta_call", b_bs_delta_call},

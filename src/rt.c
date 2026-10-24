@@ -3060,6 +3060,60 @@ LumeList *lume_bi_sim_merton(double S0, double mu, double sigma, double lambda,
     return out;
 }
 
+/* ---- portfolio layer (2026-11-01) ----
+ * sim_portfolio(paths, weights): deterministic (no RNG) combination of
+ * several price paths into one portfolio-return series. paths is a list
+ * of equal-length price paths (each a list of strictly positive, finite
+ * values, length >= 2); weights is a list of finite numbers, one per
+ * path (their sum is NOT normalised — equal weight means passing
+ * [1/n]*n). The answer is a fresh float list of period returns
+ * r_t = sum_i w_i * (p_{i,t} / p_{i,t-1} - 1), t = 1..len-1, so it feeds
+ * directly into the #48 risk metrics and max_drawdown. Invalid shapes
+ * answer an empty list natively (the interpreter reports an error). The
+ * interpreter twin in builtins_math.c mirrors every check. */
+static const LumeList *bi_list_at_list(const LumeList *l, int64_t i)
+{
+    if (!l || i < 0 || i >= l->len) return NULL;
+    if (l->items[i].tag != LUME_SLOT_OBJ) return NULL;
+    const LumeList *inner = (const LumeList *)(intptr_t)l->items[i].num;
+    if (inner->kind != LUME_CTR_LIST) return NULL;
+    return inner;
+}
+
+LumeList *lume_bi_sim_portfolio(const LumeList *paths, const LumeList *weights)
+{
+    if (!paths || !weights || paths->len < 1 || weights->len != paths->len)
+        return lume_list_new();
+    int64_t m = paths->len, n = -1;
+    for (int64_t i = 0; i < m; i++) {
+        const LumeList *p = bi_list_at_list(paths, i);
+        if (!p || p->len < 2) return lume_list_new();
+        if (n < 0) n = p->len;
+        else if (p->len != n) return lume_list_new();
+        for (int64_t j = 0; j < n; j++) {
+            double v = lume_list_at_f(p, j);
+            if (!isfinite(v) || v <= 0.0) return lume_list_new();
+        }
+    }
+    for (int64_t i = 0; i < m; i++) {
+        double w = lume_list_at_f(weights, i);
+        if (!isfinite(w)) return lume_list_new();
+    }
+    LumeList *out = lume_list_new();
+    if (!out) return NULL;
+    for (int64_t t = 1; t < n; t++) {
+        double r = 0.0;
+        for (int64_t i = 0; i < m; i++) {
+            const LumeList *p = bi_list_at_list(paths, i);
+            double prev = lume_list_at_f(p, t - 1);
+            double cur = lume_list_at_f(p, t);
+            r += lume_list_at_f(weights, i) * (cur / prev - 1.0);
+        }
+        lume_list_push_f(out, r);
+    }
+    return out;
+}
+
 /* Black-Scholes (2026-10-28): d1/d2 through the same lume_bi_normcdf the
  * interpreter uses, so prices, deltas, gamma and vega agree to the ULP
  * across the three backends. Non-finite / non-positive inputs answer NAN

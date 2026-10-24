@@ -416,6 +416,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_sim_bridge(double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_ou(double, double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_merton(double, double, double, double, double, double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_sim_portfolio(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_bs_call(double, double, double, double, double)\n");
     EMIT(g, "declare double @lume_bi_bs_put(double, double, double, double, double)\n");
     EMIT(g, "declare double @lume_bi_bs_delta_call(double, double, double, double, double)\n");
@@ -1285,6 +1286,29 @@ static Val cg_builtin(CG *g, Node *n)
         free(vs);
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)), "%s", buf);
         free(buf);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* sim_portfolio(paths, weights) (2026-11-01): two list arguments — a
+     * list of equal-length price paths and one finite weight per path —
+     * answering the portfolio-return series as a fresh float list. */
+    if (strcmp(bname, "sim_portfolio") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: sim_portfolio() takes (paths, weights)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: sim_portfolio() needs a list of paths", n->line);
+        }
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || w.ty->kind != TY_LIST) {
+            free(a.v); free(w.v);
+            ERRV(g, "line %zu: sim_portfolio() needs a list of weights", n->line);
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_sim_portfolio(i8* %s, i8* %s)",
+                              a.v, w.v);
+        free(a.v); free(w.v);
         return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 
