@@ -203,9 +203,15 @@ int backend_build_regex(char *err, size_t err_size)
     lume_mkdir("build/compat/regex");
     for (size_t i = 0; i < sizeof srcs / sizeof srcs[0]; i++) {
         char src[PATH_MAX], obj[PATH_MAX];
-        snprintf(src, sizeof src, "%s/%s", dir, srcs[i]);
-        snprintf(obj, sizeof obj, "build/compat/regex/%.*s.o",
-                 (int)(strlen(srcs[i]) - 2), srcs[i]);   /* strip ".c" */
+        if (snprintf(src, sizeof src, "%s/%s", dir, srcs[i]) >= (int)sizeof src) {
+            snprintf(err, err_size, "compat regex source path too long: %s", srcs[i]);
+            return 1;
+        }
+        if (snprintf(obj, sizeof obj, "build/compat/regex/%.*s.o",
+                     (int)(strlen(srcs[i]) - 2), srcs[i]) >= (int)sizeof obj) {   /* strip ".c" */
+            snprintf(err, err_size, "compat regex object path too long: %s", srcs[i]);
+            return 1;
+        }
         struct stat s, o;
         if (stat(src, &s) != 0) {
             snprintf(err, err_size, "compat regex source not found: %s", src);
@@ -213,8 +219,11 @@ int backend_build_regex(char *err, size_t err_size)
         }
         if (stat(obj, &o) == 0 && o.st_mtime >= s.st_mtime) continue;
         char cmd[PATH_MAX * 2];
-        snprintf(cmd, sizeof cmd, "%s -O2 -I%s -c %s -o %s",
-                 pick_cc(), dir, src, obj);
+        if (snprintf(cmd, sizeof cmd, "%s -O2 -I%s -c %s -o %s",
+                     pick_cc(), dir, src, obj) >= (int)sizeof cmd) {
+            snprintf(err, err_size, "build command too long for %s", srcs[i]);
+            return 1;
+        }
         if (run_cmd(cmd) != 0) {
             snprintf(err, err_size, "compiling %s failed", srcs[i]);
             return 1;

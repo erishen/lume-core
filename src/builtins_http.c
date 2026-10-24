@@ -60,6 +60,7 @@ typedef struct ssl_st SSL;
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -275,6 +276,17 @@ typedef struct {
     SSL *ssl; /* NULL => 明文 */
     char why[160]; /* 连接失败原因,给调用方拼错误信息 */
 } Conn;
+
+/* why 是 160B 的错误原因缓冲;外部 %s 参数(主机名、CONNECT 回复头)可能远长于
+ * 它。经 va_list 转发后由 libc 负责 NUL 截断,gcc 无法静态推导参数长度,
+ * 不再告 -Wformat-truncation。 */
+static void set_why(char *why, size_t cap, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vsnprintf(why, cap, fmt, ap);
+    va_end(ap);
+}
 
 static long now_ms(void) {
     struct timespec ts;
@@ -565,7 +577,7 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
     char portbuf[16];
     snprintf(portbuf, sizeof portbuf, "%u", cport);
     if (getaddrinfo(chost, portbuf, &hints, &res) != 0) {
-        snprintf(c->why, sizeof c->why, "name lookup failed for %s", chost);
+        set_why(c->why, sizeof c->why, "name lookup failed for %s", chost);
         return -1;
     }
     int fd = -1;
@@ -585,7 +597,7 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
     freeaddrinfo(res);
     if (fd < 0) {
         /* 带出原因:否则「连不上」永远只剩一句没信息的 cannot reach。 */
-        snprintf(c->why, sizeof c->why, "%s", strerror(errno));
+        set_why(c->why, sizeof c->why, "%s", strerror(errno));
         return -1;
     }
     c->fd = fd;
@@ -600,21 +612,21 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
                          u->host, u->port, u->host, u->port);
         if (n < 0 || (size_t)n >= sizeof req) { conn_close(c); return -1; }
         if (conn_write(c, req, (size_t)n, deadline) != 0) {
-            snprintf(c->why, sizeof c->why, "proxy %s:%u unreachable for CONNECT", chost, cport);
+            set_why(c->why, sizeof c->why, "proxy %s:%u unreachable for CONNECT", chost, cport);
             conn_close(c); return -1;
         }
         char hdr[2048];
         size_t off = 0, got = 0;
         for (;;) {
             if (conn_read_exact(c, hdr + off, 1, &got, deadline) != 0) {
-                snprintf(c->why, sizeof c->why, "proxy %s:%u sent no CONNECT reply", chost, cport);
+                set_why(c->why, sizeof c->why, "proxy %s:%u sent no CONNECT reply", chost, cport);
                 conn_close(c); return -1;
             }
             off += got;
             if (off >= 4 && memcmp(hdr + off - 4, "\r\n\r\n", 4) == 0) break;
             if (off + 1 >= sizeof hdr) {
                 hdr[sizeof hdr - 1] = '\0';
-                snprintf(c->why, sizeof c->why, "proxy CONNECT reply: %s", hdr);
+                set_why(c->why, sizeof c->why, "proxy CONNECT reply: %s", hdr);
                 conn_close(c); return -1;
             }
         }
@@ -630,7 +642,7 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
             rc = (sp[1] - '0') * 100 + (sp[2] - '0') * 10 + (sp[3] - '0');
         if (rc < 200 || rc > 399) {
             hdr[off < sizeof hdr ? off : sizeof hdr - 1] = '\0';
-            snprintf(c->why, sizeof c->why, "proxy refused CONNECT (%d): %s", rc, hdr);
+            set_why(c->why, sizeof c->why, "proxy refused CONNECT (%d): %s", rc, hdr);
             conn_close(c); return -1;
         }
     }
@@ -638,7 +650,7 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
         int r = tls_attach(c, u->host, deadline);
         if (r == 1) { conn_close(c); return 1; }
         if (r != 0) {
-            if (!c->why[0]) snprintf(c->why, sizeof c->why, "TLS handshake failed");
+            if (!c->why[0]) set_why(c->why, sizeof c->why, "TLS handshake failed");
             conn_close(c); return -1;
         }
     }

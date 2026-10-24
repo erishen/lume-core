@@ -1913,7 +1913,8 @@ static Val cg_call(CG *g, Node *n)
      * the body to it. */
     {
         char fname[160];
-        snprintf(fname, sizeof fname, "L_%s", name);
+        if (snprintf(fname, sizeof fname, "L_%s", name) >= (int)sizeof fname)
+            ERRV(g, "line %zu: function name too long for symbol: '%s'", n->line, name);
         if (!LLVMGetNamedFunction(g->mod, fname)) {
             LLVMTypeRef *pts = (LLVMTypeRef *)xmalloc(
                 sizeof(LLVMTypeRef) * (s->arity > 0 ? (size_t)s->arity : 1));
@@ -1964,7 +1965,8 @@ static Val cg_call(CG *g, Node *n)
     }
 
     char fname[160];
-    snprintf(fname, sizeof fname, "L_%s", name);
+    if (snprintf(fname, sizeof fname, "L_%s", name) >= (int)sizeof fname)
+        ERRV(g, "line %zu: function name too long for symbol: '%s'", n->line, name);
     LLVMValueRef fcallee = LLVMGetNamedFunction(g->mod, fname);
     if (!fcallee) ERRV(g, "line %zu: '%s' was never defined", n->line, name);
 

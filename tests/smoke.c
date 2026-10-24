@@ -37,15 +37,15 @@ static void capture_end(int fd, char *path, char *out, size_t cap) {
     out[n < 0 ? 0 : n] = '\0';
 }
 
-/* CRT mkdir on Windows takes a single argument (the POSIX mode is spelled
- * _mkdir and is meaningless there anyway). */
-static int mkdir_p(const char *path) {
 #ifdef _WIN32
+/* CRT mkdir on Windows takes a single argument (the POSIX mode is spelled
+ * _mkdir and is meaningless there anyway). POSIX builds never reference this
+ * helper (the scratch dir comes from `rm -rf && mkdir -p`), so it is compiled
+ * only where it is used — otherwise -Wunused-function trips on Linux CI. */
+static int mkdir_p(const char *path) {
     return mkdir(path);
-#else
-    return mkdir(path, 0755);
-#endif
 }
+#endif
 
 /* Windows-only recursive delete: mingw's system() hands the command to
  * cmd.exe, which has neither `rm -rf` nor `mkdir -p`. */
@@ -299,7 +299,12 @@ static void check_modules(const char *name, const char *const files[][2],
     snprintf(dir, sizeof(dir), "/tmp/lume-smoke-modules/%s", name);
 #ifndef _WIN32
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dir, dir);
+    if (snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", dir, dir)
+        >= (int)sizeof cmd) {
+        fprintf(stderr, "FAIL %-32s scratch path too long\n", name);
+        tests_failed++;
+        goto done;
+    }
     if (system(cmd) != 0) {
 #else
     rmrf(dir);
