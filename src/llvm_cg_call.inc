@@ -1716,6 +1716,97 @@ static Val cg_builtin(CG *g, Node *n)
         return a;   /* sorted in place; the same list is returned */
     }
 
+    /* Quant builtins (2026-10-24): same contract as the text emitter's
+     * copy — descriptive statistics, covariance / correlation / linear
+     * regression and the time-series helpers, all list-argument, so like
+     * sort() they live outside the numeric BUILTINS table. The helpers
+     * (src/rt.c lume_bi_*) mirror the interpreter's native_* in
+     * builtins_math.c. */
+    if (strcmp(bname, "mean") == 0 || strcmp(bname, "variance") == 0 ||
+        strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
+        strcmp(bname, "max_drawdown") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        const char *fn = strcmp(bname, "mean") == 0 ? "lume_bi_mean"
+                       : strcmp(bname, "variance") == 0 ? "lume_bi_variance"
+                       : strcmp(bname, "stddev") == 0 ? "lume_bi_stddev"
+                       : strcmp(bname, "median") == 0 ? "lume_bi_median"
+                       : "lume_bi_max_drawdown";
+        LLVMTypeRef p[1] = { g->i8ptr };
+        LLVMValueRef vs[1] = { a.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p, 1, 0),
+            rt_decl(g, fn, g->dbl, p, 1), vs, 1, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    if (strcmp(bname, "percentile") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: percentile() takes (list, p)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: percentile() needs a list", n->line);
+        Val p = cg_expr(g, n->as.call.args[1]);
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: percentile() needs a number for p", n->line);
+        if (p.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { p.v };
+            p.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->dbl };
+        LLVMValueRef v2[2] = { a.v, p.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, "lume_bi_percentile", g->dbl, p2, 2), v2, 2, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
+        strcmp(bname, "linreg") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (x, y)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef v2[2] = { a.v, b.v };
+        if (strcmp(bname, "linreg") == 0) {
+            LLVMValueRef r = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i8ptr, p2, 2, 0),
+                rt_decl(g, "lume_bi_linreg", g->i8ptr, p2, 2), v2, 2, "q");
+            return val_make(type_anon_struct(), r);
+        }
+        const char *fn = strcmp(bname, "covariance") == 0
+                             ? "lume_bi_covariance" : "lume_bi_correlation";
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, fn, g->dbl, p2, 2), v2, 2, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    if (strcmp(bname, "pct_change") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: pct_change() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: pct_change() needs a list", n->line);
+        LLVMTypeRef p[1] = { g->i8ptr };
+        LLVMValueRef vs[1] = { a.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p, 1, 0),
+            rt_decl(g, "lume_bi_pct_change", g->i8ptr, p, 1), vs, 1, "q");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
     return (Val){ NULL, NULL };
 }
 

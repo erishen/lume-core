@@ -2527,3 +2527,176 @@ LumeSlot *lume_slot_at_key(const LumeSlot *s, const char *k)
     if (i < 0) return NULL;
     return &m->vals[i];
 }
+
+/* ------------------------------------------------------------------ *
+ * Quant builtins (2026-10-24): descriptive statistics, correlation /
+ * linear regression, and the time-series helpers a quant workflow
+ * needs. The native side mirrors the interpreter's native_* contracts
+ * in builtins_math.c; element reads go through lume_list_at_f so int
+ * and float slots both widen, exactly like the interpreter's list
+ * reads. Return values: double helpers answer NAN on a degenerate
+ * input; pct_change() builds a fresh list (length n-1, empty for n<2);
+ * linreg() builds a fresh {slope, intercept, r2} map.
+ * ------------------------------------------------------------------ */
+
+static int bi_quant_cmp_d(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* Extract the list as a plain double array (int slots widen). NULL with
+ * n=0 when the list is null/empty. */
+static double *bi_num_copy(const LumeList *l, int64_t *n)
+{
+    *n = l ? l->len : 0;
+    if (*n == 0) return NULL;
+    double *buf = (double *)calloc((size_t)*n, sizeof(double));
+    if (!buf) return NULL;
+    for (int64_t i = 0; i < *n; i++) buf[i] = lume_list_at_f(l, i);
+    return buf;
+}
+
+double lume_bi_mean(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n == 0) { free(xs); return NAN; }
+    double s = 0.0;
+    for (int64_t i = 0; i < n; i++) s += xs[i];
+    free(xs);
+    return s / (double)n;
+}
+
+double lume_bi_variance(const LumeList *l)
+{
+    /* Sample variance (n-1 denominator), the convention quant work uses. */
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double m = 0.0;
+    for (int64_t i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double s = 0.0;
+    for (int64_t i = 0; i < n; i++) { double d = xs[i] - m; s += d * d; }
+    free(xs);
+    return s / (double)(n - 1);
+}
+
+double lume_bi_stddev(const LumeList *l)
+{
+    double v = lume_bi_variance(l);
+    return v == v ? sqrt(v) : NAN;
+}
+
+double lume_bi_median(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n == 0) { free(xs); return NAN; }
+    qsort(xs, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    double med = (n % 2) ? xs[n / 2]
+                         : 0.5 * (xs[n / 2 - 1] + xs[n / 2]);
+    free(xs);
+    return med;
+}
+
+double lume_bi_percentile(const LumeList *l, double p)
+{
+    /* p in [0,100]; linear interpolation between the bracketing order
+     * statistics (the pandas default). */
+    if (p < 0.0 || p > 100.0 || p != p) return NAN;
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n == 0) { free(xs); return NAN; }
+    qsort(xs, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    double r = p / 100.0 * (double)(n - 1);
+    int64_t lo = (int64_t)r;
+    double frac = r - (double)lo;
+    double v = lo + 1 < n
+                   ? xs[lo] + frac * (xs[lo + 1] - xs[lo])
+                   : xs[lo];
+    free(xs);
+    return v;
+}
+
+double lume_bi_covariance(const LumeList *x, const LumeList *y)
+{
+    int64_t nx, ny;
+    double *xs = bi_num_copy(x, &nx), *ys = bi_num_copy(y, &ny);
+    if (!xs || !ys || nx < 2 || nx != ny) { free(xs); free(ys); return NAN; }
+    double mx = 0.0, my = 0.0;
+    for (int64_t i = 0; i < nx; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= (double)nx; my /= (double)nx;
+    double s = 0.0;
+    for (int64_t i = 0; i < nx; i++) s += (xs[i] - mx) * (ys[i] - my);
+    free(xs); free(ys);
+    return s / (double)(nx - 1);
+}
+
+double lume_bi_correlation(const LumeList *x, const LumeList *y)
+{
+    double cov = lume_bi_covariance(x, y);
+    if (cov != cov) return NAN;
+    double sx = lume_bi_stddev(x), sy = lume_bi_stddev(y);
+    if (sx != sx || sy != sy || sx == 0.0 || sy == 0.0) return NAN;
+    return cov / (sx * sy);
+}
+
+/* Least-squares fit y = slope*x + intercept with r^2. A fresh map holds
+ * the three doubles; NULL (never returned as NAN-carrying doubles) when
+ * the data is degenerate. */
+LumeMap *lume_bi_linreg(const LumeList *x, const LumeList *y)
+{
+    int64_t nx, ny;
+    double *xs = bi_num_copy(x, &nx), *ys = bi_num_copy(y, &ny);
+    if (!xs || !ys || nx < 2 || nx != ny) { free(xs); free(ys); return NULL; }
+    double mx = 0.0, my = 0.0;
+    for (int64_t i = 0; i < nx; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= (double)nx; my /= (double)nx;
+    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (int64_t i = 0; i < nx; i++) {
+        double dx = xs[i] - mx, dy = ys[i] - my;
+        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+    }
+    free(xs); free(ys);
+    if (sxx == 0.0) return NULL;
+    double slope = sxy / sxx;
+    double intercept = my - slope * mx;
+    double r2 = (syy == 0.0) ? (sxy == 0.0 ? 1.0 : NAN) : sxy * sxy / (sxx * syy);
+    LumeMap *m = lume_map_new();
+    lume_map_put_f(m, "slope", slope);
+    lume_map_put_f(m, "intercept", intercept);
+    lume_map_put_f(m, "r2", r2);
+    return m;
+}
+
+/* Percentage change vs the previous element, in percent (100x, the way a
+ * financial return column is usually shown): out[i] = 100*(x[i+1]-x[i])/x[i].
+ * A zero previous element answers NAN for that step (division by zero is
+ * undefined, not 0). Returns a fresh list; n<2 gives an empty list. */
+LumeList *lume_bi_pct_change(const LumeList *l)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return out; }
+    for (int64_t i = 1; i < n; i++) {
+        double prev = xs[i - 1];
+        double pc = prev == 0.0 ? NAN : 100.0 * (xs[i] - prev) / prev;
+        lume_list_push_f(out, pc);
+    }
+    free(xs);
+    return out;
+}
+
+/* Max drawdown of a price series, as a positive percentage: the largest
+ * peak-to-trough drop, 0 for a monotonically rising series, NAN for n<2. */
+double lume_bi_max_drawdown(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double peak = xs[0], mdd = 0.0;
+    for (int64_t i = 1; i < n; i++) {
+        if (xs[i] > peak) peak = xs[i];
+        double dd = peak > 0.0 ? 100.0 * (peak - xs[i]) / peak : 0.0;
+        if (dd > mdd) mdd = dd;
+    }
+    free(xs);
+    return mdd;
+}

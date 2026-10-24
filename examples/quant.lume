@@ -1,0 +1,41 @@
+// quant.lume — quant-analysis builtins (2026-10-24).
+//
+//   bin/lume examples/quant.lume                 run it (interpreter)
+//   bin/lume --compile-text examples/quant.lume  native IR-text backend
+//   bin/lume --compile-llvm examples/quant.lume  native libLLVM backend
+//
+// The ten quant builtins — mean / variance / stddev / median / percentile /
+// covariance / correlation / linreg / pct_change / max_drawdown — are
+// computed identically on all three backends (the interpreter's native_* in
+// builtins_math.c and the native lume_bi_* in src/rt.c share one formula
+// set; tests/quant-consistency.lume pins that agreement). stats.lume above
+// shows the same statistics written by hand with map/filter/reduce; here
+// they are one call each.
+//
+// The fixture is a tiny price/return study: a close-price series, its
+// descriptive statistics, the percentage-change series, a drawdown check,
+// and a covariance/correlation/regression against a benchmark series.
+
+let closes: list = [100.0, 101.5, 99.8, 103.2, 102.1, 105.0, 104.4, 106.2, 99.5, 108.0];
+let bench: list = [0.1, 0.2, -0.1, 0.4, 0.1, 0.5, 0.3, 0.6, -0.2, 0.8];
+
+print("close series           = " + str(closes));
+print("mean                   = " + str(mean(closes)));
+print("variance (sample)      = " + str(variance(closes)));
+print("stddev (sample)        = " + str(stddev(closes)));
+print("median                 = " + str(median(closes)));
+print("p10 / p90              = " + str(percentile(closes, 10.0)) +
+      " / " + str(percentile(closes, 90.0)));
+print("max drawdown (%)       = " + str(max_drawdown(closes)));
+
+let pct: list = pct_change(closes);
+print("pct change (%)         = " + str(pct));
+
+print("covariance (close, bench) = " + str(covariance(closes, bench)));
+print("correlation (close, bench) = " + str(correlation(closes, bench)));
+
+let fit: map = linreg(bench, closes);
+print("linreg(bench -> close) = " + str(fit));
+print("  slope     = " + str(get(fit, "slope")));
+print("  intercept = " + str(get(fit, "intercept")));
+print("  r2        = " + str(get(fit, "r2")));

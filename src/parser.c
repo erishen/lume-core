@@ -178,6 +178,14 @@ Type *parse_type(Parser *p) {
              * there is no singleton TY_MAP representation to annotate.) */
             char *nm = ident_name(p, t);
             if (strcmp(nm, "list") == 0) { ty = type_list(any_type()); break; }
+            /* `map` annotates the anonymous-struct shape a map literal and
+             * every map-returning builtin actually have. Without this the
+             * annotation became a phantom named struct ("map" with no
+             * definition), so `let m: map = {...}` bound through the named-
+             * struct aggregate path on the native backends and stored the
+             * map's length instead of the pointer — `print(m)` answered 2 for
+             * a two-key map and get(m, k) read null. Redirect like `list`. */
+            if (strcmp(nm, "map") == 0) { ty = type_anon_struct(); break; }
             ty = type_struct(nm);
             break;
         }

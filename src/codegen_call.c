@@ -398,6 +398,20 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_list_at_slot(i8*, i64)\n");
     EMIT(g, "declare i64 @lume_list_print(i8*)\n");
     EMIT(g, "declare void @lume_list_sort(i8*)\n");
+    /* Quant builtins (2026-10-24): list-argument statistics / time-series
+     * helpers. They live outside the numeric BUILTINS table (sort()'s
+     * pattern — a list argument cannot travel through the i64/double
+     * columns), so their signatures are declared here. */
+    EMIT(g, "declare double @lume_bi_mean(i8*)\n");
+    EMIT(g, "declare double @lume_bi_variance(i8*)\n");
+    EMIT(g, "declare double @lume_bi_stddev(i8*)\n");
+    EMIT(g, "declare double @lume_bi_median(i8*)\n");
+    EMIT(g, "declare double @lume_bi_percentile(i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_covariance(i8*, i8*)\n");
+    EMIT(g, "declare double @lume_bi_correlation(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_linreg(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_pct_change(i8*)\n");
+    EMIT(g, "declare double @lume_bi_max_drawdown(i8*)\n");
 
     EMIT(g, "declare i8* @lume_map_new()\n");
     EMIT(g, "declare i64 @lume_map_len(i8*)\n");
@@ -1871,6 +1885,93 @@ static Val cg_builtin(CG *g, Node *n)
         }
         EMIT(g, "  call void @lume_list_sort(i8* %s)\n", a.v);
         return a;   /* sorted in place; the same list is returned */
+    }
+
+    /* Quant builtins (2026-10-24): descriptive statistics, covariance /
+     * correlation / linear regression and the time-series helpers. Like
+     * sort() they take lists, so they live outside the numeric BUILTINS
+     * table; the helpers (src/rt.c lume_bi_*) mirror the interpreter's
+     * native_* contracts in builtins_math.c. */
+    if (strcmp(bname, "mean") == 0 || strcmp(bname, "variance") == 0 ||
+        strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
+        strcmp(bname, "max_drawdown") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        const char *fn = strcmp(bname, "mean") == 0 ? "lume_bi_mean"
+                       : strcmp(bname, "variance") == 0 ? "lume_bi_variance"
+                       : strcmp(bname, "stddev") == 0 ? "lume_bi_stddev"
+                       : strcmp(bname, "median") == 0 ? "lume_bi_median"
+                       : "lume_bi_max_drawdown";
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @%s(i8* %s)", fn, a.v);
+        free(a.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    if (strcmp(bname, "percentile") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: percentile() takes (list, p)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: percentile() needs a list", n->line);
+        Val p = cg_expr(g, n->as.call.args[1]);
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
+            free(a.v); free(p.v);
+            ERRV(g, "line %zu: percentile() needs a number for p", n->line);
+        }
+        if (p.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", p.v);
+            free(p.v);
+            p.v = w;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_percentile(i8* %s, double %s)",
+                              a.v, p.v);
+        free(a.v); free(p.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
+        strcmp(bname, "linreg") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (x, y)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        }
+        if (strcmp(bname, "linreg") == 0) {
+            char *t = emit_instrf(g, type_anon_struct(),
+                                  "call i8* @lume_bi_linreg(i8* %s, i8* %s)",
+                                  a.v, b.v);
+            free(a.v); free(b.v);
+            return val_make(type_anon_struct(), t);
+        }
+        const char *fn = strcmp(bname, "covariance") == 0
+                             ? "lume_bi_covariance" : "lume_bi_correlation";
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @%s(i8* %s, i8* %s)", fn, a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    if (strcmp(bname, "pct_change") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: pct_change() takes exactly one argument", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: pct_change() needs a list", n->line);
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_pct_change(i8* %s)", a.v);
+        free(a.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* ---- string tools (interpreter parity, builtins_str.c) ----

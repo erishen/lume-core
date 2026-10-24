@@ -474,6 +474,33 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   `work/knowledge/medical-stats/TODO.md`; now that core ships these, that
   project can wire the p-values without hand-rolling unstable distribution
   code in the DSL.
+- [x] **Quant-analysis builtins (filed 2026-10-24, closed 2026-10-24).** A
+  layer above the CDFs for portfolio / backtest / return-series scripts,
+  three-backend-consistent exactly like the statistical builtins:
+  - `mean(l)` / `variance(l)` / `stddev(l)` — sample variance (n-1);
+    the native helpers answer NAN and the interpreter wrappers
+    vm_set_error on n<2
+  - `median(l)` / `percentile(l, p)` — order statistics; p∈[0,100],
+    linear interpolation between the bracketing order statistics
+  - `covariance(x, y)` / `correlation(x, y)` — sample (n-1), equal-length
+  - `linreg(x, y)` — least squares → fresh `{slope, intercept, r2}` map
+  - `pct_change(l)` — fresh percentage list (n-1; zero prev → NAN)
+  - `max_drawdown(l)` — positive percentage, 0 for monotonic, NAN for n<2
+  Implementation: rt.c `lume_bi_*` native twins (element reads widen int
+  slots through lume_list_at_f); builtins_math.c interpreter wrappers
+  (same duplicated-core split as the CDFs); interp.c registration;
+  typecheck.c `LUME_BUILTIN_NAMES` + arity; codegen_scan.c /
+  llvm_cg_scan.inc inference (scalars→float, pct_change→list(float),
+  linreg→struct); codegen_call.c / llvm_cg_call.inc list-arg emit
+  branches (sort()'s pattern). Regression: tests/quant-consistency.lume +
+  .expected run by tests/native_backends.sh across interp/text/llvm
+  byte-identically; examples/quant.lume walks a price/benchmark study.
+  Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
+  was a phantom named struct on the native emitters (a `let m: map = {...}`
+  bound the map's length where the pointer belonged); parser.c now
+  redirects `map` to type_anon_struct() (list's redirect) and type_compat
+  accepts anonymous structs against a bare `map` while named structs stay
+  strict.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

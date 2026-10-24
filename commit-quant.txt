@@ -1,0 +1,20 @@
+﻿quant builtins: mean/variance/stddev/median/percentile/covariance/correlation/linreg/pct_change/max_drawdown
+
+Three-leg contract (interpreter + IR-text + LLVM) for ten list-argument
+quant helpers, following the sort() list-arg pattern and the CDF precedent:
+
+- rt.c lume_bi_* native runtime (sample variance n-1, pandas-style
+  percentile interpolation, fresh {slope,intercept,r2} map, fresh
+  percentage pct_change list, positive max_drawdown; int slots widen)
+- builtins_math.c interpreter wrappers with vm_set_error validation
+- typecheck.c names + arity; codegen_scan.c / llvm_cg_scan.inc return
+  inference; codegen_call.c / llvm_cg_call.inc list-arg emit branches
+- tests/quant-consistency.lume (+expected) pins byte-identical output
+  across interp/text/llvm in tests/native_backends.sh; examples/quant.lume
+
+Also fixes the `map` annotation binding bug the fixture surfaced:
+`: map` parsed as a phantom named struct, so the native emitters stored
+the map's length instead of its pointer (print(m) answered 2 for a
+two-key map, get(m,k) read null). parser.c now redirects `map` to
+type_anon_struct() (list's redirect); type_compat accepts anonymous
+structs against a bare `map` annotation while named structs stay strict.

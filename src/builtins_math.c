@@ -326,3 +326,233 @@ Value b_igamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, ar
 Value b_ibeta(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_ibeta); }
 Value b_tdist_cdf(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_tdist_cdf); }
 Value b_chisq_cdf(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_chisq_cdf); }
+
+/* ---- 量化 builtins (2026-10-24): 描述统计 / 相关回归 / 时间序列 ----
+ * 与 rt.c 的 lume_bi_* 同一套公式(interp / 原生后端一致)。列表元素
+ * int/float 都接受(list_num 宽化),退化输入(空 / 过短 / 非数字 / 长度
+ * 不等)一律 vm_set_error。 */
+
+static bool arg_list(VM *vm, Value v, ObjList **out) {
+    if (!IS_OBJ(v) || AS_OBJ(v)->type != OBJ_LIST) {
+        vm_set_error(vm, "expected list argument");
+        return false;
+    }
+    *out = &AS_OBJ(v)->as.list;
+    return true;
+}
+
+static bool list_num(VM *vm, ObjList *L, int i, double *out) {
+    Value v = L->items[i];
+    if (IS_INT(v))   { *out = (double)AS_INT(v); return true; }
+    if (IS_FLOAT(v)) { *out = v.as.n;            return true; }
+    vm_set_error(vm, "quant builtin needs a list of numbers");
+    return false;
+}
+
+static double *list_to_doubles(VM *vm, ObjList *L, int *n) {
+    *n = L->count;
+    double *xs = (double *)malloc((size_t)(*n ? *n : 1) * sizeof(double));
+    if (!xs) { vm_set_error(vm, "out of memory"); return NULL; }
+    for (int i = 0; i < *n; i++)
+        if (!list_num(vm, L, i, &xs[i])) { free(xs); return NULL; }
+    return xs;
+}
+
+static int cmp_d(const void *a, const void *b) {
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+static void native_mean(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count == 0) { vm_set_error(vm, "mean() needs a non-empty list"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double s = 0.0;
+    for (int i = 0; i < n; i++) s += xs[i];
+    free(xs);
+    *out = val_num(s / (double)n);
+}
+
+static void native_variance(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "variance() needs >= 2 elements"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0;
+    for (int i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double s = 0.0;
+    for (int i = 0; i < n; i++) { double d = xs[i] - m; s += d * d; }
+    free(xs);
+    *out = val_num(s / (double)(n - 1));   /* sample variance, n-1 */
+}
+
+static void native_stddev(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "stddev() needs >= 2 elements"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0;
+    for (int i = 0; i < n; i++) m += xs[i];
+    m /= (double)n;
+    double s = 0.0;
+    for (int i = 0; i < n; i++) { double d = xs[i] - m; s += d * d; }
+    free(xs);
+    *out = val_num(sqrt(s / (double)(n - 1)));
+}
+
+static void native_median(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count == 0) { vm_set_error(vm, "median() needs a non-empty list"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    qsort(xs, (size_t)n, sizeof(double), cmp_d);
+    double med = (n % 2) ? xs[n / 2] : 0.5 * (xs[n / 2 - 1] + xs[n / 2]);
+    free(xs);
+    *out = val_num(med);
+}
+
+static void native_percentile(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double p;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &p)) return;
+    if (p < 0.0 || p > 100.0) { vm_set_error(vm, "percentile() needs p in [0,100]"); return; }
+    if (L->count == 0) { vm_set_error(vm, "percentile() needs a non-empty list"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    qsort(xs, (size_t)n, sizeof(double), cmp_d);
+    double r = p / 100.0 * (double)(n - 1);
+    int lo = (int)r;
+    double frac = r - (double)lo;
+    double v = lo + 1 < n ? xs[lo] + frac * (xs[lo + 1] - xs[lo]) : xs[lo];
+    free(xs);
+    *out = val_num(v);
+}
+
+static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *X, *Y;
+    if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
+    if (X->count != Y->count || X->count < 2) {
+        vm_set_error(vm, "covariance() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, X, &n);
+    double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
+    if (!ys) { free(xs); return; }
+    double mx = 0.0, my = 0.0;
+    for (int i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= (double)n; my /= (double)n;
+    double s = 0.0;
+    for (int i = 0; i < n; i++) s += (xs[i] - mx) * (ys[i] - my);
+    free(xs); free(ys);
+    *out = val_num(s / (double)(n - 1));
+}
+
+static void native_correlation(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *X, *Y;
+    if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
+    if (X->count != Y->count || X->count < 2) {
+        vm_set_error(vm, "correlation() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, X, &n);
+    double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
+    if (!ys) { free(xs); return; }
+    double mx = 0.0, my = 0.0;
+    for (int i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= (double)n; my /= (double)n;
+    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dx = xs[i] - mx, dy = ys[i] - my;
+        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+    }
+    free(xs); free(ys);
+    if (sxx == 0.0 || syy == 0.0) {
+        vm_set_error(vm, "correlation(): one series is constant");
+        return;
+    }
+    *out = val_num(sxy / sqrt(sxx * syy));
+}
+
+static void native_linreg(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *X, *Y;
+    if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
+    if (X->count != Y->count || X->count < 2) {
+        vm_set_error(vm, "linreg() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, X, &n);
+    double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
+    if (!ys) { free(xs); return; }
+    double mx = 0.0, my = 0.0;
+    for (int i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; }
+    mx /= (double)n; my /= (double)n;
+    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dx = xs[i] - mx, dy = ys[i] - my;
+        sxx += dx * dx; sxy += dx * dy; syy += dy * dy;
+    }
+    free(xs); free(ys);
+    if (sxx == 0.0) { vm_set_error(vm, "linreg(): x is constant"); return; }
+    double slope = sxy / sxx;
+    double intercept = my - slope * mx;
+    double r2 = (syy == 0.0) ? (sxy == 0.0 ? 1.0 : NAN) : sxy * sxy / (sxx * syy);
+    Obj *m = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(m));
+    map_set(vm, m, "slope", val_num(slope));
+    map_set(vm, m, "intercept", val_num(intercept));
+    map_set(vm, m, "r2", val_num(r2));
+    vm_pop(vm);
+    *out = val_obj(m);
+}
+
+static void native_pct_change(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    if (L->count >= 2) {
+        int n; double *xs = list_to_doubles(vm, L, &n);
+        if (xs) {
+            for (int i = 1; i < n; i++) {
+                double prev = xs[i - 1];
+                double pc = prev == 0.0 ? NAN : 100.0 * (xs[i] - prev) / prev;
+                list_push(vm, res, val_num(pc));
+            }
+            free(xs);
+        }
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_max_drawdown(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "max_drawdown() needs >= 2 elements"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double peak = xs[0], mdd = 0.0;
+    for (int i = 1; i < n; i++) {
+        if (xs[i] > peak) peak = xs[i];
+        double dd = peak > 0.0 ? 100.0 * (peak - xs[i]) / peak : 0.0;
+        if (dd > mdd) mdd = dd;
+    }
+    free(xs);
+    *out = val_num(mdd);
+}
+
+Value b_mean(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_mean); }
+Value b_variance(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_variance); }
+Value b_stddev(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_stddev); }
+Value b_median(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_median); }
+Value b_percentile(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_percentile); }
+Value b_covariance(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_covariance); }
+Value b_correlation(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_correlation); }
+Value b_linreg(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_linreg); }
+Value b_pct_change(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_pct_change); }
+Value b_max_drawdown(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_max_drawdown); }

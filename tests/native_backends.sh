@@ -512,6 +512,35 @@ else
     echo "ok   sql cross-backend: skipped (build has no libsqlite3)"
 fi
 
+# ---- quant cross-backend consistency ----
+# The quant builtins (mean/variance/stddev/median/percentile/covariance/
+# correlation/linreg/pct_change/max_drawdown) exist on the interpreter side
+# (builtins_math.c native_*) and on the native side (src/rt.c lume_bi_*)
+# sharing one formula set, so the same fixture must produce byte-identical
+# output on every leg — the same protocol as the core fixture above. No
+# probe needed: quant needs nothing beyond libc.
+QUANT_SCRIPT=tests/quant-consistency.lume
+QUANT_EXPECTED=tests/quant-consistency.expected
+[ -f "$QUANT_EXPECTED" ] || fail "$QUANT_EXPECTED missing (generate from the interpreter)"
+
+quant_ran=()
+check "" quant-interp "$QUANT_SCRIPT" "$QUANT_EXPECTED"
+quant_ran+=("quant-interp")
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) check --compile-text quant-text "$QUANT_SCRIPT" "$QUANT_EXPECTED"; quant_ran+=("quant-text") ;;
+        llvm) check --compile-llvm quant-llvm "$QUANT_SCRIPT" "$QUANT_EXPECTED"; quant_ran+=("quant-llvm") ;;
+    esac
+done
+for (( i = 0; i < ${#quant_ran[@]}; i++ )); do
+    for (( j = i + 1; j < ${#quant_ran[@]}; j++ )); do
+        a=${quant_ran[$i]}; b=${quant_ran[$j]}
+        diff -u "$WORK/$a.norm" "$WORK/$b.norm" > "$WORK/quant-$a-vs-$b.diff" ||
+            { head -20 "$WORK/quant-$a-vs-$b.diff"; fail "quant: $a and $b disagree"; }
+        pass "quant: $a and $b agree with each other"
+    done
+done
+
 # ---- native serve: abandoned sql_tx handle reclaimed at request boundary ----
 # The interpreter's tx handle is an OBJ_SQLTX with a GC finalizer; the native
 # handle is a plain heap struct, so the serve loop rolls back + closes every

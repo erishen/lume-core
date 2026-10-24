@@ -102,6 +102,20 @@ Value b_igamma(VM *vm, int argc, Value *args);
 Value b_ibeta(VM *vm, int argc, Value *args);
 Value b_tdist_cdf(VM *vm, int argc, Value *args);
 Value b_chisq_cdf(VM *vm, int argc, Value *args);
+/* Quant builtins (2026-10-24): descriptive statistics, covariance /
+ * correlation / linear regression, pct_change and max_drawdown. The
+ * interpreter wrappers validate and surface vm_set_error; rt.c's
+ * lume_bi_* compute the same numbers for the native backends. */
+Value b_mean(VM *vm, int argc, Value *args);
+Value b_variance(VM *vm, int argc, Value *args);
+Value b_stddev(VM *vm, int argc, Value *args);
+Value b_median(VM *vm, int argc, Value *args);
+Value b_percentile(VM *vm, int argc, Value *args);
+Value b_covariance(VM *vm, int argc, Value *args);
+Value b_correlation(VM *vm, int argc, Value *args);
+Value b_linreg(VM *vm, int argc, Value *args);
+Value b_pct_change(VM *vm, int argc, Value *args);
+Value b_max_drawdown(VM *vm, int argc, Value *args);
 Value b_el(VM *vm, int argc, Value *args);
 Value b_render(VM *vm, int argc, Value *args);
 Value b_html(VM *vm, int argc, Value *args);

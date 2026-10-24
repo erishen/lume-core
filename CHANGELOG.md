@@ -25,6 +25,31 @@ All notable changes to Lume are documented here. The format follows
   same protocol as `native_backends.sh`'s sql block) and skipped with a
   note elsewhere. The ai-verify CI job installs `libsqlite3-dev` so the
   seed is genuinely judged there.
+- **Quant-analysis builtins: mean / variance / stddev / median /
+  percentile / covariance / correlation / linreg / pct_change /
+  max_drawdown.** Ten list-argument statistics and time-series helpers
+  with the same three-leg contract as the CDFs: interpreter wrappers
+  (`builtins_math.c` native_*, validated with vm_set_error), native
+  runtime (`rt.c` lume_bi_*), and type inference + emission on both
+  native backends (arity table in `typecheck.c`, inference in
+  `codegen_scan.c` / `llvm_cg_scan.inc`, list-arg emit branches in
+  `codegen_call.c` / `llvm_cg_call.inc` — sort()'s pattern).
+  `variance` / `stddev` are sample (n-1); `percentile(p)` linearly
+  interpolates for p∈[0,100]; `linreg` returns a fresh `{slope,
+  intercept, r2}` map; `pct_change` returns a fresh percentage list
+  (n-1, NAN over a zero previous value); `max_drawdown` answers a
+  positive percentage. `tests/quant-consistency.lume` pins byte-identical
+  output across the interpreter / text / LLVM legs, and
+  `examples/quant.lume` walks a price/benchmark study.
+- **`map` type annotations bind correctly on the native backends.** A
+  `let m: map = ...` annotation was parsed as a phantom named struct
+  ("map" with no definition), so the native emitters bound through the
+  named-struct aggregate path and stored the map's length where the
+  pointer belonged — `print(m)` answered 2 for a two-key map and
+  `get(m, k)` read null. The parser now redirects `map` to
+  `type_anon_struct()` (list's existing redirect), and `type_compat`
+  accepts any anonymous struct against a bare `map` annotation while
+  named structs stay strict.
 
 ### Fixed
 

@@ -437,6 +437,9 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "min", "max", "pi", "e",
     /* statistical distribution builtins (2026-10-20, builtins_math.c + rt.c) */
     "normcdf", "erf", "gamma", "lgamma", "igamma", "ibeta", "tdist_cdf", "chisq_cdf",
+    /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
+    "mean", "variance", "stddev", "median", "percentile",
+    "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
     /* outbound HTTP (2026-10-04, builtins_http.c) */
     "http_get",
     /* HTTP verbs that carry a body (2026-10-05) */
@@ -486,6 +489,9 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"normcdf",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
+    {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},
+    {"percentile",2,2}, {"covariance",2,2}, {"correlation",2,2}, {"linreg",2,2},
+    {"pct_change",1,1}, {"max_drawdown",1,1},
     {"strftime",2,2}, {"replace",3,3}, {"put",3,3},
     /* bounded optional upper (runtime: argc > max rejected) */
     {"sql_query",1,3}, {"sql_write",1,3},
@@ -758,6 +764,13 @@ bool type_compat(Checker *c, Type *src, Type *dst, size_t line) {
         case TY_STRUCT: {
             if (src->name && dst->name)
                 return strcmp(src->name, dst->name) == 0;
+            /* A bare `map` annotation is an empty anonymous struct
+             * (type_anon_struct, see parser.c): it names the dynamic map
+             * container, whose fields only exist at runtime, so any
+             * *anonymous* struct — a map literal or a map-returning
+             * builtin — satisfies it. A named struct stays strict: it has
+             * a declared shape, not a runtime one. */
+            if (!dst->name && dst->count == 0 && !src->name) return true;
             /* need field shape comparison */
             if (src->count != dst->count) return false;
             for (int i = 0; i < src->count; i++) {

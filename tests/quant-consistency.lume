@@ -1,0 +1,46 @@
+// Native quant cross-backend consistency fixture.
+//
+// Runs through the interpreter, the text backend and the LLVM backend and
+// diffs the outputs (tests/native_backends.sh). The quant builtins
+// (builtins_math.c native_* on the interpreter side, src/rt.c lume_bi_* on
+// the native side) share one formula set, so every printed value must agree
+// byte-for-byte across the three legs. The inputs are chosen so the outputs
+// are exact in %g six-digit printing: small integer data with simple
+// fractions (variance 2.5, covariance 5) and round drawdown percentages.
+
+let xs: list = [1, 2, 3, 4, 5];
+print(mean(xs));
+print(variance(xs));
+print(stddev(xs));
+print(median(xs));
+print(percentile(xs, 0.0));
+print(percentile(xs, 25.0));
+print(percentile(xs, 50.0));
+print(percentile(xs, 75.0));
+print(percentile(xs, 100.0));
+
+// int slots widen exactly like float slots
+let xf: list = [1.0, 2.0, 3.0, 4.0, 5.0];
+print(mean(xf));
+print(variance(xf));
+
+let ys: list = [2, 4, 6, 8, 10];
+print(covariance(xs, ys));
+print(correlation(xs, ys));
+let lr: map = linreg(xs, ys);
+print(lr);
+
+// even-length median
+let even: list = [1, 2, 3, 4];
+print(median(even));
+print(median([1, 1, 2, 2]));
+
+// max drawdown: monotonic -> 0, halving -> 50, peak-then-trough -> 25
+print(max_drawdown([1, 2, 3]));
+print(max_drawdown([100.0, 90.0, 80.0, 50.0]));
+print(max_drawdown([10.0, 12.0, 9.0, 11.0]));
+
+// pct_change returns a fresh list of percentages
+let pc: list = pct_change(xs);
+print(pc);
+print(pct_change([0.0, 10.0, 20.0]));
