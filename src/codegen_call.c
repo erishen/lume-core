@@ -401,6 +401,10 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_rand_von_mises(double, double)\n");
     EMIT(g, "declare i8* @lume_bi_rand_multinomial(i64, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_sim_gbm(double, double, double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rand_dirichlet(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_rand_binormal(double, double, double, double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rand_gauss_copula(double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rand_t_copula(double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_bridge(double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_ou(double, double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_merton(double, double, double, double, double, double, double, i64)\n");
@@ -1245,6 +1249,86 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "sim_bridge") == 0) fn = "lume_bi_sim_bridge";
         else if (strcmp(bname, "sim_ou") == 0) fn = "lume_bi_sim_ou";
         else fn = "lume_bi_sim_merton";
+        char *buf = NULL;
+        size_t bl = 0;
+        for (int i = 0; i < argc - 1; i++) {
+            char *a = vs[i].v;
+            if (vs[i].ty->kind == TY_INT) {
+                char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                      "call double @lume_bi_float(i64 %s)", a);
+                free(a);
+                a = w;
+            }
+            if (i == 0) {
+                size_t need = snprintf(NULL, 0, "call i8* @%s(double %s", fn, a) + 1;
+                buf = (char *)malloc(need);
+                bl = (size_t)snprintf(buf, need, "call i8* @%s(double %s", fn, a);
+            } else {
+                size_t need = bl + snprintf(NULL, 0, ", double %s", a) + 1;
+                buf = (char *)realloc(buf, need);
+                bl += (size_t)snprintf(buf + bl, need - bl, ", double %s", a);
+            }
+            free(a);
+        }
+        size_t need = bl + snprintf(NULL, 0, ", i64 %s)", nv) + 1;
+        buf = (char *)realloc(buf, need);
+        snprintf(buf + bl, need - bl, ", i64 %s)", nv);
+        free(nv);
+        free(vs);
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)), "%s", buf);
+        free(buf);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* rand_dirichlet(alphas) (2026-10-30): a fresh normalized probability
+     * vector from iid Gamma(alpha_i, 1) samples; one list argument. */
+    if (strcmp(bname, "rand_dirichlet") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: rand_dirichlet() takes one list", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: rand_dirichlet() needs a list", n->line);
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_rand_dirichlet(i8* %s)", a.v);
+        free(a.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* Multivariate / copula samplers (2026-10-30): all-scalar inputs
+     * answering a fresh float list. rand_binormal(mu1, mu2, sd1, sd2, rho,
+     * n) takes six arguments, rand_gauss_copula(rho, n) two and
+     * rand_t_copula(rho, df, n) three. The last argument is the sample
+     * count (float truncates through lume_bi_ftoi), every other argument a
+     * double (int widens through lume_bi_float). */
+    if (strcmp(bname, "rand_binormal") == 0 || strcmp(bname, "rand_gauss_copula") == 0 ||
+        strcmp(bname, "rand_t_copula") == 0) {
+        int want = (strcmp(bname, "rand_binormal") == 0) ? 6 :
+                   (strcmp(bname, "rand_gauss_copula") == 0 ? 2 : 3);
+        if (argc != want)
+            ERRV(g, "line %zu: %s() takes %d arguments", n->line, bname, want);
+        Val *vs = (Val *)calloc((size_t)argc, sizeof(Val));
+        for (int i = 0; i < argc; i++) {
+            vs[i] = cg_expr(g, n->as.call.args[i]);
+            if (!vs[i].v || !vs[i].ty ||
+                (vs[i].ty->kind != TY_INT && vs[i].ty->kind != TY_FLOAT)) {
+                for (int j = 0; j <= i; j++) free(vs[j].v);
+                free(vs);
+                ERRV(g, "line %zu: %s() needs numbers", n->line, bname);
+            }
+        }
+        char *nv = vs[argc - 1].v;
+        if (vs[argc - 1].ty->kind == TY_FLOAT) {
+            char *w = emit_instrf(g, type_prim(TY_INT),
+                                  "call i64 @lume_bi_ftoi(double %s)", nv);
+            free(nv);
+            nv = w;
+        }
+        const char *fn;
+        if (strcmp(bname, "rand_binormal") == 0) fn = "lume_bi_rand_binormal";
+        else if (strcmp(bname, "rand_gauss_copula") == 0) fn = "lume_bi_rand_gauss_copula";
+        else fn = "lume_bi_rand_t_copula";
         char *buf = NULL;
         size_t bl = 0;
         for (int i = 0; i < argc - 1; i++) {

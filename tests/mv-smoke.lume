@@ -1,0 +1,47 @@
+// multivariate / copula family cross-backend smoke (2026-10-30)
+// rand_dirichlet / rand_binormal / rand_gauss_copula / rand_t_copula
+// one continuous seed-42 stream (no re-seeds): every backend must emit
+// the same 32 rows byte-for-byte; the pinned absolute-stream values live
+// in tests/quant-consistency.expected and are checked against the Python
+// reference in tests/quant-refcheck.py.
+seed(42);
+let d0 = rand_dirichlet([1.0, 1.0, 1.0]);
+print(d0[0]);
+print(d0[1]);
+print(d0[2]);
+let d1 = rand_dirichlet([1.0, 2.0, 3.0]);
+print(d1[0]);
+print(d1[1]);
+print(d1[2]);
+let b0 = rand_binormal(0.0, 0.0, 1.0, 1.0, 0.0, 3);
+print(b0[0]);
+print(b0[1]);
+print(b0[2]);
+print(b0[3]);
+print(b0[4]);
+print(b0[5]);
+let b1 = rand_binormal(100.0, 50.0, 2.0, 3.0, 0.5, 2);
+print(b1[0]);
+print(b1[1]);
+print(b1[2]);
+print(b1[3]);
+let g0 = rand_gauss_copula(0.0, 2);
+print(g0[0]);
+print(g0[1]);
+print(g0[2]);
+print(g0[3]);
+let g1 = rand_gauss_copula(0.8, 2);
+print(g1[0]);
+print(g1[1]);
+print(g1[2]);
+print(g1[3]);
+let t0 = rand_t_copula(0.5, 4.0, 2);
+print(t0[0]);
+print(t0[1]);
+print(t0[2]);
+print(t0[3]);
+let t1 = rand_t_copula(-0.3, 8.0, 2);
+print(t1[0]);
+print(t1[1]);
+print(t1[2]);
+print(t1[3]);

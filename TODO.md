@@ -672,8 +672,29 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   by parts) or integration — independent of rt.c's ibeta/igamma
   formulas; quant-fuzz runs 10 series x 101 rows (1010 checks) with
   finiteness and (0,1] p-value assertions.
-  Still open as future directions: multivariate distributions / copulas,
-  and the Bootstrap (resampling) family.
+  Still open: the Bootstrap (resampling) family.
+- [x] **Multivariate distributions / copulas (2026-10-30).**
+  `rand_dirichlet(alphas)`: iid Gamma(alpha_i, 1) draws via the existing
+  bi_gamma_sample (boost below shape 1), normalized — a simplex share in
+  (0,1), flat float list out. `rand_binormal(mu1,mu2,sd1,sd2,rho,n)`:
+  two Box-Muller pairs per sample, x1 = mu1+sd1*z1, x2 =
+  mu2+sd2*(rho*z1+sqrt(1-rho^2)*z2). `rand_gauss_copula(rho,n)`: the same
+  pair through lume_bi_normcdf, so both marginals are exact U(0,1)
+  probabilities. `rand_t_copula(rho,df,n)`: the pair scaled by a shared
+  sqrt(df/chisq(df)) draw (2*bi_gamma_sample(df/2)) then lume_bi_tdist_cdf
+  — common-tail dependence beyond the Gaussian copula. Invalid parameters
+  answer an empty list (n<1, rho outside (-1,1), NAN shapes); the native
+  emitters reuse the sim_* list-argument blocks (flat list for dirichlet,
+  scalar->list with a trailing count for the rest; LLVM carrier free /
+  reference-free). quant-consistency pins 13 more rows (120 total, three
+  legs byte-identical; each call re-seeds 42 so the rows replay from the
+  absolute start of the stream); quant-refcheck adds 12 absolute-stream
+  cases (127 total) — pcg_dirichlet via pcg_gamma, the copulas via
+  pcg_rand_normal + _bs_ncdf / the definition-based tdist_cdf_ref
+  integration, independent of rt.c's gamma loop and ibeta CDF; quant-fuzz
+  runs 10 series x 105 rows (1050 checks) with (0,1) share/probability
+  and finiteness assertions.
+  Still open: the Bootstrap (resampling) family.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

@@ -209,3 +209,39 @@ print(chisq_p(0, 1));
 print(chisq_p(3.84146, 1));
 print(chisq_p(10, 4));
 print(z_pvalue(2.5758));
+
+// multivariate / copula (2026-10-30): each sampler re-seeds 42 so the
+// reference replays it from the absolute start of the stream —
+// dirichlet([1,1,1]) is symmetric (each element ~1/3), binormal with
+// rho=0 has independent marginals, the copulas answer probabilities in
+// (0,1); the rows are pinned against the absolute-stream Python
+// reference in tests/quant-refcheck.py.
+seed(42);
+let mv0 = rand_dirichlet([1.0, 1.0, 1.0]);
+print(mv0[0]);
+print(mv0[1]);
+print(mv0[2]);
+seed(42);
+let mv1 = rand_dirichlet([1.0, 2.0, 3.0]);
+print(mv1[2]);
+seed(42);
+let mv2 = rand_binormal(0.0, 0.0, 1.0, 1.0, 0.0, 3);
+print(mv2[0]);
+print(mv2[2]);
+seed(42);
+let mv3 = rand_binormal(100.0, 50.0, 2.0, 3.0, 0.5, 2);
+print(mv3[0]);
+seed(42);
+let mv4 = rand_gauss_copula(0.0, 2);
+print(mv4[0]);
+print(mv4[1]);
+seed(42);
+let mv5 = rand_gauss_copula(0.8, 2);
+print(mv5[0]);
+seed(42);
+let mv6 = rand_t_copula(0.5, 4.0, 2);
+print(mv6[0]);
+print(mv6[2]);
+seed(42);
+let mv7 = rand_t_copula(-0.3, 8.0, 2);
+print(mv7[0]);

@@ -400,7 +400,9 @@ static Type *infer_node_type(CG *g, Node *n)
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||
                 strcmp(name, "shuffle") == 0 ||
                 strcmp(name, "sim_gbm") == 0 || strcmp(name, "sim_bridge") == 0 ||
-                strcmp(name, "sim_ou") == 0 || strcmp(name, "sim_merton") == 0)
+                strcmp(name, "sim_ou") == 0 || strcmp(name, "sim_merton") == 0 ||
+                strcmp(name, "rand_dirichlet") == 0 || strcmp(name, "rand_binormal") == 0 ||
+                strcmp(name, "rand_gauss_copula") == 0 || strcmp(name, "rand_t_copula") == 0)
                 return type_list(type_prim(TY_FLOAT));
             /* rand_multinomial (2026-10-28) builds a fresh int list: the
              * success counts per category. */

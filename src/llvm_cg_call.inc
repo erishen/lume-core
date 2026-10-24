@@ -767,6 +767,22 @@ static Val cg_builtin(CG *g, Node *n)
             rt_decl(g, "lume_bi_shuffle", g->i8ptr, p1, 1), v1, 1, "q");
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
+    /* rand_dirichlet(alphas) (2026-10-30): a fresh normalized probability
+     * vector from iid Gamma(alpha_i, 1) samples; one list argument, a fresh
+     * float list back. */
+    if (strcmp(bname, "rand_dirichlet") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: rand_dirichlet() takes one list", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: rand_dirichlet() needs a list", n->line);
+        LLVMTypeRef p1[1] = { g->i8ptr };
+        LLVMValueRef v1[1] = { a.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p1, 1, 0),
+            rt_decl(g, "lume_bi_rand_dirichlet", g->i8ptr, p1, 1), v1, 1, "dir");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
     /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against a
      * float list of category weights; answers a fresh int list. n
      * truncates through lume_bi_ftoi, probs passes as i8*. */
@@ -852,6 +868,65 @@ static Val cg_builtin(CG *g, Node *n)
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->i8ptr, pt, argc, 0),
             rt_decl(g, fn, g->i8ptr, pt, argc), pv, argc, "sim");
+        /* Val.v is a live LLVMValueRef here (never heap-allocated by us):
+         * free only the calloc'd carrier arrays, not the refs themselves. */
+        free(vs);
+        free(pt);
+        free(pv);
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
+    /* Multivariate / copula samplers (2026-10-30, mirroring the text
+     * backend's branches): all-scalar inputs answering a fresh float list.
+     * rand_binormal(mu1, mu2, sd1, sd2, rho, n) takes six arguments,
+     * rand_gauss_copula(rho, n) two and rand_t_copula(rho, df, n) three.
+     * The last argument truncates through lume_bi_ftoi, every other
+     * argument widens through lume_bi_float. */
+    if (strcmp(bname, "rand_binormal") == 0 || strcmp(bname, "rand_gauss_copula") == 0 ||
+        strcmp(bname, "rand_t_copula") == 0) {
+        int want = (strcmp(bname, "rand_binormal") == 0) ? 6 :
+                   (strcmp(bname, "rand_gauss_copula") == 0 ? 2 : 3);
+        if (argc != want)
+            ERRV(g, "line %zu: %s() takes %d arguments", n->line, bname, want);
+        Val *vs = (Val *)calloc((size_t)argc, sizeof(Val));
+        for (int i = 0; i < argc; i++) {
+            vs[i] = cg_expr(g, n->as.call.args[i]);
+            if (!vs[i].v || !vs[i].ty ||
+                (vs[i].ty->kind != TY_INT && vs[i].ty->kind != TY_FLOAT)) {
+                free(vs);
+                ERRV(g, "line %zu: %s() needs numbers", n->line, bname);
+            }
+        }
+        LLVMValueRef nv = vs[argc - 1].v;
+        if (vs[argc - 1].ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { nv };
+            nv = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "ft");
+        }
+        const char *fn;
+        if (strcmp(bname, "rand_binormal") == 0) fn = "lume_bi_rand_binormal";
+        else if (strcmp(bname, "rand_gauss_copula") == 0) fn = "lume_bi_rand_gauss_copula";
+        else fn = "lume_bi_rand_t_copula";
+        LLVMTypeRef *pt = (LLVMTypeRef *)calloc((size_t)argc, sizeof(LLVMTypeRef));
+        LLVMValueRef *pv = (LLVMValueRef *)calloc((size_t)argc, sizeof(LLVMValueRef));
+        for (int i = 0; i < argc - 1; i++) {
+            pt[i] = g->dbl;
+            pv[i] = vs[i].v;
+            if (vs[i].ty->kind == TY_INT) {
+                LLVMTypeRef p1[1] = { g->i64 };
+                LLVMValueRef v1[1] = { vs[i].v };
+                pv[i] = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->dbl, p1, 1, 0),
+                    rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+            }
+        }
+        pt[argc - 1] = g->i64;
+        pv[argc - 1] = nv;
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, pt, argc, 0),
+            rt_decl(g, fn, g->i8ptr, pt, argc), pv, argc, "mv");
         /* Val.v is a live LLVMValueRef here (never heap-allocated by us):
          * free only the calloc'd carrier arrays, not the refs themselves. */
         free(vs);

@@ -3198,6 +3198,87 @@ double lume_bi_chisq_p(double x, double df)
     return p < 0.0 ? 0.0 : p;   /* ULP guard on the upper tail */
 }
 
+/* Multivariate / copula samplers (2026-10-30): rand_dirichlet /
+ * rand_binormal / rand_gauss_copula / rand_t_copula. All reuse the single
+ * deterministic PCG32 stream through the helpers above — lume_bi_rand_normal
+ * for each Box-Muller z (two draws each), bi_gamma_sample for the shared
+ * chi-square draw, lume_bi_normcdf / lume_bi_tdist_cdf for the probability
+ * transforms — so the interpreter and both native backends advance their own
+ * stream identically and answer byte-identical lists. Each answers a fresh
+ * flat float list; invalid parameters answer an empty list natively (the
+ * interpreter reports an error instead). */
+LumeList *lume_bi_rand_dirichlet(const LumeList *alphas)
+{
+    LumeList *out = lume_list_new();
+    int64_t n = 0; double *a = bi_num_copy(alphas, &n);
+    if (!a || n < 1) { free(a); return out; }
+    for (int64_t i = 0; i < n; i++)
+        if (!isfinite(a[i]) || a[i] <= 0.0) { free(a); return out; }
+    double *g = (double *)malloc((size_t)n * sizeof(double));
+    if (!g) { free(a); return out; }
+    double sum = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        g[i] = bi_gamma_sample(a[i]);   /* iid Gamma(alpha_i, 1) */
+        sum += g[i];
+    }
+    free(a);
+    if (!(sum > 0.0)) { free(g); return out; }
+    for (int64_t i = 0; i < n; i++) lume_list_push_f(out, g[i] / sum);
+    free(g);
+    return out;
+}
+
+LumeList *lume_bi_rand_binormal(double mu1, double mu2, double sd1, double sd2,
+                                double rho, int64_t n)
+{
+    LumeList *out = lume_list_new();
+    if (!isfinite(mu1) || !isfinite(mu2) || !isfinite(sd1) || sd1 < 0.0 ||
+        !isfinite(sd2) || sd2 < 0.0 || !isfinite(rho) || rho <= -1.0 ||
+        rho >= 1.0 || n < 1) return out;
+    double c = sqrt(1.0 - rho * rho);   /* Cholesky factor of the 2x2 corr */
+    for (int64_t j = 0; j < n; j++) {
+        double z1 = lume_bi_rand_normal(0.0, 1.0);
+        double z2 = lume_bi_rand_normal(0.0, 1.0);
+        lume_list_push_f(out, mu1 + sd1 * z1);
+        lume_list_push_f(out, mu2 + sd2 * (rho * z1 + c * z2));
+    }
+    return out;
+}
+
+LumeList *lume_bi_rand_gauss_copula(double rho, int64_t n)
+{
+    LumeList *out = lume_list_new();
+    if (!isfinite(rho) || rho <= -1.0 || rho >= 1.0 || n < 1) return out;
+    double c = sqrt(1.0 - rho * rho);
+    for (int64_t j = 0; j < n; j++) {
+        double z1 = lume_bi_rand_normal(0.0, 1.0);
+        double z2 = lume_bi_rand_normal(0.0, 1.0);
+        double y2 = rho * z1 + c * z2;   /* corr(rho) normal pair */
+        lume_list_push_f(out, lume_bi_normcdf(z1));
+        lume_list_push_f(out, lume_bi_normcdf(y2));
+    }
+    return out;
+}
+
+LumeList *lume_bi_rand_t_copula(double rho, double df, int64_t n)
+{
+    LumeList *out = lume_list_new();
+    if (!isfinite(rho) || rho <= -1.0 || rho >= 1.0 || !isfinite(df) ||
+        df <= 0.0 || n < 1) return out;
+    double c = sqrt(1.0 - rho * rho);
+    for (int64_t j = 0; j < n; j++) {
+        double z1 = lume_bi_rand_normal(0.0, 1.0);
+        double z2 = lume_bi_rand_normal(0.0, 1.0);
+        double v = 2.0 * bi_gamma_sample(0.5 * df);   /* chi-square(df) */
+        double s = sqrt(df / v);                       /* shared scaling */
+        double y1 = z1 * s;
+        double y2 = (rho * z1 + c * z2) * s;
+        lume_list_push_f(out, lume_bi_tdist_cdf(y1, df));
+        lume_list_push_f(out, lume_bi_tdist_cdf(y2, df));
+    }
+    return out;
+}
+
 /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against the
  * probs list, one plain draw per experiment, answered as a fresh int list
  * (counts per category). Defined here, after the LumeList machinery —

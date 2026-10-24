@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 101                             # rows per dataset. The layout mirrors the
+RPP = 105                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -565,6 +565,60 @@ def tdist_cdf_ref(t, df):
     return 0.5 + _simpson(lambda x: _t_pdf(x, df), 0.0, t)
 
 
+def pcg_dirichlet(seed, alphas, k):
+    """iid Gamma(alpha_i, 1) draws via pcg_gamma (sequential stream
+    positions), normalized; returns (flat vector list, next_k)."""
+    n = len(alphas)
+    g = []
+    for a in alphas:
+        v, k = pcg_gamma(seed, a, k)
+        g.append(v)
+    s = sum(g)
+    return ([x / s for x in g], k)
+
+
+def pcg_binormal(seed, mu1, mu2, sd1, sd2, rho, n, k):
+    """n independent pairs: z1, z2 standard normals (two draws each);
+    x1 = mu1+sd1*z1, x2 = mu2+sd2*(rho*z1 + sqrt(1-rho^2)*z2)."""
+    c = math.sqrt(1.0 - rho * rho)
+    out = []
+    for _ in range(n):
+        z1 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        z2 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        out.append(mu1 + sd1 * z1)
+        out.append(mu2 + sd2 * (rho * z1 + c * z2))
+    return out, k
+
+
+def pcg_gauss_copula(seed, rho, n, k):
+    """Gaussian copula pair: corr(rho) normal pair transformed by Phi;
+    uniform marginals in (0,1)."""
+    c = math.sqrt(1.0 - rho * rho)
+    out = []
+    for _ in range(n):
+        z1 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        z2 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        out.append(_bs_ncdf(z1))
+        out.append(_bs_ncdf(rho * z1 + c * z2))
+    return out, k
+
+
+def pcg_t_copula(seed, rho, df, n, k):
+    """Student-t copula pair: the same corr(rho) normal pair scaled by a
+    shared sqrt(df/chisq(df)) draw (chi-square = 2*gamma(df/2)), then the
+    t CDF; uniform marginals in (0,1)."""
+    c = math.sqrt(1.0 - rho * rho)
+    out = []
+    for _ in range(n):
+        z1 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        z2 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        v, k = pcg_gamma(seed, 0.5 * df, k)
+        s = math.sqrt(df / (2.0 * v))
+        out.append(tdist_cdf_ref(z1 * s, df))
+        out.append(tdist_cdf_ref((rho * z1 + c * z2) * s, df))
+    return out, k
+
+
 def tstat_ref(data, mu):
     return (st.mean(data) - mu) / (st.stdev(data) / math.sqrt(len(data)))
 
@@ -923,6 +977,23 @@ def main():
         lines.append("print(chisq_stat([5,15], [10,10]));")
         row(sixg(chisq_p_ref(5.0, 1)))
         lines.append("print(chisq_p(5, 1));")
+        # multivariate / copula (2026-10-30): dirichlet answers a (0,1)
+        # simplex share, binormal stays finite, the copulas answer
+        # probabilities in (0,1); each row re-seeds so the absolute-k
+        # reference (1-based, see pcg32_draw) replays from the start of
+        # the stream, mirroring the appended consistency section.
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_dirichlet(sd, [1.0, 1.0, 1.0], 1)[0][0]))
+        lines.append("print(rand_dirichlet([1.0, 1.0, 1.0])[0]);")
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_binormal(sd, 0.0, 0.0, 1.0, 1.0, 0.5, 1, 1)[0][0]))
+        lines.append("print(rand_binormal(0.0, 0.0, 1.0, 1.0, 0.5, 1)[0]);")
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_gauss_copula(sd, 0.5, 1, 1)[0][0]))
+        lines.append("print(rand_gauss_copula(0.5, 1)[0]);")
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_t_copula(sd, 0.5, 4.0, 1, 1)[0][0]))
+        lines.append("print(rand_t_copula(0.5, 4.0, 1)[0]);")
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:
@@ -1131,6 +1202,14 @@ def main():
             elif r == 99:                  # chisq_stat >= 0
                 if got < -1e-9:
                     sys.stderr.write("FAIL row %d: chisq_stat < 0 %r\n" % (i, got)); fails += 1
+            elif r == 101 or r == 103 or r == 104:  # dirichlet share / copula
+                # probabilities in (0, 1)
+                if got <= 0.0 or got >= 1.0:
+                    sys.stderr.write("FAIL row %d: probability out of (0,1) %r\n"
+                                     % (i, got)); fails += 1
+            elif r == 102:                  # binormal[0] finite
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite binormal %r\n" % (i, got)); fails += 1
 
     # covariance symmetry is asserted on the pair rows (r==6 vs r==7)
     for i in range(N_SERIES):

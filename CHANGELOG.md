@@ -258,6 +258,35 @@ All notable changes to Lume are documented here. The format follows
   is independent of rt.c's ibeta/igamma formulas;
   `tests/quant-fuzz.py` grows to 1010 checks (10 series × 101 rows)
   with finiteness and (0,1] p-value assertions on the new rows.
+- **Multivariate-distribution / copula samplers: `rand_dirichlet` /
+  `rand_binormal` / `rand_gauss_copula` / `rand_t_copula`.** Four
+  builtins that move the Monte-Carlo layer from univariate samplers to
+  dependent vectors: `rand_dirichlet(alphas)` turns iid Gamma(αᵢ, 1)
+  draws (the existing `bi_gamma_sample`, one stream draw per round plus
+  the boost draw below shape 1) into a normalized simplex share and
+  returns a flat float list; `rand_binormal(mu1,mu2,sd1,sd2,rho,n)`
+  samples n pairs `x1 = μ1+σ1·z1`, `x2 = μ2+σ2·(ρ·z1+√(1−ρ²)·z2)` from
+  two Box-Muller pairs each; `rand_gauss_copula(rho,n)` feeds the same
+  correlated normal pair through `lume_bi_normcdf`, so both marginals
+  answer probabilities in (0,1) and the row U(0,1)-marginality is exact;
+  `rand_t_copula(rho,df,n)` scales the pair by a shared
+  `√(df/chisq(df))` draw (`2·bi_gamma_sample(df/2)`) and pushes the
+  result through `lume_bi_tdist_cdf`, adding the common-tail dependence
+  the Gaussian copula lacks. Invalid parameters answer an empty list
+  (n<1, rho outside (−1,1), NAN shapes); the interp / text / LLVM
+  emitters mirror the sim_* list-argument blocks (flat list for
+  dirichlet, scalar→list with a trailing count for the rest), and the
+  LLVM blocks keep the calloc'd carrier free / reference-free pattern.
+  `tests/quant-consistency.lume` pins 13 more rows (120 total, three
+  legs byte-identical; every call re-seeds 42 so the rows replay from
+  the absolute start of the stream); `tests/quant-refcheck.py` adds 12
+  cases (127 total) whose references replay the same absolute stream
+  position-by-position — `pcg_dirichlet` via the existing `pcg_gamma`,
+  the copulas via `pcg_rand_normal` + `_bs_ncdf` / the definition-based
+  `tdist_cdf_ref` integration — so agreement is independent of rt.c's
+  gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
+  (10 series × 105 rows) with (0,1) simplex-share / probability and
+  finiteness assertions on the four new rows.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

@@ -665,6 +665,60 @@ def chisq_p_ref(x, df):
     return 1.0 - chisq_cdf_ref(x, df)
 
 
+def pcg_dirichlet(seed, alphas, k):
+    """iid Gamma(alpha_i, 1) draws via pcg_gamma (sequential stream
+    positions), normalized; returns (flat vector list, next_k)."""
+    n = len(alphas)
+    g = []
+    for a in alphas:
+        v, k = pcg_gamma(seed, a, k)
+        g.append(v)
+    s = sum(g)
+    return ([x / s for x in g], k)
+
+
+def pcg_binormal(seed, mu1, mu2, sd1, sd2, rho, n, k):
+    """n independent pairs: z1, z2 standard normals (two draws each);
+    x1 = mu1+sd1*z1, x2 = mu2+sd2*(rho*z1 + sqrt(1-rho^2)*z2)."""
+    c = math.sqrt(1.0 - rho * rho)
+    out = []
+    for _ in range(n):
+        z1 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        z2 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        out.append(mu1 + sd1 * z1)
+        out.append(mu2 + sd2 * (rho * z1 + c * z2))
+    return out, k
+
+
+def pcg_gauss_copula(seed, rho, n, k):
+    """Gaussian copula pair: corr(rho) normal pair transformed by Phi;
+    uniform marginals in (0,1)."""
+    c = math.sqrt(1.0 - rho * rho)
+    out = []
+    for _ in range(n):
+        z1 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        z2 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        out.append(_bs_ncdf(z1))
+        out.append(_bs_ncdf(rho * z1 + c * z2))
+    return out, k
+
+
+def pcg_t_copula(seed, rho, df, n, k):
+    """Student-t copula pair: the same corr(rho) normal pair scaled by a
+    shared sqrt(df/chisq(df)) draw (chi-square = 2*gamma(df/2)), then the
+    t CDF; uniform marginals in (0,1)."""
+    c = math.sqrt(1.0 - rho * rho)
+    out = []
+    for _ in range(n):
+        z1 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        z2 = pcg_rand_normal(seed, 0.0, 1.0, k); k += 2
+        v, k = pcg_gamma(seed, 0.5 * df, k)
+        s = math.sqrt(df / (2.0 * v))
+        out.append(tdist_cdf_ref(z1 * s, df))
+        out.append(tdist_cdf_ref((rho * z1 + c * z2) * s, df))
+    return out, k
+
+
 def pcg_t(seed, df, k):
     """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
     u1 = pcg_ub(seed, k)
@@ -789,6 +843,24 @@ cases += [
     ("test chisq_p 3.84146", sixg(chisq_p_ref(3.84146, 1)), 0.05),
     ("test chisq_p 10 df4",  sixg(chisq_p_ref(10, 4)), 0.0404277),
     ("test z_pvalue 2.5758", sixg(z_pvalue_ref(2.5758)), 0.0100008),
+    # multivariate / copula (2026-10-30): absolute-stream references replay
+    # each call from the start of the seed-42 stream (every consistency row
+    # re-seeds first) — dirichlet normalizes iid gamma draws, binormal /
+    # gauss_copula consume two Box-Muller pairs per sample, t_copula adds
+    # the shared chi-square draw; the t CDF reference is the definition-based
+    # integration above.
+    ("mv dirichlet[0]",      sixg(pcg_dirichlet(42, [1.0, 1.0, 1.0], 1)[0][0]), 0.283897),
+    ("mv dirichlet[1]",      sixg(pcg_dirichlet(42, [1.0, 1.0, 1.0], 1)[0][1]), 0.110099),
+    ("mv dirichlet[2]",      sixg(pcg_dirichlet(42, [1.0, 1.0, 1.0], 1)[0][2]), 0.606005),
+    ("mv dirichlet heavy",   sixg(pcg_dirichlet(42, [1.0, 2.0, 3.0], 1)[0][2]), 0.711631),
+    ("mv binormal[0]",       sixg(pcg_binormal(42, 0.0, 0.0, 1.0, 1.0, 0.0, 3, 1)[0][0]), -2.01858),
+    ("mv binormal[2]",       sixg(pcg_binormal(42, 0.0, 0.0, 1.0, 1.0, 0.0, 3, 1)[0][2]), 0.751619),
+    ("mv binormal rho",      sixg(pcg_binormal(42, 100.0, 50.0, 2.0, 3.0, 0.5, 2, 1)[0][0]), 95.9628),
+    ("mv gauss_copula[1]",   sixg(pcg_gauss_copula(42, 0.0, 2, 1)[0][1]), 0.887921),
+    ("mv gauss_copula rho",  sixg(pcg_gauss_copula(42, 0.8, 2, 1)[0][0]), 0.0217654),
+    ("mv t_copula[0]",       sixg(pcg_t_copula(42, 0.5, 4.0, 2, 1)[0][0]), 0.0826892),
+    ("mv t_copula[2]",       sixg(pcg_t_copula(42, 0.5, 4.0, 2, 1)[0][2]), 0.148959),
+    ("mv t_copula neg rho",  sixg(pcg_t_copula(42, -0.3, 8.0, 2, 1)[0][0]), 0.0588266),
 ]
 
 fails = 0

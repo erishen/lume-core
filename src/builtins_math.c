@@ -1077,6 +1077,104 @@ static void native_chisq_p(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(p < 0.0 ? 0.0 : p);
 }
 
+/* Multivariate / copula samplers (2026-10-30): independent interpreter-side
+ * implementations of the same formulas as rt.c's lume_bi_rand_dirichlet /
+ * rand_binormal / rand_gauss_copula / rand_t_copula, driven by this VM's own
+ * bi_rng stream (bi_rand_normal_1 per Box-Muller z, bi_gamma_sample for the
+ * shared chi-square draw, bi_normcdf / bi_tdist_cdf for the probability
+ * transforms), so each backend advances its own PCG32 state identically.
+ * Each answers a fresh flat float list; invalid parameters error here and
+ * answer an empty list natively. */
+static void native_rand_dirichlet(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    int n; double *a = list_to_doubles(vm, L, &n);
+    if (!a) return;
+    if (n < 1) { free(a); vm_set_error(vm, "rand_dirichlet(): need a non-empty alphas list"); return; }
+    for (int i = 0; i < n; i++)
+        if (a[i] <= 0.0 || a[i] != a[i]) { free(a); vm_set_error(vm, "rand_dirichlet(): alphas must be positive"); return; }
+    double *g = (double *)malloc((size_t)n * sizeof(double));
+    if (!g) { free(a); vm_set_error(vm, "out of memory"); return; }
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) { g[i] = bi_gamma_sample(a[i]); sum += g[i]; }
+    free(a);
+    if (!(sum > 0.0)) { free(g); vm_set_error(vm, "rand_dirichlet(): sample sum is 0"); return; }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int i = 0; i < n; i++) list_push(vm, res, val_num(g[i] / sum));
+    free(g);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rand_binormal(VM *vm, int argc, Value *args, Value *out) {
+    double mu1, mu2, sd1, sd2, rho, n;
+    if (argc < 6 || !arg_num(vm, args[0], &mu1) || !arg_num(vm, args[1], &mu2) ||
+        !arg_num(vm, args[2], &sd1) || !arg_num(vm, args[3], &sd2) ||
+        !arg_num(vm, args[4], &rho) || !arg_num(vm, args[5], &n)) return;
+    if (!isfinite(mu1) || !isfinite(mu2) || !isfinite(sd1) || sd1 < 0.0 ||
+        !isfinite(sd2) || sd2 < 0.0 || !isfinite(rho) || rho <= -1.0 ||
+        rho >= 1.0 || n < 1.0 || n != n) {
+        vm_set_error(vm, "rand_binormal(): invalid parameters"); return;
+    }
+    int64_t nn = (int64_t)n;
+    double c = sqrt(1.0 - rho * rho);
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int64_t j = 0; j < nn; j++) {
+        double z1 = bi_rand_normal_1(0.0, 1.0);
+        double z2 = bi_rand_normal_1(0.0, 1.0);
+        list_push(vm, res, val_num(mu1 + sd1 * z1));
+        list_push(vm, res, val_num(mu2 + sd2 * (rho * z1 + c * z2)));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rand_gauss_copula(VM *vm, int argc, Value *args, Value *out) {
+    double rho, n;
+    if (argc < 2 || !arg_num(vm, args[0], &rho) || !arg_num(vm, args[1], &n)) return;
+    if (!isfinite(rho) || rho <= -1.0 || rho >= 1.0 || n < 1.0 || n != n) {
+        vm_set_error(vm, "rand_gauss_copula(): invalid parameters"); return;
+    }
+    int64_t nn = (int64_t)n;
+    double c = sqrt(1.0 - rho * rho);
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int64_t j = 0; j < nn; j++) {
+        double z1 = bi_rand_normal_1(0.0, 1.0);
+        double z2 = bi_rand_normal_1(0.0, 1.0);
+        list_push(vm, res, val_num(bi_normcdf(z1)));
+        list_push(vm, res, val_num(bi_normcdf(rho * z1 + c * z2)));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rand_t_copula(VM *vm, int argc, Value *args, Value *out) {
+    double rho, df, n;
+    if (argc < 3 || !arg_num(vm, args[0], &rho) || !arg_num(vm, args[1], &df) ||
+        !arg_num(vm, args[2], &n)) return;
+    if (!isfinite(rho) || rho <= -1.0 || rho >= 1.0 || !isfinite(df) || df <= 0.0 ||
+        n < 1.0 || n != n) {
+        vm_set_error(vm, "rand_t_copula(): invalid parameters"); return;
+    }
+    int64_t nn = (int64_t)n;
+    double c = sqrt(1.0 - rho * rho);
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int64_t j = 0; j < nn; j++) {
+        double z1 = bi_rand_normal_1(0.0, 1.0);
+        double z2 = bi_rand_normal_1(0.0, 1.0);
+        double v = 2.0 * bi_gamma_sample(0.5 * df);
+        double s = sqrt(df / v);
+        list_push(vm, res, val_num(bi_tdist_cdf(z1 * s, df)));
+        list_push(vm, res, val_num(bi_tdist_cdf((rho * z1 + c * z2) * s, df)));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -1184,6 +1282,10 @@ Value b_tstat(VM *vm, int argc, Value *args)         { return vm_native(vm, argc
 Value b_ttest_p(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_ttest_p); }
 Value b_chisq_stat(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_chisq_stat); }
 Value b_chisq_p(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_chisq_p); }
+Value b_rand_dirichlet(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_dirichlet); }
+Value b_rand_binormal(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_binormal); }
+Value b_rand_gauss_copula(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_gauss_copula); }
+Value b_rand_t_copula(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_t_copula); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }
