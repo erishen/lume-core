@@ -358,11 +358,14 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "igamma") == 0 || strcmp(name, "ibeta") == 0 ||
                  strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0 ||
                  strcmp(name, "rand") == 0 || strcmp(name, "rand_range") == 0 ||
-                 strcmp(name, "rand_normal") == 0))
+                 strcmp(name, "rand_normal") == 0 || strcmp(name, "rand_exponential") == 0))
                 return type_prim(TY_FLOAT);
             /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
-             * the seed it was given, rand_int() a bounded draw. */
-            if (strcmp(name, "seed") == 0 || strcmp(name, "rand_int") == 0)
+             * the seed it was given, rand_int() a bounded draw; the
+             * distribution family (2026-10-25): rand_bool() answers 0/1,
+             * rand_poisson() a count. */
+            if (strcmp(name, "seed") == 0 || strcmp(name, "rand_int") == 0 ||
+                strcmp(name, "rand_bool") == 0 || strcmp(name, "rand_poisson") == 0)
                 return type_prim(TY_INT);
             /* Quant builtins (2026-10-24) — must stay in step with
              * codegen_scan.c: scalar statistics answer a float, the rolling
@@ -374,7 +377,8 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "skew") == 0 || strcmp(name, "kurtosis") == 0))
                 return type_prim(TY_FLOAT);
             if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
-                strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0)
+                strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||
+                strcmp(name, "shuffle") == 0)
                 return type_list(type_prim(TY_FLOAT));
             if (strcmp(name, "linreg") == 0)
                 return type_anon_struct();

@@ -659,6 +659,47 @@ static Val cg_builtin(CG *g, Node *n)
             rt_decl(g, "lume_bi_rand_int", g->i64, p2, 2), v2, 2, "ri");
         return val_make(type_prim(TY_INT), r);
     }
+    /* Distribution family (2026-10-25, mirroring the text backend): the one
+     * numeric builtins widen an int via lume_bi_float; shuffle passes the
+     * list through as i8*. */
+    if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
+        strcmp(bname, "rand_poisson") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: %s() takes one number", n->line, bname);
+        Val p = cg_expr(g, n->as.call.args[0]);
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+        if (p.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { p.v };
+            p.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        int is_exp = strcmp(bname, "rand_exponential") == 0;
+        const char *fn = is_exp ? "lume_bi_rand_exponential"
+                      : strcmp(bname, "rand_bool") == 0 ? "lume_bi_rand_bool"
+                      : "lume_bi_rand_poisson";
+        LLVMTypeRef p1[1] = { g->dbl };
+        LLVMValueRef v1[1] = { p.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(is_exp ? g->dbl : g->i64, p1, 1, 0),
+            rt_decl(g, fn, is_exp ? g->dbl : g->i64, p1, 1), v1, 1, "rd");
+        return val_make(is_exp ? type_prim(TY_FLOAT) : type_prim(TY_INT), r);
+    }
+    if (strcmp(bname, "shuffle") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: shuffle() takes one list", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: shuffle() needs a list", n->line);
+        LLVMTypeRef p1[1] = { g->i8ptr };
+        LLVMValueRef v1[1] = { a.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p1, 1, 0),
+            rt_decl(g, "lume_bi_shuffle", g->i8ptr, p1, 1), v1, 1, "q");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
 
     /* now(): epoch seconds (SPEC §6.2, matching the interpreter's now() and
      * bridge_native's lume_bi_now). */

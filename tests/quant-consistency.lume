@@ -88,3 +88,21 @@ print(rand_normal(0.0, 1.0));
 print(rand_normal(100.0, 5.0));
 seed(42);
 print(rand());
+
+// distribution family (2026-10-25): rand_bool is a Bernoulli 0/1 draw,
+// rand_exponential the inverse-CDF -ln(u)/rate, rand_poisson Knuth's
+// multiplicative method (exp(-lambda) underflow guard), shuffle a
+// Fisher-Yates permutation of a fresh list (input untouched; each step
+// consumes rand_int(0,i)'s two PCG32 draws). All share the deterministic
+// stream, so re-seeding reproduces the rows exactly.
+seed(42);
+print(rand_bool(0.5));
+print(rand_exponential(1.0));
+print(rand_poisson(5.0));
+print(shuffle([10, 20, 30, 40, 50, 60]));
+seed(42);
+print(rand_bool(0.0));
+print(rand_bool(1.0));
+print(rand_exponential(0.5));
+print(rand_poisson(2.0));
+print(shuffle([1, 2, 3]));

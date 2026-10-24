@@ -388,6 +388,46 @@ double lume_bi_rand_normal(double mu, double sigma)
     return mu + sigma * z;
 }
 
+/* Bernoulli draw: 1 with probability p (0 <= p <= 1), else 0. The draw is
+ * the same rand() the interpreter uses, so the fixed stream keeps every
+ * backend identical; an out-of-range p answers 0 natively (the interpreter
+ * reports an error). */
+int64_t lume_bi_rand_bool(double p)
+{
+    if (!isfinite(p) || p < 0.0 || p > 1.0) return 0;
+    return ((double)(rng_next() >> 8) * 0.000000059604644775390625) < p;
+}
+
+/* Exponential(rate): inverse-CDF -ln(u)/rate, with the same 2^-25 anti-zero
+ * bias on u as rand_normal (u == 0 would give +inf). */
+double lume_bi_rand_exponential(double rate)
+{
+    if (!isfinite(rate) || rate <= 0.0) return NAN;
+    double u = (double)(rng_next() >> 8) * 0.000000059604644775390625
+               + 0.0000000298023223876953125;
+    return -log(u) / rate;
+}
+
+/* Poisson(lambda): Knuth's multiplicative method. Each step consumes one
+ * u (biased like rand_normal); exp(-lambda) == 0 means lambda is so large
+ * the loop could never terminate, so that answers -1 natively (the
+ * interpreter reports an error). */
+int64_t lume_bi_rand_poisson(double lambda)
+{
+    if (!isfinite(lambda) || lambda <= 0.0) return -1;
+    double l = exp(-lambda);
+    if (!(l > 0.0)) return -1;
+    double p = 1.0;
+    int64_t k = 0;
+    do {
+        k++;
+        double u = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                   + 0.0000000298023223876953125;
+        p *= u;
+    } while (p > l);
+    return k - 1;
+}
+
 double lume_bi_lgamma(double x) { return lgamma(x); }
 
 double lume_bi_gamma(double x)  { return exp(lgamma(x)); }
@@ -2661,6 +2701,24 @@ double lume_bi_mean(const LumeList *l)
     for (int64_t i = 0; i < n; i++) s += xs[i];
     free(xs);
     return s / (double)n;
+}
+
+/* Fisher-Yates shuffle of a fresh list (the input is left untouched): for
+ * i = n-1 down to 1, swap i with rand_int(0, i). rand_int consumes two
+ * PCG32 draws per step, and the fixed stream makes the permutation
+ * deterministic across backends and runs. */
+LumeList *lume_bi_shuffle(const LumeList *l)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs) return out;
+    for (int64_t i = n - 1; i > 0; i--) {
+        int64_t j = lume_bi_rand_int(0, i);
+        double t = xs[i]; xs[i] = xs[j]; xs[j] = t;
+    }
+    for (int64_t i = 0; i < n; i++) lume_list_push_f(out, xs[i]);
+    free(xs);
+    return out;
 }
 
 double lume_bi_variance(const LumeList *l)

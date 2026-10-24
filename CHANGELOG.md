@@ -97,6 +97,26 @@ All notable changes to Lume are documented here. The format follows
   total); `tests/quant-fuzz.py` grows to 470 checks (10 series × 47 rows)
   with rand/rand_range/rand_int bound assertions and a re-seed round-trip
   (last row must equal the first) under every distribution kind.
+- **Monte Carlo distribution family 鈥?`rand_bool`/`rand_exponential`/
+  `rand_poisson`/`shuffle` (2026-10-25).** The RNG surface grows a
+  Bernoulli draw, an exponential sampler, a Poisson sampler and a
+  Fisher-Yates shuffler, all on the same deterministic PCG32 stream:
+  `rand_bool(p)` answers 1 with probability p (p outside [0,1] reports
+  an error on the interpreter and answers 0 natively);
+  `rand_exponential(rate)` is the inverse-CDF `-ln(u)/rate` (rate 鈮?0
+  likewise errors / NAN); `rand_poisson(lambda)` runs Knuth's
+  multiplicative method with an `exp(-lambda)` underflow guard (errors /
+  -1); `shuffle(list)` returns a fresh permutation, leaving its input
+  untouched and consuming `rand_int(0,i)`'s two PCG32 draws per step so
+  every backend stays byte-identical. `rand_bool`/`rand_poisson` infer
+  `TY_INT`, `rand_exponential` `TY_FLOAT` and `shuffle` a float list,
+  all with explicit arities like the base five.
+  `tests/quant-consistency.lume` pins 9 more seed-42 rows (52 total,
+  three legs byte-identical); `tests/quant-refcheck.py` adds 9 fixed
+  cases against the independent Python PCG32 (62 total);
+  `tests/quant-fuzz.py` grows to 560 checks (10 series 脳 56 rows) with
+  bool/exponential/poisson bound assertions and a second re-seed
+  round-trip after the distribution rows.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

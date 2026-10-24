@@ -377,6 +377,10 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_rand_range(double, double)\n");
     EMIT(g, "declare i64 @lume_bi_rand_int(i64, i64)\n");
     EMIT(g, "declare double @lume_bi_rand_normal(double, double)\n");
+    EMIT(g, "declare i64 @lume_bi_rand_bool(double)\n");
+    EMIT(g, "declare double @lume_bi_rand_exponential(double)\n");
+    EMIT(g, "declare i64 @lume_bi_rand_poisson(double)\n");
+    EMIT(g, "declare i8* @lume_bi_shuffle(i8*)\n");
     EMIT(g, "declare double @lume_bi_log(double)\n");
     EMIT(g, "declare i64 @lume_bi_parse_i64(i8*)\n");
     EMIT(g, "declare double @lume_bi_parse_double(i8*)\n");
@@ -1034,6 +1038,48 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i64 @lume_bi_rand_int(i64 %s, i64 %s)", a.v, b.v);
         free(a.v); free(b.v);
         return val_make(type_prim(TY_INT), t);
+    }
+
+    /* Distribution family (2026-10-25): rand_bool(p) / rand_exponential(rate)
+     * / rand_poisson(lambda) take one number — an int widens through
+     * lume_bi_float exactly as the interpreter treats its double argument;
+     * shuffle(list) returns a fresh list (Fisher-Yates on the same PCG32
+     * stream). */
+    if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
+        strcmp(bname, "rand_poisson") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: %s() takes one number", n->line, bname);
+        Val p = cg_expr(g, n->as.call.args[0]);
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
+            free(p.v);
+            ERRV(g, "line %zu: %s() needs a number", n->line, bname);
+        }
+        if (p.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", p.v);
+            free(p.v);
+            p.v = w;
+        }
+        int is_exp = strcmp(bname, "rand_exponential") == 0;
+        const char *fn = is_exp ? "lume_bi_rand_exponential"
+                      : strcmp(bname, "rand_bool") == 0 ? "lume_bi_rand_bool"
+                      : "lume_bi_rand_poisson";
+        Type *rt = is_exp ? type_prim(TY_FLOAT) : type_prim(TY_INT);
+        const char *pty = is_exp ? "double" : "i64";
+        char *t = emit_instrf(g, rt, "call %s @%s(double %s)", pty, fn, p.v);
+        free(p.v);
+        return val_make(rt, t);
+    }
+    if (strcmp(bname, "shuffle") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: shuffle() takes one list", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: shuffle() needs a list", n->line);
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_shuffle(i8* %s)", a.v);
+        free(a.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* File builtins (SPEC §6.2): read_file returns the file as a string or

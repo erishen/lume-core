@@ -284,6 +284,41 @@ def pcg_rand_normal(seed, mu, sigma, k):
     return mu + sigma * z
 
 
+def pcg_rand_bool(seed, p, k):
+    return 1 if (pcg32_draw(seed, k) >> 8) * R2_24 < p else 0
+
+
+def pcg_rand_exp(seed, rate, k):
+    u = (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+    return -math.log(u) / rate
+
+
+def pcg_rand_poi(seed, lam, k):
+    """Knuth's multiplicative Poisson; consumes one draw per step."""
+    l = math.exp(-lam)
+    p = 1.0
+    count = 0
+    while True:
+        count += 1
+        p *= (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+        k += 1
+        if p <= l:
+            return count - 1
+
+
+def pcg_shuffle(seed, vals, k):
+    """Fisher-Yates on a fresh copy; each step consumes rand_int(0,i)'s two
+    draws, so k advances by two per step."""
+    xs = list(vals)
+    n = len(xs)
+    for i in range(n - 1, 0, -1):
+        r = pcg32_draw(seed, k) | (pcg32_draw(seed, k + 1) << 32)
+        k += 2
+        j = r % (i + 1)
+        xs[i], xs[j] = xs[j], xs[i]
+    return xs
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -297,6 +332,21 @@ cases += [
     ("rng rand_normal(0,1)",   sixg(pcg_rand_normal(42, 0.0, 1.0, 8)), -1.44361),
     ("rng rand_normal(100,5)", sixg(pcg_rand_normal(42, 100.0, 5.0, 10)), 103.551),
     ("rng re-seed deterministic", sixg(pcg_rand(42, 1)),     0),
+    # distribution family (2026-10-25): rand_bool is Bernoulli 0/1,
+    # rand_exponential inverse-CDF, rand_poisson Knuth's method, shuffle a
+    # Fisher-Yates permutation. Stream offsets below mirror the fixture's
+    # appended section (poisson consumes its loop count, shuffle two draws
+    # per step).
+    ("rng rand_bool(0.5) k=1",     pcg_rand_bool(42, 0.5, 1), 1),
+    ("rng rand_exp(1.0) k=2",      sixg(pcg_rand_exp(42, 1.0, 2)), 0.364854),
+    ("rng rand_poi(5.0) k=3",      pcg_rand_poi(42, 5.0, 3), 3),
+    ("rng shuffle k=7",            pcg_shuffle(42, [10, 20, 30, 40, 50, 60], 7),
+     [40, 10, 50, 20, 30, 60]),
+    ("rng rand_bool(0.0) k=1",     pcg_rand_bool(42, 0.0, 1), 0),
+    ("rng rand_bool(1.0) k=2",     pcg_rand_bool(42, 1.0, 2), 1),
+    ("rng rand_exp(0.5) k=3",      sixg(pcg_rand_exp(42, 0.5, 3)), 1.50027),
+    ("rng rand_poi(2.0) k=4",      pcg_rand_poi(42, 2.0, 4), 2),
+    ("rng shuffle([1,2,3]) k=7",   pcg_shuffle(42, [1, 2, 3], 7), [2, 1, 3]),
 ]
 
 fails = 0

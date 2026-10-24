@@ -28,10 +28,14 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 47                              # rows per dataset (39 quant rows + 8
+RPP = 56                              # rows per dataset (39 quant rows + 17
                                       # Monte Carlo RNG rows: rand x2,
                                       # rand_range, rand_int x2, rand_normal
-                                      # x2, then re-seed + first rand again)
+                                      # x2, re-seed + first rand again, then
+                                      # the distribution family: rand_bool x3
+                                      # (0.5 / 0.0 / 1.0), rand_exponential
+                                      # x2, rand_poisson x2, shuffle[0], and a
+                                      # closing re-seed round-trip)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -182,6 +186,42 @@ def pcg_rand_normal(seed, mu, sigma, k):
     return mu + sigma * z
 
 
+def pcg_rand_bool(seed, p, k):
+    return 1 if (pcg32_draw(seed, k) >> 8) * R2_24 < p else 0
+
+
+def pcg_rand_exp(seed, rate, k):
+    u = (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+    return -math.log(u) / rate
+
+
+def pcg_rand_poi_consumed(seed, lam, k):
+    """Knuth's multiplicative Poisson; returns (value, next_k) so callers can
+    continue the stream after the loop's variable draw count."""
+    l = math.exp(-lam)
+    p = 1.0
+    count = 0
+    while True:
+        count += 1
+        p *= (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+        k += 1
+        if p <= l:
+            return count - 1, k
+
+
+def pcg_shuffle_first(seed, vals, k):
+    """First element of a Fisher-Yates permutation on a copy (two draws per
+    step), continuing from absolute draw offset k."""
+    xs = list(vals)
+    n = len(xs)
+    for i in range(n - 1, 0, -1):
+        r = pcg32_draw(seed, k) | (pcg32_draw(seed, k + 1) << 32)
+        k += 2
+        j = r % (i + 1)
+        xs[i], xs[j] = xs[j], xs[i]
+    return xs[0]
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -329,6 +369,34 @@ def main():
         lines.append("seed(%d);" % sd)
         row(sixg(pcg_rand(sd, 1)))
         lines.append("print(rand());")
+        # distribution family (2026-10-25): rand_bool is Bernoulli 0/1,
+        # rand_exponential inverse-CDF, rand_poisson Knuth's method,
+        # shuffle a Fisher-Yates permutation of the series (we read element
+        # [0] so each dataset still emits one row per builtin). Stream
+        # offsets mirror the consistency fixture's appended section.
+        lines.append("seed(%d);" % sd)
+        row(pcg_rand_bool(sd, 0.5, 1))
+        lines.append("print(rand_bool(0.5));")
+        row(sixg(pcg_rand_exp(sd, 1.0, 2)))
+        lines.append("print(rand_exponential(1.0));")
+        pv, nk = pcg_rand_poi_consumed(sd, 5.0, 3)
+        row(pv)
+        lines.append("print(rand_poisson(5.0));")
+        row(sixg(pcg_shuffle_first(sd, x, nk)))
+        lines.append("print(shuffle(%s)[0]);" % da)
+        lines.append("seed(%d);" % sd)
+        row(pcg_rand_bool(sd, 0.0, 1))
+        lines.append("print(rand_bool(0.0));")
+        row(pcg_rand_bool(sd, 1.0, 2))
+        lines.append("print(rand_bool(1.0));")
+        row(sixg(pcg_rand_exp(sd, 0.5, 3)))
+        lines.append("print(rand_exponential(0.5));")
+        pv2, _ = pcg_rand_poi_consumed(sd, 2.0, 4)
+        row(pv2)
+        lines.append("print(rand_poisson(2.0));")
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_rand(sd, 1)))
+        lines.append("print(rand());")
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:
@@ -395,28 +463,49 @@ def main():
         if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
             sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
             # vs a positive peak can exceed 100% — the bound is only the sign)
-        # Monte Carlo RNG property rows: rand() in [0,1), rand_range inside
-        # its interval, rand_int inside its inclusive bounds, and the last
-        # row (re-seed + first rand again) equals the first rand row — a
-        # reproducibility contract no identical-implementation bug could
-        # fake, since the round-trip forces a full stream restart.
-        if r >= RPP - 8:
-            if r == RPP - 8 or r == RPP - 7:      # rand()
+        # Monte Carlo RNG property rows (span RPP-17 .. RPP-1): rand() in
+        # [0,1), rand_range inside its interval, rand_int inside its inclusive
+        # bounds, rand_bool in {0,1}, rand_exponential > 0, rand_poisson >= 0,
+        # shuffle[0] a member of the series, and the closing re-seed row
+        # (first rand again) equals the opening rand row — a reproducibility
+        # contract no identical-implementation bug could fake, since the
+        # round-trip forces a full stream restart.
+        if r >= RPP - 17:
+            if r == RPP - 17 or r == RPP - 16 or r == RPP - 1:      # rand()
                 if got < -1e-9 or got > 1.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: rand() out of [0,1) %r\n" % (i, got)); fails += 1
-            elif r == RPP - 6:                    # rand_range(0, 10)
+            elif r == RPP - 15:                    # rand_range(0, 10)
                 if got < -1e-9 or got > 10.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: rand_range out of [0,10] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 5:                    # rand_int(0, 100)
+            elif r == RPP - 14:                    # rand_int(0, 100)
                 if got < 0 or got > 100:
                     sys.stderr.write("FAIL row %d: rand_int out of [0,100] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 4:                    # rand_int(-50, 50)
+            elif r == RPP - 13:                    # rand_int(-50, 50)
                 if got < -50 or got > 50:
                     sys.stderr.write("FAIL row %d: rand_int out of [-50,50] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 1:                    # re-seed round-trip
-                if not close(got, rows["interp"][i - (RPP - 1) + (RPP - 8)]):
+            elif r == RPP - 9 or r == RPP - 5 or r == RPP - 4:      # rand_bool
+                if got not in (0.0, 1.0):
+                    sys.stderr.write("FAIL row %d: rand_bool out of {0,1} %r\n" % (i, got)); fails += 1
+            elif r == RPP - 8 or r == RPP - 3:      # rand_exponential > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: rand_exponential <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 7 or r == RPP - 2:      # rand_poisson >= 0
+                if got < 0.0:
+                    sys.stderr.write("FAIL row %d: rand_poisson < 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 6:                      # shuffle[0] in [min, max]
+                # compare at the printout's six significant figures: on the
+                # large-offset series the raw min/max and the printed value
+                # can differ by the %g rounding (e.g. 99999896.7 prints as
+                # 9.99999e7), so the bounds are rounded the same way.
+                si = i // RPP
+                lo, hi = sixg(min(series[si])), sixg(max(series[si]))
+                if got < lo - 1e-9 or got > hi + 1e-9:
+                    sys.stderr.write("FAIL row %d: shuffle[0] %r outside series [%r, %r]\n"
+                                     % (i, got, lo, hi)); fails += 1
+            elif r == RPP - 1:                      # re-seed round-trip
+                if not close(got, rows["interp"][i - (RPP - 1) + (RPP - 17)]):
                     sys.stderr.write("FAIL row %d: re-seed rand %r != first rand %r\n"
-                                     % (i, got, rows["interp"][i - (RPP - 1) + (RPP - 8)]))
+                                     % (i, got, rows["interp"][i - (RPP - 1) + (RPP - 17)]))
                     fails += 1
 
     # covariance symmetry is asserted on the pair rows (r==6 vs r==7)

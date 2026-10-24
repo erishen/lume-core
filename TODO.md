@@ -537,6 +537,19 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   total), quant-fuzz runs 10 series x 47 rows (470 checks) with
   rand/rand_range/rand_int bounds plus a re-seed round-trip under every
   distribution kind.
+  Monte Carlo distribution family (2026-10-25): rand_bool(p) answers 1
+  with probability p (p outside [0,1] errors on the interpreter / 0
+  natively); rand_exponential(rate) = inverse-CDF -ln(u)/rate (rate <= 0
+  errors / NAN); rand_poisson(lambda) = Knuth's multiplicative method
+  (exp(-lambda) underflow errors / -1); shuffle(list) = Fisher-Yates on
+  a fresh list (input untouched), each step consuming rand_int(0,i)'s
+  two PCG32 draws so interpreter and native backends stay byte-identical.
+  rand_bool/rand_poisson infer TY_INT, rand_exponential TY_FLOAT,
+  shuffle a float list; explicit arities like the base five.
+  quant-consistency pins 9 more seed-42 rows (52 total), quant-refcheck
+  adds 9 independent cases (62 total), quant-fuzz runs 10 series x 56
+  rows (560 checks) with bool/exponential/poisson bounds and a second
+  re-seed round-trip after the distribution rows.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

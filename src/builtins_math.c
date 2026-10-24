@@ -308,6 +308,10 @@ static void native_norminv(VM *vm, int argc, Value *args, Value *out) {
 static uint64_t bi_rng_state = 0x853c49e6748fea9bULL;
 static uint64_t bi_rng_inc   = 0xda3e39cb94b95bdbULL;
 
+/* native_shuffle is defined after the list helpers (list_to_doubles etc.)
+ * that it needs; the b_* wrappers sit earlier, so forward-declare it. */
+static void native_shuffle(VM *vm, int argc, Value *args, Value *out);
+
 static uint32_t bi_rng_next(void)
 {
     uint64_t old = bi_rng_state;
@@ -326,6 +330,7 @@ static void native_seed(VM *vm, int argc, Value *args, Value *out) {
 }
 
 static void native_rand(VM *vm, int argc, Value *args, Value *out) {
+    (void)args;
     if (argc != 0) { vm_set_error(vm, "rand() takes no arguments"); return; }
     *out = val_num((double)(bi_rng_next() >> 8) * 0.000000059604644775390625);
 }
@@ -362,6 +367,51 @@ static void native_rand_normal(VM *vm, int argc, Value *args, Value *out) {
                 + 0.0000000298023223876953125;
     double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
     *out = val_num(mu + sigma * z);
+}
+
+static void native_rand_bool(VM *vm, int argc, Value *args, Value *out) {
+    double p;
+    if (argc < 1 || !arg_num(vm, args[0], &p)) return;
+    if (!isfinite(p) || p < 0.0 || p > 1.0) {
+        vm_set_error(vm, "rand_bool(): need p in [0,1]");
+        return;
+    }
+    *out = val_num((double)(((double)(bi_rng_next() >> 8) * 0.000000059604644775390625) < p));
+}
+
+static void native_rand_exponential(VM *vm, int argc, Value *args, Value *out) {
+    double rate;
+    if (argc < 1 || !arg_num(vm, args[0], &rate)) return;
+    if (!isfinite(rate) || rate <= 0.0) {
+        vm_set_error(vm, "rand_exponential(): need rate > 0");
+        return;
+    }
+    double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+               + 0.0000000298023223876953125;
+    *out = val_num(-log(u) / rate);
+}
+
+static void native_rand_poisson(VM *vm, int argc, Value *args, Value *out) {
+    double lambda;
+    if (argc < 1 || !arg_num(vm, args[0], &lambda)) return;
+    if (!isfinite(lambda) || lambda <= 0.0) {
+        vm_set_error(vm, "rand_poisson(): need lambda > 0");
+        return;
+    }
+    double l = exp(-lambda);
+    if (!(l > 0.0)) {
+        vm_set_error(vm, "rand_poisson(): lambda too large (exp underflows)");
+        return;
+    }
+    double p = 1.0;
+    int64_t k = 0;
+    do {
+        k++;
+        double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                   + 0.0000000298023223876953125;
+        p *= u;
+    } while (p > l);
+    *out = val_num((double)(k - 1));
 }
 
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
@@ -431,6 +481,10 @@ Value b_rand(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, ar
 Value b_rand_range(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_rand_range); }
 Value b_rand_int(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_rand_int); }
 Value b_rand_normal(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_rand_normal); }
+Value b_rand_bool(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_rand_bool); }
+Value b_rand_exponential(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_exponential); }
+Value b_rand_poisson(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_poisson); }
+Value b_shuffle(VM *vm, int argc, Value *args)          { return vm_native(vm, argc, args, native_shuffle); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }
@@ -468,6 +522,29 @@ static double *list_to_doubles(VM *vm, ObjList *L, int *n) {
     for (int i = 0; i < *n; i++)
         if (!list_num(vm, L, i, &xs[i])) { free(xs); return NULL; }
     return xs;
+}
+
+/* Fisher-Yates on a fresh list (input untouched): the j draw inlines
+ * bi_rng_next's two-output 64-bit reduction exactly like native_rand_int,
+ * so interpreter and native backends consume the same stream. */
+static void native_shuffle(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (xs) {
+        for (int i = n - 1; i > 0; i--) {
+            uint64_t span = (uint64_t)i + 1ULL;
+            uint64_t r = (uint64_t)bi_rng_next() | ((uint64_t)bi_rng_next() << 32u);
+            int64_t j = (int64_t)(r % span);
+            double t = xs[i]; xs[i] = xs[j]; xs[j] = t;
+        }
+        for (int i = 0; i < n; i++) list_push(vm, res, val_num(xs[i]));
+        free(xs);
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
 }
 
 static int cmp_d(const void *a, const void *b) {
