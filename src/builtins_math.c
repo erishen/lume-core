@@ -986,6 +986,97 @@ static void native_bs_vega(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(S * bi_normpdf(d1) * sqrt(T));
 }
 
+/* Hypothesis testing (2026-10-29): mirrors rt.c's lume_bi_* — the same
+ * Welford sample variance, the same distribution CDFs, the same
+ * invalid-input policy (error on the interpreter / NAN natively). */
+static double bi_list_sum(VM *vm, ObjList *L, int *n)
+{
+    int cnt; double *xs = list_to_doubles(vm, L, &cnt);
+    if (!xs) return NAN;
+    double s = 0.0;
+    for (int i = 0; i < cnt; i++) s += xs[i];
+    free(xs);
+    if (n) *n = cnt;
+    return s;
+}
+
+static void native_z_test(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    double mu, sigma;
+    if (argc != 3 || !arg_list(vm, args[0], &L) ||
+        !arg_num(vm, args[1], &mu) || !arg_num(vm, args[2], &sigma)) return;
+    if (!isfinite(mu) || !isfinite(sigma) || sigma <= 0.0) { *out = val_num(NAN); return; }
+    int n; double s = bi_list_sum(vm, L, &n);
+    if (s != s || n < 1) { *out = val_num(NAN); return; }
+    *out = val_num((s / (double)n - mu) / (sigma / sqrt((double)n)));
+}
+
+static void native_z_pvalue(VM *vm, int argc, Value *args, Value *out) {
+    double z;
+    if (argc < 1 || !arg_num(vm, args[0], &z)) return;
+    if (!isfinite(z)) { *out = val_num(NAN); return; }
+    double at = z < 0.0 ? -z : z;
+    double p = 2.0 * (1.0 - bi_normcdf(at));
+    *out = val_num(p > 1.0 ? 1.0 : p);
+}
+
+static void native_tstat(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    double mu;
+    if (argc != 2 || !arg_list(vm, args[0], &L) ||
+        !arg_num(vm, args[1], &mu)) return;
+    if (!isfinite(mu)) { *out = val_num(NAN); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs || n < 2) { free(xs); *out = val_num(NAN); return; }
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double sd = sqrt(m2 / (double)(n - 1));
+    if (sd <= 0.0) { *out = val_num(NAN); return; }
+    *out = val_num((m - mu) / (sd / sqrt((double)n)));
+}
+
+static void native_ttest_p(VM *vm, int argc, Value *args, Value *out) {
+    double t, df;
+    if (argc < 2 || !arg_num(vm, args[0], &t) || !arg_num(vm, args[1], &df)) return;
+    if (!isfinite(t) || !isfinite(df) || df <= 0.0) { *out = val_num(NAN); return; }
+    double at = t < 0.0 ? -t : t;
+    double p = 2.0 * (1.0 - bi_tdist_cdf(at, df));
+    *out = val_num(p > 1.0 ? 1.0 : p);
+}
+
+static void native_chisq_stat(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *LO, *LE;
+    if (argc != 2 || !arg_list(vm, args[0], &LO) || !arg_list(vm, args[1], &LE)) return;
+    int no, ne;
+    double *o = list_to_doubles(vm, LO, &no);
+    if (!o) return;
+    double *e = list_to_doubles(vm, LE, &ne);
+    if (!e || no != ne || no < 1) { free(o); free(e); *out = val_num(NAN); return; }
+    double total = 0.0;
+    for (int i = 0; i < no; i++) {
+        if (!isfinite(o[i]) || !isfinite(e[i]) || e[i] <= 0.0) {
+            free(o); free(e); *out = val_num(NAN); return;
+        }
+        double d = o[i] - e[i];
+        total += d * d / e[i];
+    }
+    free(o); free(e);
+    *out = val_num(total);
+}
+
+static void native_chisq_p(VM *vm, int argc, Value *args, Value *out) {
+    double x, df;
+    if (argc < 2 || !arg_num(vm, args[0], &x) || !arg_num(vm, args[1], &df)) return;
+    if (!isfinite(x) || x < 0.0 || !isfinite(df) || df <= 0.0) { *out = val_num(NAN); return; }
+    double p = 1.0 - bi_chisq_cdf(x, df);
+    *out = val_num(p < 0.0 ? 0.0 : p);
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -1087,6 +1178,12 @@ Value b_bs_delta_call(VM *vm, int argc, Value *args){ return vm_native(vm, argc,
 Value b_bs_delta_put(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bs_delta_put); }
 Value b_bs_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_bs_gamma); }
 Value b_bs_vega(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_bs_vega); }
+Value b_z_test(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_z_test); }
+Value b_z_pvalue(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_z_pvalue); }
+Value b_tstat(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_tstat); }
+Value b_ttest_p(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_ttest_p); }
+Value b_chisq_stat(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_chisq_stat); }
+Value b_chisq_p(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_chisq_p); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

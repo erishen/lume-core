@@ -651,6 +651,29 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   redirects `map` to type_anon_struct() (list's redirect) and type_compat
   accepts anonymous structs against a bare `map` while named structs stay
   strict.
+  Hypothesis-testing family (2026-10-29): z_test(list, mu, sigma) =
+  (mean-mu)/(sigma/sqrt(n)) with n>=1, sigma>0; z_pvalue(z) =
+  2*(1-normcdf(|z|)) clamped at 1; tstat(list, mu) = (mean-mu)/(s/sqrt(n))
+  with n>=2, s>0 (zero-variance sample answers NAN); ttest_p(t, df) =
+  2*(1-tdist_cdf(|t|, df)) clamped at 1; chisq_stat(obs, exp) =
+  sum((o-e)^2/e) (equal-length lists, e>0, all finite); chisq_p(x, df) =
+  1-chisq_cdf(x, df) clamped at 0. All p-values reuse the interpreter CDFs
+  (lume_bi_normcdf / lume_bi_tdist_cdf / lume_bi_chisq_cdf) so the three
+  legs agree to the last ULP; invalid parameters error on the interpreter
+  / NAN natively. The rt.c block sits before the lume_bi_mean /
+  lume_bi_stddev definitions it reuses, so it carries forward
+  declarations (otherwise the text backend's C99 implicit-declaration
+  warning). quant-consistency pins 14 more rows (107 total, three legs
+  byte-identical — z_test answers sqrt(3), chisq_p(3.84146,1) = 0.05 and
+  z_pvalue(2.5758) = 0.0100008 on the classic critical values);
+  quant-refcheck adds 14 cases (115 total) whose p-value references are
+  definition-based — the Student-t CDF by numerical integration of its
+  density, the chi-square CDF by closed forms (erf / exponential / gamma
+  by parts) or integration — independent of rt.c's ibeta/igamma
+  formulas; quant-fuzz runs 10 series x 101 rows (1010 checks) with
+  finiteness and (0,1] p-value assertions.
+  Still open as future directions: multivariate distributions / copulas,
+  and the Bootstrap (resampling) family.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

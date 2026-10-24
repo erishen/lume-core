@@ -186,3 +186,26 @@ print(bs_vega(100.0, 100.0, 0.05, 0.2, 1.0));
 seed(42);
 let g2 = sim_gbm(100.0, 0.05, 0.2, 1.0, 5);
 print(g2[5]);
+
+// hypothesis tests (2026-10-29): z_test / tstat / chisq_stat answer the
+// statistics (list + scalars), z_pvalue / ttest_p / chisq_p the two-sided
+// p-values sharing the distribution CDFs. The rows are closed-form-friendly:
+// z_test answers sqrt(3), chisq_stat 5 / 1 / 0, chisq_p(3.84146,1) = 0.05
+// (the classic chi-square 95% critical value at df=1), z_pvalue(2.5758) ~
+// 0.01 (the 99% normal critical value); ttest_p(2.32379,3) and
+// chisq_p(10,4) are pinned by independent numerical integration of the
+// densities in tests/quant-refcheck.py.
+print(z_test([10,12,14], 10, 2));
+print(z_pvalue(1.96));
+print(z_pvalue(0));
+print(z_pvalue(-1.96));
+print(tstat([10,12,14,16], 10));
+print(ttest_p(2.32379, 3));
+print(chisq_stat([5,15], [10,10]));
+print(chisq_stat([10,10,10,10], [10,10,10,10]));
+print(chisq_stat([1,2,3], [2,2,2]));
+print(chisq_p(5, 1));
+print(chisq_p(0, 1));
+print(chisq_p(3.84146, 1));
+print(chisq_p(10, 4));
+print(z_pvalue(2.5758));

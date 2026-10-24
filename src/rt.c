@@ -3125,6 +3125,79 @@ double lume_bi_bs_vega(double S, double K, double r, double sigma, double T)
     return S * bi_normpdf(d1) * sqrt(T);
 }
 
+/* Hypothesis testing (2026-10-29): z / t / chi-square statistics and their
+ * two-sided p-values. The p-values share the interpreter's distribution
+ * CDFs (lume_bi_normcdf / lume_bi_tdist_cdf / lume_bi_chisq_cdf) and the
+ * descriptive stats reuse lume_bi_mean / lume_bi_stddev, so the three
+ * backends agree to the ULP. Invalid inputs answer NAN natively (the
+ * interpreter reports an error). */
+double lume_bi_mean(const LumeList *l);
+double lume_bi_stddev(const LumeList *l);
+double lume_bi_z_test(const LumeList *l, double mu, double sigma)
+{
+    if (!isfinite(mu) || !isfinite(sigma) || sigma <= 0.0) return NAN;
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 1) { free(xs); return NAN; }
+    free(xs);
+    double m = lume_bi_mean(l);
+    if (m != m) return NAN;
+    return (m - mu) / (sigma / sqrt((double)n));
+}
+
+double lume_bi_z_pvalue(double z)
+{
+    if (!isfinite(z)) return NAN;
+    double at = z < 0.0 ? -z : z;
+    double p = 2.0 * (1.0 - lume_bi_normcdf(at));
+    return p > 1.0 ? 1.0 : p;   /* ULP guard on the tiny lower tail */
+}
+
+double lume_bi_tstat(const LumeList *l, double mu)
+{
+    if (!isfinite(mu)) return NAN;
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    free(xs);
+    double m = lume_bi_mean(l);
+    if (m != m) return NAN;
+    double s = lume_bi_stddev(l);
+    if (s != s || s <= 0.0) return NAN;   /* zero-variance sample */
+    return (m - mu) / (s / sqrt((double)n));
+}
+
+double lume_bi_ttest_p(double t, double df)
+{
+    if (!isfinite(t) || !isfinite(df) || df <= 0.0) return NAN;
+    double at = t < 0.0 ? -t : t;
+    double p = 2.0 * (1.0 - lume_bi_tdist_cdf(at, df));
+    return p > 1.0 ? 1.0 : p;
+}
+
+double lume_bi_chisq_stat(const LumeList *obs, const LumeList *exp)
+{
+    int64_t no; double *o = bi_num_copy(obs, &no);
+    if (!o) return NAN;
+    int64_t ne; double *e = bi_num_copy(exp, &ne);
+    if (!e || no != ne || no < 1) { free(o); free(e); return NAN; }
+    double total = 0.0;
+    for (int64_t i = 0; i < no; i++) {
+        if (!isfinite(o[i]) || !isfinite(e[i]) || e[i] <= 0.0) {
+            free(o); free(e); return NAN;
+        }
+        double d = o[i] - e[i];
+        total += d * d / e[i];
+    }
+    free(o); free(e);
+    return total;
+}
+
+double lume_bi_chisq_p(double x, double df)
+{
+    if (!isfinite(x) || x < 0.0 || !isfinite(df) || df <= 0.0) return NAN;
+    double p = 1.0 - lume_bi_chisq_cdf(x, df);
+    return p < 0.0 ? 0.0 : p;   /* ULP guard on the upper tail */
+}
+
 /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against the
  * probs list, one plain draw per experiment, answered as a fresh int list
  * (counts per category). Defined here, after the LumeList machinery —

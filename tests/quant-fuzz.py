@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 95                              # rows per dataset. The layout mirrors the
+RPP = 101                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -61,7 +61,11 @@ RPP = 95                              # rows per dataset. The layout mirrors the
                                       # round-trip, then the financial rows:
                                       # sim_gbm[5] / sim_bridge[4] /
                                       # sim_ou[4] / sim_merton[4] / bs x6 /
-                                      # re-seeded sim_gbm[5] replay)
+                                      # re-seeded sim_gbm[5] replay, then the
+                                      # hypothesis-test rows: z_test[series] /
+                                      # z_pvalue(1.96) / tstat[series] /
+                                      # ttest_p(2.32379,3) / chisq_stat /
+                                      # chisq_p(5,1))
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -530,6 +534,72 @@ def bs_vega_ref(S, K, r, sigma, T):
     return S * _bs_npdf(d1) * math.sqrt(T)
 
 
+def z_test_ref(data, mu, sigma):
+    return (st.mean(data) - mu) / (sigma / math.sqrt(len(data)))
+
+
+def z_pvalue_ref(z):
+    return 2.0 * (1.0 - _bs_ncdf(abs(z)))
+
+
+def _t_pdf(x, df):
+    c = (math.gamma((df + 1) / 2.0)
+         / (math.sqrt(df * math.pi) * math.gamma(df / 2.0)))
+    return c * (1.0 + x * x / df) ** (-(df + 1) / 2.0)
+
+
+def _simpson(f, a, b, n=40000):
+    h = (b - a) / n
+    s = f(a) + f(b)
+    for i in range(1, n):
+        x = a + i * h
+        s += 4.0 * f(x) if i % 2 else 2.0 * f(x)
+    return s * h / 3.0
+
+
+def tdist_cdf_ref(t, df):
+    """Definition-based Student-t CDF (density integration), independent of
+    rt.c's ibeta formula."""
+    if t < 0.0:
+        return 1.0 - tdist_cdf_ref(-t, df)
+    return 0.5 + _simpson(lambda x: _t_pdf(x, df), 0.0, t)
+
+
+def tstat_ref(data, mu):
+    return (st.mean(data) - mu) / (st.stdev(data) / math.sqrt(len(data)))
+
+
+def ttest_p_ref(t, df):
+    return 2.0 * (1.0 - tdist_cdf_ref(abs(t), df))
+
+
+def chisq_stat_ref(o, e):
+    return sum((a - b) ** 2 / b for a, b in zip(o, e))
+
+
+def _chi2_pdf(x, k):
+    c = 1.0 / (2.0 ** (k / 2.0) * math.gamma(k / 2.0))
+    return x ** (k / 2.0 - 1.0) * math.exp(-x / 2.0) * c
+
+
+def chisq_cdf_ref(x, k):
+    """Definition-based chi-square CDF (closed forms k=1/2/4, integration
+    otherwise), independent of rt.c's igamma path."""
+    if x <= 0.0:
+        return 0.0
+    if k == 1:
+        return math.erf(math.sqrt(x / 2.0))
+    if k == 2:
+        return 1.0 - math.exp(-x / 2.0)
+    if k == 4:
+        return 1.0 - math.exp(-x / 2.0) * (1.0 + x / 2.0)
+    return _simpson(lambda y: _chi2_pdf(y, k), 1e-16, x)
+
+
+def chisq_p_ref(x, df):
+    return 1.0 - chisq_cdf_ref(x, df)
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -835,6 +905,24 @@ def main():
         lines.append("seed(%d);" % sd)
         row(sixg(pcg_sim_gbm(sd, 100.0, 0.05, 0.2, 1.0, 5, 1)[5]))
         lines.append("print(sim_gbm(100.0, 0.05, 0.2, 1.0, 5)[5]);")
+        # hypothesis tests (2026-10-29): z_test / tstat answer statistics on
+        # the series (mu=10, sigma=2 keep the value moderate), the p-value /
+        # chisq rows are fixed closed-form-friendly pins; deterministic (no
+        # RNG draws). The references are definition-based: the t CDF by
+        # density integration, the chi-square CDF by closed forms (erf /
+        # exponential / gamma by parts) or integration.
+        row(sixg(z_test_ref(x, 10.0, 2.0)))
+        lines.append("print(z_test(%s, 10, 2));" % da)
+        row(sixg(z_pvalue_ref(1.96)))
+        lines.append("print(z_pvalue(1.96));")
+        row(sixg(tstat_ref(x, 10.0)))
+        lines.append("print(tstat(%s, 10));" % da)
+        row(sixg(ttest_p_ref(2.32379, 3)))
+        lines.append("print(ttest_p(2.32379, 3));")
+        row(sixg(chisq_stat_ref([5.0, 15.0], [10.0, 10.0])))
+        lines.append("print(chisq_stat([5,15], [10,10]));")
+        row(sixg(chisq_p_ref(5.0, 1)))
+        lines.append("print(chisq_p(5, 1));")
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:
@@ -1034,6 +1122,15 @@ def main():
             elif r == 90 or r == 91:       # bs deltas in [-1, 1]
                 if got < -1.0 - 1e-9 or got > 1.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: bs delta out of [-1,1] %r\n" % (i, got)); fails += 1
+            elif r == 95 or r == 97:       # z_test / tstat finite
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite test statistic %r\n" % (i, got)); fails += 1
+            elif r == 96 or r == 98 or r == 100:  # p-values in (0, 1]
+                if got <= 0.0 or got > 1.0 + 1e-9:
+                    sys.stderr.write("FAIL row %d: p-value out of (0,1] %r\n" % (i, got)); fails += 1
+            elif r == 99:                  # chisq_stat >= 0
+                if got < -1e-9:
+                    sys.stderr.write("FAIL row %d: chisq_stat < 0 %r\n" % (i, got)); fails += 1
 
     # covariance symmetry is asserted on the pair rows (r==6 vs r==7)
     for i in range(N_SERIES):

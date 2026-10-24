@@ -1562,6 +1562,9 @@ static Val cg_builtin(CG *g, Node *n)
             {"ibeta",   "lume_bi_ibeta",   3},
             {"tdist_cdf", "lume_bi_tdist_cdf", 2},
             {"chisq_cdf", "lume_bi_chisq_cdf", 2},
+            {"z_pvalue",  "lume_bi_z_pvalue",  1},
+            {"ttest_p",   "lume_bi_ttest_p",   2},
+            {"chisq_p",   "lume_bi_chisq_p",   2},
         };
         for (size_t i = 0; i < sizeof(stats) / sizeof(stats[0]); i++) {
             if (strcmp(bname, stats[i].name) == 0) {
@@ -2134,6 +2137,91 @@ static Val cg_builtin(CG *g, Node *n)
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->dbl, p2, 2, 0),
             rt_decl(g, fn, g->dbl, p2, 2), v2, 2, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus
+     * scalars, chisq_stat takes observed + expected lists — all answering a
+     * float. The pure-scalar p-value helpers (z_pvalue / ttest_p / chisq_p)
+     * live in the stats table above; these three need a list argument, so
+     * they follow percentile()'s hand-emit pattern. */
+    if (strcmp(bname, "z_test") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: z_test() takes (list, mu, sigma)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: z_test() needs a list", n->line);
+        Val m = cg_expr(g, n->as.call.args[1]);
+        Val s = cg_expr(g, n->as.call.args[2]);
+        if (!m.v || !m.ty || (m.ty->kind != TY_INT && m.ty->kind != TY_FLOAT) ||
+            !s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT)) {
+            free(a.v); free(m.v); free(s.v);
+            ERRV(g, "line %zu: z_test() needs numbers for mu and sigma", n->line);
+        }
+        if (m.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { m.v };
+            m.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        if (s.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { s.v };
+            s.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        LLVMTypeRef p3[3] = { g->i8ptr, g->dbl, g->dbl };
+        LLVMValueRef v3[3] = { a.v, m.v, s.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p3, 3, 0),
+            rt_decl(g, "lume_bi_z_test", g->dbl, p3, 3), v3, 3, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    if (strcmp(bname, "tstat") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: tstat() takes (list, mu)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: tstat() needs a list", n->line);
+        Val m = cg_expr(g, n->as.call.args[1]);
+        if (!m.v || !m.ty || (m.ty->kind != TY_INT && m.ty->kind != TY_FLOAT)) {
+            free(a.v); free(m.v);
+            ERRV(g, "line %zu: tstat() needs a number for mu", n->line);
+        }
+        if (m.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { m.v };
+            m.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->dbl };
+        LLVMValueRef v2[2] = { a.v, m.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, "lume_bi_tstat", g->dbl, p2, 2), v2, 2, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    if (strcmp(bname, "chisq_stat") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: chisq_stat() takes (observed, expected)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: chisq_stat() needs a list", n->line);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: chisq_stat() needs a list", n->line);
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef v2[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, "lume_bi_chisq_stat", g->dbl, p2, 2), v2, 2, "q");
         return val_make(type_prim(TY_FLOAT), r);
     }
 

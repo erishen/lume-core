@@ -1,0 +1,19 @@
+// tstat family cross-backend smoke (2026-10-29)
+// z_test / z_pvalue / tstat / ttest_p / chisq_stat / chisq_p
+seed(42);
+print(z_test([10,11,12,13,14], 12, 2));
+print(z_test([10,12,14], 10, 2));
+print(z_pvalue(1.96));
+print(z_pvalue(0));
+print(z_pvalue(-1.96));
+print(tstat([10,12,14,16], 10));
+print(ttest_p(2.32379, 3));
+print(chisq_stat([5,15], [10,10]));
+print(chisq_stat([10,10,10,10], [10,10,10,10]));
+print(chisq_p(5, 1));
+print(chisq_p(0, 1));
+print(z_test([10,12,14], 10, 2.0));
+print(tstat([10,12,14,16], 10.0));
+print(chisq_stat([1,2,3], [2,2,2]));
+print(chisq_p(3.84146, 1));
+print(z_pvalue(2.5758));

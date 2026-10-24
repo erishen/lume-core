@@ -229,6 +229,35 @@ All notable changes to Lume are documented here. The format follows
   constant and every row-position assertion now use the fixture's true
   95-row layout with absolute positions instead of tail-relative
   offsets.
+- **Hypothesis-testing builtins: `z_test` / `z_pvalue` / `tstat` /
+  `ttest_p` / `chisq_stat` / `chisq_p`.** Six builtins that close the
+  loop between the distribution CDFs and the quant list helpers: the
+  one-sample z-statistic `(mean−μ)/(σ/√n)` (n≥1, σ>0), its two-sided
+  p-value `2(1−Φ(|z|))` (clamped at 1), the one-sample t-statistic
+  `(mean−μ)/(s/√n)` (n≥2, s>0; a zero-variance sample answers NAN),
+  the two-sided t p-value `2(1−F_t(|t|, df))` (clamped at 1), the
+  chi-square statistic `Σ(o−e)²/e` (equal-length lists, e>0, all
+  finite) and its upper-tail p-value `1−F_χ²(x, df)` (clamped at 0).
+  All three p-values reuse the interpreter's CDFs (`lume_bi_normcdf`
+  / `lume_bi_tdist_cdf` / `lume_bi_chisq_cdf`), so the three legs
+  agree to the last ULP; invalid parameters error on the interpreter
+  and answer NAN natively. The list-arg statistics emit through the
+  percentile-style special-case blocks on both native backends (int
+  scalars widen via `lume_bi_float`), and the pure-scalar p-values sit
+  in the BUILTINS Bi table / LLVM stats table. The new rt.c block sits
+  before the `lume_bi_mean`/`lume_bi_stddev` definitions it reuses, so
+  it carries forward declarations to keep C99 implicit-declaration
+  warnings out of the text backend.
+  `tests/quant-consistency.lume` pins 14 more rows (107 total, three
+  legs byte-identical; z_test answers √3, chisq_p(3.84146,1) = 0.05
+  and z_pvalue(2.5758) = 0.0100008 on the classic critical values);
+  `tests/quant-refcheck.py` adds 14 cases (115 total) whose p-value
+  references are definition-based — the Student-t CDF by numerical
+  integration of its density, the chi-square CDF by closed forms
+  (erf / exponential / gamma by parts) or integration — so agreement
+  is independent of rt.c's ibeta/igamma formulas;
+  `tests/quant-fuzz.py` grows to 1010 checks (10 series × 101 rows)
+  with finiteness and (0,1] p-value assertions on the new rows.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

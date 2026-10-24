@@ -49,6 +49,9 @@ static const Bi BUILTINS[] = {
     { "ibeta",     NULL, NULL, NULL, 0, "lume_bi_ibeta",     "double", "double", 3 },
     { "tdist_cdf", NULL, NULL, NULL, 0, "lume_bi_tdist_cdf", "double", "double", 2 },
     { "chisq_cdf", NULL, NULL, NULL, 0, "lume_bi_chisq_cdf", "double", "double", 2 },
+    { "z_pvalue",  NULL, NULL, NULL, 0, "lume_bi_z_pvalue",  "double", "double", 1 },
+    { "ttest_p",   NULL, NULL, NULL, 0, "lume_bi_ttest_p",   "double", "double", 2 },
+    { "chisq_p",   NULL, NULL, NULL, 0, "lume_bi_chisq_p",   "double", "double", 2 },
     { "now",   "lume_bi_now",  NULL,     "i64",    0,  NULL,           NULL,         NULL,     0 },
     { "argv",  "lume_bi_argv", NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
 };
@@ -407,6 +410,9 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_bs_delta_put(double, double, double, double, double)\n");
     EMIT(g, "declare double @lume_bi_bs_gamma(double, double, double, double, double)\n");
     EMIT(g, "declare double @lume_bi_bs_vega(double, double, double, double, double)\n");
+    EMIT(g, "declare double @lume_bi_z_test(i8*, double, double)\n");
+    EMIT(g, "declare double @lume_bi_tstat(i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_chisq_stat(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_rand_lognormal(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_gumbel(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_rayleigh(double)\n");
@@ -2340,6 +2346,85 @@ static Val cg_builtin(CG *g, Node *n)
                              ? "lume_bi_covariance" : "lume_bi_correlation";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s, i8* %s)", fn, a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus
+     * scalars, chisq_stat takes observed + expected lists — all answering a
+     * float. The pure-scalar p-value helpers (z_pvalue / ttest_p / chisq_p)
+     * live in the BUILTINS table; these three need a list argument, so they
+     * follow percentile()'s hand-emit pattern. */
+    if (strcmp(bname, "z_test") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: z_test() takes (list, mu, sigma)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: z_test() needs a list", n->line);
+        Val m = cg_expr(g, n->as.call.args[1]);
+        Val s = cg_expr(g, n->as.call.args[2]);
+        if (!m.v || !m.ty || (m.ty->kind != TY_INT && m.ty->kind != TY_FLOAT) ||
+            !s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT)) {
+            free(a.v); free(m.v); free(s.v);
+            ERRV(g, "line %zu: z_test() needs numbers for mu and sigma", n->line);
+        }
+        if (m.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", m.v);
+            free(m.v);
+            m.v = w;
+        }
+        if (s.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", s.v);
+            free(s.v);
+            s.v = w;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_z_test(i8* %s, double %s, double %s)",
+                              a.v, m.v, s.v);
+        free(a.v); free(m.v); free(s.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    if (strcmp(bname, "tstat") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: tstat() takes (list, mu)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: tstat() needs a list", n->line);
+        Val m = cg_expr(g, n->as.call.args[1]);
+        if (!m.v || !m.ty || (m.ty->kind != TY_INT && m.ty->kind != TY_FLOAT)) {
+            free(a.v); free(m.v);
+            ERRV(g, "line %zu: tstat() needs a number for mu", n->line);
+        }
+        if (m.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", m.v);
+            free(m.v);
+            m.v = w;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_tstat(i8* %s, double %s)",
+                              a.v, m.v);
+        free(a.v); free(m.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    if (strcmp(bname, "chisq_stat") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: chisq_stat() takes (observed, expected)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: chisq_stat() needs a list", n->line);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: chisq_stat() needs a list", n->line);
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_chisq_stat(i8* %s, i8* %s)",
+                              a.v, b.v);
         free(a.v); free(b.v);
         return val_make(type_prim(TY_FLOAT), t);
     }

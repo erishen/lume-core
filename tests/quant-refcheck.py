@@ -598,6 +598,73 @@ def bs_vega_ref(S, K, r, sigma, T):
     return S * _bs_npdf(d1) * math.sqrt(T)
 
 
+def z_test_ref(data, mu, sigma):
+    return (st.mean(data) - mu) / (sigma / math.sqrt(len(data)))
+
+
+def z_pvalue_ref(z):
+    return 2.0 * (1.0 - _bs_ncdf(abs(z)))
+
+
+def _t_pdf(x, df):
+    c = (math.gamma((df + 1) / 2.0)
+         / (math.sqrt(df * math.pi) * math.gamma(df / 2.0)))
+    return c * (1.0 + x * x / df) ** (-(df + 1) / 2.0)
+
+
+def _simpson(f, a, b, n=40000):
+    h = (b - a) / n
+    s = f(a) + f(b)
+    for i in range(1, n):
+        x = a + i * h
+        s += 4.0 * f(x) if i % 2 else 2.0 * f(x)
+    return s * h / 3.0
+
+
+def tdist_cdf_ref(t, df):
+    """Definition-based Student-t CDF: 0.5 + integral of the density on
+    [0, t] (independent of rt.c's ibeta formula)."""
+    if t < 0.0:
+        return 1.0 - tdist_cdf_ref(-t, df)
+    return 0.5 + _simpson(lambda x: _t_pdf(x, df), 0.0, t)
+
+
+def tstat_ref(data, mu):
+    return (st.mean(data) - mu) / (st.stdev(data) / math.sqrt(len(data)))
+
+
+def ttest_p_ref(t, df):
+    return 2.0 * (1.0 - tdist_cdf_ref(abs(t), df))
+
+
+def chisq_stat_ref(o, e):
+    return sum((a - b) ** 2 / b for a, b in zip(o, e))
+
+
+def _chi2_pdf(x, k):
+    c = 1.0 / (2.0 ** (k / 2.0) * math.gamma(k / 2.0))
+    return x ** (k / 2.0 - 1.0) * math.exp(-x / 2.0) * c
+
+
+def chisq_cdf_ref(x, k):
+    """Definition-based chi-square CDF: closed forms where they exist
+    (k=1 erf, k=2 exponential, k=4 gamma by parts) — independent of rt.c's
+    igamma path."""
+    if x <= 0.0:
+        return 0.0
+    if k == 1:
+        return math.erf(math.sqrt(x / 2.0))
+    if k == 2:
+        return 1.0 - math.exp(-x / 2.0)
+    if k == 4:
+        return 1.0 - math.exp(-x / 2.0) * (1.0 + x / 2.0)
+    return _simpson(lambda y: _chi2_pdf(y, k), 1e-16, x)
+
+
+def chisq_p_ref(x, df):
+    return 1.0 - chisq_cdf_ref(x, df)
+
+
 def pcg_t(seed, df, k):
     """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
     u1 = pcg_ub(seed, k)
@@ -704,6 +771,24 @@ cases += [
     ("fin bs_gamma", sixg(bs_gamma_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 0.018762),
     ("fin bs_vega",  sixg(bs_vega_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 37.524),
     ("fin gbm replay k=1", sixg(pcg_sim_gbm(42, 100.0, 0.05, 0.2, 1.0, 5, 1)[5]), 95.1781),
+    # hypothesis tests (2026-10-29): statistics are closed-form (z =
+    # sqrt(3), chisq 5/1/0), p-values against the definition-based
+    # references above (t CDF by density integration, chi-square CDF by
+    # closed forms / integration).
+    ("test z_test sqrt3",    sixg(z_test_ref([10, 12, 14], 10, 2)), 1.73205),
+    ("test z_pvalue 1.96",   sixg(z_pvalue_ref(1.96)), 0.0499958),
+    ("test z_pvalue 0",      sixg(z_pvalue_ref(0.0)), 1),
+    ("test z_pvalue -1.96",  sixg(z_pvalue_ref(-1.96)), 0.0499958),
+    ("test tstat",           sixg(tstat_ref([10, 12, 14, 16], 10)), 2.32379),
+    ("test ttest_p",         sixg(ttest_p_ref(2.32379, 3)), 0.102728),
+    ("test chisq_stat 5",    sixg(chisq_stat_ref([5, 15], [10, 10])), 5),
+    ("test chisq_stat 0",    sixg(chisq_stat_ref([10, 10, 10, 10], [10, 10, 10, 10])), 0),
+    ("test chisq_stat 1",    sixg(chisq_stat_ref([1, 2, 3], [2, 2, 2])), 1),
+    ("test chisq_p 5 df1",   sixg(chisq_p_ref(5, 1)), 0.0253473),
+    ("test chisq_p 0 df1",   sixg(chisq_p_ref(0.0, 1)), 1),
+    ("test chisq_p 3.84146", sixg(chisq_p_ref(3.84146, 1)), 0.05),
+    ("test chisq_p 10 df4",  sixg(chisq_p_ref(10, 4)), 0.0404277),
+    ("test z_pvalue 2.5758", sixg(z_pvalue_ref(2.5758)), 0.0100008),
 ]
 
 fails = 0
