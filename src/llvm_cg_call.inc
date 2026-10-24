@@ -601,7 +601,9 @@ static Val cg_builtin(CG *g, Node *n)
     }
     if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0 ||
         strcmp(bname, "rand_cauchy") == 0 || strcmp(bname, "rand_gamma") == 0 ||
-        strcmp(bname, "rand_beta") == 0) {
+        strcmp(bname, "rand_beta") == 0 || strcmp(bname, "rand_weibull") == 0 ||
+        strcmp(bname, "rand_logistic") == 0 || strcmp(bname, "rand_pareto") == 0 ||
+        strcmp(bname, "rand_laplace") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -628,7 +630,11 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "rand_normal") == 0) fn = "lume_bi_rand_normal";
         else if (strcmp(bname, "rand_cauchy") == 0) fn = "lume_bi_rand_cauchy";
         else if (strcmp(bname, "rand_gamma") == 0) fn = "lume_bi_rand_gamma";
-        else fn = "lume_bi_rand_beta";
+        else if (strcmp(bname, "rand_beta") == 0) fn = "lume_bi_rand_beta";
+        else if (strcmp(bname, "rand_weibull") == 0) fn = "lume_bi_rand_weibull";
+        else if (strcmp(bname, "rand_logistic") == 0) fn = "lume_bi_rand_logistic";
+        else if (strcmp(bname, "rand_pareto") == 0) fn = "lume_bi_rand_pareto";
+        else fn = "lume_bi_rand_laplace";
         LLVMTypeRef p2[2] = { g->dbl, g->dbl };
         LLVMValueRef v2[2] = { a.v, b.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -670,7 +676,7 @@ static Val cg_builtin(CG *g, Node *n)
      * list through as i8*. */
     if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
         strcmp(bname, "rand_poisson") == 0 || strcmp(bname, "rand_chisq") == 0 ||
-        strcmp(bname, "rand_student_t") == 0) {
+        strcmp(bname, "rand_student_t") == 0 || strcmp(bname, "rand_geometric") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes one number", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[0]);
@@ -690,7 +696,8 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "rand_exponential") == 0) fn = "lume_bi_rand_exponential";
         else if (strcmp(bname, "rand_poisson") == 0) fn = "lume_bi_rand_poisson";
         else if (strcmp(bname, "rand_chisq") == 0) fn = "lume_bi_rand_chisq";
-        else fn = "lume_bi_rand_student_t";
+        else if (strcmp(bname, "rand_student_t") == 0) fn = "lume_bi_rand_student_t";
+        else fn = "lume_bi_rand_geometric";
         LLVMTypeRef p1[1] = { g->dbl };
         LLVMValueRef v1[1] = { p.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,

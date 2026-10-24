@@ -504,6 +504,52 @@ double lume_bi_rand_student_t(double df)
     return z / sqrt(v / df);
 }
 
+/* Inverse-transform samplers (2026-10-26): geometric / weibull / logistic
+ * / pareto / laplace, each consuming exactly one biased draw. All carry
+ * the 2^-25 anti-zero bias (ln has poles at the endpoints); laplace's
+ * |ub-0.5| stays clear of 0 the same way. Invalid parameters answer -1 /
+ * NAN natively (the interpreter reports an error instead). */
+int64_t lume_bi_rand_geometric(double p)
+{
+    if (!isfinite(p) || p <= 0.0 || p > 1.0) return -1;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    return (int64_t)floor(log(ub) / log(1.0 - p));
+}
+
+double lume_bi_rand_weibull(double shape, double scale)
+{
+    if (!isfinite(shape) || !isfinite(scale) || shape <= 0.0 || scale <= 0.0) return NAN;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    return scale * pow(-log(ub), 1.0 / shape);
+}
+
+double lume_bi_rand_logistic(double mu, double s)
+{
+    if (!isfinite(mu) || !isfinite(s) || s <= 0.0) return NAN;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    return mu + s * log(ub / (1.0 - ub));
+}
+
+double lume_bi_rand_pareto(double xm, double alpha)
+{
+    if (!isfinite(xm) || !isfinite(alpha) || xm <= 0.0 || alpha <= 0.0) return NAN;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    return xm / pow(ub, 1.0 / alpha);
+}
+
+double lume_bi_rand_laplace(double mu, double b)
+{
+    if (!isfinite(mu) || !isfinite(b) || b <= 0.0) return NAN;
+    double ub = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double s = (ub < 0.5) ? -1.0 : 1.0;
+    return mu - b * s * log(1.0 - 2.0 * fabs(ub - 0.5));
+}
+
 double lume_bi_lgamma(double x) { return lgamma(x); }
 
 double lume_bi_gamma(double x)  { return exp(lgamma(x)); }

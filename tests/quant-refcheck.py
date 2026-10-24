@@ -356,6 +356,32 @@ def pcg_cauchy(seed, loc, scale, k):
     return loc + scale * math.tan(3.14159265358979323846 * (pcg_rand(seed, k) - 0.5))
 
 
+def pcg_geo(seed, p, k):
+    """Geometric failure count before the first success, one biased draw."""
+    v = pcg_ub(seed, k)
+    return int(math.floor(math.log(v) / math.log(1.0 - p)))
+
+
+def pcg_wei(seed, shape, scale, k):
+    v = pcg_ub(seed, k)
+    return scale * math.pow(-math.log(v), 1.0 / shape)
+
+
+def pcg_logi(seed, mu, s, k):
+    v = pcg_ub(seed, k)
+    return mu + s * math.log(v / (1.0 - v))
+
+
+def pcg_par(seed, xm, alpha, k):
+    return xm / math.pow(pcg_ub(seed, k), 1.0 / alpha)
+
+
+def pcg_lap(seed, mu, b, k):
+    v = pcg_ub(seed, k)
+    s = -1.0 if v < 0.5 else 1.0
+    return mu - b * s * math.log(1.0 - 2.0 * abs(v - 0.5))
+
+
 def pcg_t(seed, df, k):
     """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
     u1 = pcg_ub(seed, k)
@@ -408,6 +434,17 @@ cases += [
     ("rng t(5) cont",          sixg(pcg_t(42, 5.0, k5)), -0.281188),
     ("rng gamma(0.5,1) k=1",   sixg(g05 / 1.0), 0.0601073),
     ("rng chisq(1) cont",      sixg(2.0 * pcg_gamma(42, 0.5, kk)[0]), 0.406656),
+    # inverse-transform samplers (2026-10-26): geometric is the failure
+    # count floor(ln(ub)/ln(1-p)) on one draw, weibull/logistic/pareto/
+    # laplace are the closed-form inverse CDFs on one draw each — all use
+    # the 2^-25-biased ub, mirroring the appended fixture section.
+    ("rng geo(0.5) k=1",         pcg_geo(42, 0.5, 1), 25),
+    ("rng weibull(2,1) k=2",     sixg(pcg_wei(42, 2.0, 1.0, 2)), 0.604032),
+    ("rng logistic(0,1) k=3",    sixg(pcg_logi(42, 0.0, 1.0, 3)), -0.110904),
+    ("rng pareto(1,2) k=4",      sixg(pcg_par(42, 1.0, 2.0, 4)), 1.00996),
+    ("rng laplace(0,1) k=5",     sixg(pcg_lap(42, 0.0, 1.0, 5)), 0.707612),
+    ("rng geo(0.1) k=1",         pcg_geo(42, 0.1, 1), 164),
+    ("rng weibull(0.5,3) k=2",   sixg(pcg_wei(42, 0.5, 3.0, 2)), 0.399356),
 ]
 
 fails = 0

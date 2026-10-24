@@ -565,6 +565,19 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   Marsaglia-Tsang cases (69 total), quant-fuzz runs 10 series x 63 rows
   (630 checks) with positivity/range/finiteness assertions on the new
   samplers and the existing re-seed round-trips.
+  Inverse-transform samplers (2026-10-26): rand_geometric(p) = the
+  failure count floor(ln(ub)/ln(1-p)) for p in (0,1] (one biased draw,
+  TY_INT); rand_weibull(shape,scale) = scale*(-ln(ub))^(1/shape);
+  rand_logistic(mu,s) = mu + s*ln(ub/(1-ub)); rand_pareto(xm,alpha) =
+  xm/ub^(1/alpha); rand_laplace(mu,b) = mu - b*sgn(ub-0.5)*ln(1-2|ub-0.5|)
+  — each a closed-form inverse CDF on one draw (TY_FLOAT). All reuse the
+  2^-25 anti-zero bias (every formula has a log pole at the endpoints);
+  invalid parameters error on the interpreter / -1 or NAN natively. Both
+  scans infer, both call emitters extend the 2-param / 1-param RNG
+  branches. quant-consistency pins 7 more rows (66 total), quant-refcheck
+  adds 7 absolute-k cases (76 total), quant-fuzz runs 10 series x 70 rows
+  (700 checks) with non-negativity/positivity/finiteness assertions on
+  the new samplers.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

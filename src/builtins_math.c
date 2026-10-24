@@ -499,6 +499,71 @@ static void native_rand_student_t(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(z / sqrt(v / df));
 }
 
+/* Inverse-transform samplers (2026-10-26): geometric / weibull / logistic
+ * / pareto / laplace mirroring rt.c's lume_bi_* exactly (same constants,
+ * same one-draw consume order). All use the 2^-25 anti-zero bias; invalid
+ * parameters error (native side answers -1 / NAN). */
+static void native_rand_geometric(VM *vm, int argc, Value *args, Value *out) {
+    double p;
+    if (argc < 1 || !arg_num(vm, args[0], &p)) return;
+    if (!isfinite(p) || p <= 0.0 || p > 1.0) {
+        vm_set_error(vm, "rand_geometric(): need p in (0, 1]");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    *out = val_num((double)(int64_t)floor(log(ub) / log(1.0 - p)));
+}
+
+static void native_rand_weibull(VM *vm, int argc, Value *args, Value *out) {
+    double shape, scale;
+    if (argc < 2 || !arg_num(vm, args[0], &shape) || !arg_num(vm, args[1], &scale)) return;
+    if (!isfinite(shape) || !isfinite(scale) || shape <= 0.0 || scale <= 0.0) {
+        vm_set_error(vm, "rand_weibull(): need shape > 0, scale > 0");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    *out = val_num(scale * pow(-log(ub), 1.0 / shape));
+}
+
+static void native_rand_logistic(VM *vm, int argc, Value *args, Value *out) {
+    double mu, s;
+    if (argc < 2 || !arg_num(vm, args[0], &mu) || !arg_num(vm, args[1], &s)) return;
+    if (!isfinite(mu) || !isfinite(s) || s <= 0.0) {
+        vm_set_error(vm, "rand_logistic(): need scale s > 0");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    *out = val_num(mu + s * log(ub / (1.0 - ub)));
+}
+
+static void native_rand_pareto(VM *vm, int argc, Value *args, Value *out) {
+    double xm, alpha;
+    if (argc < 2 || !arg_num(vm, args[0], &xm) || !arg_num(vm, args[1], &alpha)) return;
+    if (!isfinite(xm) || !isfinite(alpha) || xm <= 0.0 || alpha <= 0.0) {
+        vm_set_error(vm, "rand_pareto(): need xm > 0, alpha > 0");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    *out = val_num(xm / pow(ub, 1.0 / alpha));
+}
+
+static void native_rand_laplace(VM *vm, int argc, Value *args, Value *out) {
+    double mu, b;
+    if (argc < 2 || !arg_num(vm, args[0], &mu) || !arg_num(vm, args[1], &b)) return;
+    if (!isfinite(mu) || !isfinite(b) || b <= 0.0) {
+        vm_set_error(vm, "rand_laplace(): need scale b > 0");
+        return;
+    }
+    double ub = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double s = (ub < 0.5) ? -1.0 : 1.0;
+    *out = val_num(mu - b * s * log(1.0 - 2.0 * fabs(ub - 0.5)));
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -575,6 +640,11 @@ Value b_rand_gamma(VM *vm, int argc, Value *args)       { return vm_native(vm, a
 Value b_rand_beta(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_rand_beta); }
 Value b_rand_chisq(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_rand_chisq); }
 Value b_rand_student_t(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_rand_student_t); }
+Value b_rand_geometric(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_rand_geometric); }
+Value b_rand_weibull(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_weibull); }
+Value b_rand_logistic(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_logistic); }
+Value b_rand_pareto(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_pareto); }
+Value b_rand_laplace(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_laplace); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

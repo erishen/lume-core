@@ -120,3 +120,16 @@ print(rand_student_t(5.0));
 seed(42);
 print(rand_gamma(0.5, 1.0));
 print(rand_chisq(1.0));
+
+// inverse-transform samplers (2026-10-26): geometric (failure count,
+// TY_INT), weibull / logistic / pareto / laplace — one 2^-25-biased draw
+// each (all carry ln poles at the endpoints).
+seed(42);
+print(rand_geometric(0.5));
+print(rand_weibull(2.0, 1.0));
+print(rand_logistic(0.0, 1.0));
+print(rand_pareto(1.0, 2.0));
+print(rand_laplace(0.0, 1.0));
+seed(42);
+print(rand_geometric(0.1));
+print(rand_weibull(0.5, 3.0));

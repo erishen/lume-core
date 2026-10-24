@@ -361,14 +361,18 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "rand_normal") == 0 || strcmp(name, "rand_exponential") == 0 ||
                  strcmp(name, "rand_cauchy") == 0 || strcmp(name, "rand_gamma") == 0 ||
                  strcmp(name, "rand_beta") == 0 || strcmp(name, "rand_chisq") == 0 ||
-                 strcmp(name, "rand_student_t") == 0))
+                 strcmp(name, "rand_student_t") == 0 ||
+                 strcmp(name, "rand_weibull") == 0 || strcmp(name, "rand_logistic") == 0 ||
+                 strcmp(name, "rand_pareto") == 0 || strcmp(name, "rand_laplace") == 0))
                 return type_prim(TY_FLOAT);
             /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
              * the seed it was given, rand_int() a bounded draw; the
              * distribution family (2026-10-25): rand_bool() answers 0/1,
-             * rand_poisson() a count. */
+             * rand_poisson() a count; inverse-transform (2026-10-26):
+             * rand_geometric() a failure count. */
             if (strcmp(name, "seed") == 0 || strcmp(name, "rand_int") == 0 ||
-                strcmp(name, "rand_bool") == 0 || strcmp(name, "rand_poisson") == 0)
+                strcmp(name, "rand_bool") == 0 || strcmp(name, "rand_poisson") == 0 ||
+                strcmp(name, "rand_geometric") == 0)
                 return type_prim(TY_INT);
             /* Quant builtins (2026-10-24) — must stay in step with
              * codegen_scan.c: scalar statistics answer a float, the rolling

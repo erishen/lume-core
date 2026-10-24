@@ -137,6 +137,20 @@ All notable changes to Lume are documented here. The format follows
   absolute-k Python Marsaglia-Tsang (69 total); `tests/quant-fuzz.py`
   grows to 630 checks (10 series × 63 rows) with positivity, range and
   finiteness assertions on the new samplers.
+- **Inverse-transform samplers: `rand_geometric` / `rand_weibull` /
+  `rand_logistic` / `rand_pareto` / `rand_laplace`.** Five more Monte
+  Carlo builtins, each consuming exactly one 2^-25-biased draw (every
+  formula has a log pole at the endpoints, so the anti-zero bias that
+  rand_normal / rand_exponential already carry is reused). `rand_geometric`
+  answers the failure count `floor(ln(ub)/ln(1-p))` for p∈(0,1] (TY_INT);
+  the four continuous ones are closed-form inverse CDFs (TY_FLOAT).
+  Invalid parameters error on the interpreter / answer -1 or NAN
+  natively. Both scans infer, both call emitters extend the 2-param and
+  1-param RNG branches. `tests/quant-consistency.lume` pins 7 more rows
+  (66 total); `tests/quant-refcheck.py` adds 7 absolute-k cases (76
+  total); `tests/quant-fuzz.py` grows to 700 checks (10 series × 70 rows)
+  with non-negativity, positivity and finiteness assertions on the new
+  samplers.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

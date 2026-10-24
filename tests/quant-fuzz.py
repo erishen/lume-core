@@ -28,11 +28,14 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 63                              # rows per dataset (39 quant rows + 24
-                                      # Monte Carlo rows: continuous samplers
-                                      # x7 (cauchy / gamma / beta / chisq /
-                                      # student_t / gamma<1 / chisq<1), rand
-                                      # x2, rand_range, rand_int x2,
+RPP = 70                              # rows per dataset (39 quant rows + 31
+                                      # Monte Carlo rows: inverse-transform
+                                      # samplers x7 (geometric / weibull /
+                                      # logistic / pareto / laplace / geo(0.1)
+                                      # / weibull(0.5,3)), continuous
+                                      # samplers x7 (cauchy / gamma / beta /
+                                      # chisq / student_t / gamma<1 / chisq<1),
+                                      # rand x2, rand_range, rand_int x2,
                                       # rand_normal x2, re-seed + first rand
                                       # again, then the distribution family:
                                       # rand_bool x3 (0.5 / 0.0 / 1.0),
@@ -268,6 +271,32 @@ def pcg_t(seed, df, k):
     return z / math.sqrt(2.0 * v / df), k2
 
 
+def pcg_geo(seed, p, k):
+    """Geometric failure count before the first success, one biased draw."""
+    v = pcg_ub(seed, k)
+    return int(math.floor(math.log(v) / math.log(1.0 - p)))
+
+
+def pcg_wei(seed, shape, scale, k):
+    v = pcg_ub(seed, k)
+    return scale * math.pow(-math.log(v), 1.0 / shape)
+
+
+def pcg_logi(seed, mu, s, k):
+    v = pcg_ub(seed, k)
+    return mu + s * math.log(v / (1.0 - v))
+
+
+def pcg_par(seed, xm, alpha, k):
+    return xm / math.pow(pcg_ub(seed, k), 1.0 / alpha)
+
+
+def pcg_lap(seed, mu, b, k):
+    v = pcg_ub(seed, k)
+    s = -1.0 if v < 0.5 else 1.0
+    return mu - b * s * math.log(1.0 - 2.0 * abs(v - 0.5))
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -391,6 +420,27 @@ def main():
         # keeps p mid-domain while still exercising both Acklam branches.
         p = 0.15 + 0.07 * i
         row(p); lines.append("print(normcdf(norminv(%s)));" % ("%.6f" % p))
+        # inverse-transform samplers (2026-10-26): geometric is the failure
+        # count floor(ln(ub)/ln(1-p)) on one draw (p=0.5 and p=0.1, the
+        # second block after a re-seed); weibull/logistic/pareto/laplace
+        # are closed-form inverse CDFs on one 2^-25-biased draw each.
+        sd = 1000 + i
+        lines.append("seed(%d);" % sd)
+        row(pcg_geo(sd, 0.5, 1))
+        lines.append("print(rand_geometric(0.5));")
+        row(sixg(pcg_wei(sd, 2.0, 1.0, 2)))
+        lines.append("print(rand_weibull(2.0, 1.0));")
+        row(sixg(pcg_logi(sd, 0.0, 1.0, 3)))
+        lines.append("print(rand_logistic(0.0, 1.0));")
+        row(sixg(pcg_par(sd, 1.0, 2.0, 4)))
+        lines.append("print(rand_pareto(1.0, 2.0));")
+        row(sixg(pcg_lap(sd, 0.0, 1.0, 5)))
+        lines.append("print(rand_laplace(0.0, 1.0));")
+        lines.append("seed(%d);" % sd)
+        row(pcg_geo(sd, 0.1, 1))
+        lines.append("print(rand_geometric(0.1));")
+        row(sixg(pcg_wei(sd, 0.5, 3.0, 2)))
+        lines.append("print(rand_weibull(0.5, 3.0));")
         # continuous samplers (2026-10-25): gamma (Marsaglia-Tsang 2000)
         # drives beta (two sequential gamma draws), chisq (twice
         # gamma(k/2)), student_t (normal over chisq/df); cauchy is a
@@ -538,17 +588,31 @@ def main():
         if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
             sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
             # vs a positive peak can exceed 100% — the bound is only the sign)
-        # Monte Carlo property rows (span RPP-24 .. RPP-1): the continuous
-        # samplers at RPP-24..RPP-18 (cauchy/t finite, gamma/chisq > 0,
-        # beta in (0,1), gamma<1/chisq<1 exercise the boost branch), then
-        # rand() in [0,1), rand_range inside its interval, rand_int inside
-        # its inclusive bounds, rand_bool in {0,1}, rand_exponential > 0,
+        # Monte Carlo property rows (span RPP-31 .. RPP-1): the inverse-
+        # transform samplers at RPP-31..RPP-25 (geometric >= 0, weibull /
+        # pareto > 0, logistic/laplace finite), the continuous samplers at
+        # RPP-24..RPP-18 (cauchy/t finite, gamma/chisq > 0, beta in (0,1),
+        # gamma<1/chisq<1 exercise the boost branch), then rand() in
+        # [0,1), rand_range inside its interval, rand_int inside its
+        # inclusive bounds, rand_bool in {0,1}, rand_exponential > 0,
         # rand_poisson >= 0, shuffle[0] a member of the series, and the
         # closing re-seed row (first rand again) equals the opening rand row
         # — a reproducibility contract no identical-implementation bug could
         # fake, since the round-trip forces a full stream restart.
-        if r >= RPP - 24:
-            if r == RPP - 24 or r == RPP - 20:            # cauchy / student_t
+        if r >= RPP - 31:
+            if r == RPP - 31 or r == RPP - 26:            # geometric >= 0
+                if got < 0.0:
+                    sys.stderr.write("FAIL row %d: geometric < 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 30 or r == RPP - 25:          # weibull > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: weibull <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 29 or r == RPP - 27:          # logistic / laplace
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite sampler %r\n" % (i, got)); fails += 1
+            elif r == RPP - 28:                           # pareto >= xm > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: pareto <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 24 or r == RPP - 20:          # cauchy / student_t
                 if not math.isfinite(got):
                     sys.stderr.write("FAIL row %d: non-finite sampler %r\n" % (i, got)); fails += 1
             elif r == RPP - 23 or r == RPP - 19:          # gamma / gamma<1 > 0
