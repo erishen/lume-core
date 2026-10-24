@@ -106,3 +106,17 @@ print(rand_bool(1.0));
 print(rand_exponential(0.5));
 print(rand_poisson(2.0));
 print(shuffle([1, 2, 3]));
+
+// continuous samplers (2026-10-25): gamma (Marsaglia-Tsang 2000), beta
+// (two sequential gamma draws), chisq (twice gamma(k/2)), student_t
+// (standard normal over chisq/df), cauchy (inverse-CDF tan). All on the
+// same deterministic stream; re-seeding reproduces the rows exactly.
+seed(42);
+print(rand_cauchy(0.0, 1.0));
+print(rand_gamma(2.0, 1.0));
+print(rand_beta(2.0, 3.0));
+print(rand_chisq(4.0));
+print(rand_student_t(5.0));
+seed(42);
+print(rand_gamma(0.5, 1.0));
+print(rand_chisq(1.0));

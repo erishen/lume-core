@@ -1,0 +1,12 @@
+// continuous-sampler smoke (2026-10-25): gamma/beta/chisq/student_t/cauchy
+// on the deterministic PCG32 stream (seed 42), values verified against the
+// independent stateful Python reference.
+seed(42);
+print(rand_cauchy(0.0, 1.0));
+print(rand_gamma(2.0, 1.0));
+print(rand_beta(2.0, 3.0));
+print(rand_chisq(4.0));
+print(rand_student_t(5.0));
+seed(42);
+print(rand_gamma(0.5, 1.0));
+print(rand_chisq(1.0));

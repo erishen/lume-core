@@ -28,14 +28,17 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 56                              # rows per dataset (39 quant rows + 17
-                                      # Monte Carlo RNG rows: rand x2,
-                                      # rand_range, rand_int x2, rand_normal
-                                      # x2, re-seed + first rand again, then
-                                      # the distribution family: rand_bool x3
-                                      # (0.5 / 0.0 / 1.0), rand_exponential
-                                      # x2, rand_poisson x2, shuffle[0], and a
-                                      # closing re-seed round-trip)
+RPP = 63                              # rows per dataset (39 quant rows + 24
+                                      # Monte Carlo rows: continuous samplers
+                                      # x7 (cauchy / gamma / beta / chisq /
+                                      # student_t / gamma<1 / chisq<1), rand
+                                      # x2, rand_range, rand_int x2,
+                                      # rand_normal x2, re-seed + first rand
+                                      # again, then the distribution family:
+                                      # rand_bool x3 (0.5 / 0.0 / 1.0),
+                                      # rand_exponential x2, rand_poisson x2,
+                                      # shuffle[0], and a closing re-seed
+                                      # round-trip)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -222,6 +225,49 @@ def pcg_shuffle_first(seed, vals, k):
     return xs[0]
 
 
+def pcg_ub(seed, k):
+    return (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+
+
+def pcg_gamma(seed, shape, k):
+    """Marsaglia-Tsang 2000 gamma sample from absolute stream position k;
+    returns (value, next_k). shape<1 boosts with a fresh u raised to 1/shape,
+    shape>=1 runs the rejection loop (Box-Muller z, then one u per round)."""
+    if shape < 1.0:
+        g, k = pcg_gamma(seed, shape + 1.0, k)
+        return g * math.pow(pcg_rand(seed, k), 1.0 / shape), k + 1
+    d = shape - 1.0 / 3.0
+    c = 1.0 / math.sqrt(9.0 * d)
+    while True:
+        u1 = pcg_ub(seed, k)
+        u2 = pcg_ub(seed, k + 1)
+        z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
+        k += 2
+        v = (1.0 + c * z) ** 3
+        if v <= 0.0:
+            continue
+        vv = pcg_rand(seed, k)
+        k += 1
+        if vv < 1.0 - 0.0331 * z ** 4:
+            return d * v, k
+        if math.log(vv) < 0.5 * z * z + d * (1.0 - v + math.log(v)):
+            return d * v, k
+
+
+def pcg_cauchy(seed, loc, scale, k):
+    return loc + scale * math.tan(3.14159265358979323846 * (pcg_rand(seed, k) - 0.5))
+
+
+def pcg_t(seed, df, k):
+    """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df);
+    returns (value, next_k)."""
+    u1 = pcg_ub(seed, k)
+    u2 = pcg_ub(seed, k + 1)
+    z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
+    v, k2 = pcg_gamma(seed, df / 2.0, k + 2)
+    return z / math.sqrt(2.0 * v / df), k2
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -345,6 +391,35 @@ def main():
         # keeps p mid-domain while still exercising both Acklam branches.
         p = 0.15 + 0.07 * i
         row(p); lines.append("print(normcdf(norminv(%s)));" % ("%.6f" % p))
+        # continuous samplers (2026-10-25): gamma (Marsaglia-Tsang 2000)
+        # drives beta (two sequential gamma draws), chisq (twice
+        # gamma(k/2)), student_t (normal over chisq/df); cauchy is a
+        # one-draw inverse-CDF tan. Offsets mirror the consistency
+        # fixture's appended section; every value is checked against the
+        # independent Python implementation, and the shape<1 boost branch
+        # is exercised by gamma(0.5) and chisq(1).
+        sd = 1000 + i
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_cauchy(sd, 0.0, 1.0, 1)))
+        lines.append("print(rand_cauchy(0.0, 1.0));")
+        g21, ka = pcg_gamma(sd, 2.0, 2)
+        row(sixg(g21 / 1.0))
+        lines.append("print(rand_gamma(2.0, 1.0));")
+        ga, kb = pcg_gamma(sd, 2.0, ka)
+        gb, kc = pcg_gamma(sd, 3.0, kb)
+        row(sixg(ga / (ga + gb)))
+        lines.append("print(rand_beta(2.0, 3.0));")
+        k5 = pcg_gamma(sd, 2.0, kc)[1]
+        row(sixg(2.0 * pcg_gamma(sd, 2.0, kc)[0]))
+        lines.append("print(rand_chisq(4.0));")
+        tval, kt = pcg_t(sd, 5.0, k5)
+        row(sixg(tval))
+        lines.append("print(rand_student_t(5.0));")
+        g05, kk = pcg_gamma(sd, 0.5, kt)
+        row(sixg(g05 / 1.0))
+        lines.append("print(rand_gamma(0.5, 1.0));")
+        row(sixg(2.0 * pcg_gamma(sd, 0.5, kk)[0]))
+        lines.append("print(rand_chisq(1.0));")
         # Monte Carlo RNG rows: deterministic per-dataset seed (1000+i).
         # consume order matches the smoke fixture: r1, r2, rr (draw 3),
         # rand_int x2 (draws 4-5 and 6-7), rand_normal x2 (draws 8-9 and
@@ -463,15 +538,29 @@ def main():
         if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
             sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
             # vs a positive peak can exceed 100% — the bound is only the sign)
-        # Monte Carlo RNG property rows (span RPP-17 .. RPP-1): rand() in
-        # [0,1), rand_range inside its interval, rand_int inside its inclusive
-        # bounds, rand_bool in {0,1}, rand_exponential > 0, rand_poisson >= 0,
-        # shuffle[0] a member of the series, and the closing re-seed row
-        # (first rand again) equals the opening rand row — a reproducibility
-        # contract no identical-implementation bug could fake, since the
-        # round-trip forces a full stream restart.
-        if r >= RPP - 17:
-            if r == RPP - 17 or r == RPP - 16 or r == RPP - 1:      # rand()
+        # Monte Carlo property rows (span RPP-24 .. RPP-1): the continuous
+        # samplers at RPP-24..RPP-18 (cauchy/t finite, gamma/chisq > 0,
+        # beta in (0,1), gamma<1/chisq<1 exercise the boost branch), then
+        # rand() in [0,1), rand_range inside its interval, rand_int inside
+        # its inclusive bounds, rand_bool in {0,1}, rand_exponential > 0,
+        # rand_poisson >= 0, shuffle[0] a member of the series, and the
+        # closing re-seed row (first rand again) equals the opening rand row
+        # — a reproducibility contract no identical-implementation bug could
+        # fake, since the round-trip forces a full stream restart.
+        if r >= RPP - 24:
+            if r == RPP - 24 or r == RPP - 20:            # cauchy / student_t
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite sampler %r\n" % (i, got)); fails += 1
+            elif r == RPP - 23 or r == RPP - 19:          # gamma / gamma<1 > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: gamma <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 22:                           # beta in (0, 1)
+                if got <= 0.0 or got >= 1.0:
+                    sys.stderr.write("FAIL row %d: beta out of (0,1) %r\n" % (i, got)); fails += 1
+            elif r == RPP - 21 or r == RPP - 18:          # chisq / chisq<1 > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: chisq <= 0 %r\n" % (i, got)); fails += 1
+            elif r == RPP - 17 or r == RPP - 16 or r == RPP - 1:      # rand()
                 if got < -1e-9 or got > 1.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: rand() out of [0,1) %r\n" % (i, got)); fails += 1
             elif r == RPP - 15:                    # rand_range(0, 10)

@@ -381,6 +381,11 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_rand_exponential(double)\n");
     EMIT(g, "declare i64 @lume_bi_rand_poisson(double)\n");
     EMIT(g, "declare i8* @lume_bi_shuffle(i8*)\n");
+    EMIT(g, "declare double @lume_bi_rand_cauchy(double, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_gamma(double, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_beta(double, double)\n");
+    EMIT(g, "declare double @lume_bi_rand_chisq(double)\n");
+    EMIT(g, "declare double @lume_bi_rand_student_t(double)\n");
     EMIT(g, "declare double @lume_bi_log(double)\n");
     EMIT(g, "declare i64 @lume_bi_parse_i64(i8*)\n");
     EMIT(g, "declare double @lume_bi_parse_double(i8*)\n");
@@ -983,9 +988,11 @@ static Val cg_builtin(CG *g, Node *n)
                         emit_instrf(g, type_prim(TY_FLOAT),
                                     "call double @lume_bi_rand()"));
     }
-    if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0) {
+    if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0 ||
+        strcmp(bname, "rand_cauchy") == 0 || strcmp(bname, "rand_gamma") == 0 ||
+        strcmp(bname, "rand_beta") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: %s() takes (lo, hi) / (mu, sigma)", n->line, bname);
+            ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         Val b = cg_expr(g, n->as.call.args[1]);
         if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
@@ -1005,8 +1012,12 @@ static Val cg_builtin(CG *g, Node *n)
             free(b.v);
             b.v = w;
         }
-        const char *fn = strcmp(bname, "rand_range") == 0
-                             ? "lume_bi_rand_range" : "lume_bi_rand_normal";
+        const char *fn;
+        if (strcmp(bname, "rand_range") == 0) fn = "lume_bi_rand_range";
+        else if (strcmp(bname, "rand_normal") == 0) fn = "lume_bi_rand_normal";
+        else if (strcmp(bname, "rand_cauchy") == 0) fn = "lume_bi_rand_cauchy";
+        else if (strcmp(bname, "rand_gamma") == 0) fn = "lume_bi_rand_gamma";
+        else fn = "lume_bi_rand_beta";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(double %s, double %s)", fn, a.v, b.v);
         free(a.v); free(b.v);
@@ -1046,7 +1057,8 @@ static Val cg_builtin(CG *g, Node *n)
      * shuffle(list) returns a fresh list (Fisher-Yates on the same PCG32
      * stream). */
     if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
-        strcmp(bname, "rand_poisson") == 0) {
+        strcmp(bname, "rand_poisson") == 0 || strcmp(bname, "rand_chisq") == 0 ||
+        strcmp(bname, "rand_student_t") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes one number", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[0]);
@@ -1060,12 +1072,16 @@ static Val cg_builtin(CG *g, Node *n)
             free(p.v);
             p.v = w;
         }
-        int is_exp = strcmp(bname, "rand_exponential") == 0;
-        const char *fn = is_exp ? "lume_bi_rand_exponential"
-                      : strcmp(bname, "rand_bool") == 0 ? "lume_bi_rand_bool"
-                      : "lume_bi_rand_poisson";
-        Type *rt = is_exp ? type_prim(TY_FLOAT) : type_prim(TY_INT);
-        const char *pty = is_exp ? "double" : "i64";
+        int is_float = strcmp(bname, "rand_exponential") == 0 ||
+                       strcmp(bname, "rand_chisq") == 0 || strcmp(bname, "rand_student_t") == 0;
+        const char *fn;
+        if (strcmp(bname, "rand_bool") == 0) fn = "lume_bi_rand_bool";
+        else if (strcmp(bname, "rand_exponential") == 0) fn = "lume_bi_rand_exponential";
+        else if (strcmp(bname, "rand_poisson") == 0) fn = "lume_bi_rand_poisson";
+        else if (strcmp(bname, "rand_chisq") == 0) fn = "lume_bi_rand_chisq";
+        else fn = "lume_bi_rand_student_t";
+        Type *rt = is_float ? type_prim(TY_FLOAT) : type_prim(TY_INT);
+        const char *pty = is_float ? "double" : "i64";
         char *t = emit_instrf(g, rt, "call %s @%s(double %s)", pty, fn, p.v);
         free(p.v);
         return val_make(rt, t);

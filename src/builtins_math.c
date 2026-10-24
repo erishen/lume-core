@@ -414,6 +414,91 @@ static void native_rand_poisson(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num((double)(k - 1));
 }
 
+/* Continuous samplers (2026-10-25): gamma / beta / chisq / student_t /
+ * cauchy mirroring rt.c's lume_bi_* exactly (same constants, same consume
+ * order) — interpreter and native backends stay byte-identical. */
+static double bi_gamma_sample(double shape)
+{
+    if (shape < 1.0)
+        return bi_gamma_sample(shape + 1.0)
+               * pow((double)(bi_rng_next() >> 8) * 0.000000059604644775390625,
+                     1.0 / shape);
+    double d = shape - 0.3333333333333333;
+    double c = 1.0 / sqrt(9.0 * d);
+    for (;;) {
+        double u1 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        double u2 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+        double v = (1.0 + c * z);
+        v = v * v * v;
+        if (v <= 0.0) continue;
+        double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+        if (u < 1.0 - 0.0331 * z * z * z * z) return d * v;
+        if (log(u) < 0.5 * z * z + d * (1.0 - v + log(v))) return d * v;
+    }
+}
+
+static void native_rand_cauchy(VM *vm, int argc, Value *args, Value *out) {
+    double loc, scale;
+    if (argc < 2 || !arg_num(vm, args[0], &loc) || !arg_num(vm, args[1], &scale)) return;
+    if (!isfinite(loc) || !isfinite(scale) || scale <= 0.0) {
+        vm_set_error(vm, "rand_cauchy(): need scale > 0");
+        return;
+    }
+    double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625;
+    *out = val_num(loc + scale * tan(3.14159265358979323846 * (u - 0.5)));
+}
+
+static void native_rand_gamma(VM *vm, int argc, Value *args, Value *out) {
+    double shape, rate;
+    if (argc < 2 || !arg_num(vm, args[0], &shape) || !arg_num(vm, args[1], &rate)) return;
+    if (!isfinite(shape) || !isfinite(rate) || shape <= 0.0 || rate <= 0.0) {
+        vm_set_error(vm, "rand_gamma(): need shape > 0, rate > 0");
+        return;
+    }
+    *out = val_num(bi_gamma_sample(shape) / rate);
+}
+
+static void native_rand_beta(VM *vm, int argc, Value *args, Value *out) {
+    double a, b;
+    if (argc < 2 || !arg_num(vm, args[0], &a) || !arg_num(vm, args[1], &b)) return;
+    if (!isfinite(a) || !isfinite(b) || a <= 0.0 || b <= 0.0) {
+        vm_set_error(vm, "rand_beta(): need a > 0, b > 0");
+        return;
+    }
+    double ga = bi_gamma_sample(a);
+    double gb = bi_gamma_sample(b);
+    *out = val_num(ga / (ga + gb));
+}
+
+static void native_rand_chisq(VM *vm, int argc, Value *args, Value *out) {
+    double k;
+    if (argc < 1 || !arg_num(vm, args[0], &k)) return;
+    if (!isfinite(k) || k <= 0.0) {
+        vm_set_error(vm, "rand_chisq(): need k > 0");
+        return;
+    }
+    *out = val_num(2.0 * bi_gamma_sample(0.5 * k));
+}
+
+static void native_rand_student_t(VM *vm, int argc, Value *args, Value *out) {
+    double df;
+    if (argc < 1 || !arg_num(vm, args[0], &df)) return;
+    if (!isfinite(df) || df <= 0.0) {
+        vm_set_error(vm, "rand_student_t(): need df > 0");
+        return;
+    }
+    double u1 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double u2 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    double v = 2.0 * bi_gamma_sample(0.5 * df);
+    *out = val_num(z / sqrt(v / df));
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -485,6 +570,11 @@ Value b_rand_bool(VM *vm, int argc, Value *args)        { return vm_native(vm, a
 Value b_rand_exponential(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_exponential); }
 Value b_rand_poisson(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_poisson); }
 Value b_shuffle(VM *vm, int argc, Value *args)          { return vm_native(vm, argc, args, native_shuffle); }
+Value b_rand_cauchy(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_cauchy); }
+Value b_rand_gamma(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_rand_gamma); }
+Value b_rand_beta(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_rand_beta); }
+Value b_rand_chisq(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_rand_chisq); }
+Value b_rand_student_t(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_rand_student_t); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

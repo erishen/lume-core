@@ -428,6 +428,82 @@ int64_t lume_bi_rand_poisson(double lambda)
     return k - 1;
 }
 
+/* Continuous samplers (2026-10-25): gamma / beta / chisq / student_t /
+ * cauchy on the same deterministic PCG32 stream. All answer NAN natively
+ * for invalid parameters (the interpreter reports an error instead). */
+double lume_bi_rand_cauchy(double loc, double scale)
+{
+    if (!isfinite(loc) || !isfinite(scale) || scale <= 0.0) return NAN;
+    double u = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+    return loc + scale * tan(3.14159265358979323846 * (u - 0.5));
+}
+
+/* Gamma sample, Marsaglia-Tsang 2000 (ACM TOMS, algorithm 679). shape < 1
+ * uses the boost trick — sample shape+1, then raise a fresh draw to
+ * 1/shape; shape >= 1 runs the rejection loop, one Box-Muller z (two
+ * draws) plus one u per round. The loop count is data-dependent, but the
+ * fixed stream makes the accepted value — and the next consumer's stream
+ * position — identical across backends and runs. */
+static double bi_gamma_sample(double shape)
+{
+    if (shape < 1.0)
+        return bi_gamma_sample(shape + 1.0)
+               * pow((double)(rng_next() >> 8) * 0.000000059604644775390625,
+                     1.0 / shape);
+    double d = shape - 0.3333333333333333;
+    double c = 1.0 / sqrt(9.0 * d);
+    for (;;) {
+        double u1 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        double u2 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                    + 0.0000000298023223876953125;
+        double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+        double v = (1.0 + c * z);
+        v = v * v * v;
+        if (v <= 0.0) continue;
+        double u = (double)(rng_next() >> 8) * 0.000000059604644775390625;
+        if (u < 1.0 - 0.0331 * z * z * z * z) return d * v;
+        if (log(u) < 0.5 * z * z + d * (1.0 - v + log(v))) return d * v;
+    }
+}
+
+/* Gamma(shape, rate), rate-parameterised: mean shape/rate. */
+double lume_bi_rand_gamma(double shape, double rate)
+{
+    if (!isfinite(shape) || !isfinite(rate) || shape <= 0.0 || rate <= 0.0) return NAN;
+    return bi_gamma_sample(shape) / rate;
+}
+
+/* Beta(a, b): Ga / (Ga + Gb) from two sequential gamma samples. */
+double lume_bi_rand_beta(double a, double b)
+{
+    if (!isfinite(a) || !isfinite(b) || a <= 0.0 || b <= 0.0) return NAN;
+    double ga = bi_gamma_sample(a);
+    double gb = bi_gamma_sample(b);
+    return ga / (ga + gb);
+}
+
+/* Chi-squared(k): Gamma(k/2, 1/2), i.e. twice a gamma(k/2) sample. */
+double lume_bi_rand_chisq(double k)
+{
+    if (!isfinite(k) || k <= 0.0) return NAN;
+    return 2.0 * bi_gamma_sample(0.5 * k);
+}
+
+/* Student t(df): Z / sqrt(V/df), Z a standard normal (Box-Muller, two
+ * draws) and V ~ chisq(df); the consume order is 2 + the chisq draws. */
+double lume_bi_rand_student_t(double df)
+{
+    if (!isfinite(df) || df <= 0.0) return NAN;
+    double u1 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double u2 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    double v = 2.0 * bi_gamma_sample(0.5 * df);
+    return z / sqrt(v / df);
+}
+
 double lume_bi_lgamma(double x) { return lgamma(x); }
 
 double lume_bi_gamma(double x)  { return exp(lgamma(x)); }

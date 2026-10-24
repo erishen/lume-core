@@ -599,7 +599,9 @@ static Val cg_builtin(CG *g, Node *n)
             rt_decl(g, "lume_bi_rand", g->dbl, NULL, 0), NULL, 0, "rnd");
         return val_make(type_prim(TY_FLOAT), r);
     }
-    if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0) {
+    if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0 ||
+        strcmp(bname, "rand_cauchy") == 0 || strcmp(bname, "rand_gamma") == 0 ||
+        strcmp(bname, "rand_beta") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -621,8 +623,12 @@ static Val cg_builtin(CG *g, Node *n)
                 LLVMFunctionType(g->dbl, p1, 1, 0),
                 rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
         }
-        const char *fn = strcmp(bname, "rand_range") == 0
-                             ? "lume_bi_rand_range" : "lume_bi_rand_normal";
+        const char *fn;
+        if (strcmp(bname, "rand_range") == 0) fn = "lume_bi_rand_range";
+        else if (strcmp(bname, "rand_normal") == 0) fn = "lume_bi_rand_normal";
+        else if (strcmp(bname, "rand_cauchy") == 0) fn = "lume_bi_rand_cauchy";
+        else if (strcmp(bname, "rand_gamma") == 0) fn = "lume_bi_rand_gamma";
+        else fn = "lume_bi_rand_beta";
         LLVMTypeRef p2[2] = { g->dbl, g->dbl };
         LLVMValueRef v2[2] = { a.v, b.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -663,7 +669,8 @@ static Val cg_builtin(CG *g, Node *n)
      * numeric builtins widen an int via lume_bi_float; shuffle passes the
      * list through as i8*. */
     if (strcmp(bname, "rand_bool") == 0 || strcmp(bname, "rand_exponential") == 0 ||
-        strcmp(bname, "rand_poisson") == 0) {
+        strcmp(bname, "rand_poisson") == 0 || strcmp(bname, "rand_chisq") == 0 ||
+        strcmp(bname, "rand_student_t") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes one number", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[0]);
@@ -676,16 +683,20 @@ static Val cg_builtin(CG *g, Node *n)
                 LLVMFunctionType(g->dbl, p1, 1, 0),
                 rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
         }
-        int is_exp = strcmp(bname, "rand_exponential") == 0;
-        const char *fn = is_exp ? "lume_bi_rand_exponential"
-                      : strcmp(bname, "rand_bool") == 0 ? "lume_bi_rand_bool"
-                      : "lume_bi_rand_poisson";
+        int is_float = strcmp(bname, "rand_exponential") == 0 ||
+                       strcmp(bname, "rand_chisq") == 0 || strcmp(bname, "rand_student_t") == 0;
+        const char *fn;
+        if (strcmp(bname, "rand_bool") == 0) fn = "lume_bi_rand_bool";
+        else if (strcmp(bname, "rand_exponential") == 0) fn = "lume_bi_rand_exponential";
+        else if (strcmp(bname, "rand_poisson") == 0) fn = "lume_bi_rand_poisson";
+        else if (strcmp(bname, "rand_chisq") == 0) fn = "lume_bi_rand_chisq";
+        else fn = "lume_bi_rand_student_t";
         LLVMTypeRef p1[1] = { g->dbl };
         LLVMValueRef v1[1] = { p.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
-            LLVMFunctionType(is_exp ? g->dbl : g->i64, p1, 1, 0),
-            rt_decl(g, fn, is_exp ? g->dbl : g->i64, p1, 1), v1, 1, "rd");
-        return val_make(is_exp ? type_prim(TY_FLOAT) : type_prim(TY_INT), r);
+            LLVMFunctionType(is_float ? g->dbl : g->i64, p1, 1, 0),
+            rt_decl(g, fn, is_float ? g->dbl : g->i64, p1, 1), v1, 1, "rd");
+        return val_make(is_float ? type_prim(TY_FLOAT) : type_prim(TY_INT), r);
     }
     if (strcmp(bname, "shuffle") == 0) {
         if (argc != 1)

@@ -550,6 +550,21 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   adds 9 independent cases (62 total), quant-fuzz runs 10 series x 56
   rows (560 checks) with bool/exponential/poisson bounds and a second
   re-seed round-trip after the distribution rows.
+  Continuous samplers (2026-10-25): rand_cauchy(loc,scale) = one-draw
+  inverse-CDF loc + scale*tan(pi*(u-0.5)); rand_gamma(shape,rate) =
+  Marsaglia-Tsang 2000 (ACM TOMS 679) with a shape<1 boost (sample
+  shape+1, raise a fresh u to 1/shape) and a shape>=1 rejection loop
+  (Box-Muller z, then one u per round — loop count data-dependent but
+  stream-fixed, so cross-backend byte-identity holds); rand_beta(a,b) =
+  Ga/(Ga+Gb) from two sequential gamma draws; rand_chisq(k) = twice
+  gamma(k/2); rand_student_t(df) = a standard normal over sqrt(chisq/df).
+  All five infer TY_FLOAT (both scans) and emit through the 2-param /
+  1-param RNG branches of both call emitters; invalid parameters error
+  on the interpreter / NAN natively. quant-consistency pins 7 more rows
+  (59 total), quant-refcheck adds 7 independent absolute-k Python
+  Marsaglia-Tsang cases (69 total), quant-fuzz runs 10 series x 63 rows
+  (630 checks) with positivity/range/finiteness assertions on the new
+  samplers and the existing re-seed round-trips.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

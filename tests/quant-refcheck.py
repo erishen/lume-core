@@ -323,6 +323,54 @@ def sixg(v):
     return float("%.6g" % v)
 
 
+def pcg_ub(seed, k):
+    return (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+
+
+def pcg_gamma(seed, shape, k):
+    """Marsaglia-Tsang 2000 gamma sample from absolute stream position k;
+    returns (value, next_k). shape<1 boosts with a fresh u raised to 1/shape,
+    shape>=1 runs the rejection loop (Box-Muller z, then one u per round)."""
+    if shape < 1.0:
+        g, k = pcg_gamma(seed, shape + 1.0, k)
+        return g * math.pow(pcg_rand(seed, k), 1.0 / shape), k + 1
+    d = shape - 1.0 / 3.0
+    c = 1.0 / math.sqrt(9.0 * d)
+    while True:
+        u1 = pcg_ub(seed, k)
+        u2 = pcg_ub(seed, k + 1)
+        z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
+        k += 2
+        v = (1.0 + c * z) ** 3
+        if v <= 0.0:
+            continue
+        vv = pcg_rand(seed, k)
+        k += 1
+        if vv < 1.0 - 0.0331 * z ** 4:
+            return d * v, k
+        if math.log(vv) < 0.5 * z * z + d * (1.0 - v + math.log(v)):
+            return d * v, k
+
+
+def pcg_cauchy(seed, loc, scale, k):
+    return loc + scale * math.tan(3.14159265358979323846 * (pcg_rand(seed, k) - 0.5))
+
+
+def pcg_t(seed, df, k):
+    """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
+    u1 = pcg_ub(seed, k)
+    u2 = pcg_ub(seed, k + 1)
+    z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
+    v, _ = pcg_gamma(seed, df / 2.0, k + 2)
+    return z / math.sqrt(2.0 * v / df)
+
+
+g21, ka = pcg_gamma(42, 2.0, 2)      # rand_gamma(2,1) row
+ga, kb = pcg_gamma(42, 2.0, ka)      # beta's first gamma(2)
+gb, kc = pcg_gamma(42, 3.0, kb)      # beta's second gamma(3)
+k5 = pcg_gamma(42, 2.0, kc)[1]       # position after rand_chisq(4)
+g05, kk = pcg_gamma(42, 0.5, 1)      # rand_gamma(0.5,1) row (re-seed 42)
+
 cases += [
     ("rng rand#1 (seed42)",    sixg(pcg_rand(42, 1)),        0),
     ("rng rand#2 (seed42)",    sixg(pcg_rand(42, 2)),        0.694298),
@@ -347,6 +395,19 @@ cases += [
     ("rng rand_exp(0.5) k=3",      sixg(pcg_rand_exp(42, 0.5, 3)), 1.50027),
     ("rng rand_poi(2.0) k=4",      pcg_rand_poi(42, 2.0, 4), 2),
     ("rng shuffle([1,2,3]) k=7",   pcg_shuffle(42, [1, 2, 3], 7), [2, 1, 3]),
+    # continuous samplers (2026-10-25): cauchy is a one-draw inverse-CDF tan
+    # (draw #1 top24 is 0, hence the huge negative value); gamma is
+    # Marsaglia-Tsang 2000; beta is two sequential gamma draws; chisq is
+    # twice a gamma(k/2); student_t is a normal over chisq/df. Offsets
+    # mirror the fixture's appended section (data-dependent rejection loop
+    # counts are reproduced by the absolute-k reference).
+    ("rng cauchy(0,1) k=1",    sixg(pcg_cauchy(42, 0.0, 1.0, 1)), -1.63312e+16),
+    ("rng gamma(2,1) k=2",     sixg(g21 / 1.0), 0.799378),
+    ("rng beta(2,3) cont",     sixg(ga / (ga + gb)), 0.752015),
+    ("rng chisq(4) cont",      sixg(2.0 * pcg_gamma(42, 2.0, kc)[0]), 2.52763),
+    ("rng t(5) cont",          sixg(pcg_t(42, 5.0, k5)), -0.281188),
+    ("rng gamma(0.5,1) k=1",   sixg(g05 / 1.0), 0.0601073),
+    ("rng chisq(1) cont",      sixg(2.0 * pcg_gamma(42, 0.5, kk)[0]), 0.406656),
 ]
 
 fails = 0

@@ -440,6 +440,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* Monte Carlo RNG (2026-10-24, builtins_math.c + rt.c) */
     "seed", "rand", "rand_range", "rand_int", "rand_normal",
     "rand_bool", "rand_exponential", "rand_poisson", "shuffle",
+    "rand_cauchy", "rand_gamma", "rand_beta", "rand_chisq", "rand_student_t",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -493,6 +494,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"normcdf",1,1}, {"norminv",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
     {"seed",1,1}, {"rand",0,0}, {"rand_range",2,2}, {"rand_int",2,2}, {"rand_normal",2,2},
     {"rand_bool",1,1}, {"rand_exponential",1,1}, {"rand_poisson",1,1}, {"shuffle",1,1},
+    {"rand_cauchy",2,2}, {"rand_gamma",2,2}, {"rand_beta",2,2}, {"rand_chisq",1,1}, {"rand_student_t",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},

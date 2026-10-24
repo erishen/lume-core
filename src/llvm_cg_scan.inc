@@ -358,7 +358,10 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "igamma") == 0 || strcmp(name, "ibeta") == 0 ||
                  strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0 ||
                  strcmp(name, "rand") == 0 || strcmp(name, "rand_range") == 0 ||
-                 strcmp(name, "rand_normal") == 0 || strcmp(name, "rand_exponential") == 0))
+                 strcmp(name, "rand_normal") == 0 || strcmp(name, "rand_exponential") == 0 ||
+                 strcmp(name, "rand_cauchy") == 0 || strcmp(name, "rand_gamma") == 0 ||
+                 strcmp(name, "rand_beta") == 0 || strcmp(name, "rand_chisq") == 0 ||
+                 strcmp(name, "rand_student_t") == 0))
                 return type_prim(TY_FLOAT);
             /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
              * the seed it was given, rand_int() a bounded draw; the

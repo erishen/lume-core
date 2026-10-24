@@ -117,6 +117,26 @@ All notable changes to Lume are documented here. The format follows
   `tests/quant-fuzz.py` grows to 560 checks (10 series 脳 56 rows) with
   bool/exponential/poisson bound assertions and a second re-seed
   round-trip after the distribution rows.
+- **Continuous-distribution samplers on the deterministic stream:
+  `rand_cauchy` / `rand_gamma` / `rand_beta` / `rand_chisq` /
+  `rand_student_t`.** Five more Monte Carlo builtins with the same
+  three-leg contract. `rand_gamma` is Marsaglia-Tsang 2000 (ACM TOMS
+  algorithm 679): shape<1 boosts via a shape+1 draw raised to 1/shape,
+  shape>=1 runs the rejection loop (Box-Muller z, then one u per round)
+  — the loop count is data-dependent but the fixed PCG32 stream keeps
+  the accepted value and the next consumer's stream position identical
+  across backends; `rand_beta(a,b)` = Ga/(Ga+Gb) from two sequential
+  gamma draws; `rand_chisq(k)` = twice gamma(k/2); `rand_student_t(df)`
+  = a standard normal over sqrt(chisq/df); `rand_cauchy(loc,scale)` is
+  the one-draw inverse-CDF tan. All five infer `TY_FLOAT` (both scans)
+  and emit through rt.c's `lume_bi_*` (both call emitters, extending the
+  2-param and 1-param RNG branches); invalid parameters error in the
+  interpreter and answer NAN natively. `tests/quant-consistency.lume`
+  pins 7 more rows (59 total, three legs byte-identical);
+  `tests/quant-refcheck.py` adds 7 cases against the independent
+  absolute-k Python Marsaglia-Tsang (69 total); `tests/quant-fuzz.py`
+  grows to 630 checks (10 series × 63 rows) with positivity, range and
+  finiteness assertions on the new samplers.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the
