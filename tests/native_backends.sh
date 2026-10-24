@@ -541,6 +541,48 @@ for (( i = 0; i < ${#quant_ran[@]}; i++ )); do
     done
 done
 
+# ---- quant reference validation (independent golden values) ----
+# The three-leg diff above proves the backends agree with each other; these
+# two scripts prove they agree with the math. quant-refcheck.py checks the
+# pinned fixture values against Python's statistics module; quant-fuzz.py
+# generates seeded random series, runs all three legs and cross-checks every
+# printed number against Python's reference implementations plus
+# math-property assertions (variance >= 0, |correlation| <= 1, covariance
+# symmetry, r2 in [0,1], drawdown >= 0). Both need a python; skipped when
+# absent. The binary path is passed Windows-form on MSYS so the Python
+# subprocess can spawn it directly.
+PY=
+for p in python3 python; do
+    # existence is not enough: a broken WindowsApps stub would otherwise pass
+    # `command -v` and then fail the real run below. Probe with a real
+    # invocation instead. (py is deliberately not probed: on MSYS a `py`
+    # launcher with no registered Python hangs instead of failing fast.)
+    if command -v "$p" >/dev/null 2>&1 && "$p" -c "pass" >/dev/null 2>&1; then
+        PY=$p
+        break
+    fi
+done
+if [ -n "$PY" ]; then
+    TARGET_WIN=$TARGET
+    WORK_WIN=$WORK
+    if command -v cygpath >/dev/null 2>&1; then
+        TARGET_WIN=$(cygpath -w "$TARGET")
+        WORK_WIN=$(cygpath -w "$WORK")
+    fi
+    if ! "$PY" tests/quant-refcheck.py > "$WORK/quant-ref.out" 2>&1; then
+        tail -5 "$WORK/quant-ref.out"
+        fail "quant refcheck: pinned golden values disagree with Python reference"
+    fi
+    pass "quant refcheck: pinned golden values agree with Python reference"
+    if ! "$PY" tests/quant-fuzz.py "$TARGET_WIN" "$WORK_WIN" > "$WORK/quant-fuzz.out" 2>&1; then
+        tail -20 "$WORK/quant-fuzz.out"
+        fail "quant fuzz: randomized cross-check failed"
+    fi
+    pass "quant fuzz: seeded random series agree across all legs + Python + properties"
+else
+    echo "ok   quant reference: skipped (no python3/python)"
+fi
+
 # ---- native serve: abandoned sql_tx handle reclaimed at request boundary ----
 # The interpreter's tx handle is an OBJ_SQLTX with a GC finalizer; the native
 # handle is a plain heap struct, so the serve loop rolls back + closes every

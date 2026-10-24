@@ -41,6 +41,11 @@ All notable changes to Lume are documented here. The format follows
   positive percentage. `tests/quant-consistency.lume` pins byte-identical
   output across the interpreter / text / LLVM legs, and
   `examples/quant.lume` walks a price/benchmark study.
+  `tests/quant-refcheck.py` cross-checks the pinned values against Python's
+  `statistics` module, and `tests/quant-fuzz.py` runs seeded random series
+  through all three legs, verifying every printed number against Python
+  reference implementations plus math-property assertions; both are wired
+  into `tests/native_backends.sh` and skipped when no python is found.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

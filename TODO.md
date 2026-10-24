@@ -495,6 +495,12 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   branches (sort()'s pattern). Regression: tests/quant-consistency.lume +
   .expected run by tests/native_backends.sh across interp/text/llvm
   byte-identically; examples/quant.lume walks a price/benchmark study.
+  Independent golden values: tests/quant-refcheck.py (29 pinned values vs
+  Python's statistics module) and tests/quant-fuzz.py (seeded 10 series x
+  18 rows; three-leg equality + Python reference with TOL=1e-5 + property
+  assertions: variance>=0, |corr|<=1, covariance symmetry, r2 in [0,1],
+  drawdown>=0), both hooked into native_backends.sh and skipped when no
+  python is available.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

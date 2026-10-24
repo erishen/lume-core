@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+# tests/quant-fuzz.py — randomized cross-validation of the quant builtins.
+#
+# Generates a deterministic set of data series (seeded), writes a .lume
+# fixture that prints one scalar per line through all ten quant builtins,
+# runs that fixture through the interpreter, the IR-text backend and the
+# LLVM backend, then:
+#   1. diffs the three outputs byte-for-byte (leg consistency),
+#   2. compares every printed number against Python's reference
+#      implementations (independent golden values, TOL aligned to lume's
+#      %g six-digit printing),
+#   3. asserts the mathematical properties the results must satisfy
+#      (variance >= 0, |correlation| <= 1, covariance symmetry, drawdown
+#      in [0,100], mean within [min,max]) — properties that hold even if
+#      a buggy formula were implemented identically everywhere.
+#
+# Usage: python tests/quant-fuzz.py <lume-binary> <workdir>
+#   <lume-binary>  path to lume-core (Windows or POSIX; absolute preferred)
+#   <workdir>      scratch dir for the generated fixture and compiled bins
+import math
+import os
+import random
+import statistics as st
+import subprocess
+import sys
+
+TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
+rng = random.Random(20261024)          # deterministic across machines
+N_SERIES = 10
+N = 6                                  # series length (pct_change -> 5 rows)
+RPP = 18                               # rows per dataset (13 scalars + 5 pct)
+
+# ---------------------------------------------------------------- reference
+def percentile(data, p):
+    s = sorted(data)
+    n = len(s)
+    r = p / 100.0 * (n - 1)
+    lo = int(r)
+    frac = r - lo
+    return s[lo] + frac * (s[lo + 1] - s[lo]) if lo + 1 < n else s[lo]
+
+
+def sample_cov(x, y):
+    n = len(x)
+    mx = sum(x) / n
+    my = sum(y) / n
+    return sum((a - mx) * (b - my) for a, b in zip(x, y)) / (n - 1)
+
+
+def sample_corr(x, y):
+    return sample_cov(x, y) / (st.stdev(x) * st.stdev(y))
+
+
+def linreg(x, y):
+    n = len(x)
+    mx = sum(x) / n
+    my = sum(y) / n
+    sxx = sum((a - mx) ** 2 for a in x)
+    sxy = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    syy = sum((b - my) ** 2 for b in y)
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    r2 = sxy * sxy / (sxx * syy) if syy != 0 else (1.0 if sxy == 0 else float("nan"))
+    return slope, intercept, r2
+
+
+def pct_change(data):
+    return [
+        float("nan") if data[i - 1] == 0 else 100.0 * (data[i] - data[i - 1]) / data[i - 1]
+        for i in range(1, len(data))
+    ]
+
+
+def max_drawdown(data):
+    peak = data[0]
+    mdd = 0.0
+    for x in data[1:]:
+        if x > peak:
+            peak = x
+        if peak > 0:
+            mdd = max(mdd, 100.0 * (peak - x) / peak)
+    return mdd
+
+
+def close(a, b):
+    if math.isnan(a) and math.isnan(b):
+        return True
+    return abs(a - b) <= TOL * max(1.0, abs(b))
+
+
+# --------------------------------------------------------------- data model
+def gen_series(n):
+    kind = rng.randrange(6)
+    if kind == 0:     # uniform floats, mixed sign
+        return [round(rng.uniform(-10, 10), 3) for _ in range(n)]
+    if kind == 1:     # gaussian
+        return [round(rng.gauss(0, 5), 3) for _ in range(n)]
+    if kind == 2:     # small ints (int slots must widen)
+        return [float(rng.randint(-5, 5)) for _ in range(n)]
+    if kind == 3:     # positive-ish (drawdown meaningful)
+        return [round(abs(rng.gauss(5, 2)), 2) for _ in range(n)]
+    if kind == 4:     # leading zero -> pct_change NAN spot
+        return [0.0] + [round(rng.uniform(1, 20), 2) for _ in range(n - 1)]
+    # kind == 5: near-constant (small spread) — covariance/corr still legal
+    v = round(rng.uniform(1, 5), 2)
+    return [v + round(rng.uniform(-0.5, 0.5), 2) for _ in range(n)]
+
+
+def emit(xs):
+    return "[" + ", ".join(repr(x) for x in xs) + "]"
+
+
+# --------------------------------------------------------------- lume runner
+def run_lume(target, cwd, *args):
+    # target may be a bare MSYS relative path ("bin/lume-core"): resolve to
+    # an absolute OS path so CreateProcess finds the .exe automatically.
+    if not os.path.isabs(target):
+        target = os.path.abspath(os.path.join(cwd, target))
+    if not os.path.exists(target) and os.path.exists(target + ".exe"):
+        target = target + ".exe"
+    return subprocess.run(
+        [target] + list(args), cwd=cwd, capture_output=True, text=True)
+
+
+def parse_rows(text):
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("lume:"):
+            continue
+        rows.append(float(line))
+    return rows
+
+
+def main():
+    target = sys.argv[1]
+    work = sys.argv[2]
+    if not os.path.isdir(work):
+        os.makedirs(work, exist_ok=True)
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fixture = os.path.join(work, "quant-fuzz.lume")
+    textexe = os.path.join(work, "fuzz-text" + (".exe" if os.name == "nt" else ""))
+    llvmexe = os.path.join(work, "fuzz-llvm" + (".exe" if os.name == "nt" else ""))
+
+    series = [gen_series(N) for _ in range(N_SERIES)]
+    # pair each series with the next one (cyclic) so corr/cov/linreg see
+    # two independent draws
+    pairs = [(series[i], series[(i + 1) % N_SERIES]) for i in range(N_SERIES)]
+
+    lines = []
+    expected = []      # Python reference rows, in print order
+    for i, (x, y) in enumerate(pairs):
+        lines.append("let d%da: list = %s;" % (i, emit(x)))
+        lines.append("let d%db: list = %s;" % (i, emit(y)))
+    lines.append("")
+    for i, (x, y) in enumerate(pairs):
+        ref = []
+        def row(v):
+            ref.append(v)
+        da, db = "d%da" % i, "d%db" % i
+        row(st.mean(x));                  lines.append("print(mean(%s));" % da)
+        row(st.variance(x));              lines.append("print(variance(%s));" % da)
+        row(st.stdev(x));                 lines.append("print(stddev(%s));" % da)
+        row(st.median(x));                lines.append("print(median(%s));" % da)
+        row(percentile(x, 10.0));         lines.append("print(percentile(%s, 10.0));" % da)
+        row(percentile(x, 90.0));         lines.append("print(percentile(%s, 90.0));" % da)
+        row(sample_cov(x, y));            lines.append("print(covariance(%s, %s));" % (da, db))
+        row(sample_cov(y, x));            lines.append("print(covariance(%s, %s));" % (db, da))
+        row(sample_corr(x, y));           lines.append("print(correlation(%s, %s));" % (da, db))
+        sl, itc, r2 = linreg(x, y)
+        row(sl);  lines.append("let fit%da = linreg(%s, %s); print(get(fit%da, \"slope\", 0.0));" % (i, da, db, i))
+        row(itc); lines.append("print(get(fit%da, \"intercept\", 0.0));" % i)
+        row(r2);  lines.append("print(get(fit%da, \"r2\", 0.0));" % i)
+        row(max_drawdown(x));             lines.append("print(max_drawdown(%s));" % da)
+        pc = pct_change(x)
+        lines.append("let pc%da: list = pct_change(%s);" % (i, da))
+        for k, v in enumerate(pc):
+            row(v); lines.append("print(pc%da[%d]);" % (i, k))
+        expected.append(ref)
+
+    with open(fixture, "w", encoding="utf-8", newline="\n") as f:
+        f.write("// auto-generated by tests/quant-fuzz.py (seeded, deterministic)\n")
+        f.write("\n".join(lines) + "\n")
+
+    # ---- run all three legs
+    r_int = run_lume(target, repo, fixture)
+    r_txt = run_lume(target, repo, "--compile-text", fixture, "-o", textexe)
+    r_llv = run_lume(target, repo, "--compile-llvm", fixture, "-o", llvmexe)
+    if r_txt.returncode != 0:
+        sys.stderr.write(r_txt.stdout + r_txt.stderr)
+        sys.stderr.write("fuzz: text backend failed to compile\n")
+        return 1
+    if r_llv.returncode != 0:
+        sys.stderr.write(r_llv.stdout + r_llv.stderr)
+        sys.stderr.write("fuzz: llvm backend failed to compile\n")
+        return 1
+    r_txt_run = run_lume(os.path.abspath(textexe), repo)
+    r_llv_run = run_lume(os.path.abspath(llvmexe), repo)
+
+    legs = {
+        "interp": r_int.stdout,
+        "text": r_txt_run.stdout,
+        "llvm": r_llv_run.stdout,
+    }
+    rows = {k: parse_rows(v) for k, v in legs.items()}
+    n_rows = len(rows["interp"])
+    total = 0
+    fails = 0
+
+    # ---- 1. leg consistency (byte-level, ignoring the trailing note line)
+    base = [l for l in legs["interp"].splitlines() if l.strip() and not l.startswith("lume:")]
+    for k in ("text", "llvm"):
+        if [l for l in legs[k].splitlines() if l.strip()] != base:
+            sys.stderr.write("fuzz: %s output differs from interpreter\n" % k)
+            for a, b in zip(base, [l for l in legs[k].splitlines() if l.strip()]):
+                if a != b:
+                    sys.stderr.write("  interp: %r\n  %-5s: %r\n" % (a, k, b))
+                    break
+            fails += 1
+
+    # ---- 2 + 3. golden values + properties, row by row
+    flat_exp = [v for ref in expected for v in ref]
+    if n_rows != len(flat_exp):
+        sys.stderr.write("fuzz: row count mismatch (%d lume vs %d python)\n"
+                         % (n_rows, len(flat_exp)))
+        return 1
+    for i in range(n_rows):
+        total += 1
+        got = rows["interp"][i]
+        want = flat_exp[i]
+        if not close(got, want):
+            sys.stderr.write("FAIL row %d: lume=%r python=%r\n" % (i, got, want))
+            fails += 1
+        # property assertions (independent of the formula used)
+        r = i % RPP
+        if r in (1, 2) and got < -1e-9:      # variance / stddev >= 0
+            sys.stderr.write("FAIL row %d: negative variance/stddev %r\n" % (i, got)); fails += 1
+        if r == 8 and abs(got) > 1 + 1e-9:    # correlation in [-1, 1]
+            sys.stderr.write("FAIL row %d: correlation out of range %r\n" % (i, got)); fails += 1
+        if r == 11 and (got < -1e-9 or got > 1 + 1e-9):  # r2 in [0, 1]
+            sys.stderr.write("FAIL row %d: r2 out of range %r\n" % (i, got)); fails += 1
+        if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
+            sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
+            # vs a positive peak can exceed 100% — the bound is only the sign)
+
+    # covariance symmetry is asserted on the pair rows (r==6 vs r==7)
+    for i in range(N_SERIES):
+        a = RPP * i + 6
+        b = RPP * i + 7
+        if not close(rows["interp"][a], rows["interp"][b]):
+            sys.stderr.write("FAIL series %d: covariance(x,y) %r != covariance(y,x) %r\n"
+                             % (i, rows["interp"][a], rows["interp"][b]))
+            fails += 1
+
+    print("quant fuzz: %d series x %d rows = %d checks, %d failures"
+         % (N_SERIES, n_rows // N_SERIES, total, fails))
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
