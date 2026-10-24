@@ -369,6 +369,14 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_substr(i8*, i64, i64)\n");
     EMIT(g, "declare i8* @lume_bi_str_match(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_exp(double)\n");
+    /* Monte Carlo RNG (2026-10-24, rt.c): deterministic PCG32 behind the
+     * default seed; rand() takes no arguments, so it cannot ride the
+     * numeric table path — declared here, dispatched in cg_builtin. */
+    EMIT(g, "declare i64 @lume_bi_seed(i64)\n");
+    EMIT(g, "declare double @lume_bi_rand()\n");
+    EMIT(g, "declare double @lume_bi_rand_range(double, double)\n");
+    EMIT(g, "declare i64 @lume_bi_rand_int(i64, i64)\n");
+    EMIT(g, "declare double @lume_bi_rand_normal(double, double)\n");
     EMIT(g, "declare double @lume_bi_log(double)\n");
     EMIT(g, "declare i64 @lume_bi_parse_i64(i8*)\n");
     EMIT(g, "declare double @lume_bi_parse_double(i8*)\n");
@@ -939,6 +947,93 @@ static Val cg_builtin(CG *g, Node *n)
                                      key.v));
         free(key.v);
         return r;
+    }
+
+    /* Monte Carlo RNG (2026-10-24, rt.c lume_bi_*): rand() takes no
+     * arguments; the others take numbers — an int passes straight through,
+     * a float widens/truncates through lume_bi_float / lume_bi_ftoi (the
+     * same conversions the interpreter applies to its double arguments). */
+    if (strcmp(bname, "seed") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: seed() takes exactly one argument", n->line);
+        Val s = cg_expr(g, n->as.call.args[0]);
+        if (!s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT)) {
+            free(s.v);
+            ERRV(g, "line %zu: seed() needs a number", n->line);
+        }
+        if (s.ty->kind == TY_FLOAT) {
+            char *si = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", s.v);
+            free(s.v);
+            s.v = si;
+        }
+        char *t = emit_instrf(g, type_prim(TY_INT),
+                              "call i64 @lume_bi_seed(i64 %s)", s.v);
+        free(s.v);
+        return val_make(type_prim(TY_INT), t);
+    }
+    if (strcmp(bname, "rand") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: rand() takes no arguments", n->line);
+        return val_make(type_prim(TY_FLOAT),
+                        emit_instrf(g, type_prim(TY_FLOAT),
+                                    "call double @lume_bi_rand()"));
+    }
+    if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (lo, hi) / (mu, sigma)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT)) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: %s() needs two numbers", n->line, bname);
+        }
+        if (a.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", a.v);
+            free(a.v);
+            a.v = w;
+        }
+        if (b.ty->kind == TY_INT) {
+            char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                  "call double @lume_bi_float(i64 %s)", b.v);
+            free(b.v);
+            b.v = w;
+        }
+        const char *fn = strcmp(bname, "rand_range") == 0
+                             ? "lume_bi_rand_range" : "lume_bi_rand_normal";
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @%s(double %s, double %s)", fn, a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+    if (strcmp(bname, "rand_int") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: rand_int() takes (lo, hi)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT)) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: rand_int() needs two numbers", n->line);
+        }
+        if (a.ty->kind == TY_FLOAT) {
+            char *w = emit_instrf(g, type_prim(TY_INT),
+                                  "call i64 @lume_bi_ftoi(double %s)", a.v);
+            free(a.v);
+            a.v = w;
+        }
+        if (b.ty->kind == TY_FLOAT) {
+            char *w = emit_instrf(g, type_prim(TY_INT),
+                                  "call i64 @lume_bi_ftoi(double %s)", b.v);
+            free(b.v);
+            b.v = w;
+        }
+        char *t = emit_instrf(g, type_prim(TY_INT),
+                              "call i64 @lume_bi_rand_int(i64 %s, i64 %s)", a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_prim(TY_INT), t);
     }
 
     /* File builtins (SPEC §6.2): read_file returns the file as a string or

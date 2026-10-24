@@ -241,6 +241,64 @@ cases += [
     ("normcdf(norminv(0.9))", 0.9,                     0.9),
 ]
 
+# Monte Carlo RNG: deterministic PCG32 (O'Neill PCG-XSH-RR), independent
+# reference implementation. The lume pinned values below are the %g 6-digit
+# printouts of the three-backend consistency fixture (tests/rng-smoke.lume /
+# quant-consistency.lume), so the normal rows compare at 6 significant
+# figures; the pure-integer rows (rand/rand_range/rand_int) are exact.
+MASK64 = (1 << 64) - 1
+MASK32 = (1 << 32) - 1
+PCG_MULT = 6364136223846793005
+PCG_INC = 0xda3e39cb94b95bdb
+R2_24 = 2.0 ** -24
+R2_25 = 2.0 ** -25
+
+
+def pcg32_draw(seed, k):
+    """k-th 32-bit output (1-based) of the PCG-XSH-RR stream after seed(n)."""
+    state, inc = seed, PCG_INC
+    out = 0
+    for _ in range(k):
+        old = state
+        state = (old * PCG_MULT + inc) & MASK64
+        xs = (((old >> 18) ^ old) >> 27) & MASK32
+        rot = old >> 59
+        out = ((xs >> rot) | (xs << ((-rot) & 31))) & MASK32
+    return out
+
+
+def pcg_rand(seed, k):
+    return (pcg32_draw(seed, k) >> 8) * R2_24
+
+
+def pcg_rand_int(seed, lo, hi, k):
+    span = hi - lo + 1
+    r = pcg32_draw(seed, k) | (pcg32_draw(seed, k + 1) << 32)
+    return lo + r % span
+
+
+def pcg_rand_normal(seed, mu, sigma, k):
+    u1 = (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+    u2 = (pcg32_draw(seed, k + 1) >> 8) * R2_24 + R2_25
+    z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
+    return mu + sigma * z
+
+
+def sixg(v):
+    return float("%.6g" % v)
+
+
+cases += [
+    ("rng rand#1 (seed42)",    sixg(pcg_rand(42, 1)),        0),
+    ("rng rand#2 (seed42)",    sixg(pcg_rand(42, 2)),        0.694298),
+    ("rng rand_range(10,20)",  sixg(10.0 + 10.0 * pcg_rand(42, 3)), 14.723),
+    ("rng rand_int(1,6)",      pcg_rand_int(42, 1, 6, 4),    5),
+    ("rng rand_int(-5,5)",     pcg_rand_int(42, -5, 5, 6),   5),
+    ("rng rand_normal(0,1)",   sixg(pcg_rand_normal(42, 0.0, 1.0, 8)), -1.44361),
+    ("rng rand_normal(100,5)", sixg(pcg_rand_normal(42, 100.0, 5.0, 10)), 103.551),
+    ("rng re-seed deterministic", sixg(pcg_rand(42, 1)),     0),
+]
+
 fails = 0
 for name, got, want in cases:
     ok = close(got, want)

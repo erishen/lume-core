@@ -1504,6 +1504,13 @@ void bridge_seed_builtins(VM *vm) {
          * gamma/lgamma/igamma/ibeta/tdist_cdf/chisq_cdf 三后端一致。 */
         {"normcdf", b_normcdf},
         {"norminv", b_norminv},
+        /* Monte Carlo RNG (2026-10-24, builtins_math.c): deterministic
+         * PCG32, mirrors rt.c byte-for-byte. */
+        {"seed", b_seed},
+        {"rand", b_rand},
+        {"rand_range", b_rand_range},
+        {"rand_int", b_rand_int},
+        {"rand_normal", b_rand_normal},
         {"erf", b_erf},
         {"gamma", b_gamma},
         {"lgamma", b_lgamma},

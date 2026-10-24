@@ -302,6 +302,68 @@ static void native_norminv(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(bi_norminv(p));
 }
 
+/* Monte Carlo RNG (2026-10-24): deterministic PCG32 mirroring rt.c's
+ * lume_bi_* exactly (same constants, same consume order), so interpreter
+ * and native backends stay byte-identical. seed(n) re-bases the stream. */
+static uint64_t bi_rng_state = 0x853c49e6748fea9bULL;
+static uint64_t bi_rng_inc   = 0xda3e39cb94b95bdbULL;
+
+static uint32_t bi_rng_next(void)
+{
+    uint64_t old = bi_rng_state;
+    bi_rng_state = old * 6364136223846793005ULL + bi_rng_inc;
+    uint32_t xs = (uint32_t)(((old >> 18u) ^ old) >> 27u);
+    uint32_t rot = (uint32_t)(old >> 59u);
+    return (xs >> rot) | (xs << ((32u - rot) & 31u));
+}
+
+static void native_seed(VM *vm, int argc, Value *args, Value *out) {
+    double s;
+    if (argc < 1 || !arg_num(vm, args[0], &s)) return;
+    bi_rng_state = (uint64_t)(int64_t)s;
+    bi_rng_inc   = 0xda3e39cb94b95bdbULL;
+    *out = val_num((double)(int64_t)s);
+}
+
+static void native_rand(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 0) { vm_set_error(vm, "rand() takes no arguments"); return; }
+    *out = val_num((double)(bi_rng_next() >> 8) * 0.000000059604644775390625);
+}
+
+static void native_rand_range(VM *vm, int argc, Value *args, Value *out) {
+    double lo, hi;
+    if (argc != 2 || !arg_num(vm, args[0], &lo) || !arg_num(vm, args[1], &hi)) return;
+    if (!isfinite(lo) || !isfinite(hi) || hi < lo) {
+        vm_set_error(vm, "rand_range(): need lo <= hi, finite");
+        return;
+    }
+    *out = val_num(lo + (hi - lo) * ((double)(bi_rng_next() >> 8) * 0.000000059604644775390625));
+}
+
+static void native_rand_int(VM *vm, int argc, Value *args, Value *out) {
+    double lo, hi;
+    if (argc != 2 || !arg_num(vm, args[0], &lo) || !arg_num(vm, args[1], &hi)) return;
+    if (hi < lo) {
+        vm_set_error(vm, "rand_int(): need lo <= hi");
+        return;
+    }
+    int64_t a = (int64_t)lo, b = (int64_t)hi;
+    uint64_t span = (uint64_t)(b - a) + 1ULL;
+    uint64_t r = (uint64_t)bi_rng_next() | ((uint64_t)bi_rng_next() << 32u);
+    *out = val_num((double)(a + (int64_t)(r % span)));
+}
+
+static void native_rand_normal(VM *vm, int argc, Value *args, Value *out) {
+    double mu, sigma;
+    if (argc != 2 || !arg_num(vm, args[0], &mu) || !arg_num(vm, args[1], &sigma)) return;
+    double u1 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double u2 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    *out = val_num(mu + sigma * z);
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -364,6 +426,11 @@ static void native_chisq_cdf(VM *vm, int argc, Value *args, Value *out) {
 
 Value b_normcdf(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_normcdf); }
 Value b_norminv(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_norminv); }
+Value b_seed(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_seed); }
+Value b_rand(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand); }
+Value b_rand_range(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_rand_range); }
+Value b_rand_int(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_rand_int); }
+Value b_rand_normal(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_rand_normal); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

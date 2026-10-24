@@ -28,9 +28,10 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 39                              # rows per dataset (13 scalars + 5 pct
-                                      # + skew/kurtosis + 6 rolling_mean +
-                                      # 6 rolling_stddev + 6 ewma + norminv)
+RPP = 47                              # rows per dataset (39 quant rows + 8
+                                      # Monte Carlo RNG rows: rand x2,
+                                      # rand_range, rand_int x2, rand_normal
+                                      # x2, then re-seed + first rand again)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -134,6 +135,55 @@ def close(a, b):
     if math.isnan(a) and math.isnan(b):
         return True
     return abs(a - b) <= TOL * max(1.0, abs(b))
+
+
+# -------------------------------------------------- Monte Carlo RNG reference
+# Independent deterministic PCG32 (O'Neill PCG-XSH-RR) mirroring the lume
+# builtins' contract: seed(n) re-bases state to n with the default increment,
+# rand() = top24 * 2^-24, rand_range = lo + (hi-lo)*rand, rand_int draws 64
+# bits (two outputs, low word first) and reduces mod span, rand_normal =
+# Box-Muller with the 2^-25 anti-zero bias on u1/u2. The printed rows are
+# compared at six significant figures (%g), which is the backend printout
+# contract; the integer rows are exact.
+MASK64 = (1 << 64) - 1
+MASK32 = (1 << 32) - 1
+PCG_MULT = 6364136223846793005
+PCG_INC = 0xda3e39cb94b95bdb
+R2_24 = 2.0 ** -24
+R2_25 = 2.0 ** -25
+
+
+def pcg32_draw(seed, k):
+    state, inc = seed, PCG_INC
+    out = 0
+    for _ in range(k):
+        old = state
+        state = (old * PCG_MULT + inc) & MASK64
+        xs = (((old >> 18) ^ old) >> 27) & MASK32
+        rot = old >> 59
+        out = ((xs >> rot) | (xs << ((-rot) & 31))) & MASK32
+    return out
+
+
+def pcg_rand(seed, k):
+    return (pcg32_draw(seed, k) >> 8) * R2_24
+
+
+def pcg_rand_int(seed, lo, hi, k):
+    span = hi - lo + 1
+    r = pcg32_draw(seed, k) | (pcg32_draw(seed, k + 1) << 32)
+    return lo + r % span
+
+
+def pcg_rand_normal(seed, mu, sigma, k):
+    u1 = (pcg32_draw(seed, k) >> 8) * R2_24 + R2_25
+    u2 = (pcg32_draw(seed, k + 1) >> 8) * R2_24 + R2_25
+    z = math.sqrt(-2.0 * math.log(u1)) * math.cos(6.28318530717958647693 * u2)
+    return mu + sigma * z
+
+
+def sixg(v):
+    return float("%.6g" % v)
 
 
 # --------------------------------------------------------------- data model
@@ -255,6 +305,30 @@ def main():
         # keeps p mid-domain while still exercising both Acklam branches.
         p = 0.15 + 0.07 * i
         row(p); lines.append("print(normcdf(norminv(%s)));" % ("%.6f" % p))
+        # Monte Carlo RNG rows: deterministic per-dataset seed (1000+i).
+        # consume order matches the smoke fixture: r1, r2, rr (draw 3),
+        # rand_int x2 (draws 4-5 and 6-7), rand_normal x2 (draws 8-9 and
+        # 10-11), then re-seed and draw the first rand again — the last row
+        # must equal the first one (reproducibility round-trip).
+        sd = 1000 + i
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_rand(sd, 1)))
+        lines.append("print(rand());")
+        row(sixg(pcg_rand(sd, 2)))
+        lines.append("print(rand());")
+        row(sixg(0.0 + 10.0 * pcg_rand(sd, 3)))
+        lines.append("print(rand_range(0.0, 10.0));")
+        row(pcg_rand_int(sd, 0, 100, 4))
+        lines.append("print(rand_int(0, 100));")
+        row(pcg_rand_int(sd, -50, 50, 6))
+        lines.append("print(rand_int(-50, 50));")
+        row(sixg(pcg_rand_normal(sd, 0.0, 1.0, 8)))
+        lines.append("print(rand_normal(0.0, 1.0));")
+        row(sixg(pcg_rand_normal(sd, 5.0, 2.0, 10)))
+        lines.append("print(rand_normal(5.0, 2.0));")
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_rand(sd, 1)))
+        lines.append("print(rand());")
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:
@@ -321,6 +395,29 @@ def main():
         if r == 12 and got < -1e-9:  # drawdown >= 0 (a price falling below 0
             sys.stderr.write("FAIL row %d: negative drawdown %r\n" % (i, got)); fails += 1
             # vs a positive peak can exceed 100% — the bound is only the sign)
+        # Monte Carlo RNG property rows: rand() in [0,1), rand_range inside
+        # its interval, rand_int inside its inclusive bounds, and the last
+        # row (re-seed + first rand again) equals the first rand row — a
+        # reproducibility contract no identical-implementation bug could
+        # fake, since the round-trip forces a full stream restart.
+        if r >= RPP - 8:
+            if r == RPP - 8 or r == RPP - 7:      # rand()
+                if got < -1e-9 or got > 1.0 + 1e-9:
+                    sys.stderr.write("FAIL row %d: rand() out of [0,1) %r\n" % (i, got)); fails += 1
+            elif r == RPP - 6:                    # rand_range(0, 10)
+                if got < -1e-9 or got > 10.0 + 1e-9:
+                    sys.stderr.write("FAIL row %d: rand_range out of [0,10] %r\n" % (i, got)); fails += 1
+            elif r == RPP - 5:                    # rand_int(0, 100)
+                if got < 0 or got > 100:
+                    sys.stderr.write("FAIL row %d: rand_int out of [0,100] %r\n" % (i, got)); fails += 1
+            elif r == RPP - 4:                    # rand_int(-50, 50)
+                if got < -50 or got > 50:
+                    sys.stderr.write("FAIL row %d: rand_int out of [-50,50] %r\n" % (i, got)); fails += 1
+            elif r == RPP - 1:                    # re-seed round-trip
+                if not close(got, rows["interp"][i - (RPP - 1) + (RPP - 8)]):
+                    sys.stderr.write("FAIL row %d: re-seed rand %r != first rand %r\n"
+                                     % (i, got, rows["interp"][i - (RPP - 1) + (RPP - 8)]))
+                    fails += 1
 
     # covariance symmetry is asserted on the pair rows (r==6 vs r==7)
     for i in range(N_SERIES):

@@ -356,8 +356,14 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "erf") == 0 ||
                  strcmp(name, "gamma") == 0 || strcmp(name, "lgamma") == 0 ||
                  strcmp(name, "igamma") == 0 || strcmp(name, "ibeta") == 0 ||
-                 strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0))
+                 strcmp(name, "tdist_cdf") == 0 || strcmp(name, "chisq_cdf") == 0 ||
+                 strcmp(name, "rand") == 0 || strcmp(name, "rand_range") == 0 ||
+                 strcmp(name, "rand_normal") == 0))
                 return type_prim(TY_FLOAT);
+            /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
+             * the seed it was given, rand_int() a bounded draw. */
+            if (strcmp(name, "seed") == 0 || strcmp(name, "rand_int") == 0)
+                return type_prim(TY_INT);
             /* Quant builtins (2026-10-24) — must stay in step with
              * codegen_scan.c: scalar statistics answer a float, the rolling
              * helpers / ewma fresh float lists, linreg() a struct map. */

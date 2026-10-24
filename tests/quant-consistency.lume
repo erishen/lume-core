@@ -70,3 +70,21 @@ print(norminv(0.5));
 print(norminv(0.975));
 print(norminv(0.025));
 print(normcdf(norminv(0.9)));
+
+// Monte Carlo RNG (2026-10-24): deterministic PCG32 (O'Neill PCG-XSH-RR).
+// seed(n) re-bases the stream (state=n, default increment); rand() maps the
+// top 24 bits to [0,1); rand_range = lo + (hi-lo)*rand; rand_int draws 64
+// bits (two outputs, low word first) and reduces mod span; rand_normal is
+// Box-Muller with a 2^-25 anti-zero bias on u1/u2. The same program yields
+// the same stream on every backend and every run; re-seeding with the same
+// n restarts the stream, so the last row below must equal the first.
+seed(42);
+print(rand());
+print(rand());
+print(rand_range(10.0, 20.0));
+print(rand_int(1, 6));
+print(rand_int(-5, 5));
+print(rand_normal(0.0, 1.0));
+print(rand_normal(100.0, 5.0));
+seed(42);
+print(rand());

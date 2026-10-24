@@ -78,6 +78,25 @@ All notable changes to Lume are documented here. The format follows
   round-trip `normcdf(norminv(p)) == p` is exercised at every fuzz
   dataset (390 checks now) plus fixed values in quant-refcheck (45 cases)
   and quant-consistency.
+- **Monte Carlo RNG builtins — `seed`/`rand`/`rand_range`/`rand_int`/
+  `rand_normal` (2026-10-24).** Deterministic PCG32 (O'Neill PCG-XSH-RR)
+  with a fixed default seed and increment, so the same program produces the
+  same stream on every run and byte-identically across the interpreter /
+  text / LLVM legs. `seed(n)` re-bases the stream (state=n, default inc) for
+  reproducible experiments; `rand()` maps the top 24 bits to [0,1);
+  `rand_range(lo,hi)` = lo + (hi−lo)·rand; `rand_int(lo,hi)` draws 64 bits
+  (two outputs, low word first) and reduces mod span; `rand_normal(µ,σ)` is
+  Box-Muller with a 2⁻²⁵ bias keeping u1/u2 out of log(0). All five carry
+  explicit arities (rand 0 args; the rest 1–2, int/float mixed), so they
+  live as hand-emitted declares in both native emitters (ints widen via
+  `lume_bi_float`, floats truncate via `lume_bi_ftoi`) rather than the
+  BUILTINS table; the interpreter mirrors the same constants and consume
+  order. `tests/quant-consistency.lume` pins the seed-42 stream (8 rows,
+  three legs byte-identical); `tests/quant-refcheck.py` adds 8 fixed PCG32
+  cases cross-checked against an independent Python implementation (53
+  total); `tests/quant-fuzz.py` grows to 470 checks (10 series × 47 rows)
+  with rand/rand_range/rand_int bound assertions and a re-seed round-trip
+  (last row must equal the first) under every distribution kind.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

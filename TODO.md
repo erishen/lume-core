@@ -522,6 +522,21 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   round-trip normcdf(norminv(p)) == p runs at every fuzz dataset (RPP 39,
   390 checks); fixed values are pinned in quant-refcheck (45 cases) and
   quant-consistency (35 rows).
+  Monte Carlo RNG (2026-10-24): deterministic PCG32 (O'Neill PCG-XSH-RR)
+  with a fixed default seed and increment joins the quant toolbox —
+  seed(n) re-bases the stream (state=n, default inc), rand() = top24*2^-24
+  in [0,1), rand_range = lo + (hi-lo)*rand, rand_int draws 64 bits (two
+  outputs, low word first) and reduces mod span, rand_normal = Box-Muller
+  with a 2^-25 anti-zero bias keeping u1/u2 out of log(0). No
+  BUILTINS-table entry (rand is 0-arg, the rest are int/float-mixed 1-2
+  args): both native emitters declare the five lume_bi_* and branch by
+  name, widening ints via lume_bi_float and truncating floats via
+  lume_bi_ftoi exactly like the interpreter's (int64_t) cast.
+  quant-consistency pins the seed-42 stream (8 rows, three legs
+  byte-identical), quant-refcheck adds 8 independent PCG32 cases (53
+  total), quant-fuzz runs 10 series x 47 rows (470 checks) with
+  rand/rand_range/rand_int bounds plus a re-seed round-trip under every
+  distribution kind.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

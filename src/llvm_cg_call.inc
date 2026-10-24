@@ -567,6 +567,99 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_STRING), r);
     }
 
+    /* Monte Carlo RNG (2026-10-24, mirroring the text backend's branches):
+     * deterministic PCG32 in rt.c; ints pass straight through, floats
+     * widen/truncate through lume_bi_float / lume_bi_ftoi exactly as the
+     * interpreter truncates its double arguments. */
+    if (strcmp(bname, "seed") == 0) {
+        if (argc != 1)
+            ERRV(g, "line %zu: seed() takes exactly one argument", n->line);
+        Val s = cg_expr(g, n->as.call.args[0]);
+        if (!s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: seed() needs a number", n->line);
+        if (s.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { s.v };
+            s.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "si");
+        }
+        LLVMTypeRef p1[1] = { g->i64 };
+        LLVMValueRef v1[1] = { s.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i64, p1, 1, 0),
+            rt_decl(g, "lume_bi_seed", g->i64, p1, 1), v1, 1, "seed");
+        return val_make(type_prim(TY_INT), r);
+    }
+    if (strcmp(bname, "rand") == 0) {
+        if (argc != 0)
+            ERRV(g, "line %zu: rand() takes no arguments", n->line);
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, NULL, 0, 0),
+            rt_decl(g, "lume_bi_rand", g->dbl, NULL, 0), NULL, 0, "rnd");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+    if (strcmp(bname, "rand_range") == 0 || strcmp(bname, "rand_normal") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes two numbers", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: %s() needs two numbers", n->line, bname);
+        if (a.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { a.v };
+            a.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        if (b.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { b.v };
+            b.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        const char *fn = strcmp(bname, "rand_range") == 0
+                             ? "lume_bi_rand_range" : "lume_bi_rand_normal";
+        LLVMTypeRef p2[2] = { g->dbl, g->dbl };
+        LLVMValueRef v2[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, fn, g->dbl, p2, 2), v2, 2, "rnd");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+    if (strcmp(bname, "rand_int") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: rand_int() takes two numbers", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || (a.ty->kind != TY_INT && a.ty->kind != TY_FLOAT) ||
+            !b.v || !b.ty || (b.ty->kind != TY_INT && b.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: rand_int() needs two numbers", n->line);
+        if (a.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { a.v };
+            a.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "ai");
+        }
+        if (b.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { b.v };
+            b.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "bi");
+        }
+        LLVMTypeRef p2[2] = { g->i64, g->i64 };
+        LLVMValueRef v2[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i64, p2, 2, 0),
+            rt_decl(g, "lume_bi_rand_int", g->i64, p2, 2), v2, 2, "ri");
+        return val_make(type_prim(TY_INT), r);
+    }
+
     /* now(): epoch seconds (SPEC §6.2, matching the interpreter's now() and
      * bridge_native's lume_bi_now). */
     if (strcmp(bname, "now") == 0) {

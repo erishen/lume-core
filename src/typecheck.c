@@ -437,6 +437,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "min", "max", "pi", "e",
     /* statistical distribution builtins (2026-10-20, builtins_math.c + rt.c) */
     "normcdf", "norminv", "erf", "gamma", "lgamma", "igamma", "ibeta", "tdist_cdf", "chisq_cdf",
+    /* Monte Carlo RNG (2026-10-24, builtins_math.c + rt.c) */
+    "seed", "rand", "rand_range", "rand_int", "rand_normal",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -488,6 +490,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"reduce",3,3}, {"igamma",2,2}, {"ibeta",3,3}, {"tdist_cdf",2,2}, {"chisq_cdf",2,2},
     {"sql_tx_begin",1,1}, {"sql_tx_exec",2,3}, {"sql_tx_commit",1,1}, {"sql_tx_rollback",1,1},
     {"normcdf",1,1}, {"norminv",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
+    {"seed",1,1}, {"rand",0,0}, {"rand_range",2,2}, {"rand_int",2,2}, {"rand_normal",2,2},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},

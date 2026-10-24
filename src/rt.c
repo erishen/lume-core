@@ -329,6 +329,65 @@ double lume_bi_norminv(double p)
            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
 }
 
+/* ------------------------------------------------------------------ *
+ * Monte Carlo RNG builtins (2026-10-24).
+ *
+ * Deterministic PCG32 (O'Neill, PCG-XSH-RR) behind a fixed default seed,
+ * so the same program produces the same stream on every run and every
+ * backend — the interpreter (builtins_math.c) and both native backends
+ * share the same constants and the same consume order, keeping output
+ * byte-identical. seed(n) re-bases the stream for reproducible
+ * experiments. rand() maps the top 24 bits to [0,1); rand_normal adds a
+ * 2^-25 bias so u1/u2 stay in (0,1) and log() cannot hit zero.
+ * ------------------------------------------------------------------ */
+static uint64_t rng_state = 0x853c49e6748fea9bULL;
+static uint64_t rng_inc   = 0xda3e39cb94b95bdbULL;
+
+static uint32_t rng_next(void)
+{
+    uint64_t old = rng_state;
+    rng_state = old * 6364136223846793005ULL + rng_inc;
+    uint32_t xs = (uint32_t)(((old >> 18u) ^ old) >> 27u);
+    uint32_t rot = (uint32_t)(old >> 59u);
+    return (xs >> rot) | (xs << ((32u - rot) & 31u));
+}
+
+int64_t lume_bi_seed(int64_t s)
+{
+    rng_state = (uint64_t)s;
+    rng_inc   = 0xda3e39cb94b95bdbULL;
+    return s;
+}
+
+double lume_bi_rand(void)
+{
+    return (double)(rng_next() >> 8) * 0.000000059604644775390625; /* 2^-24 */
+}
+
+double lume_bi_rand_range(double lo, double hi)
+{
+    if (!isfinite(lo) || !isfinite(hi) || hi < lo) return NAN;
+    return lo + (hi - lo) * lume_bi_rand();
+}
+
+int64_t lume_bi_rand_int(int64_t lo, int64_t hi)
+{
+    if (hi < lo) return -1;   /* no error channel natively; interp reports */
+    uint64_t span = (uint64_t)(hi - lo) + 1ULL;
+    uint64_t r = (uint64_t)rng_next() | ((uint64_t)rng_next() << 32u);
+    return lo + (int64_t)(r % span);
+}
+
+double lume_bi_rand_normal(double mu, double sigma)
+{
+    double u1 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125; /* +2^-25 */
+    double u2 = (double)(rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    return mu + sigma * z;
+}
+
 double lume_bi_lgamma(double x) { return lgamma(x); }
 
 double lume_bi_gamma(double x)  { return exp(lgamma(x)); }

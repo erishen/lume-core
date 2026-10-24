@@ -96,6 +96,11 @@ Value b_max(VM *vm, int argc, Value *args);
  * are computed by rt.c's lume_bi_* for the native backends. */
 Value b_normcdf(VM *vm, int argc, Value *args);
 Value b_norminv(VM *vm, int argc, Value *args);
+Value b_seed(VM *vm, int argc, Value *args);
+Value b_rand(VM *vm, int argc, Value *args);
+Value b_rand_range(VM *vm, int argc, Value *args);
+Value b_rand_int(VM *vm, int argc, Value *args);
+Value b_rand_normal(VM *vm, int argc, Value *args);
 Value b_erf(VM *vm, int argc, Value *args);
 Value b_gamma(VM *vm, int argc, Value *args);
 Value b_lgamma(VM *vm, int argc, Value *args);
