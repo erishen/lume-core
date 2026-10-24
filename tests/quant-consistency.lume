@@ -161,3 +161,28 @@ print(rand_multinomial(10, [0.5, 0.3, 0.2]));
 seed(42);
 print(rand_zipf(5, 2.0));
 print(rand_von_mises(1.0, 0.0));
+// financial paths + Black-Scholes (2026-10-28): sim_gbm / sim_bridge /
+// sim_ou / sim_merton answer n+1-point float lists (index 0 = start),
+// bs_* scalar prices and Greeks. One continuous stream seeded 42:
+// gbm(5) -> bridge(4) -> ou(4) -> merton(4); the bs family is
+// deterministic; the final gbm re-seeds and replays byte-for-byte.
+seed(42);
+let g1 = sim_gbm(100.0, 0.05, 0.2, 1.0, 5);
+print(g1[1]);
+print(g1[5]);
+let b1 = sim_bridge(0.0, 10.0, 0.5, 1.0, 4);
+print(b1[0]);
+print(b1[4]);
+let o1 = sim_ou(1.0, 2.0, 1.0, 0.3, 1.0, 4);
+print(o1[4]);
+let m1 = sim_merton(100.0, 0.05, 0.2, 0.2, 0.0, 0.1, 1.0, 4);
+print(m1[4]);
+print(bs_call(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_put(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_delta_call(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_delta_put(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_gamma(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_vega(100.0, 100.0, 0.05, 0.2, 1.0));
+seed(42);
+let g2 = sim_gbm(100.0, 0.05, 0.2, 1.0, 5);
+print(g2[5]);

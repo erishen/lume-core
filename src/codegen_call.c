@@ -397,6 +397,16 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_rand_erlang(i64, double)\n");
     EMIT(g, "declare double @lume_bi_rand_von_mises(double, double)\n");
     EMIT(g, "declare i8* @lume_bi_rand_multinomial(i64, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_sim_gbm(double, double, double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_sim_bridge(double, double, double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_sim_ou(double, double, double, double, double, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_sim_merton(double, double, double, double, double, double, double, i64)\n");
+    EMIT(g, "declare double @lume_bi_bs_call(double, double, double, double, double)\n");
+    EMIT(g, "declare double @lume_bi_bs_put(double, double, double, double, double)\n");
+    EMIT(g, "declare double @lume_bi_bs_delta_call(double, double, double, double, double)\n");
+    EMIT(g, "declare double @lume_bi_bs_delta_put(double, double, double, double, double)\n");
+    EMIT(g, "declare double @lume_bi_bs_gamma(double, double, double, double, double)\n");
+    EMIT(g, "declare double @lume_bi_bs_vega(double, double, double, double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_lognormal(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_gumbel(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_rayleigh(double)\n");
@@ -1194,6 +1204,113 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_rand_multinomial(i64 %s, i8* %s)", a.v, b.v);
         free(a.v); free(b.v);
         return val_make(type_list(type_prim(TY_INT)), t);
+    }
+
+    /* Financial path simulators (2026-10-28): all-scalar inputs answering
+     * a fresh float list — the sim_* family. The last argument is the step
+     * count (float truncates through lume_bi_ftoi, like rand_int), every
+     * other argument is a double (int widens through lume_bi_float). The
+     * interpreter's native_* validate the same way. */
+    if (strcmp(bname, "sim_gbm") == 0 || strcmp(bname, "sim_bridge") == 0 ||
+        strcmp(bname, "sim_ou") == 0 || strcmp(bname, "sim_merton") == 0) {
+        int want = (strcmp(bname, "sim_gbm") == 0 || strcmp(bname, "sim_bridge") == 0) ? 5 :
+                   (strcmp(bname, "sim_ou") == 0 ? 6 : 8);
+        if (argc != want)
+            ERRV(g, "line %zu: %s() takes %d arguments", n->line, bname, want);
+        Val *vs = (Val *)calloc((size_t)argc, sizeof(Val));
+        for (int i = 0; i < argc; i++) {
+            vs[i] = cg_expr(g, n->as.call.args[i]);
+            if (!vs[i].v || !vs[i].ty ||
+                (vs[i].ty->kind != TY_INT && vs[i].ty->kind != TY_FLOAT)) {
+                for (int j = 0; j <= i; j++) free(vs[j].v);
+                free(vs);
+                ERRV(g, "line %zu: %s() needs numbers", n->line, bname);
+            }
+        }
+        char *nv = vs[argc - 1].v;
+        if (vs[argc - 1].ty->kind == TY_FLOAT) {
+            char *w = emit_instrf(g, type_prim(TY_INT),
+                                  "call i64 @lume_bi_ftoi(double %s)", nv);
+            free(nv);
+            nv = w;
+        }
+        const char *fn;
+        if (strcmp(bname, "sim_gbm") == 0) fn = "lume_bi_sim_gbm";
+        else if (strcmp(bname, "sim_bridge") == 0) fn = "lume_bi_sim_bridge";
+        else if (strcmp(bname, "sim_ou") == 0) fn = "lume_bi_sim_ou";
+        else fn = "lume_bi_sim_merton";
+        char *buf = NULL;
+        size_t bl = 0;
+        for (int i = 0; i < argc - 1; i++) {
+            char *a = vs[i].v;
+            if (vs[i].ty->kind == TY_INT) {
+                char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                      "call double @lume_bi_float(i64 %s)", a);
+                free(a);
+                a = w;
+            }
+            if (i == 0) {
+                size_t need = snprintf(NULL, 0, "call i8* @%s(double %s", fn, a) + 1;
+                buf = (char *)malloc(need);
+                bl = (size_t)snprintf(buf, need, "call i8* @%s(double %s", fn, a);
+            } else {
+                size_t need = bl + snprintf(NULL, 0, ", double %s", a) + 1;
+                buf = (char *)realloc(buf, need);
+                bl += (size_t)snprintf(buf + bl, need - bl, ", double %s", a);
+            }
+            free(a);
+        }
+        size_t need = bl + snprintf(NULL, 0, ", i64 %s)", nv) + 1;
+        buf = (char *)realloc(buf, need);
+        snprintf(buf + bl, need - bl, ", i64 %s)", nv);
+        free(nv);
+        free(vs);
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)), "%s", buf);
+        free(buf);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* Black-Scholes pricing family (2026-10-28): five doubles in, one
+     * double out — prices, deltas, gamma and vega. */
+    if (strcmp(bname, "bs_call") == 0 || strcmp(bname, "bs_put") == 0 ||
+        strcmp(bname, "bs_delta_call") == 0 || strcmp(bname, "bs_delta_put") == 0 ||
+        strcmp(bname, "bs_gamma") == 0 || strcmp(bname, "bs_vega") == 0) {
+        if (argc != 5)
+            ERRV(g, "line %zu: %s() takes (S, K, r, sigma, T)", n->line, bname);
+        Val a0 = cg_expr(g, n->as.call.args[0]);
+        Val a1 = cg_expr(g, n->as.call.args[1]);
+        Val a2 = cg_expr(g, n->as.call.args[2]);
+        Val a3 = cg_expr(g, n->as.call.args[3]);
+        Val a4 = cg_expr(g, n->as.call.args[4]);
+        if (!a0.v || !a0.ty || (a0.ty->kind != TY_INT && a0.ty->kind != TY_FLOAT) ||
+            !a1.v || !a1.ty || (a1.ty->kind != TY_INT && a1.ty->kind != TY_FLOAT) ||
+            !a2.v || !a2.ty || (a2.ty->kind != TY_INT && a2.ty->kind != TY_FLOAT) ||
+            !a3.v || !a3.ty || (a3.ty->kind != TY_INT && a3.ty->kind != TY_FLOAT) ||
+            !a4.v || !a4.ty || (a4.ty->kind != TY_INT && a4.ty->kind != TY_FLOAT)) {
+            free(a0.v); free(a1.v); free(a2.v); free(a3.v); free(a4.v);
+            ERRV(g, "line %zu: %s() needs five numbers", n->line, bname);
+        }
+        Val vv[5] = { a0, a1, a2, a3, a4 };
+        for (int i = 0; i < 5; i++) {
+            if (vv[i].ty->kind == TY_INT) {
+                char *w = emit_instrf(g, type_prim(TY_FLOAT),
+                                      "call double @lume_bi_float(i64 %s)", vv[i].v);
+                free(vv[i].v);
+                vv[i].v = w;
+            }
+        }
+        const char *fn;
+        if (strcmp(bname, "bs_call") == 0) fn = "lume_bi_bs_call";
+        else if (strcmp(bname, "bs_put") == 0) fn = "lume_bi_bs_put";
+        else if (strcmp(bname, "bs_delta_call") == 0) fn = "lume_bi_bs_delta_call";
+        else if (strcmp(bname, "bs_delta_put") == 0) fn = "lume_bi_bs_delta_put";
+        else if (strcmp(bname, "bs_gamma") == 0) fn = "lume_bi_bs_gamma";
+        else fn = "lume_bi_bs_vega";
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @%s(double %s, double %s, double %s, double %s, double %s)",
+                              fn, vv[0].v, vv[1].v, vv[2].v, vv[3].v, vv[4].v);
+        for (int i = 0; i < 5; i++) free(vv[i].v);
+        return val_make(type_prim(TY_FLOAT), t);
     }
 
     /* File builtins (SPEC §6.2): read_file returns the file as a string or

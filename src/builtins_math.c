@@ -772,6 +772,220 @@ static void native_rand_multinomial(VM *vm, int argc, Value *args, Value *out) {
     *out = val_obj(res);
 }
 
+/* Financial path simulators + Black-Scholes (2026-10-28): independent
+ * interpreter-side implementations of the same formulas as rt.c's
+ * lume_bi_sim_* / lume_bi_bs_*, driven by this VM's own bi_rng stream, so
+ * each backend advances its own PCG32 state identically. Invalid
+ * parameters answer an empty list / NAN here too, matching the native
+ * side. A path draws through the two-draw Box-Muller pair per point and —
+ * for Merton — the Knuth Poisson loop, whose draw count is stream-fixed. */
+static double bi_rand_normal_1(double mu, double sigma)
+{
+    double u1 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double u2 = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                + 0.0000000298023223876953125;
+    double z = sqrt(-2.0 * log(u1)) * cos(6.28318530717958647693 * u2);
+    return mu + sigma * z;
+}
+
+static int64_t bi_poisson_knuth(double lambda)
+{
+    if (!isfinite(lambda) || lambda <= 0.0) return -1;
+    double l = exp(-lambda);
+    if (!(l > 0.0)) return -1;
+    double p = 1.0;
+    int64_t k = 0;
+    do {
+        k++;
+        double u = (double)(bi_rng_next() >> 8) * 0.000000059604644775390625
+                   + 0.0000000298023223876953125;
+        p *= u;
+    } while (p > l);
+    return k - 1;
+}
+
+static void native_sim_gbm(VM *vm, int argc, Value *args, Value *out) {
+    double S0, mu, sigma, T, nv;
+    if (argc != 5 || !arg_num(vm, args[0], &S0) || !arg_num(vm, args[1], &mu) ||
+        !arg_num(vm, args[2], &sigma) || !arg_num(vm, args[3], &T) || !arg_num(vm, args[4], &nv)) return;
+    int64_t n = (int64_t)nv;
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    if (!isfinite(S0) || S0 <= 0.0 || !isfinite(sigma) || sigma < 0.0 ||
+        !isfinite(T) || T <= 0.0 || n <= 0 || !isfinite(mu)) {
+        vm_pop(vm); *out = val_obj(res); return;
+    }
+    double dt = T / (double)n;
+    double drift = (mu - 0.5 * sigma * sigma) * dt;
+    double vol = sigma * sqrt(dt);
+    list_push(vm, res, val_num(S0));
+    double s = S0;
+    for (int64_t i = 1; i <= n; i++) {
+        s *= exp(drift + vol * bi_rand_normal_1(0.0, 1.0));
+        list_push(vm, res, val_num(s));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_sim_bridge(VM *vm, int argc, Value *args, Value *out) {
+    double x0, xT, sigma, T, nv;
+    if (argc != 5 || !arg_num(vm, args[0], &x0) || !arg_num(vm, args[1], &xT) ||
+        !arg_num(vm, args[2], &sigma) || !arg_num(vm, args[3], &T) || !arg_num(vm, args[4], &nv)) return;
+    int64_t n = (int64_t)nv;
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    if (!isfinite(x0) || !isfinite(xT) || !isfinite(sigma) || sigma < 0.0 ||
+        !isfinite(T) || T <= 0.0 || n <= 0) {
+        vm_pop(vm); *out = val_obj(res); return;
+    }
+    double dt = T / (double)n;
+    double vol = sigma * sqrt(dt);
+    double *w = (double *)calloc((size_t)(n + 1), sizeof(double));
+    if (!w) { vm_pop(vm); *out = val_obj(res); return; }
+    for (int64_t i = 1; i <= n; i++)
+        w[i] = w[i - 1] + vol * bi_rand_normal_1(0.0, 1.0);
+    double span = xT - x0;
+    for (int64_t i = 0; i <= n; i++) {
+        double f = (double)i / (double)n;
+        list_push(vm, res, val_num(x0 + span * f + (w[i] - f * w[n])));
+    }
+    free(w);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_sim_ou(VM *vm, int argc, Value *args, Value *out) {
+    double x0, mu, theta, sigma, T, nv;
+    if (argc != 6 || !arg_num(vm, args[0], &x0) || !arg_num(vm, args[1], &mu) ||
+        !arg_num(vm, args[2], &theta) || !arg_num(vm, args[3], &sigma) ||
+        !arg_num(vm, args[4], &T) || !arg_num(vm, args[5], &nv)) return;
+    int64_t n = (int64_t)nv;
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    if (!isfinite(x0) || !isfinite(theta) || theta <= 0.0 || !isfinite(sigma) ||
+        sigma < 0.0 || !isfinite(T) || T <= 0.0 || n <= 0 || !isfinite(mu)) {
+        vm_pop(vm); *out = val_obj(res); return;
+    }
+    double dt = T / (double)n;
+    double decay = exp(-theta * dt);
+    double sd = sigma * sqrt((1.0 - exp(-2.0 * theta * dt)) / (2.0 * theta));
+    list_push(vm, res, val_num(x0));
+    double x = x0;
+    for (int64_t i = 1; i <= n; i++) {
+        x = mu + (x - mu) * decay + sd * bi_rand_normal_1(0.0, 1.0);
+        list_push(vm, res, val_num(x));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_sim_merton(VM *vm, int argc, Value *args, Value *out) {
+    double S0, mu, sigma, lambda, jmu, jsig, T, nv;
+    if (argc != 8 || !arg_num(vm, args[0], &S0) || !arg_num(vm, args[1], &mu) ||
+        !arg_num(vm, args[2], &sigma) || !arg_num(vm, args[3], &lambda) ||
+        !arg_num(vm, args[4], &jmu) || !arg_num(vm, args[5], &jsig) ||
+        !arg_num(vm, args[6], &T) || !arg_num(vm, args[7], &nv)) return;
+    int64_t n = (int64_t)nv;
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    if (!isfinite(S0) || S0 <= 0.0 || !isfinite(sigma) || sigma < 0.0 ||
+        !isfinite(lambda) || lambda < 0.0 || !isfinite(jsig) || jsig < 0.0 ||
+        !isfinite(T) || T <= 0.0 || n <= 0 || !isfinite(mu) || !isfinite(jmu)) {
+        vm_pop(vm); *out = val_obj(res); return;
+    }
+    double dt = T / (double)n;
+    double drift = (mu - 0.5 * sigma * sigma) * dt;
+    double vol = sigma * sqrt(dt);
+    double jrate = lambda * dt;
+    list_push(vm, res, val_num(S0));
+    double s = S0;
+    for (int64_t i = 1; i <= n; i++) {
+        double dz = bi_rand_normal_1(0.0, 1.0);
+        int64_t nj = bi_poisson_knuth(jrate);
+        double jl = (double)nj * jmu;
+        if (nj > 0) jl += jsig * sqrt((double)nj) * bi_rand_normal_1(0.0, 1.0);
+        s *= exp(drift + vol * dz + jl);
+        list_push(vm, res, val_num(s));
+    }
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static int bi_bs_valid(double S, double K, double r, double sigma, double T,
+                       double *d1, double *d2)
+{
+    if (!isfinite(S) || S <= 0.0 || !isfinite(K) || K <= 0.0 ||
+        !isfinite(r) || !isfinite(sigma) || sigma <= 0.0 || !isfinite(T) || T <= 0.0)
+        return 0;
+    double st = sigma * sqrt(T);
+    *d1 = (log(S / K) + (r + 0.5 * sigma * sigma) * T) / st;
+    *d2 = *d1 - st;
+    return 1;
+}
+
+static double bi_normpdf(double x)
+{
+    return exp(-0.5 * x * x) * 0.39894228040143267794;
+}
+
+static void native_bs_call(VM *vm, int argc, Value *args, Value *out) {
+    double S, K, r, sigma, T;
+    if (argc != 5 || !arg_num(vm, args[0], &S) || !arg_num(vm, args[1], &K) ||
+        !arg_num(vm, args[2], &r) || !arg_num(vm, args[3], &sigma) || !arg_num(vm, args[4], &T)) return;
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) { *out = val_num(NAN); return; }
+    double df = exp(-r * T);
+    *out = val_num(S * bi_normcdf(d1) - K * df * bi_normcdf(d2));
+}
+
+static void native_bs_put(VM *vm, int argc, Value *args, Value *out) {
+    double S, K, r, sigma, T;
+    if (argc != 5 || !arg_num(vm, args[0], &S) || !arg_num(vm, args[1], &K) ||
+        !arg_num(vm, args[2], &r) || !arg_num(vm, args[3], &sigma) || !arg_num(vm, args[4], &T)) return;
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) { *out = val_num(NAN); return; }
+    double df = exp(-r * T);
+    *out = val_num(K * df * bi_normcdf(-d2) - S * bi_normcdf(-d1));
+}
+
+static void native_bs_delta_call(VM *vm, int argc, Value *args, Value *out) {
+    double S, K, r, sigma, T;
+    if (argc != 5 || !arg_num(vm, args[0], &S) || !arg_num(vm, args[1], &K) ||
+        !arg_num(vm, args[2], &r) || !arg_num(vm, args[3], &sigma) || !arg_num(vm, args[4], &T)) return;
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) { *out = val_num(NAN); return; }
+    *out = val_num(bi_normcdf(d1));
+}
+
+static void native_bs_delta_put(VM *vm, int argc, Value *args, Value *out) {
+    double S, K, r, sigma, T;
+    if (argc != 5 || !arg_num(vm, args[0], &S) || !arg_num(vm, args[1], &K) ||
+        !arg_num(vm, args[2], &r) || !arg_num(vm, args[3], &sigma) || !arg_num(vm, args[4], &T)) return;
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) { *out = val_num(NAN); return; }
+    *out = val_num(bi_normcdf(d1) - 1.0);
+}
+
+static void native_bs_gamma(VM *vm, int argc, Value *args, Value *out) {
+    double S, K, r, sigma, T;
+    if (argc != 5 || !arg_num(vm, args[0], &S) || !arg_num(vm, args[1], &K) ||
+        !arg_num(vm, args[2], &r) || !arg_num(vm, args[3], &sigma) || !arg_num(vm, args[4], &T)) return;
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) { *out = val_num(NAN); return; }
+    *out = val_num(bi_normpdf(d1) / (S * sigma * sqrt(T)));
+}
+
+static void native_bs_vega(VM *vm, int argc, Value *args, Value *out) {
+    double S, K, r, sigma, T;
+    if (argc != 5 || !arg_num(vm, args[0], &S) || !arg_num(vm, args[1], &K) ||
+        !arg_num(vm, args[2], &r) || !arg_num(vm, args[3], &sigma) || !arg_num(vm, args[4], &T)) return;
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) { *out = val_num(NAN); return; }
+    *out = val_num(S * bi_normpdf(d1) * sqrt(T));
+}
+
 static void native_gamma(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -863,6 +1077,16 @@ Value b_rand_negative_binomial(VM *vm, int argc, Value *args) { return vm_native
 Value b_rand_erlang(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_rand_erlang); }
 Value b_rand_von_mises(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_rand_von_mises); }
 Value b_rand_multinomial(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_multinomial); }
+Value b_sim_gbm(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_sim_gbm); }
+Value b_sim_bridge(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_sim_bridge); }
+Value b_sim_ou(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sim_ou); }
+Value b_sim_merton(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_sim_merton); }
+Value b_bs_call(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_bs_call); }
+Value b_bs_put(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_bs_put); }
+Value b_bs_delta_call(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_bs_delta_call); }
+Value b_bs_delta_put(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bs_delta_put); }
+Value b_bs_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_bs_gamma); }
+Value b_bs_vega(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_bs_vega); }
 Value b_erf(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_erf); }
 Value b_gamma(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_gamma); }
 Value b_lgamma(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_lgamma); }

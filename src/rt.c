@@ -2962,6 +2962,169 @@ double lume_bi_mean(const LumeList *l)
  * i = n-1 down to 1, swap i with rand_int(0, i). rand_int consumes two
  * PCG32 draws per step, and the fixed stream makes the permutation
  * deterministic across backends and runs. */
+/* Financial path simulators + Black-Scholes pricing (2026-10-28): every
+ * path is driven by the deterministic PCG32 stream through
+ * lume_bi_rand_normal (two draws per point) and lume_bi_rand_poisson (the
+ * Knuth loop, stream-fixed draw count), so the whole path list — not just
+ * its marginal distribution — is byte-identical across the three backends.
+ * All paths answer a fresh float list of n+1 points, index 0 the initial
+ * value; invalid parameters answer an empty list natively (the interpreter
+ * reports an error). */
+static double bi_path_dt(double T, int64_t n)
+{
+    if (!isfinite(T) || T <= 0.0 || n <= 0) return NAN;
+    return T / (double)n;
+}
+
+LumeList *lume_bi_sim_gbm(double S0, double mu, double sigma, double T, int64_t n)
+{
+    if (!isfinite(S0) || S0 <= 0.0 || !isfinite(sigma) || sigma < 0.0) return lume_list_new();
+    double dt = bi_path_dt(T, n);
+    if (!(dt > 0.0) || !isfinite(mu)) return lume_list_new();
+    double drift = (mu - 0.5 * sigma * sigma) * dt;
+    double vol = sigma * sqrt(dt);
+    LumeList *out = lume_list_new();
+    if (!out) return NULL;
+    lume_list_push_f(out, S0);
+    double s = S0;
+    for (int64_t i = 1; i <= n; i++) {
+        s *= exp(drift + vol * lume_bi_rand_normal(0.0, 1.0));
+        lume_list_push_f(out, s);
+    }
+    return out;
+}
+
+LumeList *lume_bi_sim_bridge(double x0, double xT, double sigma, double T, int64_t n)
+{
+    if (!isfinite(x0) || !isfinite(xT) || !isfinite(sigma) || sigma < 0.0) return lume_list_new();
+    double dt = bi_path_dt(T, n);
+    if (!(dt > 0.0)) return lume_list_new();
+    double vol = sigma * sqrt(dt);
+    double *w = (double *)calloc((size_t)(n + 1), sizeof(double));
+    if (!w) return NULL;
+    for (int64_t i = 1; i <= n; i++)
+        w[i] = w[i - 1] + vol * lume_bi_rand_normal(0.0, 1.0);
+    LumeList *out = lume_list_new();
+    if (!out) { free(w); return NULL; }
+    double span = xT - x0;
+    for (int64_t i = 0; i <= n; i++) {
+        double f = (double)i / (double)n;
+        lume_list_push_f(out, x0 + span * f + (w[i] - f * w[n]));
+    }
+    free(w);
+    return out;
+}
+
+LumeList *lume_bi_sim_ou(double x0, double mu, double theta, double sigma, double T, int64_t n)
+{
+    if (!isfinite(x0) || !isfinite(theta) || theta <= 0.0 ||
+        !isfinite(sigma) || sigma < 0.0) return lume_list_new();
+    double dt = bi_path_dt(T, n);
+    if (!(dt > 0.0) || !isfinite(mu)) return lume_list_new();
+    double decay = exp(-theta * dt);
+    double sd = sigma * sqrt((1.0 - exp(-2.0 * theta * dt)) / (2.0 * theta));
+    LumeList *out = lume_list_new();
+    if (!out) return NULL;
+    lume_list_push_f(out, x0);
+    double x = x0;
+    for (int64_t i = 1; i <= n; i++) {
+        x = mu + (x - mu) * decay + sd * lume_bi_rand_normal(0.0, 1.0);
+        lume_list_push_f(out, x);
+    }
+    return out;
+}
+
+LumeList *lume_bi_sim_merton(double S0, double mu, double sigma, double lambda,
+                             double jmu, double jsig, double T, int64_t n)
+{
+    if (!isfinite(S0) || S0 <= 0.0 || !isfinite(sigma) || sigma < 0.0 ||
+        !isfinite(lambda) || lambda < 0.0 || !isfinite(jsig) || jsig < 0.0)
+        return lume_list_new();
+    double dt = bi_path_dt(T, n);
+    if (!(dt > 0.0) || !isfinite(mu) || !isfinite(jmu)) return lume_list_new();
+    double drift = (mu - 0.5 * sigma * sigma) * dt;
+    double vol = sigma * sqrt(dt);
+    double jrate = lambda * dt;
+    LumeList *out = lume_list_new();
+    if (!out) return NULL;
+    lume_list_push_f(out, S0);
+    double s = S0;
+    for (int64_t i = 1; i <= n; i++) {
+        double dz = lume_bi_rand_normal(0.0, 1.0);
+        int64_t nj = lume_bi_rand_poisson(jrate);  /* Knuth loop, stream-fixed */
+        double jl = (double)nj * jmu;
+        if (nj > 0) jl += jsig * sqrt((double)nj) * lume_bi_rand_normal(0.0, 1.0);
+        s *= exp(drift + vol * dz + jl);
+        lume_list_push_f(out, s);
+    }
+    return out;
+}
+
+/* Black-Scholes (2026-10-28): d1/d2 through the same lume_bi_normcdf the
+ * interpreter uses, so prices, deltas, gamma and vega agree to the ULP
+ * across the three backends. Non-finite / non-positive inputs answer NAN
+ * natively (the interpreter reports an error). */
+static int bi_bs_valid(double S, double K, double r, double sigma, double T,
+                       double *d1, double *d2)
+{
+    if (!isfinite(S) || S <= 0.0 || !isfinite(K) || K <= 0.0 ||
+        !isfinite(r) || !isfinite(sigma) || sigma <= 0.0 || !isfinite(T) || T <= 0.0)
+        return 0;
+    double st = sigma * sqrt(T);
+    *d1 = (log(S / K) + (r + 0.5 * sigma * sigma) * T) / st;
+    *d2 = *d1 - st;
+    return 1;
+}
+
+static double bi_normpdf(double x)
+{
+    return exp(-0.5 * x * x) * 0.39894228040143267794;  /* 1/sqrt(2*pi) */
+}
+
+double lume_bi_bs_call(double S, double K, double r, double sigma, double T)
+{
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) return NAN;
+    double df = exp(-r * T);
+    return S * lume_bi_normcdf(d1) - K * df * lume_bi_normcdf(d2);
+}
+
+double lume_bi_bs_put(double S, double K, double r, double sigma, double T)
+{
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) return NAN;
+    double df = exp(-r * T);
+    return K * df * lume_bi_normcdf(-d2) - S * lume_bi_normcdf(-d1);
+}
+
+double lume_bi_bs_delta_call(double S, double K, double r, double sigma, double T)
+{
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) return NAN;
+    return lume_bi_normcdf(d1);
+}
+
+double lume_bi_bs_delta_put(double S, double K, double r, double sigma, double T)
+{
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) return NAN;
+    return lume_bi_normcdf(d1) - 1.0;
+}
+
+double lume_bi_bs_gamma(double S, double K, double r, double sigma, double T)
+{
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) return NAN;
+    return bi_normpdf(d1) / (S * sigma * sqrt(T));
+}
+
+double lume_bi_bs_vega(double S, double K, double r, double sigma, double T)
+{
+    double d1, d2;
+    if (!bi_bs_valid(S, K, r, sigma, T, &d1, &d2)) return NAN;
+    return S * bi_normpdf(d1) * sqrt(T);
+}
+
 /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against the
  * probs list, one plain draw per experiment, answered as a fresh int list
  * (counts per category). Defined here, after the LumeList machinery —

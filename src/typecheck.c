@@ -444,6 +444,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "rand_geometric", "rand_weibull", "rand_logistic", "rand_pareto", "rand_laplace",
     "rand_binomial", "rand_lognormal", "rand_gumbel", "rand_rayleigh", "rand_triangular",
     "rand_zipf", "rand_negative_binomial", "rand_erlang", "rand_von_mises", "rand_multinomial",
+    "sim_gbm", "sim_bridge", "sim_ou", "sim_merton",
+    "bs_call", "bs_put", "bs_delta_call", "bs_delta_put", "bs_gamma", "bs_vega",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -501,6 +503,8 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"rand_geometric",1,1}, {"rand_weibull",2,2}, {"rand_logistic",2,2}, {"rand_pareto",2,2}, {"rand_laplace",2,2},
     {"rand_binomial",2,2}, {"rand_lognormal",2,2}, {"rand_gumbel",2,2}, {"rand_rayleigh",1,1}, {"rand_triangular",2,2},
     {"rand_zipf",2,2}, {"rand_negative_binomial",2,2}, {"rand_erlang",2,2}, {"rand_von_mises",2,2}, {"rand_multinomial",2,2},
+    {"sim_gbm",5,5}, {"sim_bridge",5,5}, {"sim_ou",6,6}, {"sim_merton",8,8},
+    {"bs_call",5,5}, {"bs_put",5,5}, {"bs_delta_call",5,5}, {"bs_delta_put",5,5}, {"bs_gamma",5,5}, {"bs_vega",5,5},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},

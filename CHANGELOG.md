@@ -193,6 +193,42 @@ All notable changes to Lume are documented here. The format follows
   `tests/quant-consistency.lume` pins 7 more rows (81 total);
   `tests/quant-refcheck.py` adds 5 absolute-k cases (88 total);
   `tests/quant-fuzz.py` grows to 840 checks (10 series × 84 rows).
+- **Financial paths + Black-Scholes: `sim_gbm` / `sim_bridge` /
+  `sim_ou` / `sim_merton` + `bs_call` / `bs_put` / `bs_delta_call` /
+  `bs_delta_put` / `bs_gamma` / `bs_vega`.** Ten builtins that turn the
+  Monte Carlo stream into a pricing toolkit. The four path simulators
+  answer n+1-point float lists (index 0 = the start value) on the same
+  deterministic PCG32 stream: `sim_gbm` = geometric Brownian motion
+  (`S·exp((μ−σ²/2)dt + σ√dt·Z)` per step, each Z a Box-Muller pair);
+  `sim_bridge` accumulates σ√dt·Z increments and linearly bridges them
+  so the endpoint lands exactly on the target (each path step consumes a
+  Box-Muller pair, and the final value reproduces the target to the last
+  ULP on every backend); `sim_ou` = the exact Ornstein-Uhlenbeck
+  recurrence `μ+(x−μ)e^(−θdt)+σ√((1−e^(−2θdt))/(2θ))·Z`;
+  `sim_merton` layers Poisson jumps on the GBM diffusion (per step: one
+  Box-Muller pair for diffusion, Knuth's Poisson on λ·dt — consuming
+  nj+1 draws including the mandatory first — and, when nj > 0, one joint
+  Box-Muller pair scaled by √nj·σ_j for the jump size). The six
+  Black-Scholes helpers are scalars sharing one `bi_normcdf`
+  (0.5(1+erf(x/√2))) so all three backends agree to the last ULP:
+  call/put prices (S·N(d1)−K·e^(−rT)·N(d2) and the mirror), delta
+  call/put (N(d1), N(d1)−1), gamma (φ(d1)/(S·σ√T)) and vega
+  (S·φ(d1)·√T). Invalid parameters return an empty list / NAN natively
+  and error on the interpreter. All ten emit through dedicated
+  hand-built declare blocks (sim_* return i8* with an int/double-mixed
+  tail — the step count truncates via `lume_bi_ftoi`; bs_* are pure
+  double×5→double). `tests/quant-consistency.lume` pins 12 more seed-42
+  rows (93 total, three legs byte-identical, including a re-seeded GBM
+  replay); `tests/quant-refcheck.py` adds 13 absolute-k cases (101
+  total); `tests/quant-fuzz.py` grows to 950 checks (10 series × 95
+  rows) with endpoint/pricing/delta range and re-seed round-trip
+  assertions. This closes the fixture-layout audit started this round:
+  the linreg slope row lives inside a `let fit = linreg(...); print(...)`
+  compound statement, so per-dataset print counts that scan for
+  `print(`-prefixed lines undercount by one — the fuzz rows-per-dataset
+  constant and every row-position assertion now use the fixture's true
+  95-row layout with absolute positions instead of tail-relative
+  offsets.
 - **`map` type annotations bind correctly on the native backends.** A
   `let m: map = ...` annotation was parsed as a phantom named struct
   ("map" with no definition), so the native emitters bound through the

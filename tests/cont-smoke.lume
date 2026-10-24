@@ -10,3 +10,31 @@ print(rand_multinomial(10, [0.5, 0.3, 0.2]));
 seed(42);
 print(rand_zipf(5, 2.0));
 print(rand_von_mises(1.0, 0.0));
+// financial paths + Black-Scholes (2026-10-28): sim_gbm / sim_bridge /
+// sim_ou / sim_merton answer n+1-point float lists; the last line re-seeds
+// and proves the GBM path replays byte-for-byte. One continuous stream
+// (gbm 10 draws, bridge 8, ou 8, merton), verified against the stateful
+// tests/pyref-fin.py (seed 42: gbm[1]=83.9837, gbm[5]=95.1781,
+// bridge[4]=10, ou[4]=1.31062, merton[4]=90.6717, bs_call=10.4506,
+// bs_put=5.57353, bs_delta_call=0.636831, bs_gamma=0.018762).
+seed(42);
+let g = sim_gbm(100.0, 0.05, 0.2, 1.0, 5);
+print(g[1]);
+print(g[5]);
+let b = sim_bridge(0.0, 10.0, 0.5, 1.0, 4);
+print(b[0]);
+print(b[4]);
+let o = sim_ou(1.0, 2.0, 1.0, 0.3, 1.0, 4);
+print(o[4]);
+let m = sim_merton(100.0, 0.05, 0.2, 0.2, 0.0, 0.1, 1.0, 4);
+print(m[4]);
+print(bs_call(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_put(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_delta_call(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_delta_put(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_gamma(100.0, 100.0, 0.05, 0.2, 1.0));
+print(bs_vega(100.0, 100.0, 0.05, 0.2, 1.0));
+seed(42);
+let g2 = sim_gbm(100.0, 0.05, 0.2, 1.0, 5);
+print(g2[5]);
+

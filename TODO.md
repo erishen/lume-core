@@ -616,6 +616,35 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   instead of exact equality. quant-consistency pins 7 more rows (81
   total), quant-refcheck adds 5 absolute-k cases (88 total), quant-fuzz
   runs 10 series x 84 rows (840 checks).
+  Financial paths + Black-Scholes (2026-10-28): sim_gbm(s0,mu,sigma,T,n)
+  = geometric Brownian motion (each step one Box-Muller pair via
+  lume_bi_rand_normal, s *= exp((mu-0.5*sigma^2)*dt + sigma*sqrt(dt)*Z),
+  answers an n+1-point float list with index 0 = s0); sim_bridge(x0,xt,
+  sigma,T,n) = accumulated Brownian increments linearly bridged so the
+  endpoint is exactly xt (each step one Box-Muller pair, the final value
+  reproduces xt to the last ULP on every backend); sim_ou(x0,mu,theta,
+  sigma,T,n) = the exact OU recurrence (same Box-Muller pair per step);
+  sim_merton(s0,mu,sigma,lambda,jmu,jsig,T,n) = GBM diffusion plus
+  Poisson jumps — per step: diffusion Box-Muller pair (2 draws), Knuth
+  Poisson on lambda*dt (nj+1 draws including the mandatory first), and a
+  joint jump Box-Muller pair scaled by sqrt(nj)*jsig when nj > 0, with
+  the jump increment nj*jmu + that term. The six bs_* helpers share one
+  bi_normcdf (0.5*(1+erf(x/sqrt(2))) so the three legs agree to the last
+  ULP: bs_call / bs_put prices, bs_delta_call = N(d1), bs_delta_put =
+  N(d1)-1, bs_gamma = phi(d1)/(S*sigma*sqrt(T)), bs_vega =
+  S*phi(d1)*sqrt(T). sim_* return i8* float lists (step count truncates
+  via lume_bi_ftoi, other ints widen via lume_bi_float), bs_* are
+  double x5 -> double; both call emitters gained dedicated hand-built
+  declare blocks. Invalid parameters return an empty list / NAN
+  natively. quant-consistency pins 12 more rows (93 total), quant-
+  refcheck adds 13 absolute-k cases (101 total), quant-fuzz runs 10
+  series x 95 rows (950 checks) with endpoint/pricing/delta assertions
+  and a re-seeded gbm replay round-trip. Fixture-layout audit: the
+  linreg slope row is emitted inside "let fit%da = linreg(...);
+  print(...)" (starts with "let"), so any per-dataset print count that
+  scans for print(-prefixed lines undercounts by one; RPP and every
+  row-position assertion now use the fixture's true 95-row layout with
+  absolute row numbers instead of tail-relative offsets.
   Also closed the `map`-annotation binding bug the fixture surfaced: `: map`
   was a phantom named struct on the native emitters (a `let m: map = {...}`
   bound the map's length where the pointer belonged); parser.c now

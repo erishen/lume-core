@@ -793,6 +793,121 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_INT)), r);
     }
 
+    /* Financial path simulators (2026-10-28, mirroring the text backend's
+     * branches): all-scalar inputs answering a fresh float list. The last
+     * argument truncates through lume_bi_ftoi, every other argument widens
+     * through lume_bi_float. */
+    if (strcmp(bname, "sim_gbm") == 0 || strcmp(bname, "sim_bridge") == 0 ||
+        strcmp(bname, "sim_ou") == 0 || strcmp(bname, "sim_merton") == 0) {
+        int want = (strcmp(bname, "sim_gbm") == 0 || strcmp(bname, "sim_bridge") == 0) ? 5 :
+                   (strcmp(bname, "sim_ou") == 0 ? 6 : 8);
+        if (argc != want)
+            ERRV(g, "line %zu: %s() takes %d arguments", n->line, bname, want);
+        Val *vs = (Val *)calloc((size_t)argc, sizeof(Val));
+        for (int i = 0; i < argc; i++) {
+            vs[i] = cg_expr(g, n->as.call.args[i]);
+            if (!vs[i].v || !vs[i].ty ||
+                (vs[i].ty->kind != TY_INT && vs[i].ty->kind != TY_FLOAT)) {
+                free(vs);
+                ERRV(g, "line %zu: %s() needs numbers", n->line, bname);
+            }
+        }
+        LLVMValueRef nv = vs[argc - 1].v;
+        if (vs[argc - 1].ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { nv };
+            nv = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "ft");
+        }
+        const char *fn;
+        if (strcmp(bname, "sim_gbm") == 0) fn = "lume_bi_sim_gbm";
+        else if (strcmp(bname, "sim_bridge") == 0) fn = "lume_bi_sim_bridge";
+        else if (strcmp(bname, "sim_ou") == 0) fn = "lume_bi_sim_ou";
+        else fn = "lume_bi_sim_merton";
+        LLVMTypeRef *pt = (LLVMTypeRef *)calloc((size_t)argc, sizeof(LLVMTypeRef));
+        LLVMValueRef *pv = (LLVMValueRef *)calloc((size_t)argc, sizeof(LLVMValueRef));
+        pt[0] = g->dbl;
+        pv[0] = vs[0].v;
+        if (vs[0].ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { vs[0].v };
+            pv[0] = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+        }
+        for (int i = 1; i < argc - 1; i++) {
+            pt[i] = g->dbl;
+            pv[i] = vs[i].v;
+            if (vs[i].ty->kind == TY_INT) {
+                LLVMTypeRef p1[1] = { g->i64 };
+                LLVMValueRef v1[1] = { vs[i].v };
+                pv[i] = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->dbl, p1, 1, 0),
+                    rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+            }
+        }
+        pt[argc - 1] = g->i64;
+        pv[argc - 1] = nv;
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, pt, argc, 0),
+            rt_decl(g, fn, g->i8ptr, pt, argc), pv, argc, "sim");
+        /* Val.v is a live LLVMValueRef here (never heap-allocated by us):
+         * free only the calloc'd carrier arrays, not the refs themselves. */
+        free(vs);
+        free(pt);
+        free(pv);
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
+    /* Black-Scholes pricing family (2026-10-28): five doubles in, one
+     * double out. */
+    if (strcmp(bname, "bs_call") == 0 || strcmp(bname, "bs_put") == 0 ||
+        strcmp(bname, "bs_delta_call") == 0 || strcmp(bname, "bs_delta_put") == 0 ||
+        strcmp(bname, "bs_gamma") == 0 || strcmp(bname, "bs_vega") == 0) {
+        if (argc != 5)
+            ERRV(g, "line %zu: %s() takes (S, K, r, sigma, T)", n->line, bname);
+        Val a0 = cg_expr(g, n->as.call.args[0]);
+        Val a1 = cg_expr(g, n->as.call.args[1]);
+        Val a2 = cg_expr(g, n->as.call.args[2]);
+        Val a3 = cg_expr(g, n->as.call.args[3]);
+        Val a4 = cg_expr(g, n->as.call.args[4]);
+        if (!a0.v || !a0.ty || (a0.ty->kind != TY_INT && a0.ty->kind != TY_FLOAT) ||
+            !a1.v || !a1.ty || (a1.ty->kind != TY_INT && a1.ty->kind != TY_FLOAT) ||
+            !a2.v || !a2.ty || (a2.ty->kind != TY_INT && a2.ty->kind != TY_FLOAT) ||
+            !a3.v || !a3.ty || (a3.ty->kind != TY_INT && a3.ty->kind != TY_FLOAT) ||
+            !a4.v || !a4.ty || (a4.ty->kind != TY_INT && a4.ty->kind != TY_FLOAT)) {
+            free(a0.v); free(a1.v); free(a2.v); free(a3.v); free(a4.v);
+            ERRV(g, "line %zu: %s() needs five numbers", n->line, bname);
+        }
+        Val vv[5] = { a0, a1, a2, a3, a4 };
+        LLVMTypeRef pt[5];
+        LLVMValueRef pv[5];
+        for (int i = 0; i < 5; i++) {
+            pt[i] = g->dbl;
+            pv[i] = vv[i].v;
+            if (vv[i].ty->kind == TY_INT) {
+                LLVMTypeRef p1[1] = { g->i64 };
+                LLVMValueRef v1[1] = { vv[i].v };
+                pv[i] = LLVMBuildCall2(g->ab,
+                    LLVMFunctionType(g->dbl, p1, 1, 0),
+                    rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
+            }
+        }
+        const char *fn;
+        if (strcmp(bname, "bs_call") == 0) fn = "lume_bi_bs_call";
+        else if (strcmp(bname, "bs_put") == 0) fn = "lume_bi_bs_put";
+        else if (strcmp(bname, "bs_delta_call") == 0) fn = "lume_bi_bs_delta_call";
+        else if (strcmp(bname, "bs_delta_put") == 0) fn = "lume_bi_bs_delta_put";
+        else if (strcmp(bname, "bs_gamma") == 0) fn = "lume_bi_bs_gamma";
+        else fn = "lume_bi_bs_vega";
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, pt, 5, 0),
+            rt_decl(g, fn, g->dbl, pt, 5), pv, 5, "bs");
+        /* Same rule as the sim block above: vv[i].v are live LLVMValueRefs. */
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
     /* now(): epoch seconds (SPEC §6.2, matching the interpreter's now() and
      * bridge_native's lume_bi_now). */
     if (strcmp(bname, "now") == 0) {

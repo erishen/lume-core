@@ -486,6 +486,118 @@ def pcg_multinom(seed, n, probs, k):
     return counts
 
 
+# Financial paths + Black-Scholes (2026-10-28). The four simulators draw
+# Box-Muller normals through pcg_rand_normal (two draws each) and, for
+# Merton, Knuth's poisson through pcg_rand_poi — whose loop consumes
+# nj+1 draws per step. Absolute offsets k mirror the fixture's continuous
+# stream (gbm 10 draws, bridge 8, ou 8, merton, then the deterministic bs
+# family, then a re-seeded gbm replay).
+def pcg_sim_gbm(seed, s0, mu, sigma, T, n, k):
+    dt = T / n
+    s = s0
+    path = [s0]
+    for _ in range(n):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        s = s * math.exp((mu - 0.5 * sigma * sigma) * dt
+                         + sigma * math.sqrt(dt) * z)
+        path.append(s)
+    return path
+
+
+def pcg_sim_bridge(seed, x0, xt, sigma, T, n, k):
+    dt = T / n
+    w = [0.0] * (n + 1)
+    for i in range(1, n + 1):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        w[i] = w[i - 1] + sigma * math.sqrt(dt) * z
+    path = []
+    for i in range(n + 1):
+        f = float(i) / n
+        path.append(x0 + (xt - x0) * f + (w[i] - f * w[n]))
+    return path
+
+
+def pcg_sim_ou(seed, x0, mu, theta, sigma, T, n, k):
+    dt = T / n
+    x = x0
+    path = [x0]
+    e = math.exp(-theta * dt)
+    for _ in range(n):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        x = mu + (x - mu) * e + sigma * math.sqrt(
+            (1.0 - math.exp(-2.0 * theta * dt)) / (2.0 * theta)) * z
+        path.append(x)
+    return path
+
+
+def pcg_sim_merton(seed, s0, mu, sigma, lam, jmu, jsig, T, n, k):
+    dt = T / n
+    s = s0
+    path = [s0]
+    for _ in range(n):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        nj = pcg_rand_poi(seed, lam * dt, k)
+        k += nj + 1
+        if nj > 0:
+            jz = pcg_rand_normal(seed, 0.0, 1.0, k)
+            k += 2
+            jump = nj * jmu + jsig * math.sqrt(nj) * jz
+        else:
+            jump = 0.0
+        s = s * math.exp((mu - 0.5 * sigma * sigma) * dt
+                         + sigma * math.sqrt(dt) * z + jump)
+        path.append(s)
+    return path
+
+
+def _bs_d12(S, K, r, sigma, T):
+    sq = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / sq
+    return d1, d1 - sq
+
+
+def _bs_ncdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bs_npdf(x):
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def bs_call_ref(S, K, r, sigma, T):
+    d1, d2 = _bs_d12(S, K, r, sigma, T)
+    return S * _bs_ncdf(d1) - K * math.exp(-r * T) * _bs_ncdf(d2)
+
+
+def bs_put_ref(S, K, r, sigma, T):
+    d1, d2 = _bs_d12(S, K, r, sigma, T)
+    return K * math.exp(-r * T) * _bs_ncdf(-d2) - S * _bs_ncdf(-d1)
+
+
+def bs_delta_call_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return _bs_ncdf(d1)
+
+
+def bs_delta_put_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return _bs_ncdf(d1) - 1.0
+
+
+def bs_gamma_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return _bs_npdf(d1) / (S * sigma * math.sqrt(T))
+
+
+def bs_vega_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return S * _bs_npdf(d1) * math.sqrt(T)
+
+
 def pcg_t(seed, df, k):
     """Student t: Box-Muller normal (two draws) over sqrt(chisq(df)/df)."""
     u1 = pcg_ub(seed, k)
@@ -574,6 +686,24 @@ cases += [
     ("rng vonmises(0,2) k=7",    sixg(pcg_vm(42, 0.0, 2.0, 7)[0]), -0.17147),
     ("rng multinom(10) k=9 [0]", pcg_multinom(42, 10, [0.5, 0.3, 0.2], 9)[0], 2),
     ("rng vonmises(1,0) k=2",    sixg(pcg_vm(42, 1.0, 0.0, 2)[0]), 2.22081),
+    # financial paths + Black-Scholes (2026-10-28): one continuous stream
+    # seeded 42 mirrors tests/quant-consistency.lume's appended section —
+    # gbm(5) 10 draws, bridge(4) 8 draws, ou(4) 8 draws, merton(4) (each
+    # step consumes its Knuth-poisson nj+1 draws), then the deterministic
+    # bs family; the final gbm re-seeds at k=1 and replays byte-for-byte.
+    ("fin gbm[1] k=1",      sixg(pcg_sim_gbm(42, 100.0, 0.05, 0.2, 1.0, 5, 1)[1]), 83.9837),
+    ("fin gbm[5] k=1",      sixg(pcg_sim_gbm(42, 100.0, 0.05, 0.2, 1.0, 5, 1)[5]), 95.1781),
+    ("fin bridge[0] k=11",  sixg(pcg_sim_bridge(42, 0.0, 10.0, 0.5, 1.0, 4, 11)[0]), 0.0),
+    ("fin bridge[4] k=11",  sixg(pcg_sim_bridge(42, 0.0, 10.0, 0.5, 1.0, 4, 11)[4]), 10.0),
+    ("fin ou[4] k=19",      sixg(pcg_sim_ou(42, 1.0, 2.0, 1.0, 0.3, 1.0, 4, 19)[4]), 1.31062),
+    ("fin merton[4] k=27",  sixg(pcg_sim_merton(42, 100.0, 0.05, 0.2, 0.2, 0.0, 0.1, 1.0, 4, 27)[4]), 90.6717),
+    ("fin bs_call",  sixg(bs_call_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 10.4506),
+    ("fin bs_put",   sixg(bs_put_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 5.57353),
+    ("fin bs_delta_call",  sixg(bs_delta_call_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 0.636831),
+    ("fin bs_delta_put",   sixg(bs_delta_put_ref(100.0, 100.0, 0.05, 0.2, 1.0)), -0.363169),
+    ("fin bs_gamma", sixg(bs_gamma_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 0.018762),
+    ("fin bs_vega",  sixg(bs_vega_ref(100.0, 100.0, 0.05, 0.2, 1.0)), 37.524),
+    ("fin gbm replay k=1", sixg(pcg_sim_gbm(42, 100.0, 0.05, 0.2, 1.0, 5, 1)[5]), 95.1781),
 ]
 
 fails = 0

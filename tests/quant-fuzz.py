@@ -28,28 +28,40 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 84                              # rows per dataset (39 quant rows + 45
-                                      # Monte Carlo rows: advanced samplers
-                                      # x7 (zipf / negative-binomial /
+RPP = 95                              # rows per dataset. The layout mirrors the
+                                      # generated fixture exactly, including the
+                                      # linreg slope row, which the fixture emits
+                                      # as "let fit%da = linreg(...); print(...)"
+                                      # (starts with "let", so print-counting by
+                                      # prefix would miss it): 39 quant rows
+                                      # (mean, variance, stddev, median, p10,
+                                      # p90, covariance x2, correlation, slope,
+                                      # intercept, r2, max-drawdown, pct_change
+                                      # x5, skew, kurtosis, rolling_mean x6,
+                                      # rolling_stddev x6, ewma x6, normcdf),
+                                      # then 56 Monte Carlo rows: advanced
+                                      # samplers x7 (zipf / negative-binomial /
                                       # erlang / von Mises / multinomial[0]
-                                      # / zipf(5) / von Mises kappa=0),
-                                      # mixed samplers x7 (binomial /
-                                      # lognormal / gumbel / rayleigh /
-                                      # triangular / binom(3,0.2) /
-                                      # lognormal(1,0.5)), inverse-
-                                      # transform samplers x7 (geometric /
-                                      # weibull / logistic / pareto /
-                                      # laplace / geo(0.1) / weibull(0.5,3)),
-                                      # continuous samplers x7 (cauchy /
-                                      # gamma / beta / chisq / student_t /
-                                      # gamma<1 / chisq<1), rand x2,
-                                      # rand_range, rand_int x2,
+                                      # / zipf(5) / von Mises kappa=0), mixed
+                                      # samplers x7 (binomial / lognormal /
+                                      # gumbel / rayleigh / triangular /
+                                      # binom(3,0.2) / lognormal(1,0.5)),
+                                      # inverse-transform samplers x7
+                                      # (geometric / weibull / logistic /
+                                      # pareto / laplace / geo(0.1) /
+                                      # weibull(0.5,3)), continuous samplers
+                                      # x7 (cauchy / gamma / beta / chisq /
+                                      # student_t / gamma<1 / chisq<1), rand
+                                      # x2, rand_range, rand_int x2,
                                       # rand_normal x2, re-seed + first rand
                                       # again, then the distribution family:
                                       # rand_bool x3 (0.5 / 0.0 / 1.0),
                                       # rand_exponential x2, rand_poisson x2,
                                       # shuffle[0], and a closing re-seed
-                                      # round-trip)
+                                      # round-trip, then the financial rows:
+                                      # sim_gbm[5] / sim_bridge[4] /
+                                      # sim_ou[4] / sim_merton[4] / bs x6 /
+                                      # re-seeded sim_gbm[5] replay)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -409,6 +421,115 @@ def pcg_multinom(seed, n, probs, k):
     return counts
 
 
+# Financial paths + Black-Scholes (2026-10-28): mirrors tests/quant-refcheck.py.
+# The simulators draw Box-Muller normals (two draws each) and, for Merton,
+# Knuth's poisson whose loop consumes nj+1 draws per step; absolute offsets
+# match the fixture's continuous stream.
+def pcg_sim_gbm(seed, s0, mu, sigma, T, n, k):
+    dt = T / n
+    s = s0
+    path = [s0]
+    for _ in range(n):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        s = s * math.exp((mu - 0.5 * sigma * sigma) * dt
+                         + sigma * math.sqrt(dt) * z)
+        path.append(s)
+    return path
+
+
+def pcg_sim_bridge(seed, x0, xt, sigma, T, n, k):
+    dt = T / n
+    w = [0.0] * (n + 1)
+    for i in range(1, n + 1):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        w[i] = w[i - 1] + sigma * math.sqrt(dt) * z
+    path = []
+    for i in range(n + 1):
+        f = float(i) / n
+        path.append(x0 + (xt - x0) * f + (w[i] - f * w[n]))
+    return path
+
+
+def pcg_sim_ou(seed, x0, mu, theta, sigma, T, n, k):
+    dt = T / n
+    x = x0
+    path = [x0]
+    e = math.exp(-theta * dt)
+    for _ in range(n):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        x = mu + (x - mu) * e + sigma * math.sqrt(
+            (1.0 - math.exp(-2.0 * theta * dt)) / (2.0 * theta)) * z
+        path.append(x)
+    return path
+
+
+def pcg_sim_merton(seed, s0, mu, sigma, lam, jmu, jsig, T, n, k):
+    dt = T / n
+    s = s0
+    path = [s0]
+    for _ in range(n):
+        z = pcg_rand_normal(seed, 0.0, 1.0, k)
+        k += 2
+        nj, k = pcg_rand_poi_consumed(seed, lam * dt, k)
+        if nj > 0:
+            jz = pcg_rand_normal(seed, 0.0, 1.0, k)
+            k += 2
+            jump = nj * jmu + jsig * math.sqrt(nj) * jz
+        else:
+            jump = 0.0
+        s = s * math.exp((mu - 0.5 * sigma * sigma) * dt
+                         + sigma * math.sqrt(dt) * z + jump)
+        path.append(s)
+    return path
+
+
+def _bs_d12(S, K, r, sigma, T):
+    sq = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / sq
+    return d1, d1 - sq
+
+
+def _bs_ncdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bs_npdf(x):
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def bs_call_ref(S, K, r, sigma, T):
+    d1, d2 = _bs_d12(S, K, r, sigma, T)
+    return S * _bs_ncdf(d1) - K * math.exp(-r * T) * _bs_ncdf(d2)
+
+
+def bs_put_ref(S, K, r, sigma, T):
+    d1, d2 = _bs_d12(S, K, r, sigma, T)
+    return K * math.exp(-r * T) * _bs_ncdf(-d2) - S * _bs_ncdf(-d1)
+
+
+def bs_delta_call_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return _bs_ncdf(d1)
+
+
+def bs_delta_put_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return _bs_ncdf(d1) - 1.0
+
+
+def bs_gamma_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return _bs_npdf(d1) / (S * sigma * math.sqrt(T))
+
+
+def bs_vega_ref(S, K, r, sigma, T):
+    d1, _ = _bs_d12(S, K, r, sigma, T)
+    return S * _bs_npdf(d1) * math.sqrt(T)
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -684,6 +805,36 @@ def main():
         lines.append("seed(%d);" % sd)
         row(sixg(pcg_rand(sd, 1)))
         lines.append("print(rand());")
+        # financial paths + Black-Scholes (2026-10-28): sim_* answer
+        # n+1-point lists (the fixture reads element n, so one row per
+        # builtin), bs_* scalar prices and Greeks; absolute-k refs mirror
+        # tests/quant-consistency.lume's appended continuous stream, and
+        # the final gbm re-seeds and replays byte-for-byte.
+        sd = 1000 + i
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_sim_gbm(sd, 100.0, 0.05, 0.2, 1.0, 5, 1)[5]))
+        lines.append("print(sim_gbm(100.0, 0.05, 0.2, 1.0, 5)[5]);")
+        row(sixg(pcg_sim_bridge(sd, 0.0, 10.0, 0.5, 1.0, 4, 11)[4]))
+        lines.append("print(sim_bridge(0.0, 10.0, 0.5, 1.0, 4)[4]);")
+        row(sixg(pcg_sim_ou(sd, 1.0, 2.0, 1.0, 0.3, 1.0, 4, 19)[4]))
+        lines.append("print(sim_ou(1.0, 2.0, 1.0, 0.3, 1.0, 4)[4]);")
+        row(sixg(pcg_sim_merton(sd, 100.0, 0.05, 0.2, 0.2, 0.0, 0.1, 1.0, 4, 27)[4]))
+        lines.append("print(sim_merton(100.0, 0.05, 0.2, 0.2, 0.0, 0.1, 1.0, 4)[4]);")
+        row(sixg(bs_call_ref(100.0, 100.0, 0.05, 0.2, 1.0)))
+        lines.append("print(bs_call(100.0, 100.0, 0.05, 0.2, 1.0));")
+        row(sixg(bs_put_ref(100.0, 100.0, 0.05, 0.2, 1.0)))
+        lines.append("print(bs_put(100.0, 100.0, 0.05, 0.2, 1.0));")
+        row(sixg(bs_delta_call_ref(100.0, 100.0, 0.05, 0.2, 1.0)))
+        lines.append("print(bs_delta_call(100.0, 100.0, 0.05, 0.2, 1.0));")
+        row(sixg(bs_delta_put_ref(100.0, 100.0, 0.05, 0.2, 1.0)))
+        lines.append("print(bs_delta_put(100.0, 100.0, 0.05, 0.2, 1.0));")
+        row(sixg(bs_gamma_ref(100.0, 100.0, 0.05, 0.2, 1.0)))
+        lines.append("print(bs_gamma(100.0, 100.0, 0.05, 0.2, 1.0));")
+        row(sixg(bs_vega_ref(100.0, 100.0, 0.05, 0.2, 1.0)))
+        lines.append("print(bs_vega(100.0, 100.0, 0.05, 0.2, 1.0));")
+        lines.append("seed(%d);" % sd)
+        row(sixg(pcg_sim_gbm(sd, 100.0, 0.05, 0.2, 1.0, 5, 1)[5]))
+        lines.append("print(sim_gbm(100.0, 0.05, 0.2, 1.0, 5)[5]);")
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:
@@ -742,7 +893,7 @@ def main():
         # draw lands within one ULP of a bucket boundary — exact-value
         # equality is not a stable cross-libm contract here, so those two
         # rows are range-checked by the property assertions below instead.
-        if r not in (RPP - 45, RPP - 40) and not close(got, want):
+        if r not in (39, 44) and not close(got, want):
             sys.stderr.write("FAIL row %d: lume=%r python=%r\n" % (i, got, want))
             fails += 1
         # property assertions (independent of the formula used)
@@ -771,85 +922,89 @@ def main():
         # closing re-seed row (first rand again) equals the opening rand row
         # — a reproducibility contract no identical-implementation bug could
         # fake, since the round-trip forces a full stream restart.
-        if r >= RPP - 45:
-            if r == RPP - 45 or r == RPP - 40:            # zipf in [1, n]
-                hi_n = 10 if r == RPP - 45 else 5
+        if r >= 39:
+            # row numbers below are absolute positions inside one 95-row
+            # dataset (see RPP above); they are kept explicit instead of
+            # RPP-relative so inserting a block can never silently re-target
+            # an unrelated row.
+            if r == 39 or r == 44:                # zipf in [1, n]
+                hi_n = 10 if r == 39 else 5
                 if got < 1.0 or got > hi_n:
                     sys.stderr.write("FAIL row %d: zipf out of [1,%d] %r\n" % (i, hi_n, got)); fails += 1
-            elif r == RPP - 44:                           # negative-binomial >= 0
+            elif r == 40:                         # negative-binomial >= 0
                 if got < 0.0:
                     sys.stderr.write("FAIL row %d: negbinom < 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 43:                           # erlang > 0
+            elif r == 41:                         # erlang > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: erlang <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 42 or r == RPP - 39:          # von Mises finite
+            elif r == 42 or r == 45:              # von Mises finite
                 if not math.isfinite(got):
                     sys.stderr.write("FAIL row %d: non-finite vonmises %r\n" % (i, got)); fails += 1
-            elif r == RPP - 41:                           # multinomial[0] in [0,10]
+            elif r == 43:                         # multinomial[0] in [0,10]
                 if got < 0.0 or got > 10.0:
                     sys.stderr.write("FAIL row %d: multinomial[0] out of [0,10] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 38 or r == RPP - 33:          # binomial in [0, n]
-                hi_n = 10 if r == RPP - 38 else 3
+            elif r == 46 or r == 51:              # binomial in [0, n]
+                hi_n = 10 if r == 46 else 3
                 if got < 0.0 or got > hi_n:
                     sys.stderr.write("FAIL row %d: binomial out of [0,%d] %r\n" % (i, hi_n, got)); fails += 1
-            elif r == RPP - 37 or r == RPP - 32:          # lognormal > 0
+            elif r == 47 or r == 52:              # lognormal > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: lognormal <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 36:                           # gumbel finite
+            elif r == 48:                         # gumbel finite
                 if not math.isfinite(got):
                     sys.stderr.write("FAIL row %d: non-finite gumbel %r\n" % (i, got)); fails += 1
-            elif r == RPP - 35:                           # rayleigh > 0
+            elif r == 49:                         # rayleigh > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: rayleigh <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 34:                           # triangular in [0,1]
+            elif r == 50:                         # triangular in [0,1]
                 if got < -1e-9 or got > 1.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: triangular out of [0,1] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 31 or r == RPP - 26:          # geometric >= 0
+            elif r == 53 or r == 58:              # geometric >= 0
                 if got < 0.0:
                     sys.stderr.write("FAIL row %d: geometric < 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 30 or r == RPP - 25:          # weibull > 0
+            elif r == 54 or r == 59:              # weibull > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: weibull <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 29 or r == RPP - 27:          # logistic / laplace
+            elif r == 55 or r == 57:              # logistic / laplace
                 if not math.isfinite(got):
                     sys.stderr.write("FAIL row %d: non-finite sampler %r\n" % (i, got)); fails += 1
-            elif r == RPP - 28:                           # pareto >= xm > 0
+            elif r == 56:                         # pareto >= xm > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: pareto <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 24 or r == RPP - 20:          # cauchy / student_t
+            elif r == 60 or r == 64:              # cauchy / student_t
                 if not math.isfinite(got):
                     sys.stderr.write("FAIL row %d: non-finite sampler %r\n" % (i, got)); fails += 1
-            elif r == RPP - 23 or r == RPP - 19:          # gamma / gamma<1 > 0
+            elif r == 61 or r == 65:              # gamma / gamma<1 > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: gamma <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 22:                           # beta in (0, 1)
+            elif r == 62:                         # beta in (0, 1)
                 if got <= 0.0 or got >= 1.0:
                     sys.stderr.write("FAIL row %d: beta out of (0,1) %r\n" % (i, got)); fails += 1
-            elif r == RPP - 21 or r == RPP - 18:          # chisq / chisq<1 > 0
+            elif r == 63 or r == 66:              # chisq / chisq<1 > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: chisq <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 17 or r == RPP - 16 or r == RPP - 1:      # rand()
+            elif r == 67 or r == 68 or r == 74 or r == 83:      # rand()
                 if got < -1e-9 or got > 1.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: rand() out of [0,1) %r\n" % (i, got)); fails += 1
-            elif r == RPP - 15:                    # rand_range(0, 10)
+            elif r == 69:                    # rand_range(0, 10)
                 if got < -1e-9 or got > 10.0 + 1e-9:
                     sys.stderr.write("FAIL row %d: rand_range out of [0,10] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 14:                    # rand_int(0, 100)
+            elif r == 70:                    # rand_int(0, 100)
                 if got < 0 or got > 100:
                     sys.stderr.write("FAIL row %d: rand_int out of [0,100] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 13:                    # rand_int(-50, 50)
+            elif r == 71:                    # rand_int(-50, 50)
                 if got < -50 or got > 50:
                     sys.stderr.write("FAIL row %d: rand_int out of [-50,50] %r\n" % (i, got)); fails += 1
-            elif r == RPP - 9 or r == RPP - 5 or r == RPP - 4:      # rand_bool
+            elif r == 75 or r == 79 or r == 80:      # rand_bool
                 if got not in (0.0, 1.0):
                     sys.stderr.write("FAIL row %d: rand_bool out of {0,1} %r\n" % (i, got)); fails += 1
-            elif r == RPP - 8 or r == RPP - 3:      # rand_exponential > 0
+            elif r == 76 or r == 81:      # rand_exponential > 0
                 if got <= 0.0:
                     sys.stderr.write("FAIL row %d: rand_exponential <= 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 7 or r == RPP - 2:      # rand_poisson >= 0
+            elif r == 77 or r == 82:      # rand_poisson >= 0
                 if got < 0.0:
                     sys.stderr.write("FAIL row %d: rand_poisson < 0 %r\n" % (i, got)); fails += 1
-            elif r == RPP - 6:                      # shuffle[0] in [min, max]
+            elif r == 78:                      # shuffle[0] in [min, max]
                 # compare at the printout's six significant figures: on the
                 # large-offset series the raw min/max and the printed value
                 # can differ by the %g rounding (e.g. 99999896.7 prints as
@@ -859,11 +1014,26 @@ def main():
                 if got < lo - 1e-9 or got > hi + 1e-9:
                     sys.stderr.write("FAIL row %d: shuffle[0] %r outside series [%r, %r]\n"
                                      % (i, got, lo, hi)); fails += 1
-            elif r == RPP - 1:                      # re-seed round-trip
-                if not close(got, rows["interp"][i - (RPP - 1) + (RPP - 17)]):
+            elif r == 83:                      # re-seed round-trip
+                if not close(got, rows["interp"][i - 16]):
                     sys.stderr.write("FAIL row %d: re-seed rand %r != first rand %r\n"
-                                     % (i, got, rows["interp"][i - (RPP - 1) + (RPP - 17)]))
+                                     % (i, got, rows["interp"][i - 16]))
                     fails += 1
+            elif r == 84 or r == 87 or r == 94:  # gbm[5] / merton[4] / replay > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: path endpoint <= 0 %r\n" % (i, got)); fails += 1
+            elif r == 85:                      # bridge endpoint exactly xt
+                if not close(got, 10.0):
+                    sys.stderr.write("FAIL row %d: bridge endpoint %r != 10\n" % (i, got)); fails += 1
+            elif r == 86:                       # ou[4] finite
+                if not math.isfinite(got):
+                    sys.stderr.write("FAIL row %d: non-finite ou path %r\n" % (i, got)); fails += 1
+            elif r == 88 or r == 89 or r == 92 or r == 93:  # bs prices/greeks > 0
+                if got <= 0.0:
+                    sys.stderr.write("FAIL row %d: bs value <= 0 %r\n" % (i, got)); fails += 1
+            elif r == 90 or r == 91:       # bs deltas in [-1, 1]
+                if got < -1.0 - 1e-9 or got > 1.0 + 1e-9:
+                    sys.stderr.write("FAIL row %d: bs delta out of [-1,1] %r\n" % (i, got)); fails += 1
 
     # covariance symmetry is asserted on the pair rows (r==6 vs r==7)
     for i in range(N_SERIES):
