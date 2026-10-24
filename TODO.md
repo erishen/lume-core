@@ -712,8 +712,28 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   _ci / pcg_bootstrap_se replay idx = int(u*n) position-by-position,
   independent of rt.c's qsort and Welford loops; quant-fuzz runs 10
   series x 110 rows (1100 checks) with finite / positivity assertions.
-  The Monte-Carlo / quant roadmap is now complete; future directions sit
-  with higher-level portfolio / backtest builtins.
+- [x] **Portfolio / risk metrics (2026-10-31).** `value_at_risk(list,
+  level)` answers the negative of the level-quantile (pandas linear
+  interpolation, lume_bi_percentile's rule — a positive loss figure);
+  `expected_shortfall(list, level)` the negative mean of every
+  observation at or below that quantile (tail conditional expectation);
+  `sharpe_ratio(list, rf)` = (mean - rf) / sample stddev (n-1, Welford);
+  `sortino_ratio(list, rf)` = (mean - rf) / downside deviation
+  sqrt(sum(min(0, x-rf)^2)/n) (population n). Deterministic — no RNG, so
+  the rows need no re-seeding. Zero volatility / zero downside
+  deviation answers NAN on every leg (a data property, not a parameter
+  error — fuzz series with no spread stay runnable); invalid parameters
+  (level outside (0,1), n<2, non-finite rf) error on the interpreter,
+  NAN natively. Emission shares bootstrap_se_mean's (list, scalar) ->
+  double block on both native backends (fn dispatch). tests/va-smoke.lume
+  pins 6 rows on all three legs; quant-consistency grows to 131 rows
+  (three legs byte-identical); quant-refcheck adds 6 mathematical cases
+  (138 total) — es_tail / sharpe_ratio_ref / sortino_ratio_ref recompute
+  in Python; quant-fuzz runs 10 series x 114 rows (1140 checks) with
+  finite / NAN agreement. With this the higher-level portfolio /
+  backtest direction called out after the bootstrap family lands; the
+  natural next step is sim-portfolio composition on top of the existing
+  path simulators and these metrics.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

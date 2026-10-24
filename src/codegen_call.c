@@ -409,6 +409,10 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_bootstrap_median_ci(i8*, double, double)\n");
     EMIT(g, "declare i8* @lume_bi_bootstrap_stddev_ci(i8*, double, double)\n");
     EMIT(g, "declare double @lume_bi_bootstrap_se_mean(i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_value_at_risk(i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_expected_shortfall(i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_sharpe_ratio(i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_sortino_ratio(i8*, double)\n");
     EMIT(g, "declare i8* @lume_bi_sim_bridge(double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_ou(double, double, double, double, double, i64)\n");
     EMIT(g, "declare i8* @lume_bi_sim_merton(double, double, double, double, double, double, double, i64)\n");
@@ -1406,18 +1410,20 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 
-    if (strcmp(bname, "bootstrap_se_mean") == 0) {
+    if (strcmp(bname, "bootstrap_se_mean") == 0 || strcmp(bname, "value_at_risk") == 0 ||
+        strcmp(bname, "expected_shortfall") == 0 || strcmp(bname, "sharpe_ratio") == 0 ||
+        strcmp(bname, "sortino_ratio") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: bootstrap_se_mean() takes (list, n_iter)", n->line);
+            ERRV(g, "line %zu: %s() takes (list, number)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
             free(a.v);
-            ERRV(g, "line %zu: bootstrap_se_mean() needs a list", n->line);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
         }
         Val ni = cg_expr(g, n->as.call.args[1]);
         if (!ni.v || !ni.ty || (ni.ty->kind != TY_INT && ni.ty->kind != TY_FLOAT)) {
             free(a.v); free(ni.v);
-            ERRV(g, "line %zu: bootstrap_se_mean() needs a number for n_iter", n->line);
+            ERRV(g, "line %zu: %s() needs a number for its second argument", n->line, bname);
         }
         if (ni.ty->kind == TY_INT) {
             char *w = emit_instrf(g, type_prim(TY_FLOAT),
@@ -1425,9 +1431,14 @@ static Val cg_builtin(CG *g, Node *n)
             free(ni.v);
             ni.v = w;
         }
+        const char *fn = "lume_bi_bootstrap_se_mean";
+        if (strcmp(bname, "value_at_risk") == 0) fn = "lume_bi_value_at_risk";
+        else if (strcmp(bname, "expected_shortfall") == 0) fn = "lume_bi_expected_shortfall";
+        else if (strcmp(bname, "sharpe_ratio") == 0) fn = "lume_bi_sharpe_ratio";
+        else if (strcmp(bname, "sortino_ratio") == 0) fn = "lume_bi_sortino_ratio";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
-                              "call double @lume_bi_bootstrap_se_mean(i8* %s, double %s)",
-                              a.v, ni.v);
+                              "call double @%s(i8* %s, double %s)",
+                              fn, a.v, ni.v);
         free(a.v); free(ni.v);
         return val_make(type_prim(TY_FLOAT), t);
     }

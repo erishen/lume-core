@@ -395,7 +395,9 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "percentile") == 0 || strcmp(name, "covariance") == 0 ||
                  strcmp(name, "correlation") == 0 || strcmp(name, "max_drawdown") == 0 ||
                  strcmp(name, "skew") == 0 || strcmp(name, "kurtosis") == 0 ||
-                 strcmp(name, "bootstrap_se_mean") == 0))
+                 strcmp(name, "bootstrap_se_mean") == 0 || strcmp(name, "value_at_risk") == 0 ||
+                 strcmp(name, "expected_shortfall") == 0 || strcmp(name, "sharpe_ratio") == 0 ||
+                 strcmp(name, "sortino_ratio") == 0))
                 return type_prim(TY_FLOAT);
             if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||

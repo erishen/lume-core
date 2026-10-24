@@ -3606,6 +3606,79 @@ double lume_bi_bootstrap_se_mean(const LumeList *l, double n_iter)
     return sqrt(m2 / (double)(it - 1));
 }
 
+/* ---- portfolio / risk metrics (2026-10-31) ----
+ * Four deterministic metrics over a return series (no RNG, so they are
+ * pure functions of the list). value_at_risk answers the negative of the
+ * level-quantile (pandas linear interpolation, lume_bi_percentile's rule)
+ * — a positive loss figure; expected_shortfall answers the negative of
+ * the mean of every observation at or below that quantile (the tail
+ * conditional expectation); sharpe_ratio is (mean - rf) over the sample
+ * stddev (n-1, lume_bi_stddev's Welford); sortino_ratio is (mean - rf)
+ * over the downside deviation sqrt(sum(min(0, x-rf)^2)/n). Zero
+ * volatility / zero downside / non-finite inputs answer NAN. The
+ * interpreter twins in builtins_math.c mirror every step. */
+
+double lume_bi_value_at_risk(const LumeList *l, double level)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 1 || !isfinite(level) || level <= 0.0 || level >= 1.0) {
+        free(xs); return NAN;
+    }
+    qsort(xs, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    double q = bi_percentile_sorted(xs, n, level * 100.0);
+    free(xs);
+    return -q;
+}
+
+double lume_bi_expected_shortfall(const LumeList *l, double level)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 1 || !isfinite(level) || level <= 0.0 || level >= 1.0) {
+        free(xs); return NAN;
+    }
+    qsort(xs, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    double q = bi_percentile_sorted(xs, n, level * 100.0);
+    double s = 0.0;
+    int64_t k = 0;
+    while (k < n && xs[k] <= q) { s += xs[k]; k++; }
+    free(xs);
+    if (k < 1) return NAN;
+    return -(s / (double)k);
+}
+
+double lume_bi_sharpe_ratio(const LumeList *l, double rf)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !isfinite(rf)) { free(xs); return NAN; }
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double sd = sqrt(m2 / (double)(n - 1));
+    if (!(sd > 0.0) || !isfinite(m)) return NAN;
+    return (m - rf) / sd;
+}
+
+double lume_bi_sortino_ratio(const LumeList *l, double rf)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !isfinite(rf)) { free(xs); return NAN; }
+    double m = 0.0, dd = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        m += xs[i];
+        double d = xs[i] - rf;
+        if (d < 0.0) dd += d * d;
+    }
+    free(xs);
+    m /= (double)n;
+    double ds = sqrt(dd / (double)n);
+    if (!(ds > 0.0) || !isfinite(m)) return NAN;
+    return (m - rf) / ds;
+}
+
 /* Max drawdown of a price series, as a positive percentage: the largest
  * peak-to-trough drop, 0 for a monotonically rising series, NAN for n<2. */
 double lume_bi_max_drawdown(const LumeList *l)

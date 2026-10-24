@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 110                             # rows per dataset. The layout mirrors the
+RPP = 114                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -65,7 +65,12 @@ RPP = 110                             # rows per dataset. The layout mirrors the
                                       # hypothesis-test rows: z_test[series] /
                                       # z_pvalue(1.96) / tstat[series] /
                                       # ttest_p(2.32379,3) / chisq_stat /
-                                      # chisq_p(5,1))
+                                      # chisq_p(5,1)), then the bootstrap rows
+                                      # (mean_ci x2 / median_ci / stddev_ci /
+                                      # se_mean), then the portfolio rows x4
+                                      # (value_at_risk / expected_shortfall /
+                                      # sharpe_ratio / sortino_ratio — fixed
+                                      # level 0.05 / rf 0.0)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -75,6 +80,27 @@ def percentile(data, p):
     lo = int(r)
     frac = r - lo
     return s[lo] + frac * (s[lo + 1] - s[lo]) if lo + 1 < n else s[lo]
+
+
+def es_tail(data, p):
+    s = sorted(data)
+    q = percentile(data, p)
+    tail = [x for x in s if x <= q]
+    return sum(tail) / len(tail) if tail else float('nan')
+
+
+def sharpe_ratio_ref(data, rf):
+    n = len(data)
+    m = sum(data) / n
+    sd = (sum((x - m) ** 2 for x in data) / (n - 1)) ** 0.5
+    return float('nan') if sd <= 0 else (m - rf) / sd
+
+
+def sortino_ratio_ref(data, rf):
+    n = len(data)
+    m = sum(data) / n
+    dd = sum((x - rf) ** 2 for x in data if x < rf) / n
+    return float('nan') if dd <= 0 else (m - rf) / (dd ** 0.5)
 
 
 def sample_cov(x, y):
@@ -1072,6 +1098,17 @@ def main():
         lines.append("seed(%d);" % sd)
         row(sixg(pcg_bootstrap_se(sd, x, 20, 1)[0]))
         lines.append("print(bootstrap_se_mean(%s, 20));" % da)
+        # portfolio / risk metrics (2026-10-31, #48): deterministic, no RNG.
+        # value_at_risk / expected_shortfall at level 0.05 (negative
+        # quantile / negative tail mean), sharpe / sortino at rf 0.0.
+        row(sixg(-percentile(x, 5.0)))
+        lines.append("print(value_at_risk(%s, 0.05));" % da)
+        row(sixg(-es_tail(x, 5.0)))
+        lines.append("print(expected_shortfall(%s, 0.05));" % da)
+        row(sixg(sharpe_ratio_ref(x, 0.0)))
+        lines.append("print(sharpe_ratio(%s, 0.0));" % da)
+        row(sixg(sortino_ratio_ref(x, 0.0)))
+        lines.append("print(sortino_ratio(%s, 0.0));" % da)
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

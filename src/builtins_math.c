@@ -1566,6 +1566,93 @@ static void native_bootstrap_se_mean(VM *vm, int argc, Value *args, Value *out) 
     *out = val_num(sqrt(m2 / (double)(it - 1)));
 }
 
+/* ---- portfolio / risk metrics (2026-10-31) ----
+ * Mirrors rt.c lume_bi_* step for step: value_at_risk answers the
+ * negative of the level-quantile (pandas linear interpolation, the
+ * percentile rule above) — a positive loss figure; expected_shortfall
+ * the negative mean of every observation at or below that quantile;
+ * sharpe_ratio (mean - rf) / sample stddev (n-1); sortino_ratio
+ * (mean - rf) / downside deviation (n denominator). Deterministic, no
+ * RNG. Invalid parameters error here, NAN natively. */
+
+static void native_value_at_risk(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double level;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &level)) return;
+    if (!isfinite(level) || level <= 0.0 || level >= 1.0) {
+        vm_set_error(vm, "value_at_risk() needs level in (0,1)"); return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 1) { free(xs); vm_set_error(vm, "value_at_risk() needs a non-empty list"); return; }
+    qsort(xs, (size_t)n, sizeof(double), cmp_d);
+    double q = boot_pctl_sorted(xs, n, level * 100.0);
+    free(xs);
+    *out = val_num(-q);
+}
+
+static void native_expected_shortfall(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double level;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &level)) return;
+    if (!isfinite(level) || level <= 0.0 || level >= 1.0) {
+        vm_set_error(vm, "expected_shortfall() needs level in (0,1)"); return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 1) { free(xs); vm_set_error(vm, "expected_shortfall() needs a non-empty list"); return; }
+    qsort(xs, (size_t)n, sizeof(double), cmp_d);
+    double q = boot_pctl_sorted(xs, n, level * 100.0);
+    double s = 0.0; int64_t k = 0;
+    while (k < n && xs[k] <= q) { s += xs[k]; k++; }
+    free(xs);
+    if (k < 1) { vm_set_error(vm, "expected_shortfall() has no tail observations"); return; }
+    *out = val_num(-(s / (double)k));
+}
+
+static void native_sharpe_ratio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double rf;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &rf)) return;
+    if (!isfinite(rf)) { vm_set_error(vm, "sharpe_ratio() needs a finite risk-free rate"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2) { free(xs); vm_set_error(vm, "sharpe_ratio() needs at least two observations"); return; }
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double sd = sqrt(m2 / (double)(n - 1));
+    /* zero or non-finite volatility is a data property, not a parameter
+     * error: answer NAN like the native backends (fuzz series with no
+     * spread) instead of aborting the run. */
+    if (!(sd > 0.0) || !isfinite(m)) { *out = val_num(NAN); return; }
+    *out = val_num((m - rf) / sd);
+}
+
+static void native_sortino_ratio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double rf;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &rf)) return;
+    if (!isfinite(rf)) { vm_set_error(vm, "sortino_ratio() needs a finite risk-free rate"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2) { free(xs); vm_set_error(vm, "sortino_ratio() needs at least two observations"); return; }
+    double m = 0.0, dd = 0.0;
+    for (int i = 0; i < n; i++) {
+        m += xs[i];
+        double d = xs[i] - rf;
+        if (d < 0.0) dd += d * d;
+    }
+    free(xs);
+    m /= (double)n;
+    double ds = sqrt(dd / (double)n);
+    /* zero downside deviation (a series with no observations below rf) is
+     * a data property, not a parameter error: answer NAN like the native
+     * backends instead of aborting the run. */
+    if (!(ds > 0.0) || !isfinite(m)) { *out = val_num(NAN); return; }
+    *out = val_num((m - rf) / ds);
+}
+
 static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
     ObjList *X, *Y;
     if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
@@ -1823,3 +1910,7 @@ Value b_bootstrap_mean_ci(VM *vm, int argc, Value *args)   { return vm_native(vm
 Value b_bootstrap_median_ci(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bootstrap_median_ci); }
 Value b_bootstrap_stddev_ci(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bootstrap_stddev_ci); }
 Value b_bootstrap_se_mean(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_bootstrap_se_mean); }
+Value b_value_at_risk(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_value_at_risk); }
+Value b_expected_shortfall(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_expected_shortfall); }
+Value b_sharpe_ratio(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_sharpe_ratio); }
+Value b_sortino_ratio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sortino_ratio); }

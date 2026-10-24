@@ -287,6 +287,30 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Portfolio / risk metrics: `value_at_risk` / `expected_shortfall` /
+  `sharpe_ratio` / `sortino_ratio`.** Four deterministic metrics over a
+  return series (no RNG — pure functions of the list, so no stream
+  bookkeeping): `value_at_risk` answers the negative of the
+  level-quantile (pandas linear interpolation, the same percentile rule
+  pinned by `lume_bi_percentile`) — a positive loss figure;
+  `expected_shortfall` the negative mean of every observation at or below
+  that quantile (the tail conditional expectation); `sharpe_ratio` is
+  (mean − rf) over the sample stddev (n−1, Welford); `sortino_ratio` is
+  (mean − rf) over the downside deviation √(Σ min(0, x−rf)² / n)
+  (population n). Zero volatility / zero downside deviation (no
+  observation below rf) is a data property, so both ratios answer NAN on
+  the interpreter exactly like the native backends instead of aborting
+  the run; invalid parameters (level ∉ (0,1), n < 2, non-finite rf) still
+  error. The four share the (list, scalar) → double emit shape with
+  `bootstrap_se_mean` on both native backends (inference joined to the
+  FLOAT group, `fn` dispatch in the shared emit block).
+  `tests/va-smoke.lume` pins 6 rows across all three legs;
+  `tests/quant-consistency.lume` grows to 131 rows (deterministic, no
+  re-seeding); `tests/quant-refcheck.py` adds six cases (138 total) —
+  `es_tail` / `sharpe_ratio_ref` / `sortino_ratio_ref` recompute the
+  statistics in Python; `tests/quant-fuzz.py` grows to 1140 checks
+  (10 series × 114 rows) with finite / NAN agreement on the four new
+  rows.
 - **Bootstrap / resampling family: `bootstrap_mean_ci` /
   `bootstrap_median_ci` / `bootstrap_stddev_ci` / `bootstrap_se_mean`.**
   The percentile-method bootstrap now sits on the deterministic PCG32

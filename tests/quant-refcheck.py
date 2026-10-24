@@ -59,6 +59,29 @@ def pct_change(data):
     ]
 
 
+def es_tail(data, p):
+    """expected-shortfall tail: mean of every observation <= the level
+    quantile (pandas linear interpolation), negative like the builtin."""
+    s = sorted(data)
+    q = percentile(data, p)
+    tail = [x for x in s if x <= q]
+    return sum(tail) / len(tail) if tail else float('nan')
+
+
+def sharpe_ratio_ref(data, rf):
+    n = len(data)
+    m = sum(data) / n
+    sd = (sum((x - m) ** 2 for x in data) / (n - 1)) ** 0.5
+    return (m - rf) / sd
+
+
+def sortino_ratio_ref(data, rf):
+    n = len(data)
+    m = sum(data) / n
+    dd = sum((x - rf) ** 2 for x in data if x < rf) / n
+    return (m - rf) / (dd ** 0.5)
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -931,6 +954,17 @@ cases += [
     ("bs median_ci lo",   sixg(pcg_bootstrap_ci(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05, 1, 1)[0][0]), 10),
     ("bs stddev_ci hi",   sixg(pcg_bootstrap_ci(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05, 2, 1)[0][1]), 3.57771),
     ("bs se_mean",        sixg(pcg_bootstrap_se(42, [10.0, 12.0, 14.0, 16.0, 18.0], 20, 1)[0]), 1.47556),
+    # portfolio / risk metrics (2026-10-31, #48): deterministic — no RNG, no
+    # re-seeding. value_at_risk = -percentile(data, level*100);
+    # expected_shortfall = -es_tail (mean of every observation <= the
+    # quantile); sharpe = (mean - rf) / sample stddev (n-1); sortino =
+    # (mean - rf) / downside deviation (n denominator).
+    ("var 5%",            sixg(-percentile([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 5.0)), 0.01775),
+    ("es 5%",             sixg(-es_tail([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 5.0)), 0.02),
+    ("sharpe rf=0",       sixg(sharpe_ratio_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 0.0)), 0.212024),
+    ("sortino rf=0",      sixg(sortino_ratio_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 0.0)), 0.404145),
+    ("var 1%",            sixg(-percentile([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 1.0)), 0.01955),
+    ("es 1%",             sixg(-es_tail([0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005], 1.0)), 0.02),
 ]
 
 fails = 0

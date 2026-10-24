@@ -263,3 +263,16 @@ let bs2 = bootstrap_stddev_ci([10.0, 12.0, 14.0, 16.0, 18.0], 20, 0.05);
 print(bs2[1]);
 seed(42);
 print(bootstrap_se_mean([10.0, 12.0, 14.0, 16.0, 18.0], 20));
+
+// portfolio / risk metrics (2026-10-31, #48): deterministic — no RNG, so
+// no re-seeding; value_at_risk / expected_shortfall are the negative
+// level-quantile and negative tail mean, sharpe / sortino are
+// (mean - rf) over sample stddev / downside deviation. Pinned in
+// tests/quant-refcheck.py.
+let va_r = [0.02, -0.01, 0.03, -0.02, 0.01, 0.005, -0.015, 0.02, 0.0, -0.005];
+print(value_at_risk(va_r, 0.05));
+print(expected_shortfall(va_r, 0.05));
+print(sharpe_ratio(va_r, 0.0));
+print(sortino_ratio(va_r, 0.0));
+print(value_at_risk(va_r, 0.01));
+print(expected_shortfall(va_r, 0.01));

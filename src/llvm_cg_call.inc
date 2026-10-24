@@ -976,15 +976,17 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 
-    if (strcmp(bname, "bootstrap_se_mean") == 0) {
+    if (strcmp(bname, "bootstrap_se_mean") == 0 || strcmp(bname, "value_at_risk") == 0 ||
+        strcmp(bname, "expected_shortfall") == 0 || strcmp(bname, "sharpe_ratio") == 0 ||
+        strcmp(bname, "sortino_ratio") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: bootstrap_se_mean() takes (list, n_iter)", n->line);
+            ERRV(g, "line %zu: %s() takes (list, number)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v || !a.ty || a.ty->kind != TY_LIST)
-            ERRV(g, "line %zu: bootstrap_se_mean() needs a list", n->line);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
         Val s = cg_expr(g, n->as.call.args[1]);
         if (!s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT))
-            ERRV(g, "line %zu: bootstrap_se_mean() needs a number for n_iter", n->line);
+            ERRV(g, "line %zu: %s() needs a number for its second argument", n->line, bname);
         if (s.ty->kind == TY_INT) {
             LLVMTypeRef p1[1] = { g->i64 };
             LLVMValueRef v1[1] = { s.v };
@@ -992,11 +994,16 @@ static Val cg_builtin(CG *g, Node *n)
                 LLVMFunctionType(g->dbl, p1, 1, 0),
                 rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
         }
+        const char *fn = "lume_bi_bootstrap_se_mean";
+        if (strcmp(bname, "value_at_risk") == 0) fn = "lume_bi_value_at_risk";
+        else if (strcmp(bname, "expected_shortfall") == 0) fn = "lume_bi_expected_shortfall";
+        else if (strcmp(bname, "sharpe_ratio") == 0) fn = "lume_bi_sharpe_ratio";
+        else if (strcmp(bname, "sortino_ratio") == 0) fn = "lume_bi_sortino_ratio";
         LLVMTypeRef pt[2] = { g->i8ptr, g->dbl };
         LLVMValueRef pv[2] = { a.v, s.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->dbl, pt, 2, 0),
-            rt_decl(g, "lume_bi_bootstrap_se_mean", g->dbl, pt, 2), pv, 2, "bse");
+            rt_decl(g, fn, g->dbl, pt, 2), pv, 2, "pm");
         return val_make(type_prim(TY_FLOAT), r);
     }
 
