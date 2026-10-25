@@ -240,6 +240,37 @@ def calmar_ratio_ref(prices):
     return float('nan') if mdd == 0.0 else m / mdd
 
 
+def autocorrelation_ref(series, lag):
+    m = len(series) - lag
+    m1 = m2 = sxx = sxy = 0.0
+    for i in range(m):
+        a = series[i]; b = series[i + lag]
+        da = a - m1; db = b - m2
+        m1 += da / (i + 1); m2 += db / (i + 1)
+        sxx += da * (a - m1); sxy += da * (b - m2)
+    return float('nan') if sxx == 0.0 else sxy / sxx
+
+
+def treynor_ref(r, b, rf):
+    mr = mb = sxx = sxy = 0.0
+    for i, (rv, bv) in enumerate(zip(r, b), 1):
+        dr = rv - mr; db = bv - mb
+        mr += dr / i; mb += db / i
+        sxx += db * (bv - mb); sxy += dr * (bv - mb)
+    if sxx == 0.0: return float('nan')
+    beta = sxy / sxx
+    return float('nan') if beta == 0.0 else (mr - rf) / beta
+
+
+def omega_ref(series, t):
+    g = lo = 0.0
+    for v in series:
+        d = v - t
+        if d > 0: g += d
+        else: lo += -d
+    return float('nan') if lo == 0.0 else g / lo
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1152,6 +1183,13 @@ cases += [
     ("ab beta",           sixg(alpha_beta_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02], 0.002)[1]), 1.2),
     ("ir",                sixg(information_ratio_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02])), 0.358057),
     ("calmar",            sixg(calmar_ratio_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0])), 1.0139),
+    # time series & ratios (2026-11-02, #54): lag-1/lag-2 ACF, Treynor
+    # (reuses the #53 beta) and Omega at two thresholds.
+    ("acf lag1",          sixg(autocorrelation_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 1)), -0.72093),
+    ("acf lag2",          sixg(autocorrelation_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 2)), 0.147059),
+    ("treynor",           sixg(treynor_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02], 0.002)), 0.00666667),
+    ("omega t=0",         sixg(omega_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.0)), 3),
+    ("omega t=0.02",      sixg(omega_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.02)), 0.25),
 ]
 
 fails = 0

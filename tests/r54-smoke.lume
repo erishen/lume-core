@@ -1,0 +1,17 @@
+// r54-smoke.lume: time series & ratios (#54), 3 legs byte-identical.
+// Pinned rows recomputed in Python (joint-Welford, see r54.py).
+let x: list = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+let b: list = [0.0, 0.0, 0.0, 0.0, 0.0, 0.02];
+print(autocorrelation(x, 1));
+print(autocorrelation(x, 2));
+print(treynor_ratio(x, b, 0.002));
+print(omega_ratio(x, 0.0));
+print(omega_ratio(x, 0.02));
+// data properties: constant series -> NAN acf; zero-variance benchmark
+// -> NAN treynor; monotone gains -> NAN omega (zero loss side)
+let c: list = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01];
+print(autocorrelation(c, 1));
+let c2: list = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01];
+print(treynor_ratio(x, c2, 0.0));
+let up: list = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06];
+print(omega_ratio(up, 0.0));

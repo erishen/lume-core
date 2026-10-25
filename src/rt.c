@@ -4075,6 +4075,73 @@ double lume_bi_calmar_ratio(const LumeList *p)
     return m / mdd;
 }
 
+/* Autocorrelation at a lag: ACF(lag) = cov(x[0..n-lag], x[lag..n]) /
+ * var(x[0..n-lag]), both sample (n-lag-1 denominator via the shared
+ * joint-Welford) over the same aligned segment — the cleanest
+ * reproducible lag-k dependence measure (a white-noise / strategy
+ * residual check). Needs lag in [1, n-2]; zero variance answers NAN. */
+double lume_bi_autocorrelation(const LumeList *l, int64_t lag)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 3 || lag < 1 || lag > n - 2) { free(xs); return NAN; }
+    int64_t m = n - lag;
+    double m1 = 0.0, m2 = 0.0, sxx = 0.0, sxy = 0.0;
+    for (int64_t i = 0; i < m; i++) {
+        double a = xs[i], b = xs[i + lag];
+        double da = a - m1, db = b - m2;
+        m1 += da / (double)(i + 1);
+        m2 += db / (double)(i + 1);
+        sxx += da * (a - m1);
+        sxy += da * (b - m2);
+    }
+    free(xs);
+    if (sxx == 0.0) return NAN;
+    return sxy / sxx;
+}
+
+/* Treynor ratio: (mean_r - rf)/beta where beta is the alpha_beta beta
+ * (joint-Welford cov/var). The reward per unit of systematic risk, the
+ * benchmark-aware companion of sharpe_ratio. Zero-variance benchmark
+ * answers NAN (data property, #48 rule). */
+double lume_bi_treynor_ratio(const LumeList *r, const LumeList *b, double rf)
+{
+    int64_t nr, nb;
+    double *rs = bi_num_copy(r, &nr), *bs = bi_num_copy(b, &nb);
+    if (!rs || !bs || nr < 2 || nr != nb || !isfinite(rf)) {
+        free(rs); free(bs); return NAN;
+    }
+    double mr = 0.0, mb = 0.0, sxx = 0.0, sxy = 0.0;
+    for (int64_t i = 0; i < nr; i++) {
+        double dr = rs[i] - mr, db = bs[i] - mb;
+        mr += dr / (double)(i + 1);
+        mb += db / (double)(i + 1);
+        sxx += db * (bs[i] - mb);
+        sxy += dr * (bs[i] - mb);
+    }
+    free(rs); free(bs);
+    if (sxx == 0.0) return NAN;
+    double beta = sxy / sxx;
+    if (beta == 0.0) return NAN;
+    return (mr - rf) / beta;
+}
+
+/* Omega ratio at a threshold: mean(max(x-t,0))/mean(max(t-x,0)), the
+ * full-distribution gain/loss ratio (Sharpe only sees mean and
+ * variance). A zero loss-side answer NAN (data property). */
+double lume_bi_omega_ratio(const LumeList *l, double t)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !isfinite(t)) { free(xs); return NAN; }
+    double g = 0.0, lo = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - t;
+        if (d > 0.0) g += d; else lo += -d;
+    }
+    free(xs);
+    if (lo == 0.0) return NAN;
+    return g / lo;
+}
+
 /* int -> i64 for the native text emitter (float window / alpha arguments
  * must truncate before the runtime call; the LLVM leg uses fptosi). */
 int64_t lume_bi_ftoi(double v) { return (int64_t)v; }

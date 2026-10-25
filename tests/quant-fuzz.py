@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 130                             # rows per dataset. The layout mirrors the
+RPP = 133                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -81,7 +81,9 @@ RPP = 130                             # rows per dataset. The layout mirrors the
                                       # mid / MACD hist on the price path)
                                       # and the attribution rows x4 (alpha /
                                       # beta / IR on the pct_change pair, plus
-                                      # the Calmar ratio on path a)
+                                      # the Calmar ratio on path a), then the
+                                      # time-series rows x3 (ACF lag-1 /
+                                      # Treynor / Omega on the series)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -237,6 +239,37 @@ def calmar_ratio_ref(prices):
         if v > peak: peak = v
         if peak > 0.0: mdd = max(mdd, 100.0 * (peak - v) / peak)
     return float("nan") if mdd == 0.0 else m / mdd
+
+
+def autocorrelation_ref(series, lag):
+    m = len(series) - lag
+    m1 = m2 = sxx = sxy = 0.0
+    for i in range(m):
+        a = series[i]; b = series[i + lag]
+        da = a - m1; db = b - m2
+        m1 += da / (i + 1); m2 += db / (i + 1)
+        sxx += da * (a - m1); sxy += da * (b - m2)
+    return float("nan") if sxx == 0.0 else sxy / sxx
+
+
+def treynor_ref(r, b, rf):
+    mr = mb = sxx = sxy = 0.0
+    for i, (rv, bv) in enumerate(zip(r, b), 1):
+        dr = rv - mr; db = bv - mb
+        mr += dr / i; mb += db / i
+        sxx += db * (bv - mb); sxy += dr * (bv - mb)
+    if sxx == 0.0: return float("nan")
+    beta = sxy / sxx
+    return float("nan") if beta == 0.0 else (mr - rf) / beta
+
+
+def omega_ref(series, t):
+    g = lo = 0.0
+    for v in series:
+        d = v - t
+        if d > 0: g += d
+        else: lo += -d
+    return float("nan") if lo == 0.0 else g / lo
 
 
 def rolling_var_ref(data, w, level):
@@ -1295,6 +1328,14 @@ def main():
         lines.append("print(information_ratio(%s, %s));" % (emit(pca), emit(pcb)))
         row(sixg(calmar_ratio_ref(pa)))
         lines.append("print(calmar_ratio(%s));" % emit(pa))
+        # time series & ratios (2026-11-02, #54): lag-1 ACF on the return
+        # series, Treynor on the pct_change pair and Omega at threshold 0.
+        row(sixg(autocorrelation_ref(x, 1)))
+        lines.append("print(autocorrelation(%s, 1));" % da)
+        row(sixg(treynor_ref(pca, pcb, 0.0)))
+        lines.append("print(treynor_ratio(%s, %s, 0.0));" % (emit(pca), emit(pcb)))
+        row(sixg(omega_ref(x, 0.0)))
+        lines.append("print(omega_ratio(%s, 0.0));" % da)
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

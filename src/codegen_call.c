@@ -483,6 +483,9 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_alpha_beta(i8*, i8*, double)\n");
     EMIT(g, "declare double @lume_bi_information_ratio(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_calmar_ratio(i8*)\n");
+    EMIT(g, "declare double @lume_bi_autocorrelation(i8*, i64)\n");
+    EMIT(g, "declare double @lume_bi_treynor_ratio(i8*, i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_omega_ratio(i8*, double)\n");
     EMIT(g, "declare i8* @lume_bi_pct_change(i8*)\n");
     EMIT(g, "declare double @lume_bi_max_drawdown(i8*)\n");
     EMIT(g, "declare double @lume_bi_skew(i8*)\n");
@@ -2531,16 +2534,16 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), t);
     }
 
-    if (strcmp(bname, "percentile") == 0) {
+    if (strcmp(bname, "percentile") == 0 || strcmp(bname, "omega_ratio") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: percentile() takes (list, p)", n->line);
+            ERRV(g, "line %zu: %s() takes (list, scalar)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v || !a.ty || a.ty->kind != TY_LIST)
-            ERRV(g, "line %zu: percentile() needs a list", n->line);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[1]);
         if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
             free(a.v); free(p.v);
-            ERRV(g, "line %zu: percentile() needs a number for p", n->line);
+            ERRV(g, "line %zu: %s() needs a number for the scalar", n->line, bname);
         }
         if (p.ty->kind == TY_INT) {
             char *w = emit_instrf(g, type_prim(TY_FLOAT),
@@ -2548,10 +2551,36 @@ static Val cg_builtin(CG *g, Node *n)
             free(p.v);
             p.v = w;
         }
+        const char *fn = strcmp(bname, "percentile") == 0
+                             ? "lume_bi_percentile" : "lume_bi_omega_ratio";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
-                              "call double @lume_bi_percentile(i8* %s, double %s)",
-                              a.v, p.v);
+                              "call double @%s(i8* %s, double %s)", fn, a.v, p.v);
         free(a.v); free(p.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    /* Autocorrelation at a lag: a list plus an integer lag — the rolling
+     * window pattern with a double return. */
+    if (strcmp(bname, "autocorrelation") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: autocorrelation() takes (series, lag)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: autocorrelation() needs a list", n->line);
+        Val lag = cg_expr(g, n->as.call.args[1]);
+        if (!lag.v || !lag.ty || (lag.ty->kind != TY_INT && lag.ty->kind != TY_FLOAT)) {
+            free(a.v); free(lag.v);
+            ERRV(g, "line %zu: autocorrelation() needs a lag size", n->line);
+        }
+        if (lag.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", lag.v);
+            free(lag.v); lag.v = wi;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_autocorrelation(i8* %s, i64 %s)",
+                              a.v, lag.v);
+        free(a.v); free(lag.v);
         return val_make(type_prim(TY_FLOAT), t);
     }
 
@@ -2688,6 +2717,35 @@ static Val cg_builtin(CG *g, Node *n)
                               a.v, b.v, rf.v);
         free(a.v); free(b.v); free(rf.v);
         return val_make(type_anon_struct(), t);
+    }
+
+    /* Treynor ratio: same (returns, benchmark, rf) shape as alpha_beta
+     * but answers a double — the reward per unit of systematic risk. */
+    if (strcmp(bname, "treynor_ratio") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: treynor_ratio() takes (returns, benchmark, rf)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: treynor_ratio() needs two lists", n->line);
+        }
+        Val rf = cg_expr(g, n->as.call.args[2]);
+        if (!rf.v || !rf.ty || (rf.ty->kind != TY_INT && rf.ty->kind != TY_FLOAT)) {
+            free(a.v); free(b.v); free(rf.v);
+            ERRV(g, "line %zu: treynor_ratio() needs a number for rf", n->line);
+        }
+        if (rf.ty->kind == TY_INT) {
+            char *fd = emit_instrf(g, type_prim(TY_FLOAT),
+                                   "call double @lume_bi_float(i64 %s)", rf.v);
+            free(rf.v); rf.v = fd;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_treynor_ratio(i8* %s, i8* %s, double %s)",
+                              a.v, b.v, rf.v);
+        free(a.v); free(b.v); free(rf.v);
+        return val_make(type_prim(TY_FLOAT), t);
     }
 
     /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus

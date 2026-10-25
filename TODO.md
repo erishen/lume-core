@@ -818,6 +818,19 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   (serve errno 10038 known). New `examples/portfolio.lume`: one full
   strategy chain (sim_gbm -> pct_change -> sim_portfolio -> risk ->
   rolling -> RSI -> attribution) byte-identical on all three backends.
+- [x] **Time series & ratios: `autocorrelation` / `treynor_ratio` /
+  `omega_ratio` (2026-11-02).** Lag-k ACF on the aligned segment
+  (joint-Welford cov/var, white-noise / residual check); Treynor ratio
+  reusing the alpha_beta beta (reward per unit of systematic risk);
+  Omega ratio at a threshold (full-distribution gain/loss). All NAN
+  data properties (zero variance / zero beta / zero loss side). Emission:
+  omega joins percentile's (list, scalar) block, autocorrelation gets
+  (list, i64) -> double, treynor (list, list, double) -> double, both
+  emitters. Verification: r54-smoke (3 legs byte-identical, Python
+  recomputes ACF -0.72093 / 0.147059, Treynor 0.0066667, Omega 3 /
+  0.25), quant-consistency 162 -> 170 rows, quant-refcheck 156 -> 161
+  cases, quant-fuzz 10 series x 133 rows (1330 checks), native_backends
+  18/19 (serve errno 10038 known).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

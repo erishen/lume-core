@@ -287,6 +287,28 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Time series & ratios: `autocorrelation` / `treynor_ratio` /
+  `omega_ratio`.** The dependence and distribution-risk layer.
+  `autocorrelation(series, lag)` answers the lag-k ACF on the aligned
+  segment — cov(x[0..n−lag], x[lag..n])/var(x[0..n−lag]), both sample
+  via the shared joint-Welford (lag ∈ [1, n−2], n ≥ 3) — the
+  reproducible white-noise / strategy-residual check.
+  `treynor_ratio(returns, benchmark, rf)` answers (mean_r − rf)/β with
+  the exact alpha_beta β (joint-Welford) — reward per unit of
+  systematic risk; zero-variance benchmark or β = 0 answers NAN (data
+  property). `omega_ratio(returns, threshold)` answers
+  mean(max(x−t,0))/mean(max(t−x,0)) — the full-distribution gain/loss
+  ratio that Sharpe cannot see; a zero loss side answers NAN. Emission:
+  omega_ratio joins the percentile (list, scalar) → double block,
+  autocorrelation gets the (list, i64) → double block (lag truncates
+  through lume_bi_ftoi), treynor_ratio the (list, list, double) →
+  double block (rf widens through lume_bi_float) — text and LLVM, with
+  the inference twin in codegen_scan/llvm_cg_scan. Verification:
+  `tests/r54-smoke.lume` (3 legs byte-identical; Python recomputes ACF
+  −0.72093 / 0.147059, Treynor 0.0066667, Omega 3 / 0.25 and the NAN
+  data properties), `tests/quant-consistency.lume` grows to 170 rows,
+  `tests/quant-refcheck.py` to 161 cases, `tests/quant-fuzz.py` to
+  1330 checks (10 series × 133 rows).
 - **Performance attribution — the benchmark-aware evaluation layer:
   `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
   risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but

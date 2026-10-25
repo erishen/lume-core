@@ -2286,15 +2286,15 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), r);
     }
 
-    if (strcmp(bname, "percentile") == 0) {
+    if (strcmp(bname, "percentile") == 0 || strcmp(bname, "omega_ratio") == 0) {
         if (argc != 2)
-            ERRV(g, "line %zu: percentile() takes (list, p)", n->line);
+            ERRV(g, "line %zu: %s() takes (list, scalar)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v || !a.ty || a.ty->kind != TY_LIST)
-            ERRV(g, "line %zu: percentile() needs a list", n->line);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
         Val p = cg_expr(g, n->as.call.args[1]);
         if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT))
-            ERRV(g, "line %zu: percentile() needs a number for p", n->line);
+            ERRV(g, "line %zu: %s() needs a number for the scalar", n->line, bname);
         if (p.ty->kind == TY_INT) {
             LLVMTypeRef p1[1] = { g->i64 };
             LLVMValueRef v1[1] = { p.v };
@@ -2302,11 +2302,38 @@ static Val cg_builtin(CG *g, Node *n)
                 LLVMFunctionType(g->dbl, p1, 1, 0),
                 rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "pf");
         }
+        const char *fn = strcmp(bname, "percentile") == 0
+                             ? "lume_bi_percentile" : "lume_bi_omega_ratio";
         LLVMTypeRef p2[2] = { g->i8ptr, g->dbl };
         LLVMValueRef v2[2] = { a.v, p.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->dbl, p2, 2, 0),
-            rt_decl(g, "lume_bi_percentile", g->dbl, p2, 2), v2, 2, "q");
+            rt_decl(g, fn, g->dbl, p2, 2), v2, 2, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    /* Autocorrelation at a lag: list + integer lag, double return. */
+    if (strcmp(bname, "autocorrelation") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: autocorrelation() takes (series, lag)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: autocorrelation() needs a list", n->line);
+        Val lag = cg_expr(g, n->as.call.args[1]);
+        if (!lag.v || !lag.ty || (lag.ty->kind != TY_INT && lag.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: autocorrelation() needs a lag size", n->line);
+        if (lag.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { lag.v };
+            lag.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "li");
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { a.v, lag.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, "lume_bi_autocorrelation", g->dbl, p2, 2), v2, 2, "q");
         return val_make(type_prim(TY_FLOAT), r);
     }
 
@@ -2449,6 +2476,36 @@ static Val cg_builtin(CG *g, Node *n)
             LLVMFunctionType(g->i8ptr, p3, 3, 0),
             rt_decl(g, "lume_bi_alpha_beta", g->i8ptr, p3, 3), v3, 3, "q");
         return val_make(type_anon_struct(), r);
+    }
+
+    /* Treynor ratio: (returns, benchmark, rf) -> double, the reward per
+     * unit of systematic risk. rf widens through lume_bi_float. */
+    if (strcmp(bname, "treynor_ratio") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: treynor_ratio() takes (returns, benchmark, rf)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+            ERRV(g, "line %zu: treynor_ratio() needs two lists", n->line);
+        }
+        Val rf = cg_expr(g, n->as.call.args[2]);
+        if (!rf.v || !rf.ty || (rf.ty->kind != TY_INT && rf.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: treynor_ratio() needs a number for rf", n->line);
+        }
+        if (rf.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { rf.v };
+            rf.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "rd");
+        }
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->dbl };
+        LLVMValueRef v3[3] = { a.v, b.v, rf.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p3, 3, 0),
+            rt_decl(g, "lume_bi_treynor_ratio", g->dbl, p3, 3), v3, 3, "q");
+        return val_make(type_prim(TY_FLOAT), r);
     }
 
     /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus

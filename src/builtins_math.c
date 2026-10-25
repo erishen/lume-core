@@ -2199,6 +2199,75 @@ static void native_calmar_ratio(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(mdd == 0.0 ? NAN : m / mdd);
 }
 
+/* Time series & ratios (#54): ACF(lag) over the aligned segment, the
+ * Treynor ratio (reuses the alpha_beta joint-Welford recurrence) and
+ * the full-distribution Omega ratio — identical contracts to rt.c. */
+static void native_autocorrelation(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double lagd;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &lagd)) return;
+    int64_t lag = (int64_t)lagd;
+    if (L->count < 3 || lag < 1 || lag > L->count - 2) {
+        vm_set_error(vm, "autocorrelation() needs lag in [1, n-2] with n >= 3");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    int64_t m = n - lag;
+    double m1 = 0.0, m2 = 0.0, sxx = 0.0, sxy = 0.0;
+    for (int64_t i = 0; i < m; i++) {
+        double a = xs[i], b = xs[i + lag];
+        double da = a - m1, db = b - m2;
+        m1 += da / (double)(i + 1);
+        m2 += db / (double)(i + 1);
+        sxx += da * (a - m1);
+        sxy += da * (b - m2);
+    }
+    free(xs);
+    *out = val_num(sxx == 0.0 ? NAN : sxy / sxx);
+}
+
+static void native_treynor_ratio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *R, *B; double rf;
+    if (argc < 3 || !arg_list(vm, args[0], &R) || !arg_list(vm, args[1], &B) ||
+        !arg_num(vm, args[2], &rf)) return;
+    if (R->count != B->count || R->count < 2) {
+        vm_set_error(vm, "treynor_ratio() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    if (!isfinite(rf)) { vm_set_error(vm, "treynor_ratio(): rf must be finite"); return; }
+    int n; double *rs = list_to_doubles(vm, R, &n);
+    double *bs = rs ? list_to_doubles(vm, B, &n) : NULL;
+    if (!bs) { free(rs); return; }
+    double mr = 0.0, mb = 0.0, sxx = 0.0, sxy = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dr = rs[i] - mr, db = bs[i] - mb;
+        mr += dr / (double)(i + 1);
+        mb += db / (double)(i + 1);
+        sxx += db * (bs[i] - mb);
+        sxy += dr * (bs[i] - mb);
+    }
+    free(rs); free(bs);
+    if (sxx == 0.0) { *out = val_num(NAN); return; }
+    double beta = sxy / sxx;
+    *out = val_num(beta == 0.0 ? NAN : (mr - rf) / beta);
+}
+
+static void native_omega_ratio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double t;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &t)) return;
+    if (L->count < 2) { vm_set_error(vm, "omega_ratio() needs >= 2 elements"); return; }
+    if (!isfinite(t)) { vm_set_error(vm, "omega_ratio(): threshold must be finite"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double g = 0.0, lo = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - t;
+        if (d > 0.0) g += d; else lo += -d;
+    }
+    free(xs);
+    *out = val_num(lo == 0.0 ? NAN : g / lo);
+}
+
 static void native_skew(VM *vm, int argc, Value *args, Value *out) {
     ObjList *L;
     if (argc < 1 || !arg_list(vm, args[0], &L)) return;
@@ -2350,3 +2419,6 @@ Value b_bollinger(VM *vm, int argc, Value *args)          { return vm_native(vm,
 Value b_alpha_beta(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_alpha_beta); }
 Value b_information_ratio(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_information_ratio); }
 Value b_calmar_ratio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_calmar_ratio); }
+Value b_autocorrelation(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_autocorrelation); }
+Value b_treynor_ratio(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_treynor_ratio); }
+Value b_omega_ratio(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_omega_ratio); }

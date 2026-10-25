@@ -344,3 +344,17 @@ print(information_ratio(t53r, t53r));
 print(calmar_ratio(t52p));
 let t53up: list = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0];
 print(calmar_ratio(t53up));
+
+// #54 time series & ratios (2026-11-02): lag-k autocorrelation on the
+// aligned segment, the Treynor ratio (reuses the alpha_beta beta) and
+// the full-distribution Omega ratio. Deterministic, no RNG;
+// zero-variance / zero-loss-side inputs are data properties answering
+// NAN.
+print(autocorrelation(t53r, 1));
+print(autocorrelation(t53r, 2));
+print(treynor_ratio(t53r, t53b, 0.002));
+print(omega_ratio(t53r, 0.0));
+print(omega_ratio(t53r, 0.02));
+print(autocorrelation(t53b, 1));
+print(treynor_ratio(t53r, t53b, 0.0));
+print(omega_ratio(t53up, 0.0));
