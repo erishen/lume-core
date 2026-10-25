@@ -802,6 +802,22 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   The quant surface now spans simulation -> statistics -> risk ->
   portfolio -> rolling evaluation -> signals: a full strategy chain in
   Lume.
+- [x] **Performance attribution — `alpha_beta` / `information_ratio` /
+  `calmar_ratio` (2026-11-02).** The benchmark-aware evaluation layer
+  that completes the #48 risk family: alpha/beta vs a benchmark
+  (joint-Welford cov/var, per-period alpha, NAN on zero-variance
+  benchmark), information ratio (excess mean over sample tracking
+  error, NAN when identical), Calmar ratio (mean pct_change over max
+  drawdown percent, NAN on monotonic paths). Emission: alpha_beta in
+  the anon-struct group, information_ratio in the (list, list) block,
+  calmar_ratio in the mean (list) block, both emitters. Verification:
+  r53-smoke (3 legs byte-identical, Python recomputes alpha 0.0064 /
+  beta 1.2 / IR 0.358057 / Calmar 1.0139 + 3 NAN properties),
+  quant-consistency 154 -> 162 rows, quant-refcheck 152 -> 156 cases,
+  quant-fuzz 10 series x 130 rows (1300 checks), native_backends 18/19
+  (serve errno 10038 known). New `examples/portfolio.lume`: one full
+  strategy chain (sim_gbm -> pct_change -> sim_portfolio -> risk ->
+  rolling -> RSI -> attribution) byte-identical on all three backends.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

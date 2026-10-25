@@ -480,6 +480,9 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_covariance(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_correlation(i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_linreg(i8*, i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_alpha_beta(i8*, i8*, double)\n");
+    EMIT(g, "declare double @lume_bi_information_ratio(i8*, i8*)\n");
+    EMIT(g, "declare double @lume_bi_calmar_ratio(i8*)\n");
     EMIT(g, "declare i8* @lume_bi_pct_change(i8*)\n");
     EMIT(g, "declare double @lume_bi_max_drawdown(i8*)\n");
     EMIT(g, "declare double @lume_bi_skew(i8*)\n");
@@ -2506,7 +2509,8 @@ static Val cg_builtin(CG *g, Node *n)
      * native_* contracts in builtins_math.c. */
     if (strcmp(bname, "mean") == 0 || strcmp(bname, "variance") == 0 ||
         strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
-        strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "skew") == 0 ||
+        strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "calmar_ratio") == 0 ||
+        strcmp(bname, "skew") == 0 ||
         strcmp(bname, "kurtosis") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
@@ -2518,6 +2522,7 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "stddev") == 0 ? "lume_bi_stddev"
                        : strcmp(bname, "median") == 0 ? "lume_bi_median"
                        : strcmp(bname, "max_drawdown") == 0 ? "lume_bi_max_drawdown"
+                       : strcmp(bname, "calmar_ratio") == 0 ? "lume_bi_calmar_ratio"
                        : strcmp(bname, "skew") == 0 ? "lume_bi_skew"
                        : "lume_bi_kurtosis";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
@@ -2551,7 +2556,7 @@ static Val cg_builtin(CG *g, Node *n)
     }
 
     if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
-        strcmp(bname, "linreg") == 0) {
+        strcmp(bname, "linreg") == 0 || strcmp(bname, "information_ratio") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (x, y)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2569,8 +2574,9 @@ static Val cg_builtin(CG *g, Node *n)
             free(a.v); free(b.v);
             return val_make(type_anon_struct(), t);
         }
-        const char *fn = strcmp(bname, "covariance") == 0
-                             ? "lume_bi_covariance" : "lume_bi_correlation";
+        const char *fn = strcmp(bname, "covariance") == 0 ? "lume_bi_covariance"
+                       : strcmp(bname, "information_ratio") == 0 ? "lume_bi_information_ratio"
+                       : "lume_bi_correlation";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s, i8* %s)", fn, a.v, b.v);
         free(a.v); free(b.v);
@@ -2649,6 +2655,38 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_bollinger(i8* %s, i64 %s, double %s)",
                               a.v, w.v, k.v);
         free(a.v); free(w.v); free(k.v);
+        return val_make(type_anon_struct(), t);
+    }
+
+    /* Performance attribution (2026-11-02, #53): alpha_beta takes a
+     * returns list, a benchmark list and a scalar rf, and answers an
+     * anonymous struct {alpha, beta} — emitted as an opaque i8* like
+     * linreg / macd. The scalar widens to double, following the #48
+     * (list, scalar) group. */
+    if (strcmp(bname, "alpha_beta") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: alpha_beta() takes (returns, benchmark, rf)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: alpha_beta() needs two lists", n->line);
+        }
+        Val rf = cg_expr(g, n->as.call.args[2]);
+        if (!rf.v || !rf.ty || (rf.ty->kind != TY_INT && rf.ty->kind != TY_FLOAT)) {
+            free(a.v); free(b.v); free(rf.v);
+            ERRV(g, "line %zu: alpha_beta() needs a number for rf", n->line);
+        }
+        if (rf.ty->kind == TY_INT) {
+            char *fd = emit_instrf(g, type_prim(TY_FLOAT),
+                                   "call double @lume_bi_float(i64 %s)", rf.v);
+            free(rf.v); rf.v = fd;
+        }
+        char *t = emit_instrf(g, type_anon_struct(),
+                              "call i8* @lume_bi_alpha_beta(i8* %s, i8* %s, double %s)",
+                              a.v, b.v, rf.v);
+        free(a.v); free(b.v); free(rf.v);
         return val_make(type_anon_struct(), t);
     }
 

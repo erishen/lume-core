@@ -325,3 +325,22 @@ let t52b = bollinger(t52p, 3, 2.0);
 print(get(t52b, "mid", [])[5]);
 print(get(t52b, "upper", [])[5]);
 print(get(t52b, "lower", [])[5]);
+
+// #53 performance attribution (2026-11-02): CAPM-style alpha/beta vs a
+// benchmark, the information ratio (excess mean over tracking error) and
+// the Calmar payoff ratio (mean pct_change over max drawdown).
+// Deterministic, no RNG; zero-spread / zero-drawdown inputs are data
+// properties answering NAN.
+let t53r: list = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+let t53b: list = [0.0, 0.0, 0.0, 0.0, 0.0, 0.02];
+let t53ab = alpha_beta(t53r, t53b, 0.002);
+print(get(t53ab, "alpha", 0.0));
+print(get(t53ab, "beta", 0.0));
+let t53ab2 = alpha_beta(t53r, t53b, 0.0);
+print(get(t53ab2, "alpha", 0.0));
+print(get(t53ab2, "beta", 0.0));
+print(information_ratio(t53r, t53b));
+print(information_ratio(t53r, t53r));
+print(calmar_ratio(t52p));
+let t53up: list = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0];
+print(calmar_ratio(t53up));

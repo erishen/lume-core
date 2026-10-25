@@ -204,6 +204,42 @@ def bollinger_ref(prices, w, k):
     return mid, up, lo
 
 
+def alpha_beta_ref(r, b, rf):
+    """Joint-Welford twin of rt.c: beta = cov(r,b)/var(b), alpha =
+    mean_r - rf - beta*(mean_b - rf), per period; zero-variance benchmark
+    answers NAN fields (data property)."""
+    mr = mb = sxx = sxy = 0.0
+    for i, (rv, bv) in enumerate(zip(r, b), 1):
+        dr = rv - mr; db = bv - mb
+        mr += dr / i; mb += db / i
+        sxx += db * (bv - mb); sxy += dr * (bv - mb)
+    if sxx == 0.0:
+        return float('nan'), float('nan')
+    beta = sxy / sxx
+    return (mr - rf) - beta * (mb - rf), beta
+
+
+def information_ratio_ref(r, b):
+    md = sd = 0.0
+    for i, (rv, bv) in enumerate(zip(r, b), 1):
+        d = (rv - bv) - md
+        md += d / i
+        sd += d * ((rv - bv) - md)
+    std = (sd / (len(r) - 1)) ** 0.5
+    return float('nan') if std == 0.0 else md / std
+
+
+def calmar_ratio_ref(prices):
+    diffs = [100.0 * (prices[i] - prices[i - 1]) / prices[i - 1]
+             for i in range(1, len(prices))]
+    m = sum(diffs) / len(diffs)
+    peak = prices[0]; mdd = 0.0
+    for v in prices[1:]:
+        if v > peak: peak = v
+        if peak > 0.0: mdd = max(mdd, 100.0 * (peak - v) / peak)
+    return float('nan') if mdd == 0.0 else m / mdd
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1110,6 +1146,12 @@ cases += [
     ("rsi [3] first",     sixg(rsi_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0], 3)[3]), 80),
     ("macd hist [5]",     sixg(macd_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0], 2, 4, 3)[2][5]), 0.286465),
     ("boll upper [5]",    sixg(bollinger_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0], 3, 2.0)[1][5]), 106.388),
+    # performance attribution (2026-11-02, #53): CAPM alpha/beta vs a
+    # benchmark, information ratio and the Calmar payoff ratio.
+    ("ab alpha",          sixg(alpha_beta_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02], 0.002)[0]), 0.0064),
+    ("ab beta",           sixg(alpha_beta_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02], 0.002)[1]), 1.2),
+    ("ir",                sixg(information_ratio_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02])), 0.358057),
+    ("calmar",            sixg(calmar_ratio_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0])), 1.0139),
 ]
 
 fails = 0

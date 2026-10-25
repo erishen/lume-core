@@ -416,7 +416,8 @@ Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "skew") == 0 || strcmp(name, "kurtosis") == 0 ||
                  strcmp(name, "bootstrap_se_mean") == 0 || strcmp(name, "value_at_risk") == 0 ||
                  strcmp(name, "expected_shortfall") == 0 || strcmp(name, "sharpe_ratio") == 0 ||
-                 strcmp(name, "sortino_ratio") == 0))
+                 strcmp(name, "sortino_ratio") == 0 ||
+                 strcmp(name, "information_ratio") == 0 || strcmp(name, "calmar_ratio") == 0))
                 return type_prim(TY_FLOAT);
             if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||
@@ -437,7 +438,7 @@ Type *infer_node_type(CG *g, Node *n)
             if (strcmp(name, "rand_multinomial") == 0)
                 return type_list(type_prim(TY_INT));
             if (strcmp(name, "linreg") == 0 || strcmp(name, "macd") == 0 ||
-                strcmp(name, "bollinger") == 0)
+                strcmp(name, "bollinger") == 0 || strcmp(name, "alpha_beta") == 0)
                 return type_anon_struct();
         }
 

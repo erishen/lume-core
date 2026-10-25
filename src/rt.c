@@ -3995,6 +3995,86 @@ double lume_bi_max_drawdown(const LumeList *l)
     return mdd;
 }
 
+/* CAPM-style attribution against a benchmark: beta = cov(r,b)/var(b)
+ * (sample, joint-Welford recurrence twin of lume_bi_covariance) and
+ * alpha = mean_r - rf - beta*(mean_b - rf), per-period (no annualization,
+ * matching sharpe_ratio/sortino_ratio). A zero-variance benchmark answers
+ * NAN for both fields — a data property, mirroring the #48 zero-spread
+ * rule, not an error. A fresh map holds {alpha, beta}; NULL when the shape
+ * is invalid (unequal lengths, n<2, non-finite rf), following linreg. */
+LumeMap *lume_bi_alpha_beta(const LumeList *r, const LumeList *b, double rf)
+{
+    int64_t nr, nb;
+    double *rs = bi_num_copy(r, &nr), *bs = bi_num_copy(b, &nb);
+    if (!rs || !bs || nr < 2 || nr != nb || !isfinite(rf)) {
+        free(rs); free(bs); return NULL;
+    }
+    double mr = 0.0, mb = 0.0, sxx = 0.0, sxy = 0.0;
+    for (int64_t i = 0; i < nr; i++) {
+        double dr = rs[i] - mr, db = bs[i] - mb;
+        mr += dr / (double)(i + 1);
+        mb += db / (double)(i + 1);
+        sxx += db * (bs[i] - mb);
+        sxy += dr * (bs[i] - mb);
+    }
+    free(rs); free(bs);
+    double beta = NAN, alpha = NAN;
+    if (sxx != 0.0) {
+        beta = sxy / sxx;
+        alpha = (mr - rf) - beta * (mb - rf);
+    }
+    LumeMap *m = lume_map_new();
+    lume_map_put_f(m, "alpha", alpha);
+    lume_map_put_f(m, "beta", beta);
+    return m;
+}
+
+/* Information ratio vs a benchmark: (mean_r - mean_b)/std(r-b), sample
+ * stddev (n-1, Welford — the #48 sharpe_ratio twin). A zero tracking
+ * error answers NAN (data property). NAN for unequal lengths or n<2. */
+double lume_bi_information_ratio(const LumeList *r, const LumeList *b)
+{
+    int64_t nr, nb;
+    double *rs = bi_num_copy(r, &nr), *bs = bi_num_copy(b, &nb);
+    if (!rs || !bs || nr < 2 || nr != nb) { free(rs); free(bs); return NAN; }
+    double md = 0.0, sd = 0.0;
+    for (int64_t i = 0; i < nr; i++) {
+        double d = (rs[i] - bs[i]) - md;
+        md += d / (double)(i + 1);
+        sd += d * ((rs[i] - bs[i]) - md);
+    }
+    double mean_diff = md;
+    double std_diff = sqrt(sd / (double)(nr - 1));
+    free(rs); free(bs);
+    if (std_diff == 0.0) return NAN;
+    return mean_diff / std_diff;
+}
+
+/* Calmar-style payoff ratio on a price path: mean of pct_change (per
+ * period, in percent units matching pct_change) divided by max_drawdown
+ * (already a positive percentage). A zero drawdown (monotonic rise)
+ * answers NAN (data property). NAN for n<2. */
+double lume_bi_calmar_ratio(const LumeList *p)
+{
+    int64_t n; double *xs = bi_num_copy(p, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double m = 0.0;
+    for (int64_t i = 1; i < n; i++) {
+        if (xs[i - 1] == 0.0) { free(xs); return NAN; }
+        m += 100.0 * (xs[i] - xs[i - 1]) / xs[i - 1];
+    }
+    m /= (double)(n - 1);
+    double mdd = 0.0, peak = xs[0];
+    for (int64_t i = 1; i < n; i++) {
+        if (xs[i] > peak) peak = xs[i];
+        double dd = peak > 0.0 ? 100.0 * (peak - xs[i]) / peak : 0.0;
+        if (dd > mdd) mdd = dd;
+    }
+    free(xs);
+    if (mdd == 0.0) return NAN;
+    return m / mdd;
+}
+
 /* int -> i64 for the native text emitter (float window / alpha arguments
  * must truncate before the runtime call; the LLVM leg uses fptosi). */
 int64_t lume_bi_ftoi(double v) { return (int64_t)v; }

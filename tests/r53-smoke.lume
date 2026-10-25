@@ -1,0 +1,18 @@
+// r53-smoke.lume: performance attribution (#53), 3 legs byte-identical.
+// Pinned rows recomputed in Python (joint-Welford, see r53.py).
+let r: list = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+let b: list = [0.0, 0.0, 0.0, 0.0, 0.0, 0.02];
+let ab = alpha_beta(r, b, 0.002);
+print(get(ab, "alpha", 0.0));
+print(get(ab, "beta", 0.0));
+print(information_ratio(r, b));
+let p: list = [100.0, 102.0, 101.0, 103.0, 102.0, 105.0];
+print(calmar_ratio(p));
+// data properties: constant benchmark -> NAN fields, monotonic path ->
+// NAN drawdown ratio, identical series -> NAN tracking error
+let c: list = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01];
+let ab2 = alpha_beta(r, c, 0.0);
+print(get(ab2, "beta", 0.0));
+let up: list = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0];
+print(calmar_ratio(up));
+print(information_ratio(r, r));

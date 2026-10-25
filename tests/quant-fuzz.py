@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 126                             # rows per dataset. The layout mirrors the
+RPP = 130                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -79,6 +79,9 @@ RPP = 126                             # rows per dataset. The layout mirrors the
                                       # last-window value x2 metrics) and
                                       # the indicator rows x3 (RSI / Bollinger
                                       # mid / MACD hist on the price path)
+                                      # and the attribution rows x4 (alpha /
+                                      # beta / IR on the pct_change pair, plus
+                                      # the Calmar ratio on path a)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -196,6 +199,44 @@ def rolling_sharpe_ref(data, w, rf):
         sd = (sum((x - m) ** 2 for x in seg) / (w - 1)) ** 0.5
         out.append(float("nan") if not (sd > 0) else (m - rf) / sd)
     return out
+
+
+def pct_change_ref(prices):
+    return [100.0 * (prices[i] - prices[i - 1]) / prices[i - 1]
+            for i in range(1, len(prices))]
+
+
+def alpha_beta_ref(r, b, rf):
+    mr = mb = sxx = sxy = 0.0
+    for i, (rv, bv) in enumerate(zip(r, b), 1):
+        dr = rv - mr; db = bv - mb
+        mr += dr / i; mb += db / i
+        sxx += db * (bv - mb); sxy += dr * (bv - mb)
+    if sxx == 0.0:
+        return float("nan"), float("nan")
+    beta = sxy / sxx
+    return (mr - rf) - beta * (mb - rf), beta
+
+
+def information_ratio_ref(r, b):
+    md = sd = 0.0
+    for i, (rv, bv) in enumerate(zip(r, b), 1):
+        d = (rv - bv) - md
+        md += d / i
+        sd += d * ((rv - bv) - md)
+    std = (sd / (len(r) - 1)) ** 0.5
+    return float("nan") if std == 0.0 else md / std
+
+
+def calmar_ratio_ref(prices):
+    diffs = [100.0 * (prices[i] - prices[i - 1]) / prices[i - 1]
+             for i in range(1, len(prices))]
+    m = sum(diffs) / len(diffs)
+    peak = prices[0]; mdd = 0.0
+    for v in prices[1:]:
+        if v > peak: peak = v
+        if peak > 0.0: mdd = max(mdd, 100.0 * (peak - v) / peak)
+    return float("nan") if mdd == 0.0 else m / mdd
 
 
 def rolling_var_ref(data, w, level):
@@ -1242,6 +1283,18 @@ def main():
         mref, gref, href = macd_ref(pa, 2, 4, 3)
         lines.append("let ti%dc = macd(%s, 2, 4, 3);" % (i, emit(pa)))
         row(sixg(href[len(pa) - 1])); lines.append("print(get(ti%dc, \"hist\", [])[%d]);" % (i, len(pa) - 1))
+        # performance attribution (2026-11-02, #53): alpha/beta and the
+        # information ratio on the pct_change of the two price paths, the
+        # Calmar ratio on path a — deterministic, no RNG.
+        pca = pct_change_ref(pa); pcb = pct_change_ref(pb)
+        abv = alpha_beta_ref(pca, pcb, 0.0)
+        lines.append("let ti%dd = alpha_beta(%s, %s, 0.0);" % (i, emit(pca), emit(pcb)))
+        row(sixg(abv[0])); lines.append("print(get(ti%dd, \"alpha\", 0.0));" % i)
+        row(sixg(abv[1])); lines.append("print(get(ti%dd, \"beta\", 0.0));" % i)
+        row(sixg(information_ratio_ref(pca, pcb)))
+        lines.append("print(information_ratio(%s, %s));" % (emit(pca), emit(pcb)))
+        row(sixg(calmar_ratio_ref(pa)))
+        lines.append("print(calmar_ratio(%s));" % emit(pa))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

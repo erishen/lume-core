@@ -2119,6 +2119,86 @@ static void native_max_drawdown(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(mdd);
 }
 
+/* Performance attribution (#53): alpha_beta answers {alpha, beta} via the
+ * same joint-Welford recurrence as rt.c; a zero-variance benchmark answers
+ * NAN in both fields (data property, #48 rule) instead of erroring. */
+static void native_alpha_beta(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *R, *B; double rf;
+    if (argc < 3 || !arg_list(vm, args[0], &R) || !arg_list(vm, args[1], &B) ||
+        !arg_num(vm, args[2], &rf)) return;
+    if (R->count != B->count || R->count < 2) {
+        vm_set_error(vm, "alpha_beta() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    if (!isfinite(rf)) { vm_set_error(vm, "alpha_beta(): rf must be finite"); return; }
+    int n; double *rs = list_to_doubles(vm, R, &n);
+    double *bs = rs ? list_to_doubles(vm, B, &n) : NULL;
+    if (!bs) { free(rs); return; }
+    double mr = 0.0, mb = 0.0, sxx = 0.0, sxy = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dr = rs[i] - mr, db = bs[i] - mb;
+        mr += dr / (double)(i + 1);
+        mb += db / (double)(i + 1);
+        sxx += db * (bs[i] - mb);
+        sxy += dr * (bs[i] - mb);
+    }
+    free(rs); free(bs);
+    double beta = NAN, alpha = NAN;
+    if (sxx != 0.0) {
+        beta = sxy / sxx;
+        alpha = (mr - rf) - beta * (mb - rf);
+    }
+    Obj *m = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(m));
+    map_set(vm, m, "alpha", val_num(alpha));
+    map_set(vm, m, "beta", val_num(beta));
+    vm_pop(vm);
+    *out = val_obj(m);
+}
+
+static void native_information_ratio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *R, *B;
+    if (argc < 2 || !arg_list(vm, args[0], &R) || !arg_list(vm, args[1], &B)) return;
+    if (R->count != B->count || R->count < 2) {
+        vm_set_error(vm, "information_ratio() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    int n; double *rs = list_to_doubles(vm, R, &n);
+    double *bs = rs ? list_to_doubles(vm, B, &n) : NULL;
+    if (!bs) { free(rs); return; }
+    double md = 0.0, sd = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = (rs[i] - bs[i]) - md;
+        md += d / (double)(i + 1);
+        sd += d * ((rs[i] - bs[i]) - md);
+    }
+    free(rs); free(bs);
+    double std_diff = sqrt(sd / (double)(n - 1));
+    *out = val_num(std_diff == 0.0 ? NAN : md / std_diff);
+}
+
+static void native_calmar_ratio(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *P;
+    if (argc < 1 || !arg_list(vm, args[0], &P)) return;
+    if (P->count < 2) { vm_set_error(vm, "calmar_ratio() needs >= 2 elements"); return; }
+    int n; double *xs = list_to_doubles(vm, P, &n);
+    if (!xs) return;
+    double m = 0.0;
+    for (int i = 1; i < n; i++) {
+        if (xs[i - 1] == 0.0) { free(xs); *out = val_num(NAN); return; }
+        m += 100.0 * (xs[i] - xs[i - 1]) / xs[i - 1];
+    }
+    m /= (double)(n - 1);
+    double mdd = 0.0, peak = xs[0];
+    for (int i = 1; i < n; i++) {
+        if (xs[i] > peak) peak = xs[i];
+        double dd = peak > 0.0 ? 100.0 * (peak - xs[i]) / peak : 0.0;
+        if (dd > mdd) mdd = dd;
+    }
+    free(xs);
+    *out = val_num(mdd == 0.0 ? NAN : m / mdd);
+}
+
 static void native_skew(VM *vm, int argc, Value *args, Value *out) {
     ObjList *L;
     if (argc < 1 || !arg_list(vm, args[0], &L)) return;
@@ -2267,3 +2347,6 @@ Value b_sim_portfolio(VM *vm, int argc, Value *args)       { return vm_native(vm
 Value b_rsi(VM *vm, int argc, Value *args)                { return vm_native(vm, argc, args, native_rsi); }
 Value b_macd(VM *vm, int argc, Value *args)               { return vm_native(vm, argc, args, native_macd); }
 Value b_bollinger(VM *vm, int argc, Value *args)          { return vm_native(vm, argc, args, native_bollinger); }
+Value b_alpha_beta(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_alpha_beta); }
+Value b_information_ratio(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_information_ratio); }
+Value b_calmar_ratio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_calmar_ratio); }

@@ -287,6 +287,33 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Performance attribution — the benchmark-aware evaluation layer:
+  `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
+  risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but
+  benchmark-free; these three answer against a benchmark or a drawdown.
+  `alpha_beta(returns, benchmark, rf)` answers `{alpha, beta}` — beta =
+  cov(r,b)/var(b) via the joint-Welford twin of covariance, alpha =
+  mean_r − rf − β·(mean_b − rf), per-period (matching sharpe_ratio, no
+  annualization). A zero-variance benchmark answers NAN in both fields —
+  a data property, not an error (the #48 zero-spread rule).
+  `information_ratio(returns, benchmark)` answers
+  (mean_r − mean_b)/std(r−b) with a sample (n−1, Welford) tracking
+  error — NAN when the series are identical (zero tracking error).
+  `calmar_ratio(prices)` answers mean of pct_change (per-period
+  percent) divided by max_drawdown percent — NAN on a monotonic
+  (zero-drawdown) path. Emission: alpha_beta joins the anon-struct
+  group (i8* return, scalar widened through lume_bi_float),
+  information_ratio joins the covariance (list, list) → double block,
+  calmar_ratio joins the mean (list) → double block — text and LLVM,
+  with the inference twin in codegen_scan/llvm_cg_scan. Verification:
+  `tests/r53-smoke.lume` (3 legs byte-identical; Python recomputes
+  alpha 0.0064 / beta 1.2 / IR 0.358057 / Calmar 1.0139 and the three
+  NAN data properties), `tests/quant-consistency.lume` grows to 162
+  rows, `tests/quant-refcheck.py` to 156 cases, `tests/quant-fuzz.py`
+  to 1300 checks (10 series × 130 rows). New end-to-end demo
+  `examples/portfolio.lume` runs one full strategy chain on all three
+  backends: sim_gbm → pct_change → sim_portfolio → risk metrics →
+  rolling evaluation → RSI signals → attribution.
 - **Technical indicators — the signal layer: `rsi` / `macd` /
   `bollinger`.** Deterministic (no RNG), built on the #33 rolling /
   #48 risk family. `rsi(prices, window)` is Wilder's RSI: needs

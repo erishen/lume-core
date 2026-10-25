@@ -2262,7 +2262,8 @@ static Val cg_builtin(CG *g, Node *n)
      * builtins_math.c. */
     if (strcmp(bname, "mean") == 0 || strcmp(bname, "variance") == 0 ||
         strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
-        strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "skew") == 0 ||
+        strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "calmar_ratio") == 0 ||
+        strcmp(bname, "skew") == 0 ||
         strcmp(bname, "kurtosis") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
@@ -2274,6 +2275,7 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "stddev") == 0 ? "lume_bi_stddev"
                        : strcmp(bname, "median") == 0 ? "lume_bi_median"
                        : strcmp(bname, "max_drawdown") == 0 ? "lume_bi_max_drawdown"
+                       : strcmp(bname, "calmar_ratio") == 0 ? "lume_bi_calmar_ratio"
                        : strcmp(bname, "skew") == 0 ? "lume_bi_skew"
                        : "lume_bi_kurtosis";
         LLVMTypeRef p[1] = { g->i8ptr };
@@ -2309,7 +2311,7 @@ static Val cg_builtin(CG *g, Node *n)
     }
 
     if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
-        strcmp(bname, "linreg") == 0) {
+        strcmp(bname, "linreg") == 0 || strcmp(bname, "information_ratio") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (x, y)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2326,8 +2328,9 @@ static Val cg_builtin(CG *g, Node *n)
                 rt_decl(g, "lume_bi_linreg", g->i8ptr, p2, 2), v2, 2, "q");
             return val_make(type_anon_struct(), r);
         }
-        const char *fn = strcmp(bname, "covariance") == 0
-                             ? "lume_bi_covariance" : "lume_bi_correlation";
+        const char *fn = strcmp(bname, "covariance") == 0 ? "lume_bi_covariance"
+                       : strcmp(bname, "information_ratio") == 0 ? "lume_bi_information_ratio"
+                       : "lume_bi_correlation";
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->dbl, p2, 2, 0),
             rt_decl(g, fn, g->dbl, p2, 2), v2, 2, "q");
@@ -2414,6 +2417,37 @@ static Val cg_builtin(CG *g, Node *n)
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->i8ptr, p3, 3, 0),
             rt_decl(g, "lume_bi_bollinger", g->i8ptr, p3, 3), v3, 3, "q");
+        return val_make(type_anon_struct(), r);
+    }
+
+    /* Performance attribution (2026-11-02, #53): alpha_beta answers
+     * {alpha, beta} — an opaque i8* like linreg/macd. rf widens through
+     * lume_bi_float. */
+    if (strcmp(bname, "alpha_beta") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: alpha_beta() takes (returns, benchmark, rf)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+            ERRV(g, "line %zu: alpha_beta() needs two lists", n->line);
+        }
+        Val rf = cg_expr(g, n->as.call.args[2]);
+        if (!rf.v || !rf.ty || (rf.ty->kind != TY_INT && rf.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: alpha_beta() needs a number for rf", n->line);
+        }
+        if (rf.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { rf.v };
+            rf.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "rd");
+        }
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->dbl };
+        LLVMValueRef v3[3] = { a.v, b.v, rf.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p3, 3, 0),
+            rt_decl(g, "lume_bi_alpha_beta", g->i8ptr, p3, 3), v3, 3, "q");
         return val_make(type_anon_struct(), r);
     }
 

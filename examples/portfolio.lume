@@ -1,0 +1,45 @@
+// portfolio.lume — one full strategy chain in ~30 lines, using only the
+// quant builtins (#38-#53). Pipeline: simulate two correlated-ish GBM
+// paths, take pct_change returns, combine them into a portfolio, compute
+// risk metrics, run rolling evaluation, generate RSI signals, then
+// attribute performance vs a benchmark. Deterministic: every seed() call
+// replays the exact same PCG32 stream on all three backends.
+//
+// Run: bin/lume-core examples/portfolio.lume
+//      bin/lume-core --compile-text  -o t.exe examples/portfolio.lume && t.exe
+//      bin/lume-core --compile-llvm  -o l.exe examples/portfolio.lume && l.exe
+
+seed(42);
+
+// 1) simulate two 12-point GBM price paths (mu 8% / 12%, sigma 20% / 35%)
+let pa: list = sim_gbm(100.0, 0.08, 0.20, 1.0, 12);
+let pb: list = sim_gbm(100.0, 0.12, 0.35, 1.0, 12);
+
+// 2) per-period returns, in percent
+let ra: list = pct_change(pa);
+let rb: list = pct_change(pb);
+
+// 3) 60/40 portfolio return stream (re-weights the same paths)
+let rp: list = sim_portfolio([pa, pb], [0.6, 0.4]);
+
+// 4) risk metrics on the portfolio (#48)
+print("pf sharpe   " + str(sharpe_ratio(rp, 0.02)));
+print("pf sortino  " + str(sortino_ratio(rp, 0.02)));
+print("pf VaR 5%   " + str(value_at_risk(rp, 0.05)));
+print("pf CVaR 5%  " + str(expected_shortfall(rp, 0.05)));
+print("pf maxDD    " + str(max_drawdown(pa)));
+
+// 5) rolling evaluation over the portfolio returns (#51)
+let rsh: list = rolling_sharpe(rp, 4, 0.02);
+print("roll sharpe last " + str(rsh[11]));
+
+// 6) signals on the price path (#52): RSI vs 30/70 bands
+let rsi_a: list = rsi(pa, 3);
+print("RSI last    " + str(rsi_a[11]));
+
+// 7) performance attribution vs asset B as the benchmark (#53)
+let ab = alpha_beta(rp, rb, 0.02);
+print("alpha       " + str(get(ab, "alpha", 0.0)));
+print("beta        " + str(get(ab, "beta", 0.0)));
+print("IR          " + str(information_ratio(rp, rb)));
+print("Calmar      " + str(calmar_ratio(pa)));
