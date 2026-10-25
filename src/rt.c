@@ -4142,6 +4142,129 @@ double lume_bi_omega_ratio(const LumeList *l, double t)
     return g / lo;
 }
 
+/* Average ranks (1-based, ties share the mean of their rank range) over
+ * a double copy — the monotonicity / IC primitive. A fresh float list;
+ * empty for n < 1. */
+LumeList *lume_bi_rank(const LumeList *l)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 1) { free(xs); return out; }
+    double *sorted = malloc((size_t)n * sizeof(double));
+    if (!sorted) { free(xs); return out; }
+    memcpy(sorted, xs, (size_t)n * sizeof(double));
+    qsort(sorted, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    for (int64_t i = 0; i < n; i++) {
+        /* find the first/last index of xs[i] in the sorted copy */
+        int64_t lo = 0, hi = n - 1, first = -1, last = -1;
+        while (lo <= hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            if (sorted[mid] < xs[i]) lo = mid + 1;
+            else { first = mid; hi = mid - 1; }
+        }
+        lo = 0; hi = n - 1;
+        while (lo <= hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            if (sorted[mid] > xs[i]) hi = mid - 1;
+            else { last = mid; lo = mid + 1; }
+        }
+        double r = (first >= 0 && last >= first)
+                       ? ((double)(first + 1) + (double)(last + 1)) / 2.0
+                       : NAN;
+        lume_list_push_f(out, r);
+    }
+    free(sorted); free(xs);
+    return out;
+}
+
+/* Shared spearman body: ranks both series (average ties) then runs the
+ * joint-Welford Pearson on the rank pairs; a constant side answers NAN. */
+static double spearman_pairs(const double *xs, const double *ys, int64_t n)
+{
+    double *sx = malloc((size_t)n * sizeof(double));
+    double *sy = malloc((size_t)n * sizeof(double));
+    if (!sx || !sy) { free(sx); free(sy); return NAN; }
+    double *ox = malloc((size_t)n * sizeof(double));
+    double *oy = malloc((size_t)n * sizeof(double));
+    if (!ox || !oy) { free(sx); free(sy); free(ox); free(oy); return NAN; }
+    for (int64_t i = 0; i < n; i++) { sx[i] = xs[i]; sy[i] = ys[i]; }
+    qsort(sx, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    qsort(sy, (size_t)n, sizeof(double), bi_quant_cmp_d);
+    for (int64_t i = 0; i < n; i++) {
+        int64_t lo = 0, hi = n - 1, first = -1, last = -1;
+        while (lo <= hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            if (sx[mid] < xs[i]) lo = mid + 1;
+            else { first = mid; hi = mid - 1; }
+        }
+        lo = 0; hi = n - 1;
+        while (lo <= hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            if (sx[mid] > xs[i]) hi = mid - 1;
+            else { last = mid; lo = mid + 1; }
+        }
+        ox[i] = ((double)(first + 1) + (double)(last + 1)) / 2.0;
+        lo = 0; hi = n - 1; first = -1; last = -1;
+        while (lo <= hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            if (sy[mid] < ys[i]) lo = mid + 1;
+            else { first = mid; hi = mid - 1; }
+        }
+        lo = 0; hi = n - 1;
+        while (lo <= hi) {
+            int64_t mid = lo + (hi - lo) / 2;
+            if (sy[mid] > ys[i]) hi = mid - 1;
+            else { last = mid; lo = mid + 1; }
+        }
+        oy[i] = ((double)(first + 1) + (double)(last + 1)) / 2.0;
+    }
+    free(sx); free(sy);
+    double mx = 0.0, my = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double dx = ox[i] - mx, dy = oy[i] - my;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        sxx += dx * (ox[i] - mx);
+        sxy += dx * (oy[i] - my);
+        syy += dy * (oy[i] - my);
+    }
+    free(ox); free(oy);
+    if (sxx == 0.0 || syy == 0.0) return NAN;
+    return sxy / sqrt(sxx * syy);
+}
+
+double lume_bi_spearman(const LumeList *x, const LumeList *y)
+{
+    int64_t nx, ny;
+    double *xs = bi_num_copy(x, &nx), *ys = bi_num_copy(y, &ny);
+    if (!xs || !ys || nx < 2 || nx != ny) { free(xs); free(ys); return NAN; }
+    double r = spearman_pairs(xs, ys, nx);
+    free(xs); free(ys);
+    return r;
+}
+
+/* Information coefficient: the rank correlation between a signal and the
+ * forward returns lagged by k periods — spearman over the aligned
+ * segment (signal[0..n-lag], returns[lag..n]). NAN for lag outside
+ * [1, n-2] (an aligned segment shorter than 2). */
+double lume_bi_ic(const LumeList *sig, const LumeList *ret, int64_t lag)
+{
+    int64_t ns, nr;
+    double *ss = bi_num_copy(sig, &ns), *rs = bi_num_copy(ret, &nr);
+    if (!ss || !rs || ns < 3 || ns != nr || lag < 1 || lag > ns - 2) {
+        free(ss); free(rs); return NAN;
+    }
+    int64_t m = ns - lag;
+    double *sa = malloc((size_t)m * sizeof(double));
+    double *ra = malloc((size_t)m * sizeof(double));
+    if (!sa || !ra) { free(ss); free(rs); free(sa); free(ra); return NAN; }
+    for (int64_t i = 0; i < m; i++) { sa[i] = ss[i]; ra[i] = rs[i + lag]; }
+    free(ss); free(rs);
+    double r = spearman_pairs(sa, ra, m);
+    free(sa); free(ra);
+    return r;
+}
+
 /* int -> i64 for the native text emitter (float window / alpha arguments
  * must truncate before the runtime call; the LLVM leg uses fptosi). */
 int64_t lume_bi_ftoi(double v) { return (int64_t)v; }

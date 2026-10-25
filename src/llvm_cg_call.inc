@@ -2337,8 +2337,38 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), r);
     }
 
+    /* Information coefficient (#55): signal vs forward returns at lag k —
+     * (list, list, i64) -> double, the integer lag truncates via
+     * lume_bi_ftoi. */
+    if (strcmp(bname, "ic") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: ic() takes (signal, returns, lag)", n->line);
+        Val s = cg_expr(g, n->as.call.args[0]);
+        Val r = cg_expr(g, n->as.call.args[1]);
+        if (!s.v || !s.ty || s.ty->kind != TY_LIST ||
+            !r.v || !r.ty || r.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: ic() needs two lists", n->line);
+        Val lag = cg_expr(g, n->as.call.args[2]);
+        if (!lag.v || !lag.ty || (lag.ty->kind != TY_INT && lag.ty->kind != TY_FLOAT))
+            ERRV(g, "line %zu: ic() needs a lag size", n->line);
+        if (lag.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { lag.v };
+            lag.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "li");
+        }
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i8ptr, g->i64 };
+        LLVMValueRef v3[3] = { s.v, r.v, lag.v };
+        LLVMValueRef rr = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p3, 3, 0),
+            rt_decl(g, "lume_bi_ic", g->dbl, p3, 3), v3, 3, "q");
+        return val_make(type_prim(TY_FLOAT), rr);
+    }
+
     if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
-        strcmp(bname, "linreg") == 0 || strcmp(bname, "information_ratio") == 0) {
+        strcmp(bname, "linreg") == 0 || strcmp(bname, "information_ratio") == 0 ||
+        strcmp(bname, "spearman") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (x, y)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2357,6 +2387,7 @@ static Val cg_builtin(CG *g, Node *n)
         }
         const char *fn = strcmp(bname, "covariance") == 0 ? "lume_bi_covariance"
                        : strcmp(bname, "information_ratio") == 0 ? "lume_bi_information_ratio"
+                       : strcmp(bname, "spearman") == 0 ? "lume_bi_spearman"
                        : "lume_bi_correlation";
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->dbl, p2, 2, 0),
@@ -2593,17 +2624,19 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), r);
     }
 
-    if (strcmp(bname, "pct_change") == 0) {
+    if (strcmp(bname, "pct_change") == 0 || strcmp(bname, "rank") == 0) {
         if (argc != 1)
-            ERRV(g, "line %zu: pct_change() takes exactly one argument", n->line);
+            ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v || !a.ty || a.ty->kind != TY_LIST)
-            ERRV(g, "line %zu: pct_change() needs a list", n->line);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        const char *fn = strcmp(bname, "pct_change") == 0
+                             ? "lume_bi_pct_change" : "lume_bi_rank";
         LLVMTypeRef p[1] = { g->i8ptr };
         LLVMValueRef vs[1] = { a.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->i8ptr, p, 1, 0),
-            rt_decl(g, "lume_bi_pct_change", g->i8ptr, p, 1), vs, 1, "q");
+            rt_decl(g, fn, g->i8ptr, p, 1), vs, 1, "q");
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 

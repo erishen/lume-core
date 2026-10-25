@@ -486,6 +486,9 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_autocorrelation(i8*, i64)\n");
     EMIT(g, "declare double @lume_bi_treynor_ratio(i8*, i8*, double)\n");
     EMIT(g, "declare double @lume_bi_omega_ratio(i8*, double)\n");
+    EMIT(g, "declare i8* @lume_bi_rank(i8*)\n");
+    EMIT(g, "declare double @lume_bi_spearman(i8*, i8*)\n");
+    EMIT(g, "declare double @lume_bi_ic(i8*, i8*, i64)\n");
     EMIT(g, "declare i8* @lume_bi_pct_change(i8*)\n");
     EMIT(g, "declare double @lume_bi_max_drawdown(i8*)\n");
     EMIT(g, "declare double @lume_bi_skew(i8*)\n");
@@ -2584,8 +2587,39 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), t);
     }
 
+    /* Information coefficient: rank correlation between a signal and its
+     * forward returns lagged by k periods — (list, list, i64) -> double,
+     * the integer lag truncates through lume_bi_ftoi. */
+    if (strcmp(bname, "ic") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: ic() takes (signal, returns, lag)", n->line);
+        Val s = cg_expr(g, n->as.call.args[0]);
+        Val r = cg_expr(g, n->as.call.args[1]);
+        if (!s.v || !s.ty || s.ty->kind != TY_LIST ||
+            !r.v || !r.ty || r.ty->kind != TY_LIST) {
+            free(s.v); free(r.v);
+            ERRV(g, "line %zu: ic() needs two lists", n->line);
+        }
+        Val lag = cg_expr(g, n->as.call.args[2]);
+        if (!lag.v || !lag.ty || (lag.ty->kind != TY_INT && lag.ty->kind != TY_FLOAT)) {
+            free(s.v); free(r.v); free(lag.v);
+            ERRV(g, "line %zu: ic() needs a lag size", n->line);
+        }
+        if (lag.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", lag.v);
+            free(lag.v); lag.v = wi;
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_ic(i8* %s, i8* %s, i64 %s)",
+                              s.v, r.v, lag.v);
+        free(s.v); free(r.v); free(lag.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
     if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
-        strcmp(bname, "linreg") == 0 || strcmp(bname, "information_ratio") == 0) {
+        strcmp(bname, "linreg") == 0 || strcmp(bname, "information_ratio") == 0 ||
+        strcmp(bname, "spearman") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (x, y)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2605,6 +2639,7 @@ static Val cg_builtin(CG *g, Node *n)
         }
         const char *fn = strcmp(bname, "covariance") == 0 ? "lume_bi_covariance"
                        : strcmp(bname, "information_ratio") == 0 ? "lume_bi_information_ratio"
+                       : strcmp(bname, "spearman") == 0 ? "lume_bi_spearman"
                        : "lume_bi_correlation";
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s, i8* %s)", fn, a.v, b.v);
@@ -2827,14 +2862,16 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), t);
     }
 
-    if (strcmp(bname, "pct_change") == 0) {
+    if (strcmp(bname, "pct_change") == 0 || strcmp(bname, "rank") == 0) {
         if (argc != 1)
-            ERRV(g, "line %zu: pct_change() takes exactly one argument", n->line);
+            ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
         if (!a.v || !a.ty || a.ty->kind != TY_LIST)
-            ERRV(g, "line %zu: pct_change() needs a list", n->line);
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        const char *fn = strcmp(bname, "pct_change") == 0
+                             ? "lume_bi_pct_change" : "lume_bi_rank";
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
-                              "call i8* @lume_bi_pct_change(i8* %s)", a.v);
+                              "call i8* @%s(i8* %s)", fn, a.v);
         free(a.v);
         return val_make(type_list(type_prim(TY_FLOAT)), t);
     }

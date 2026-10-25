@@ -2268,6 +2268,135 @@ static void native_omega_ratio(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(lo == 0.0 ? NAN : g / lo);
 }
 
+/* Rank statistics & signal evaluation (#55): average ranks (1-based,
+ * ties share the mean), Spearman on the rank pairs (joint-Welford
+ * Pearson, mirroring rt.c) and the information coefficient over the
+ * aligned signal/forward-return segment. */
+static void native_rank(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 1) { vm_set_error(vm, "rank() needs >= 1 element"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double *sorted = malloc((size_t)n * sizeof(double));
+    if (!sorted) { free(xs); return; }
+    memcpy(sorted, xs, (size_t)n * sizeof(double));
+    qsort(sorted, (size_t)n, sizeof(double), cmp_d);
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int i = 0; i < n; i++) {
+        int lo = 0, hi = n - 1, first = -1, last = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (sorted[mid] < xs[i]) lo = mid + 1;
+            else { first = mid; hi = mid - 1; }
+        }
+        lo = 0; hi = n - 1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (sorted[mid] > xs[i]) hi = mid - 1;
+            else { last = mid; lo = mid + 1; }
+        }
+        list_push(vm, res, val_num(((double)(first + 1) + (double)(last + 1)) / 2.0));
+    }
+    free(sorted); free(xs);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static double interp_spearman_pairs(const double *xs, const double *ys, int n)
+{
+    double *sx = malloc((size_t)n * sizeof(double));
+    double *sy = malloc((size_t)n * sizeof(double));
+    double *ox = malloc((size_t)n * sizeof(double));
+    double *oy = malloc((size_t)n * sizeof(double));
+    if (!sx || !sy || !ox || !oy) {
+        free(sx); free(sy); free(ox); free(oy); return NAN;
+    }
+    for (int i = 0; i < n; i++) { sx[i] = xs[i]; sy[i] = ys[i]; }
+    qsort(sx, (size_t)n, sizeof(double), cmp_d);
+    qsort(sy, (size_t)n, sizeof(double), cmp_d);
+    for (int i = 0; i < n; i++) {
+        int lo = 0, hi = n - 1, first = -1, last = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (sx[mid] < xs[i]) lo = mid + 1;
+            else { first = mid; hi = mid - 1; }
+        }
+        lo = 0; hi = n - 1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (sx[mid] > xs[i]) hi = mid - 1;
+            else { last = mid; lo = mid + 1; }
+        }
+        ox[i] = ((double)(first + 1) + (double)(last + 1)) / 2.0;
+        lo = 0; hi = n - 1; first = -1; last = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (sy[mid] < ys[i]) lo = mid + 1;
+            else { first = mid; hi = mid - 1; }
+        }
+        lo = 0; hi = n - 1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (sy[mid] > ys[i]) hi = mid - 1;
+            else { last = mid; lo = mid + 1; }
+        }
+        oy[i] = ((double)(first + 1) + (double)(last + 1)) / 2.0;
+    }
+    free(sx); free(sy);
+    double mx = 0.0, my = 0.0, sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (int i = 0; i < n; i++) {
+        double dx = ox[i] - mx, dy = oy[i] - my;
+        mx += dx / (double)(i + 1);
+        my += dy / (double)(i + 1);
+        sxx += dx * (ox[i] - mx);
+        sxy += dx * (oy[i] - my);
+        syy += dy * (oy[i] - my);
+    }
+    free(ox); free(oy);
+    if (sxx == 0.0 || syy == 0.0) return NAN;
+    return sxy / sqrt(sxx * syy);
+}
+
+static void native_spearman(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *X, *Y;
+    if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
+    if (X->count != Y->count || X->count < 2) {
+        vm_set_error(vm, "spearman() needs two equal-length lists (n >= 2)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, X, &n);
+    double *ys = xs ? list_to_doubles(vm, Y, &n) : NULL;
+    if (!ys) { free(xs); return; }
+    double r = interp_spearman_pairs(xs, ys, n);
+    free(xs); free(ys);
+    *out = val_num(r);
+}
+
+static void native_ic(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *S, *R; double lagd;
+    if (argc < 3 || !arg_list(vm, args[0], &S) || !arg_list(vm, args[1], &R) ||
+        !arg_num(vm, args[2], &lagd)) return;
+    int64_t lag = (int64_t)lagd;
+    if (S->count != R->count || S->count < 3 || lag < 1 || lag > S->count - 2) {
+        vm_set_error(vm, "ic() needs lag in [1, n-2] with n >= 3");
+        return;
+    }
+    int n; double *ss = list_to_doubles(vm, S, &n);
+    double *rs = ss ? list_to_doubles(vm, R, &n) : NULL;
+    if (!rs) { free(ss); return; }
+    int64_t m = n - lag;
+    double *sa = malloc((size_t)m * sizeof(double));
+    double *ra = malloc((size_t)m * sizeof(double));
+    if (!sa || !ra) { free(ss); free(rs); free(sa); free(ra); return; }
+    for (int64_t i = 0; i < m; i++) { sa[i] = ss[i]; ra[i] = rs[i + lag]; }
+    free(ss); free(rs);
+    double r = interp_spearman_pairs(sa, ra, (int)m);
+    free(sa); free(ra);
+    *out = val_num(r);
+}
+
 static void native_skew(VM *vm, int argc, Value *args, Value *out) {
     ObjList *L;
     if (argc < 1 || !arg_list(vm, args[0], &L)) return;
@@ -2422,3 +2551,6 @@ Value b_calmar_ratio(VM *vm, int argc, Value *args)       { return vm_native(vm,
 Value b_autocorrelation(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_autocorrelation); }
 Value b_treynor_ratio(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_treynor_ratio); }
 Value b_omega_ratio(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_omega_ratio); }
+Value b_rank(VM *vm, int argc, Value *args)               { return vm_native(vm, argc, args, native_rank); }
+Value b_spearman(VM *vm, int argc, Value *args)           { return vm_native(vm, argc, args, native_spearman); }
+Value b_ic(VM *vm, int argc, Value *args)                 { return vm_native(vm, argc, args, native_ic); }

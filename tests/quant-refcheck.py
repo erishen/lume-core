@@ -271,6 +271,39 @@ def omega_ref(series, t):
     return float('nan') if lo == 0.0 else g / lo
 
 
+def rank_ref(series):
+    n = len(series)
+    idx = sorted(range(n), key=lambda i: series[i])
+    r = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and series[idx[j + 1]] == series[idx[i]]:
+            j += 1
+        avg = (i + 1 + j + 1) / 2.0
+        for k in range(i, j + 1):
+            r[idx[k]] = avg
+        i = j + 1
+    return r
+
+
+def spearman_ref(a, b):
+    ra = rank_ref(list(a)); rb = rank_ref(list(b))
+    m1 = m2 = sxx = sxy = syy = 0.0
+    for i, (av, bv) in enumerate(zip(ra, rb), 1):
+        da = av - m1; db = bv - m2
+        m1 += da / i; m2 += db / i
+        sxx += da * (av - m1); sxy += da * (bv - m2); syy += db * (bv - m2)
+    if sxx == 0.0 or syy == 0.0: return float('nan')
+    return sxy / math.sqrt(sxx * syy)
+
+
+def ic_ref(sig, ret, lag):
+    m = len(sig) - lag
+    if m < 2: return float('nan')
+    return spearman_ref(sig[:m], ret[lag:])
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1190,6 +1223,14 @@ cases += [
     ("treynor",           sixg(treynor_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], [0.0, 0.0, 0.0, 0.0, 0.0, 0.02], 0.002)), 0.00666667),
     ("omega t=0",         sixg(omega_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.0)), 3),
     ("omega t=0.02",      sixg(omega_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.02)), 0.25),
+    # rank statistics & signal evaluation (2026-11-02, #55): average
+    # ranks with ties, Spearman as the rank-pair Pearson, and the IC at
+    # lag 1/2 on the aligned signal/forward-return segment.
+    ("rank tied",         sixg(rank_ref([3.0, 1.0, 2.0, 3.0])[0]), 3.5),
+    ("rank all-same",     sixg(rank_ref([5.0, 5.0, 5.0])[0]), 2),
+    ("spearman inv",      sixg(spearman_ref([1.0, 2.0, 3.0, 4.0, 5.0], [5.0, 4.0, 3.0, 2.0, 1.0])), -1),
+    ("spearman tied",     sixg(spearman_ref([1.0, 2.0, 2.0, 3.0], [2.0, 2.0, 4.0, 8.0])), 0.833333),
+    ("ic lag1",           sixg(ic_ref([2.0, 1.0, 3.0, 4.0, 5.0, 6.0], [0.1, 0.5, 0.2, 0.8, 0.9, 0.95], 1)), 1),
 ]
 
 fails = 0

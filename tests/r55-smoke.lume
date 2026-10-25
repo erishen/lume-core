@@ -1,0 +1,22 @@
+// r55-smoke.lume: rank statistics & signal evaluation (#55),
+// 3 legs byte-identical. Pinned rows recomputed in Python (r55.py).
+let x: list = [3.0, 1.0, 2.0, 3.0];
+print(rank(x));
+let allsame: list = [5.0, 5.0, 5.0];
+print(rank(allsame));
+let mono: list = [1.0, 2.0, 3.0, 4.0, 5.0];
+let inv: list = [5.0, 4.0, 3.0, 2.0, 1.0];
+print(spearman(mono, inv));
+let tied: list = [1.0, 2.0, 2.0, 3.0];
+let tret: list = [2.0, 2.0, 4.0, 8.0];
+print(spearman(tied, tret));
+let sig: list = [2.0, 1.0, 3.0, 4.0, 5.0, 6.0];
+let fr: list = [0.1, 0.5, 0.2, 0.8, 0.9, 0.95];
+print(ic(sig, fr, 1));
+print(ic(sig, fr, 2));
+// data properties: constant side -> NAN spearman; aligned segment
+// constant -> NAN ic
+let const: list = [1.0, 1.0, 1.0, 1.0];
+print(spearman(const, [1.0, 2.0, 3.0, 4.0]));
+let cref: list = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+print(ic(sig, cref, 1));

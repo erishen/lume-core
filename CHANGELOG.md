@@ -309,6 +309,29 @@ All notable changes to Lume are documented here. The format follows
   data properties), `tests/quant-consistency.lume` grows to 170 rows,
   `tests/quant-refcheck.py` to 161 cases, `tests/quant-fuzz.py` to
   1330 checks (10 series × 133 rows).
+- **Rank statistics & signal evaluation: `rank` / `spearman` / `ic`.**
+  The monotonicity and forecast-quality layer.
+  `rank(list)` answers 1-based average ranks — ties share the mean of
+  their rank range (binary-search rank assignment over the sorted
+  copy), the primitive behind monotone transforms and IC. `spearman(x,
+  y)` answers the Pearson over the rank pairs via the shared
+  joint-Welford — the scale-free correlation that survives outliers and
+  monotone transforms; a constant side answers NAN (data property).
+  `ic(signal, returns, lag)` answers the rank correlation between a
+  signal and its forward returns lagged k periods —
+  spearman(signal[0..n−lag], returns[lag..n]), the standard
+  forecast-quality measure in factor research; lag outside [1, n−2]
+  answers NAN. Emission: rank joins the pct_change (i8*) → i8* float
+  list block, spearman joins the covariance (i8*, i8*) → double block,
+  ic gets a (i8*, i8*, i64) → double block (lag truncates through
+  lume_bi_ftoi) — text and LLVM, with the inference twin in
+  codegen_scan/llvm_cg_scan; the text leg declares the three new rt
+  entries. Verification: `tests/r55-smoke.lume` (3 legs byte-identical;
+  Python recomputes ranks [3.5,1,2,3.5] / [2,2,2], Spearman −1 /
+  0.833333, IC 1 / 0.8 and the NAN data properties),
+  `tests/quant-consistency.lume` grows to 178 rows,
+  `tests/quant-refcheck.py` to 166 cases, `tests/quant-fuzz.py` to
+  1360 checks (10 series × 136 rows).
 - **Performance attribution — the benchmark-aware evaluation layer:
   `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
   risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but

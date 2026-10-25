@@ -831,6 +831,18 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   0.25), quant-consistency 162 -> 170 rows, quant-refcheck 156 -> 161
   cases, quant-fuzz 10 series x 133 rows (1330 checks), native_backends
   18/19 (serve errno 10038 known).
+- [x] **Rank statistics & signal evaluation: `rank` / `spearman` / `ic`
+  (2026-11-02).** Average ranks with ties sharing the mean; Spearman as
+  the Pearson over the rank pairs (joint-Welford); IC as the rank
+  correlation between a signal and forward returns at lag k. Constant
+  sides answer NAN (data property). Emission: rank joins the pct_change
+  float-list block, spearman the covariance double block, ic a new
+  (list, list, i64) -> double block, both emitters. Verification:
+  r55-smoke (3 legs byte-identical, Python recomputes ranks [3.5,1,2,3.5]
+  / [2,2,2], Spearman -1 / 0.833333, IC 1 / 0.8), quant-consistency
+  170 -> 178 rows, quant-refcheck 161 -> 166 cases, quant-fuzz 10 series
+  x 136 rows (1360 checks), native_backends 18/19 (serve errno 10038
+  known).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

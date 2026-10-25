@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 133                             # rows per dataset. The layout mirrors the
+RPP = 136                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -83,7 +83,9 @@ RPP = 133                             # rows per dataset. The layout mirrors the
                                       # beta / IR on the pct_change pair, plus
                                       # the Calmar ratio on path a), then the
                                       # time-series rows x3 (ACF lag-1 /
-                                      # Treynor / Omega on the series)
+                                      # Treynor / Omega on the series), then
+                                      # the rank rows x3 (Spearman pair / IC
+                                      # lag-1 / first average rank)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -270,6 +272,39 @@ def omega_ref(series, t):
         if d > 0: g += d
         else: lo += -d
     return float("nan") if lo == 0.0 else g / lo
+
+
+def rank_ref(series):
+    n = len(series)
+    idx = sorted(range(n), key=lambda i: series[i])
+    r = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and series[idx[j + 1]] == series[idx[i]]:
+            j += 1
+        avg = (i + 1 + j + 1) / 2.0
+        for k in range(i, j + 1):
+            r[idx[k]] = avg
+        i = j + 1
+    return r
+
+
+def spearman_ref(a, b):
+    ra = rank_ref(list(a)); rb = rank_ref(list(b))
+    m1 = m2 = sxx = sxy = syy = 0.0
+    for i, (av, bv) in enumerate(zip(ra, rb), 1):
+        da = av - m1; db = bv - m2
+        m1 += da / i; m2 += db / i
+        sxx += da * (av - m1); sxy += da * (bv - m2); syy += db * (bv - m2)
+    if sxx == 0.0 or syy == 0.0: return float("nan")
+    return sxy / math.sqrt(sxx * syy)
+
+
+def ic_ref(sig, ret, lag):
+    m = len(sig) - lag
+    if m < 2: return float("nan")
+    return spearman_ref(sig[:m], ret[lag:])
 
 
 def rolling_var_ref(data, w, level):
@@ -1336,6 +1371,15 @@ def main():
         lines.append("print(treynor_ratio(%s, %s, 0.0));" % (emit(pca), emit(pcb)))
         row(sixg(omega_ref(x, 0.0)))
         lines.append("print(omega_ratio(%s, 0.0));" % da)
+        # rank statistics & signal evaluation (2026-11-02, #55):
+        # Spearman on the pct_change pair, the IC at lag 1 on the pair
+        # and the average rank of the first return.
+        row(sixg(spearman_ref(pca, pcb)))
+        lines.append("print(spearman(%s, %s));" % (emit(pca), emit(pcb)))
+        row(sixg(ic_ref(pca, pcb, 1)))
+        lines.append("print(ic(%s, %s, 1));" % (emit(pca), emit(pcb)))
+        row(sixg(rank_ref(pca)[0]))
+        lines.append("let rk%da = rank(%s); print(rk%da[0]);" % (i, emit(pca), i))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

@@ -358,3 +358,25 @@ print(omega_ratio(t53r, 0.02));
 print(autocorrelation(t53b, 1));
 print(treynor_ratio(t53r, t53b, 0.0));
 print(omega_ratio(t53up, 0.0));
+
+// #55 rank statistics & signal evaluation (2026-11-02): average ranks
+// with ties sharing the mean, Spearman as the Pearson on rank pairs
+// (joint-Welford) and the IC over the aligned signal/forward-return
+// segment. Deterministic; a constant side answers NAN.
+let t55same: list = [5.0, 5.0, 5.0];
+let t55mono: list = [1.0, 2.0, 3.0, 4.0, 5.0];
+let t55inv: list = [5.0, 4.0, 3.0, 2.0, 1.0];
+let t55tied: list = [1.0, 2.0, 2.0, 3.0];
+let t55tret: list = [2.0, 2.0, 4.0, 8.0];
+let t55sig: list = [2.0, 1.0, 3.0, 4.0, 5.0, 6.0];
+let t55fr: list = [0.1, 0.5, 0.2, 0.8, 0.9, 0.95];
+let t55const: list = [1.0, 1.0, 1.0, 1.0];
+let t55cref: list = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+print(rank(t53r));
+print(rank(t55same));
+print(spearman(t55mono, t55inv));
+print(spearman(t55tied, t55tret));
+print(ic(t55sig, t55fr, 1));
+print(ic(t55sig, t55fr, 2));
+print(spearman(t55const, [1.0, 2.0, 3.0, 4.0]));
+print(ic(t55sig, t55cref, 1));

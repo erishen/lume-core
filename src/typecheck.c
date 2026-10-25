@@ -454,6 +454,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "rsi", "macd", "bollinger",
     "alpha_beta", "information_ratio", "calmar_ratio",
     "autocorrelation", "treynor_ratio", "omega_ratio",
+    "rank", "spearman", "ic",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -521,6 +522,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"rsi",2,2}, {"macd",4,4}, {"bollinger",3,3},
     {"alpha_beta",3,3}, {"information_ratio",2,2}, {"calmar_ratio",1,1},
     {"autocorrelation",2,2}, {"treynor_ratio",3,3}, {"omega_ratio",2,2},
+    {"rank",1,1}, {"spearman",2,2}, {"ic",3,3},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},
