@@ -854,8 +854,8 @@ func report(): Result {
 - ⚠️ 下面的「静默」指**不报错且给出一个值**。这是本语言最需要警惕的一类行为，已在每处标出。
 - ⚠️ **本节的表格不是完整清单**。`typecheck.c` 的 `LUME_BUILTIN_NAMES` 才是（它同时是
   「不能声明、不能遮蔽」的判定依据）。下列内建本节没有各自的表格小节，语义只在别处带过：
-  `run`（§7 服务端）、`replace` / `ceil`（与 `floor` / `round` 同族的数学组，§6.7）、
-  `write` / `read`（§6.5 文件）、以及 5 个 `http_*`（§6.8，**本树在 Windows 上
+  `run`（§7 服务端）、`replace` / `ceil`（与 `floor` / `round` 同族的数学组，§6.6）、
+  `write` / `read`（§6.5 文件）、以及 5 个 `http_*`（§6.10，**本树在 Windows 上
   `LUME_HAS_HTTP=0`，它们存在但调用即报错**）。
 
 ### 6.1 输出与转换
@@ -1020,7 +1020,151 @@ print(str(abs(0 - 9223372036854775807 - 1)));  // 9.22337e+18
 ⚠️ i64 最小值取绝对值在 double 下正过来得到 `9.22337e+18`，**不是**可精确表示的 int。
 需要精确的大整数绝对值时不要用 `abs`。
 
-### 6.7 页面小工具（虚拟 DOM）
+### 6.7 量化与统计
+
+2026-10-20 起补入（builtins_math.c 解释器侧 + rt.c 原生侧成对实现，text / LLVM
+两原生后端与解释器**三腿 byte-identical**，由 `tests/quant-consistency.expected`
+逐行钉死）。分六族：基础统计、分布函数、确定性 RNG 与采样、金融路径与定价、
+统计检验、Bootstrap、风险与绩效衍生。`tests/quant-refcheck.py`（181 例）与
+`tests/quant-fuzz.py`（10 系列 × 149 行）用独立 Python 参考钉值 + 随机交叉核对。
+
+**通用契约（全族适用）：**
+
+- **恒返回 `float`**，与 §6.6 数学组一致；列表参数宽松（数字列表），返回值不松散。
+- **`nan` 是数据属性，不是错误**：#48 起统一为「零 σ / 零下行 / 零方差基准 / 零 β /
+  零损失侧 / 零回撤 / 非正价格 / 空赢侧 / 零方差」→ **三后端均返回 `nan`**。
+- **无效参数才报错**：如 `percentile` 的 `q`、`value_at_risk` 一族的 `level` 必须
+  ∈(0,1)、`norminv` 的 `p` ∈(0,1)——解释器侧 `vm_set_error`（可 `try()` 接住），
+  原生侧无错误通道，返回 `nan`（同 §6.0「报错一律是运行时错误」的家族惯例）。
+- **`rolling_*` 输出前 `window−1` 个槽位为 `nan`**；`window` 是整数语义参数，运行时截断。
+- **RNG 是确定性的**：PCG32（O'Neill, XSH-RR），未 `seed()` 时用固定默认状态
+  `0x853c49e6748fea9bULL` / 增量 `0xda3e39cb94b95bdbULL`；`seed(n)` 置状态并复位
+  增量。同一 `seed()` 后的调用序列在**三个后端逐位相同**（fuzz 从绝对流 k=1 重放钉死）。
+
+**a. 基础统计**（`builtins_math.c` + rt.c，2026-10-24）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `mean` / `variance` / `stddev` | 1 参 | `float` | 样本方差/标准差（`n−1` 分母，Welford）；`n<2` 报错 |
+| `median` | 1 参 | `float` | 排序取中位；偶数长取中间两值平均 |
+| `percentile(xs, q)` | 2 参 | `float` | 排序后线性插值（pandas 口径）；`q∈(0,1)`，越界报错/原生 `nan` |
+| `covariance(a, b)` / `correlation(a, b)` | 2 参 | `float` | joint-Welford；不等长报错；相关 |r|≤1 由 fuzz 断言；零方差 `nan` |
+| `linreg(xs, ys)` | 2 参 | `float` | 最小二乘斜率；零方差 `nan` |
+| `pct_change(xs)` | 1 参 | `float[]` | `x[i]/x[i−1]−1`；**首槽 `nan`**（无前值） |
+| `max_drawdown(prices)` | 1 参 | `float` | 峰-谷最大回撤率；单调上行 → `0` |
+| `skew` / `kurtosis` | 1 参 | `float` | 样本偏度 / 超额峰度；`n<3` 报错；零方差 `nan` |
+| `rolling_mean(xs, w)` / `rolling_stddev(xs, w)` | 2 参 | `float[]` | 滚动均值 / 样本标准差；前 `w−1` 槽 `nan` |
+| `ewma(xs, alpha)` | 2 参 | `float[]` | 指数加权；`alpha∈(0,1]`，越界报错 |
+
+**b. 分布函数**（2026-10-20，含 §6.6 数学组之后的概率组）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `normcdf(x)` | 1 参 | `float` | 标准正态 CDF；`normcdf(norminv(p))≈p`（fuzz 往返断言） |
+| `norminv(p)` | 1 参 | `float` | Acklam 有理近似（|err|~1.15e-9）；`p∉(0,1)` 报错/原生 `nan` |
+| `erf(x)` | 1 参 | `float` | 误差函数 |
+| `gamma(x)` / `lgamma(x)` | 1 参 | `float` | Γ 函数 / 对数 Γ；非正参数报错 |
+| `igamma(a, x)` | 2 参 | `float` | 下不完全 Γ 正则化 P(a,x) |
+| `ibeta(a, b, x)` | 3 参 | `float` | 正则化不完全 β I_x(a,b) |
+| `tdist_cdf(t, df)` / `chisq_cdf(x, df)` | 2 参 | `float` | t / χ² 分布的 CDF |
+
+**c. 确定性 RNG 与采样**（2026-10-24 起，逐族提交 #38–#43、#46）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `seed(n)` | 1 参 | `null` | 重置 PCG32 状态与增量 |
+| `rand()` | 0 参 | `float` | U(0,1) |
+| `rand_range(a, b)` / `rand_int(a, b)` | 2 参 | `float` / `float` | U(a,b) 连续 / 含端整数（经截断） |
+| `rand_normal(mu, sigma)` | 2 参 | `float` | Box-Muller（2π 常量钉死）；`sigma<0` 报错 |
+| `rand_bool(p)` | 1 参 | `float` | 伯努利；`p∈[0,1]` |
+| `rand_exponential(lambda)` / `rand_poisson(lambda)` | 1 参 | `float` | 逆变换 / Knuth |
+| `shuffle(xs)` | 1 参 | `float[]` | Fisher-Yates 原地洗牌，返回原列表 |
+| `rand_cauchy(x0, g)` / `rand_laplace(mu, b)` / `rand_logistic(mu, s)` / `rand_pareto(k, a)` / `rand_weibull(k, lambda)` | 2 参 | `float` | 逆变换采样 |
+| `rand_gamma(k, theta)` / `rand_beta(a, b)` | 2 参 | `float` | Marsaglia / 相关转换 |
+| `rand_chisq(df)` / `rand_student_t(df)` | 1 参 | `float` | 由 gamma / 正态构造 |
+| `rand_geometric(p)` / `rand_negative_binomial(r, p)` | 1–2 参 | `float` | 离散逆变换 |
+| `rand_binomial(n, p)` / `rand_zipf(s, n)` | 2 参 | `float` | 二项 / Zipf 逆变换 |
+| `rand_lognormal(mu, sigma)` / `rand_gumbel(mu, beta)` / `rand_rayleigh(sigma)` / `rand_triangular(lo, hi)` | 1–2 参 | `float` | 各分布转换采样 |
+| `rand_erlang(k, lambda)` | 2 参 | `float` | Γ(k,1/λ) |
+| `rand_von_mises(mu, kappa)` | 2 参 | `float` | 环绕正态（Best-Fisher） |
+| `rand_multinomial(n, probs)` | 2 参 | `float[]` | 多项式计数的双精度向量 |
+| `rand_dirichlet(alpha)` | 1 参 | `float[]` | 由 gamma 构造 |
+| `rand_binormal(mx, my, sx, sy, rho)` | 5 参 | `float[]` | 二元正态，`|rho|<1` |
+| `rand_gauss_copula(rho, n)` / `rand_t_copula(rho, df, n)` | 2–3 参 | `float[]` | Copula 采样 |
+
+**d. 金融路径与 BS 定价**（#44）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `sim_gbm(S0, mu, sigma, T, n)` | 5 参 | `float[]` | 几何布朗运动路径（**第 4 参是 `T` 不是 seed**）；`sigma<0` 报错 |
+| `sim_bridge(S0, mu, sigma, T, n)` | 5 参 | `float[]` | 布朗桥 |
+| `sim_ou(S0, mu, theta, sigma, T, n)` | 6 参 | `float[]` | Ornstein-Uhlenbeck |
+| `sim_merton(S0, mu, sigma, lambda, muJ, sigmaJ, T, n)` | 8 参 | `float[]` | Merton 跳扩散 |
+| `sim_portfolio(paths, weights)` | 2 参 | `float[]` | 逐期 r_t=Σwᵢ(pᵢ,t/pᵢ,t−1−1)；等长校验 |
+| `bs_call` / `bs_put` / `bs_delta_call` / `bs_delta_put` / `bs_gamma` / `bs_vega` | 均 5 参 | `float` | `(S, K, T, r, sigma)` Black-Scholes 闭式 |
+
+**e. 统计检验**（#45）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `z_test(xs, mu0, sigma)` | 3 参 | `float` | z 统计量 `(mean−mu0)/(sigma/√n)`；`sigma>0` |
+| `z_pvalue(z)` | 1 参 | `float` | 双尾 p 值 `2(1−Φ(|z|))` |
+| `tstat(xs, mu0)` | 2 参 | `float` | 单样本 t 统计量（样本 σ） |
+| `ttest_p(t, df)` | 2 参 | `float` | 双尾 t p 值（tdist_cdf） |
+| `chisq_stat(obs, exp)` | 2 参 | `float` | Σ(obs−exp)²/exp；等长校验、`exp>0` |
+| `chisq_p(x, df)` | 2 参 | `float` | χ² 右尾 p 值 `1−CDF` |
+
+**f. Bootstrap**（#48 前的占位轮落地）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `bootstrap_mean_ci(xs, n, level)` / `bootstrap_median_ci(xs, n, level)` / `bootstrap_stddev_ci(xs, n, level)` | 3 参 | `float[]` | 重采样 n 次的统计量分位 CI `[lo, hi]`；`level∈(0,1)` |
+| `bootstrap_se_mean(xs, n)` | 2 参 | `float` | 重采样均值标准误 |
+
+**g. 风险与绩效衍生**（#48–#58 逐族落地）
+
+| 内建 | 签名 | 返回 | 边界 |
+| --- | --- | --- | --- |
+| `value_at_risk(xs, level)` | 2 参 | `float` | `−`第 level 分位（**正数损失**，pandas 线性插值）；`level∉(0,1)` 报错 |
+| `expected_shortfall(xs, level)` | 2 参 | `float` | 损失尾部均值（正数）；同 level 契约 |
+| `sharpe_ratio(xs, rf)` / `sortino_ratio(xs, rf)` | 2 参 | `float` | 样本 σ；Sortino 下行偏差 √(Σmin(0,x−rf)²/n)；零 σ / 零下行 `nan` |
+| `rolling_sharpe` / `rolling_sortino` / `rolling_var` / `rolling_cvar` | 均 3 参 `(xs, w, level)` | `float[]` | 窗口内套 #48 原式；前 `w−1` 槽 `nan`；零波动窗口 `nan` |
+| `rsi(prices, period)` | 2 参 | `float[]` | 相对强弱；前 `period` 槽 `nan` |
+| `macd(prices, fast, slow, signal)` | 4 参 | `float[]` | 三线：`[macd, signal, hist]` 逐槽；预热槽 `nan` |
+| `bollinger(prices, period, k)` | 3 参 | `float[]` | `[mid, upper, lower]` 逐槽（中轨 ± k·σ）；预热槽 `nan` |
+| `alpha_beta(port, bench)` | 2 参 | `float[]` | `[beta, alpha]`；零方差基准 `nan` |
+| `information_ratio(port, bench)` | 2 参 | `float` | 超额均值/跟踪误差；零跟踪误差 `nan` |
+| `calmar_ratio(xs)` | 1 参 | `float` | 年均收益/最大回撤%；零回撤 `nan` |
+| `autocorrelation(xs, lag)` | 2 参 | `float` | 对齐段 ACF；`lag≥1`，越界 `nan` |
+| `treynor_ratio(port, bench, rf)` | 3 参 | `float` | 超额/β；β=0 或零方差基准 `nan` |
+| `omega_ratio(xs, threshold)` | 2 参 | `float` | 收益/亏损侧比率；零损失侧 `nan` |
+| `rank(xs)` | 1 参 | `float[]` | 1 基平均秩（并列共享均值） |
+| `spearman(a, b)` | 2 参 | `float` | 秩对 Pearson；等长校验 |
+| `ic(signal, prices, lag)` | 3 参 | `float` | 信号 vs 滞后 k 前瞻收益秩相关；`lag∈[1,n−2]`，越界 `nan` |
+| `annualized_return(prices)` | 1 参 | `float` | 几何年化；非正价格 `nan` |
+| `annualized_volatility(xs)` | 1 参 | `float` | 样本 σ × √252 |
+| `sharpe_annualized(xs, rf)` | 2 参 | `float` | #48 Sharpe × √252 |
+| `cumulative_return(prices)` | 1 参 | `float` | `p_last/p_first−1`；非正端点 `nan` |
+| `semivariance(xs)` | 1 参 | `float` | 下半矩 Σmin(0,x−μ)²/n；平盘 `0` |
+| `downside_deviation(xs, t)` | 2 参 | `float` | √(Σmin(0,x−t)²/n) |
+| `param_var(xs, level)` | 2 参 | `float` | `−(μ+z(level)·σ)` 正数损失；`level∉(0,1)` 报错 |
+| `kelly_fraction(xs)` | 1 参 | `float` | `μ/σ²`；零方差 `nan` |
+| `profit_factor(xs)` | 1 参 | `float` | 总盈利/|总亏损|；无亏损侧 `nan`、全亏 `0` |
+| `win_rate(xs)` | 1 参 | `float` | 严格正收益占比（0 不算赢） |
+| `avg_win(xs)` / `avg_loss(xs)` | 1 参 | `float` | 严格正/负侧均值；空侧 `nan` |
+| `max_consecutive_losses(xs)` | 1 参 | `float` | 最长严格负连续段；无亏损 `0` |
+
+示例（确定性，三后端同值）：
+
+```lume
+seed(42);                     // 复位 RNG，之后的序列三后端逐位相同
+let p = sim_gbm(100.0, 0.05, 0.2, 1.0, 64);
+print(sharpe_annualized(pct_change(p), 0.0));
+print(value_at_risk(pct_change(p), 0.05));   // 正数损失
+print(profit_factor([0.05, -0.02, 0.03]));   // 0.08 / 0.02 = 4
+```
+
+### 6.8 页面小工具（虚拟 DOM）
 
 | 内建 | 签名 | 返回 |
 | --- | --- | --- |
@@ -1077,7 +1221,7 @@ print(render(el("script", {}, "alert(1)")));         // <script>alert(1)</script
 所以它**不适合**直接生成需要校验的场景（URL scheme、`<script>`、事件处理器属性
 `onclick` 之类）—— 值被转义了，但**标签与属性名是你给的、不会被拦**。
 
-### 6.8 工具台（空壳）
+### 6.9 工具台（空壳）
 
 本树无 Agent 运行时，这四个恒返回空值但**保留可用**（不在不同平台间分叉语言面）：
 
@@ -1088,7 +1232,7 @@ print(render(el("script", {}, "alert(1)")));         // <script>alert(1)</script
 | `catalog()` | `{ skills: [], tools: [], mcps: [...] }` |
 | `discovery_endpoints()` | `{ llm: null, router: null, model: null }` |
 
-### 6.9 出站 HTTP
+### 6.10 出站 HTTP
 
 本树没有服务器，但能主动发起 HTTP/HTTPS 请求。五个谓词共用一条实现：
 
@@ -1114,9 +1258,9 @@ let r = http_patch(url,  ... 同 post,带 body);
   设了 `NO_PROXY`/`no_proxy`（逗号/空格分隔，支持 `.domain` 后缀、`*` 通配、可选 `:port`）的主机**直连、不走代理**；
   `LUME_NO_PROXY` 优先级最高，且无论是否设了 `LUME_HTTP_PROXY` 都生效——内网地址必须能绕过代理直连。
 - ⚠️ **本树无 Winsock**：`LUME_HAS_HTTP=0`，这些内建在 Windows 构建里**存在但调用即报错**
-  （见 §6.9 与 §8 的 host/core 差异）。
+  （见 §6.10 与 §8 的 host/core 差异）。
 
-### 6.10 名字在表里但不可调用
+### 6.11 名字在表里但不可调用
 
 `typecheck.c` 的 `LUME_BUILTIN_NAMES` 里有四个名字**没有对应实现**，写出来会得到
 `undefined variable`：类型词 `type`、`Result`（用于标注而非调用）、常量 `pi`/`e` 是

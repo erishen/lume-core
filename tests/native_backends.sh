@@ -562,6 +562,23 @@ for p in python3 python; do
         break
     fi
 done
+if [ -z "$PY" ]; then
+    # MSYS bash inherits the Windows PATH, but an App-Execution-Alias stub
+    # can make the bare `python` probe fail while a real install exists in
+    # LOCALAPPDATA (standard Python installer layout). Fall back to it; a
+    # Linux CI simply matches nothing and stays skipped. The unexpanded glob
+    # is guarded by [ -x ] before use.
+    WPY_ROOT=
+    if command -v cygpath >/dev/null 2>&1 && [ -n "${LOCALAPPDATA:-}" ]; then
+        WPY_ROOT=$(cygpath -u "$LOCALAPPDATA")/Programs/Python
+        for cand in "$WPY_ROOT"/Python3*/python.exe; do
+            if [ -x "$cand" ] && "$cand" -c "pass" >/dev/null 2>&1; then
+                PY=$cand
+                break
+            fi
+        done
+    fi
+fi
 if [ -n "$PY" ]; then
     TARGET_WIN=$TARGET
     WORK_WIN=$WORK

@@ -389,6 +389,30 @@ All notable changes to Lume are documented here. The format follows
   `tests/quant-consistency.lume` grows to 204 rows,
   `tests/quant-refcheck.py` to 181 cases, `tests/quant-fuzz.py` to
   1490 checks (10 series × 149 rows).
+- **Quant surface spec: `docs/SPEC.md` §6.7 量化与统计.**
+  The quant builtins (100+, #29–#58) had no normative documentation —
+  only CHANGELOG/TODO entries — while §6 claimed to be the normative
+  builtin list. The new section covers all seven families (descriptive
+  stats, distribution functions, deterministic RNG/samplers, financial
+  paths + Black-Scholes, hypothesis tests, bootstrap, risk & trading
+  statistics) with the cross-cutting contracts: every value is float;
+  `nan` is a data property (zero sigma / downside / benchmark variance
+  / beta / loss side / drawdown / non-positive price / empty side /
+  zero Kelly variance), invalid parameters are the only errors
+  (interpreter raises, native answers nan); rolling families pad the
+  first window−1 slots with nan; the RNG is deterministic PCG32 so the
+  same `seed()` reproduces identical streams on all three backends.
+  Existing section cross-references were renumbered (§6.7 页面小工具 →
+  §6.8, 工具台 → §6.9, HTTP → §6.10, 不可调用 → §6.11) and the stale
+  §6.7 reference in §6.0 fixed. A worked example triple-checks
+  profit_factor([0.05,-0.02,0.03]) = 0.08/0.02 = 4.
+- **Regression harness: Windows python fallback in
+  `tests/native_backends.sh`.** The python probe now falls back to the
+  standard Windows installer layout under LOCALAPPDATA
+  (Programs/Python/Python3*/python.exe) when the bare `python3`/`python`
+  probes fail — an App-Execution-Alias stub would otherwise silently
+  skip the quant reference leg on Windows; a Linux CI matches nothing
+  and stays skipped.
 - **Performance attribution — the benchmark-aware evaluation layer:
   `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
   risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but

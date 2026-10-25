@@ -880,6 +880,21 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   quant-consistency 194 -> 204 rows, quant-refcheck 176 -> 181 cases,
   quant-fuzz 10 series x 149 rows (1490 checks),
   native_backends 18/19 (serve errno 10038 known).
+- [x] **Quant surface spec: `docs/SPEC.md` §6.7 量化与统计
+  (2026-11-02).** Normative documentation for the 100+ quant builtins
+  across all seven families, with the cross-cutting contracts: float
+  returns; `nan` as a data property (zero sigma / downside / benchmark
+  variance / beta / loss side / drawdown / non-positive price / empty
+  side / zero Kelly variance) vs invalid-parameter errors (interpreter
+  raises, native answers nan); rolling padding; deterministic PCG32
+  RNG. Section renumbering 6.7 -> 6.8 ... 6.10 -> 6.11 and the stale
+  §6.0 reference fixed. Worked example triple-checks profit_factor = 4.
+- [x] **Regression harness: Windows python fallback in
+  `tests/native_backends.sh` (2026-11-02).** Probe falls back to
+  LOCALAPPDATA Programs/Python/Python3*/python.exe when bare
+  python3/python fail, so a Windows install with an
+  App-Execution-Alias stub no longer silently skips the quant
+  reference leg.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
