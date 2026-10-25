@@ -3834,6 +3834,151 @@ LumeList *lume_bi_rolling_cvar(const LumeList *l, int64_t window, double level)
     return out;
 }
 
+/* ---- technical indicators (2026-11-02, #52) — the signal layer on the
+ * #33 rolling / #48 risk family. Deterministic (no RNG). */
+
+/* rsi(prices, window): Wilder's Relative Strength Index. Needs window+1
+ * prices — the first window rows answer NAN (w deltas feed the first RSI
+ * at row w); after the initial simple average, gains/losses smooth with
+ * Wilder's alpha = 1/w. avgLoss == 0 answers 100 (no losing periods); an
+ * all-flat series answers 50 (neutral). Invalid window answers an empty
+ * list (the interpreter errors). */
+LumeList *lume_bi_rsi(const LumeList *l, int64_t window)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || window < 1 || window > n - 1) {
+        free(xs); return lume_list_new();
+    }
+    LumeList *out = lume_list_new();
+    double avg_gain = 0.0, avg_loss = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window) { lume_list_push_f(out, NAN); continue; }
+        double ch = xs[i] - xs[i - 1];
+        double gain = ch > 0.0 ? ch : 0.0;
+        double loss = ch < 0.0 ? -ch : 0.0;
+        if (i == window) {
+            double sg = 0.0, sl = 0.0;
+            for (int64_t j = 1; j <= window; j++) {
+                double d = xs[j] - xs[j - 1];
+                if (d > 0.0) sg += d; else sl += -d;
+            }
+            avg_gain = sg / (double)window;
+            avg_loss = sl / (double)window;
+        } else {
+            avg_gain = (avg_gain * (window - 1) + gain) / (double)window;
+            avg_loss = (avg_loss * (window - 1) + loss) / (double)window;
+        }
+        if (!(avg_loss > 0.0)) {
+            lume_list_push_f(out, avg_gain > 0.0 ? 100.0 : 50.0);
+        } else {
+            lume_list_push_f(out, 100.0 - 100.0 / (1.0 + avg_gain / avg_loss));
+        }
+    }
+    free(xs);
+    return out;
+}
+
+/* Shared EMA pass used by macd (and reusable): returns a fresh float list
+ * with alpha = 2/(n+1), seeded at row 0 (no leading NANs — the same
+ * recurrence as ewma). */
+static LumeList *bi_ema(const LumeList *l, int64_t period)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 1 || period < 1) { free(xs); return NULL; }
+    double a = 2.0 / (double)(period + 1);
+    LumeList *out = lume_list_new();
+    double e = xs[0];
+    lume_list_push_f(out, e);
+    for (int64_t i = 1; i < n; i++) {
+        e = a * xs[i] + (1.0 - a) * e;
+        lume_list_push_f(out, e);
+    }
+    free(xs);
+    return out;
+}
+
+/* macd(prices, fast, slow, signal) -> {macd, signal, hist}: the MACD line
+ * is EMA(fast) - EMA(slow); the signal line is EMA(signal) over the MACD
+ * line; hist = macd - signal. All three columns are full-length float
+ * lists (EMA starts at row 0). periods >= 1; a NULL answer means an
+ * invalid period / list (the interpreter errors). */
+LumeMap *lume_bi_macd(const LumeList *l, int64_t fast, int64_t slow, int64_t signal)
+{
+    if (!l || l->len < 1 || fast < 1 || slow < 1 || signal < 1) return NULL;
+    LumeList *ef = bi_ema(l, fast);
+    if (!ef) return NULL;
+    LumeList *es = bi_ema(l, slow);
+    if (!es) return NULL;
+    LumeList *macd = lume_list_new();
+    int64_t n = l->len;
+    for (int64_t i = 0; i < n; i++) {
+        double m = lume_list_at_f(ef, i) - lume_list_at_f(es, i);
+        lume_list_push_f(macd, m);
+    }
+    /* signal over the macd line */
+    int64_t sgn = 0; double *ms = bi_num_copy(macd, &sgn);
+    if (!ms) { return NULL; }
+    double a = 2.0 / (double)(signal + 1);
+    LumeList *sig = lume_list_new();
+    double e = ms[0];
+    lume_list_push_f(sig, e);
+    for (int64_t i = 1; i < sgn; i++) {
+        e = a * ms[i] + (1.0 - a) * e;
+        lume_list_push_f(sig, e);
+    }
+    free(ms);
+    LumeList *hist = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        lume_list_push_f(hist, lume_list_at_f(macd, i) - lume_list_at_f(sig, i));
+    }
+    LumeMap *m = lume_map_new();
+    lume_map_put_obj(m, "macd", macd);
+    lume_map_put_obj(m, "signal", sig);
+    lume_map_put_obj(m, "hist", hist);
+    return m;
+}
+
+/* bollinger(prices, window, k) -> {mid, upper, lower}: mid is the rolling
+ * mean, upper/lower = mid ± k * rolling stddev — the same window-1 leading
+ * NANs as rolling_mean/stddev; zero-spread windows collapse the band to
+ * mid (legal, not NAN). Invalid window / k answers NULL. */
+LumeMap *lume_bi_bollinger(const LumeList *l, int64_t window, double k)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || window < 2 || window > n || !isfinite(k)) {
+        free(xs); return NULL;
+    }
+    LumeList *mid = lume_list_new();
+    LumeList *up = lume_list_new();
+    LumeList *lo = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window - 1) {
+            lume_list_push_f(mid, NAN);
+            lume_list_push_f(up, NAN);
+            lume_list_push_f(lo, NAN);
+            continue;
+        }
+        double m = 0.0, m2 = 0.0;
+        int64_t kk = 0;
+        for (int64_t j = i - window + 1; j <= i; j++, kk++) {
+            double d = xs[j] - m;
+            m += d / (double)(kk + 1);
+            m2 += d * (xs[j] - m);
+        }
+        /* Welford's m has converged to the window mean at loop end. */
+        double sd = sqrt(m2 / (double)(window - 1));
+        lume_list_push_f(mid, m);
+        lume_list_push_f(up, m + k * sd);
+        lume_list_push_f(lo, m - k * sd);
+    }
+    free(xs);
+    LumeMap *map = lume_map_new();
+    lume_map_put_obj(map, "mid", mid);
+    lume_map_put_obj(map, "upper", up);
+    lume_map_put_obj(map, "lower", lo);
+    return map;
+}
+
 /* Max drawdown of a price series, as a positive percentage: the largest
  * peak-to-trough drop, 0 for a monotonically rising series, NAN for n<2. */
 double lume_bi_max_drawdown(const LumeList *l)

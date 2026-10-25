@@ -307,3 +307,21 @@ print(rva[5]);
 let rcv: list = rolling_cvar(rw, 3, 0.25);
 print(rcv[0]);
 print(rcv[5]);
+
+// #52 technical indicators (2026-11-02): Wilder RSI on a fixed
+// 6-point price path, MACD (EMA diff + signal + histogram), and
+// Bollinger bands — deterministic, no RNG. get(map, key, [])
+// reads a full-length column.
+let t52p: list = [100.0, 102.0, 101.0, 103.0, 102.0, 105.0];
+let t52rsi: list = rsi(t52p, 3);
+print(t52rsi[0]);
+print(t52rsi[3]);
+print(t52rsi[5]);
+let t52m = macd(t52p, 2, 4, 3);
+print(get(t52m, "macd", [])[5]);
+print(get(t52m, "signal", [])[5]);
+print(get(t52m, "hist", [])[5]);
+let t52b = bollinger(t52p, 3, 2.0);
+print(get(t52b, "mid", [])[5]);
+print(get(t52b, "upper", [])[5]);
+print(get(t52b, "lower", [])[5]);

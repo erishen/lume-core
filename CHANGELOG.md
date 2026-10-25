@@ -287,6 +287,35 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Technical indicators — the signal layer: `rsi` / `macd` /
+  `bollinger`.** Deterministic (no RNG), built on the #33 rolling /
+  #48 risk family. `rsi(prices, window)` is Wilder's RSI: needs
+  window+1 prices, so the first window rows answer NAN; after the
+  initial simple average, gains/losses smooth with Wilder's alpha
+  1/w; avgLoss == 0 answers 100 (no losing periods), an all-flat
+  series answers 50. `macd(prices, fast, slow, signal)` answers an
+  anonymous struct `{macd, signal, hist}`: the MACD line is
+  EMA(fast) − EMA(slow) with alpha 2/(n+1), the signal line is EMA
+  over the MACD line, hist = macd − signal — full-length columns,
+  no leading NANs. `bollinger(prices, window, k)` answers
+  `{mid, upper, lower}`: rolling mean ± k × sample stddev, the same
+  window−1 leading NANs as rolling_mean/stddev; zero-spread windows
+  collapse the band to mid. Emission: rsi joins the (list, i64) →
+  float-list group; macd (i8*, i64, i64, i64) → i8* and bollinger
+  (i8*, i64, double) → i8* join the anon-struct group beside linreg,
+  on text and LLVM. **Bug fixed on the way**: `get(map, "k", [])`
+  — a list default — used to answer the anon struct used for maps,
+  so indexing it failed natively (`index read failed`); the list
+  flavour now answers a `list<any>` (both emitters), matching the
+  interpreter's dynamic read. `tests/r52-smoke.lume` pins preamble
+  NAN + last-row values on all three legs (Python recomputes:
+  80 / 81.132075 / 0.939072 / 0.652608 / 0.286465 / 103.333333 /
+  106.388384 / 100.278283); `tests/quant-consistency.lume` grows to
+  154 rows; `tests/quant-refcheck.py` adds rsi/macd/bollinger
+  references (152 cases); `tests/quant-fuzz.py` grows to 1260
+  checks (10 series × 126 rows). The quant surface now spans the
+  full strategy chain: simulation → statistics → risk → portfolio →
+  rolling evaluation → signals.
 - **Rolling window portfolio evaluation: `rolling_sharpe` / `rolling_sortino`
   / `rolling_var` / `rolling_cvar`.** The backtesting shape called out after
   sim_portfolio: each builtin takes `(returns, window, scalar)` — window

@@ -148,6 +148,62 @@ def rolling_cvar_ref(data, window, level):
     return out
 
 
+def rsi_ref(prices, w):
+    """Wilder RSI (2026-11-02, #52): needs w+1 prices; the first w rows
+    are NAN; avgLoss == 0 answers 100, all-flat answers 50."""
+    n = len(prices)
+    out = [float('nan')] * n
+    ag = al = 0.0
+    for i in range(n):
+        if i < w:
+            continue
+        ch = prices[i] - prices[i - 1]
+        gain = ch if ch > 0 else 0.0
+        loss = -ch if ch < 0 else 0.0
+        if i == w:
+            sg = sl = 0.0
+            for j in range(1, w + 1):
+                d = prices[j] - prices[j - 1]
+                if d > 0: sg += d
+                else: sl += -d
+            ag, al = sg / w, sl / w
+        else:
+            ag = (ag * (w - 1) + gain) / w
+            al = (al * (w - 1) + loss) / w
+        if not (al > 0.0):
+            out[i] = 100.0 if ag > 0.0 else 50.0
+        else:
+            out[i] = 100.0 - 100.0 / (1.0 + ag / al)
+    return out
+
+
+def macd_ref(prices, fast, slow, signal):
+    """EMA(fast)-EMA(slow) with alpha = 2/(n+1); signal = EMA over the
+    macd line; hist = macd - signal. Full-length columns, no preamble."""
+    def ema(x, p_):
+        a = 2.0 / (p_ + 1)
+        out = [x[0]]
+        for v in x[1:]:
+            out.append(a * v + (1.0 - a) * out[-1])
+        return out
+    m = [x - y for x, y in zip(ema(prices, fast), ema(prices, slow))]
+    g = ema(m, signal)
+    return m, g, [x - y for x, y in zip(m, g)]
+
+
+def bollinger_ref(prices, w, k):
+    """rolling mean +/- k * sample stddev; window-1 leading NANs."""
+    mid = [float('nan')] * len(prices)
+    up = [float('nan')] * len(prices)
+    lo = [float('nan')] * len(prices)
+    for i in range(w - 1, len(prices)):
+        seg = prices[i + 1 - w:i + 1]
+        m = sum(seg) / w
+        sd = (sum((x - m) ** 2 for x in seg) / (w - 1)) ** 0.5
+        mid[i], up[i], lo[i] = m, m + k * sd, m - k * sd
+    return mid, up, lo
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1048,6 +1104,12 @@ cases += [
     ("rso [5] last win", sixg(rolling_sortino_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.0)[5]), 0.57735),
     ("rva [5] last win", sixg(rolling_var_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.25)[5]), 0.005),
     ("rcv [5] last win", sixg(rolling_cvar_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.25)[5]), 0.02),
+    # technical indicators (2026-11-02, #52): Wilder RSI at its first
+    # row, MACD histogram and Bollinger upper band at the last row of a
+    # fixed 6-point price path — all recomputed in Python.
+    ("rsi [3] first",     sixg(rsi_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0], 3)[3]), 80),
+    ("macd hist [5]",     sixg(macd_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0], 2, 4, 3)[2][5]), 0.286465),
+    ("boll upper [5]",    sixg(bollinger_ref([100.0, 102.0, 101.0, 103.0, 102.0, 105.0], 3, 2.0)[1][5]), 106.388),
 ]
 
 fails = 0

@@ -66,6 +66,12 @@ static int get_flavour(Type *t, const char **fn, Type **rty)
     case TY_INT:
     case TY_BOOL:   *fn = "lume_map_get_i";   *rty = type_prim(TY_INT);     return 1;
     case TY_LIST:
+        /* A list-typed default reads a real LumeList* back, so the answer
+         * is indexable — not the anon struct used for maps (mirror of
+         * codegen_call.c). */
+        *fn = "lume_map_get_obj";
+        *rty = type_list(type_prim(TY_ANY));
+        return 1;
     case TY_STRUCT:
     case TY_RESULT:
     case TY_NULL:   *fn = "lume_map_get_obj"; *rty = type_anon_struct();    return 1;
@@ -2328,6 +2334,89 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), r);
     }
 
+    /* Technical indicators (2026-11-02, #52): macd answers {macd, signal,
+     * hist}, bollinger answers {mid, upper, lower} — opaque i8* like
+     * linreg. Periods truncate through lume_bi_ftoi, k widens through
+     * lume_bi_float. */
+    if (strcmp(bname, "macd") == 0) {
+        if (argc != 4)
+            ERRV(g, "line %zu: macd() takes (prices, fast, slow, signal)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: macd() needs a list", n->line);
+        Val f = cg_expr(g, n->as.call.args[1]);
+        Val s = cg_expr(g, n->as.call.args[2]);
+        Val sig = cg_expr(g, n->as.call.args[3]);
+        if (!f.v || !f.ty || (f.ty->kind != TY_INT && f.ty->kind != TY_FLOAT) ||
+            !s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT) ||
+            !sig.v || !sig.ty || (sig.ty->kind != TY_INT && sig.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: macd() needs integer periods", n->line);
+        }
+        if (f.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { f.v };
+            f.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "fi");
+        }
+        if (s.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { s.v };
+            s.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "si");
+        }
+        if (sig.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { sig.v };
+            sig.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "gi");
+        }
+        LLVMTypeRef p3[4] = { g->i8ptr, g->i64, g->i64, g->i64 };
+        LLVMValueRef v3[4] = { a.v, f.v, s.v, sig.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p3, 4, 0),
+            rt_decl(g, "lume_bi_macd", g->i8ptr, p3, 4), v3, 4, "q");
+        return val_make(type_anon_struct(), r);
+    }
+
+    if (strcmp(bname, "bollinger") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: bollinger() takes (prices, window, k)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: bollinger() needs a list", n->line);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: bollinger() needs a window size", n->line);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { w.v };
+            w.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "wi");
+        }
+        Val k = cg_expr(g, n->as.call.args[2]);
+        if (!k.v || !k.ty || (k.ty->kind != TY_INT && k.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: bollinger() needs a number for k", n->line);
+        }
+        if (k.ty->kind == TY_INT) {
+            LLVMTypeRef p1[1] = { g->i64 };
+            LLVMValueRef v1[1] = { k.v };
+            k.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p1, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p1, 1), v1, 1, "kd");
+        }
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i64, g->dbl };
+        LLVMValueRef v3[3] = { a.v, w.v, k.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p3, 3, 0),
+            rt_decl(g, "lume_bi_bollinger", g->i8ptr, p3, 3), v3, 3, "q");
+        return val_make(type_anon_struct(), r);
+    }
+
     /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus
      * scalars, chisq_stat takes observed + expected lists — all answering a
      * float. The pure-scalar p-value helpers (z_pvalue / ttest_p / chisq_p)
@@ -2432,7 +2521,8 @@ static Val cg_builtin(CG *g, Node *n)
      * is an integer semantic: an int passes straight through as i64, a
      * float truncates via lume_bi_ftoi — the same truncation the
      * interpreter applies to its double window argument. */
-    if (strcmp(bname, "rolling_mean") == 0 || strcmp(bname, "rolling_stddev") == 0) {
+    if (strcmp(bname, "rolling_mean") == 0 || strcmp(bname, "rolling_stddev") == 0 ||
+        strcmp(bname, "rsi") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (list, window)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2450,7 +2540,8 @@ static Val cg_builtin(CG *g, Node *n)
                 rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "wi");
         }
         const char *fn = strcmp(bname, "rolling_mean") == 0
-                             ? "lume_bi_rolling_mean" : "lume_bi_rolling_stddev";
+                             ? "lume_bi_rolling_mean" : strcmp(bname, "rsi") == 0
+                             ? "lume_bi_rsi" : "lume_bi_rolling_stddev";
         LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
         LLVMValueRef v2[2] = { a.v, w.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,

@@ -320,6 +320,14 @@ static int get_flavour(Type *t, const char **fn, Type **rty)
     case TY_INT:
     case TY_BOOL:   *fn = "lume_map_get_i";   *rty = type_prim(TY_INT);     return 1;
     case TY_LIST:
+        /* A list-typed default reads a real LumeList* back, so the answer
+         * is indexable — not the anon struct used for maps. The element
+         * type is unknowable at compile time (the map does not say), so it
+         * reads as a list of any; indexing it goes through the boxed slot
+         * path, and the interpreter's dynamic get() agrees. */
+        *fn = "lume_map_get_obj";
+        *rty = type_list(type_prim(TY_ANY));
+        return 1;
     case TY_STRUCT:
     case TY_RESULT:
     case TY_NULL:   *fn = "lume_map_get_obj"; *rty = type_anon_struct();    return 1;
@@ -478,6 +486,9 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_kurtosis(i8*)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_mean(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_stddev(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rsi(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_macd(i8*, i64, i64, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_bollinger(i8*, i64, double)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_sharpe(i8*, i64, double)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_sortino(i8*, i64, double)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_var(i8*, i64, double)\n");
@@ -2566,6 +2577,81 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_FLOAT), t);
     }
 
+    /* Technical indicators (2026-11-02, #52): macd takes a prices list
+     * plus three integer periods and answers an anonymous struct
+     * {macd, signal, hist} of float lists; bollinger takes a prices list,
+     * an integer window and a float k and answers {mid, upper, lower} —
+     * both emitted as an opaque i8* like linreg. */
+    if (strcmp(bname, "macd") == 0) {
+        if (argc != 4)
+            ERRV(g, "line %zu: macd() takes (prices, fast, slow, signal)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: macd() needs a list", n->line);
+        Val f = cg_expr(g, n->as.call.args[1]);
+        Val s = cg_expr(g, n->as.call.args[2]);
+        Val sig = cg_expr(g, n->as.call.args[3]);
+        if (!f.v || !f.ty || (f.ty->kind != TY_INT && f.ty->kind != TY_FLOAT) ||
+            !s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT) ||
+            !sig.v || !sig.ty || (sig.ty->kind != TY_INT && sig.ty->kind != TY_FLOAT)) {
+            free(a.v); free(f.v); free(s.v); free(sig.v);
+            ERRV(g, "line %zu: macd() needs integer periods", n->line);
+        }
+        if (f.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", f.v);
+            free(f.v); f.v = wi;
+        }
+        if (s.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", s.v);
+            free(s.v); s.v = wi;
+        }
+        if (sig.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", sig.v);
+            free(sig.v); sig.v = wi;
+        }
+        char *t = emit_instrf(g, type_anon_struct(),
+                              "call i8* @lume_bi_macd(i8* %s, i64 %s, i64 %s, i64 %s)",
+                              a.v, f.v, s.v, sig.v);
+        free(a.v); free(f.v); free(s.v); free(sig.v);
+        return val_make(type_anon_struct(), t);
+    }
+
+    if (strcmp(bname, "bollinger") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: bollinger() takes (prices, window, k)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: bollinger() needs a list", n->line);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            free(a.v); free(w.v);
+            ERRV(g, "line %zu: bollinger() needs a window size", n->line);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", w.v);
+            free(w.v); w.v = wi;
+        }
+        Val k = cg_expr(g, n->as.call.args[2]);
+        if (!k.v || !k.ty || (k.ty->kind != TY_INT && k.ty->kind != TY_FLOAT)) {
+            free(a.v); free(w.v); free(k.v);
+            ERRV(g, "line %zu: bollinger() needs a number for k", n->line);
+        }
+        if (k.ty->kind == TY_INT) {
+            char *kd = emit_instrf(g, type_prim(TY_FLOAT),
+                                   "call double @lume_bi_float(i64 %s)", k.v);
+            free(k.v); k.v = kd;
+        }
+        char *t = emit_instrf(g, type_anon_struct(),
+                              "call i8* @lume_bi_bollinger(i8* %s, i64 %s, double %s)",
+                              a.v, w.v, k.v);
+        free(a.v); free(w.v); free(k.v);
+        return val_make(type_anon_struct(), t);
+    }
+
     /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus
      * scalars, chisq_stat takes observed + expected lists — all answering a
      * float. The pure-scalar p-value helpers (z_pvalue / ttest_p / chisq_p)
@@ -2657,12 +2743,13 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 
-    /* rolling_mean/rolling_stddev (list, window) and ewma (list, alpha):
+    /* rolling_mean/rolling_stddev/rsi (list, window) and ewma (list, alpha):
      * list plus one scalar, returning a fresh float list. The window is an
      * integer semantic — an int argument passes straight through as i64, a
      * float truncates through lume_bi_ftoi (the same truncation the
      * interpreter applies). */
-    if (strcmp(bname, "rolling_mean") == 0 || strcmp(bname, "rolling_stddev") == 0) {
+    if (strcmp(bname, "rolling_mean") == 0 || strcmp(bname, "rolling_stddev") == 0 ||
+        strcmp(bname, "rsi") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (list, window)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2680,7 +2767,8 @@ static Val cg_builtin(CG *g, Node *n)
             w.v = wi;
         }
         const char *fn = strcmp(bname, "rolling_mean") == 0
-                             ? "lume_bi_rolling_mean" : "lume_bi_rolling_stddev";
+                             ? "lume_bi_rolling_mean" : strcmp(bname, "rsi") == 0
+                             ? "lume_bi_rsi" : "lume_bi_rolling_stddev";
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @%s(i8* %s, i64 %s)", fn, a.v, w.v);
         free(a.v); free(w.v);

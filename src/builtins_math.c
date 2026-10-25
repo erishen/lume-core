@@ -1860,6 +1860,144 @@ static void native_rolling_cvar(VM *vm, int argc, Value *args, Value *out) {
     *out = val_obj(res);
 }
 
+/* ---- technical indicators (2026-11-02, #52) — interpreter twins of the
+ * rt.c lume_bi_* signal layer. Deterministic (no RNG). */
+
+/* Shared EMA pass: alpha = 2/(n+1), seeded at row 0 (no leading NANs —
+ * the same recurrence as ewma). Returns NULL on an invalid list/period. */
+static Obj *interp_ema(VM *vm, ObjList *L, int64_t period) {
+    if (L->count < 1 || period < 1) return NULL;
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return NULL;
+    double a = 2.0 / (double)(period + 1);
+    Obj *out = AS_OBJ(make_list(vm));
+    double e = xs[0];
+    list_push(vm, out, val_num(e));
+    for (int i = 1; i < n; i++) {
+        e = a * xs[i] + (1.0 - a) * e;
+        list_push(vm, out, val_num(e));
+    }
+    free(xs);
+    return out;
+}
+
+static void native_rsi(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double wnd;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &wnd)) return;
+    int64_t window = (int64_t)wnd;
+    if (L->count < 2 || window < 1 || window > (int64_t)L->count - 1) {
+        vm_set_error(vm, "rsi() needs (prices, window in [1, len-1])");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    Obj *res = AS_OBJ(make_list(vm));
+    double avg_gain = 0.0, avg_loss = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window) { list_push(vm, res, val_num(NAN)); continue; }
+        double ch = xs[i] - xs[i - 1];
+        double gain = ch > 0.0 ? ch : 0.0;
+        double loss = ch < 0.0 ? -ch : 0.0;
+        if (i == window) {
+            double sg = 0.0, sl = 0.0;
+            for (int64_t j = 1; j <= window; j++) {
+                double d = xs[j] - xs[j - 1];
+                if (d > 0.0) sg += d; else sl += -d;
+            }
+            avg_gain = sg / (double)window;
+            avg_loss = sl / (double)window;
+        } else {
+            avg_gain = (avg_gain * (window - 1) + gain) / (double)window;
+            avg_loss = (avg_loss * (window - 1) + loss) / (double)window;
+        }
+        if (!(avg_loss > 0.0)) {
+            list_push(vm, res, val_num(avg_gain > 0.0 ? 100.0 : 50.0));
+        } else {
+            list_push(vm, res, val_num(100.0 - 100.0 / (1.0 + avg_gain / avg_loss)));
+        }
+    }
+    free(xs);
+    *out = val_obj(res);
+}
+
+static void native_macd(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double fd, sd, gd;
+    if (argc < 4 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &fd) ||
+        !arg_num(vm, args[2], &sd) || !arg_num(vm, args[3], &gd)) return;
+    int64_t fast = (int64_t)fd, slow = (int64_t)sd, signal = (int64_t)gd;
+    if (L->count < 1 || fast < 1 || slow < 1 || signal < 1) {
+        vm_set_error(vm, "macd() needs (prices, fast, slow, signal) with periods >= 1");
+        return;
+    }
+    Obj *ef = interp_ema(vm, L, fast);
+    Obj *es = interp_ema(vm, L, slow);
+    if (!ef || !es) return;
+    int n; double *fx = list_to_doubles(vm, &ef->as.list, &n);
+    double *sx = fx ? list_to_doubles(vm, &es->as.list, &n) : NULL;
+    if (!sx) { free(fx); return; }
+    Obj *macd = AS_OBJ(make_list(vm));
+    for (int i = 0; i < n; i++) list_push(vm, macd, val_num(fx[i] - sx[i]));
+    free(fx); free(sx);
+    Obj *sig = interp_ema(vm, &macd->as.list, signal);
+    if (!sig) return;
+    int m; double *mx = list_to_doubles(vm, &macd->as.list, &m);
+    double *gx = mx ? list_to_doubles(vm, &sig->as.list, &m) : NULL;
+    if (!gx) { free(mx); return; }
+    Obj *hist = AS_OBJ(make_list(vm));
+    for (int i = 0; i < m; i++) list_push(vm, hist, val_num(mx[i] - gx[i]));
+    free(mx); free(gx);
+    Obj *map = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(map));
+    map_set(vm, map, "macd", val_obj(macd));
+    map_set(vm, map, "signal", val_obj(sig));
+    map_set(vm, map, "hist", val_obj(hist));
+    vm_pop(vm);
+    *out = val_obj(map);
+}
+
+static void native_bollinger(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double wnd, k;
+    if (argc < 3 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &wnd) ||
+        !arg_num(vm, args[2], &k)) return;
+    int64_t window = (int64_t)wnd;
+    if (L->count < 2 || window < 2 || window > (int64_t)L->count || !isfinite(k)) {
+        vm_set_error(vm, "bollinger() needs (prices, window in [2, len], finite k)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    Obj *mid = AS_OBJ(make_list(vm));
+    Obj *up = AS_OBJ(make_list(vm));
+    Obj *lo = AS_OBJ(make_list(vm));
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window - 1) {
+            list_push(vm, mid, val_num(NAN));
+            list_push(vm, up, val_num(NAN));
+            list_push(vm, lo, val_num(NAN));
+            continue;
+        }
+        double m = 0.0, m2 = 0.0;
+        int64_t kk = 0;
+        for (int64_t j = i - window + 1; j <= i; j++, kk++) {
+            double d = xs[j] - m;
+            m += d / (double)(kk + 1);
+            m2 += d * (xs[j] - m);
+        }
+        double sd = sqrt(m2 / (double)(window - 1));
+        list_push(vm, mid, val_num(m));
+        list_push(vm, up, val_num(m + k * sd));
+        list_push(vm, lo, val_num(m - k * sd));
+    }
+    free(xs);
+    Obj *map = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(map));
+    map_set(vm, map, "mid", val_obj(mid));
+    map_set(vm, map, "upper", val_obj(up));
+    map_set(vm, map, "lower", val_obj(lo));
+    vm_pop(vm);
+    *out = val_obj(map);
+}
+
 static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
     ObjList *X, *Y;
     if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
@@ -2126,3 +2264,6 @@ Value b_rolling_sortino(VM *vm, int argc, Value *args)    { return vm_native(vm,
 Value b_rolling_var(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_rolling_var); }
 Value b_rolling_cvar(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_rolling_cvar); }
 Value b_sim_portfolio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sim_portfolio); }
+Value b_rsi(VM *vm, int argc, Value *args)                { return vm_native(vm, argc, args, native_rsi); }
+Value b_macd(VM *vm, int argc, Value *args)               { return vm_native(vm, argc, args, native_macd); }
+Value b_bollinger(VM *vm, int argc, Value *args)          { return vm_native(vm, argc, args, native_bollinger); }

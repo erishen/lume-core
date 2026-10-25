@@ -1,0 +1,20 @@
+// #52 technical indicators (2026-11-02) — pinned on all three backends.
+// rsi: Wilder RSI on a 6-point price path, window 3 -> preamble NAN,
+//      first RSI 80 at row 3, Wilder-smoothed 81.132075 at row 5.
+// macd: EMA(2)-EMA(4) on the same path with signal period 3 -> the
+//      last-window macd/signal/hist values.
+// bollinger: window 3, k 2 -> mid 103.333333, upper 106.388384,
+//      lower 100.278283 at the last row.
+let p: list = [100.0, 102.0, 101.0, 103.0, 102.0, 105.0];
+let r52a: list = rsi(p, 3);
+print(r52a[0]);
+print(r52a[3]);
+print(r52a[5]);
+let r52b = macd(p, 2, 4, 3);
+print(get(r52b, "macd", [])[5]);
+print(get(r52b, "signal", [])[5]);
+print(get(r52b, "hist", [])[5]);
+let r52c = bollinger(p, 3, 2.0);
+print(get(r52c, "mid", [])[5]);
+print(get(r52c, "upper", [])[5]);
+print(get(r52c, "lower", [])[5]);

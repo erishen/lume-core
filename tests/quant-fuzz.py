@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 123                             # rows per dataset. The layout mirrors the
+RPP = 126                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -76,7 +76,9 @@ RPP = 123                             # rows per dataset. The layout mirrors the
                                       # weights, 5 period returns) and
                                       # the rolling rows x4 (w=3 on the
                                       # length-6 series: preamble NAN +
-                                      # last-window value x2 metrics)
+                                      # last-window value x2 metrics) and
+                                      # the indicator rows x3 (RSI / Bollinger
+                                      # mid / MACD hist on the price path)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -208,6 +210,61 @@ def rolling_var_ref(data, w, level):
         q = seg[lo] if frac == 0 else seg[lo] + frac * (seg[lo + 1] - seg[lo])
         out.append(-q)
     return out
+
+
+def rsi_ref(prices, w):
+    """Wilder RSI (2026-11-02, #52): first w rows NAN; avgLoss==0 -> 100,
+    all-flat -> 50."""
+    n = len(prices)
+    out = [float("nan")] * n
+    ag = al = 0.0
+    for i in range(n):
+        if i < w:
+            continue
+        ch = prices[i] - prices[i - 1]
+        gain = ch if ch > 0 else 0.0
+        loss = -ch if ch < 0 else 0.0
+        if i == w:
+            sg = sl = 0.0
+            for j in range(1, w + 1):
+                d = prices[j] - prices[j - 1]
+                if d > 0: sg += d
+                else: sl += -d
+            ag, al = sg / w, sl / w
+        else:
+            ag = (ag * (w - 1) + gain) / w
+            al = (al * (w - 1) + loss) / w
+        if not (al > 0.0):
+            out[i] = 100.0 if ag > 0.0 else 50.0
+        else:
+            out[i] = 100.0 - 100.0 / (1.0 + ag / al)
+    return out
+
+
+def bollinger_ref(prices, w, k):
+    mid = [float("nan")] * len(prices)
+    up = [float("nan")] * len(prices)
+    lo = [float("nan")] * len(prices)
+    for i in range(w - 1, len(prices)):
+        seg = prices[i + 1 - w:i + 1]
+        m = sum(seg) / w
+        sd = (sum((x - m) ** 2 for x in seg) / (w - 1)) ** 0.5
+        mid[i], up[i], lo[i] = m, m + k * sd, m - k * sd
+    return mid, up, lo
+
+
+def macd_ref(prices, fast, slow, signal):
+    """EMA(fast)-EMA(slow); signal = EMA over the macd line; hist = macd
+    - signal. Full-length columns, no preamble."""
+    def ema(x, p_):
+        a = 2.0 / (p_ + 1)
+        out = [x[0]]
+        for v in x[1:]:
+            out.append(a * v + (1.0 - a) * out[-1])
+        return out
+    m = [x - y for x, y in zip(ema(prices, fast), ema(prices, slow))]
+    g = ema(m, signal)
+    return m, g, [x - y for x, y in zip(m, g)]
 
 
 def ewma(data, alpha):
@@ -1172,6 +1229,19 @@ def main():
         lines.append("let rv%da: list = rolling_var(%s, 3, 0.25);" % (i, da))
         row(rva[0]); lines.append("print(rv%da[0]);" % i)
         row(sixg(rva[len(x) - 1])); lines.append("print(rv%da[%d]);" % (i, len(x) - 1))
+        # technical indicators (2026-11-02, #52): Wilder RSI, Bollinger
+        # mid band and the MACD histogram on the positive price path pa —
+        # one last-row value each, recomputed in Python. get(map, key, [])
+        # reads a full-length column.
+        rsiv = rsi_ref(pa, 3)
+        lines.append("let ti%da: list = rsi(%s, 3);" % (i, emit(pa)))
+        row(sixg(rsiv[len(pa) - 1])); lines.append("print(ti%da[%d]);" % (i, len(pa) - 1))
+        bol = bollinger_ref(pa, 3, 2.0)
+        lines.append("let ti%db = bollinger(%s, 3, 2.0);" % (i, emit(pa)))
+        row(sixg(bol[0][len(pa) - 1])); lines.append("print(get(ti%db, \"mid\", [])[%d]);" % (i, len(pa) - 1))
+        mref, gref, href = macd_ref(pa, 2, 4, 3)
+        lines.append("let ti%dc = macd(%s, 2, 4, 3);" % (i, emit(pa)))
+        row(sixg(href[len(pa) - 1])); lines.append("print(get(ti%dc, \"hist\", [])[%d]);" % (i, len(pa) - 1))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

@@ -786,6 +786,22 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   statistics, risk metrics, composition and rolling evaluation — a full
   single-asset backtest loop (sim_gbm -> pct_change -> rolling metrics)
   can be written in ~15 lines of Lume.
+- [x] **Technical indicators — the signal layer: `rsi` / `macd` /
+  `bollinger` (2026-11-02).** Wilder RSI (window preamble NAN, Wilder
+  alpha 1/w, avgLoss==0 -> 100, flat -> 50); MACD (EMA diff + signal +
+  hist, anonymous struct of three full-length float lists); Bollinger
+  (rolling mean ± k × sample stddev, window-1 NANs). Deterministic, no
+  RNG. Emission: rsi joins the (list, i64) float-list group; macd and
+  bollinger join the anon-struct group (i8* returns) on both emitters.
+  **Fixed en route**: get(map, "k", []) answered the maps' anon struct
+  so indexing failed on the native backends — the list flavour now
+  answers list<any>. Verification: r52-smoke (3 legs byte-identical,
+  Python recomputes the pinned rows), quant-consistency 145 -> 154
+  rows, quant-refcheck 149 -> 152 cases, quant-fuzz 10 series x 126
+  rows (1260 checks), native_backends 18/19 (serve errno 10038 known).
+  The quant surface now spans simulation -> statistics -> risk ->
+  portfolio -> rolling evaluation -> signals: a full strategy chain in
+  Lume.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
