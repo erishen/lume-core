@@ -287,6 +287,24 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Rolling window portfolio evaluation: `rolling_sharpe` / `rolling_sortino`
+  / `rolling_var` / `rolling_cvar`.** The backtesting shape called out after
+  sim_portfolio: each builtin takes `(returns, window, scalar)` — window
+  in [2, len], scalar is rf (Sharpe/Sortino) or level in (0,1)
+  (VaR/CVaR) — and answers a fresh float list applying the exact #48
+  formula to every window, so the first window−1 slots are NAN (rolling
+  preamble) and zero-spread windows answer NAN (a data property, not an
+  error; identical to the whole-series metrics). Invalid window /
+  non-finite scalar errors on the interpreter and answer an empty list
+  natively. Emission shape is a new (list, i64, double) → fresh float
+  list group on both backends (window truncates through `lume_bi_ftoi`,
+  the scalar widens through `lume_bi_float`); inference joins the float
+  list group. `tests/r51-smoke.lume` pins preamble NAN + last-window
+  values on all three legs (Python recomputes the last window:
+  0.264906 / 0.57735 / 0.005 / 0.02); `tests/quant-consistency.lume`
+  grows to 145 rows; `tests/quant-refcheck.py` adds five cases (149
+  total) with `rolling_*_ref` window recomputation; `tests/quant-fuzz.py`
+  grows to 1230 checks (10 series × 123 rows).
 - **Transaction read-your-writes: `sql_tx_query(tx, sql[, params])`.**
   The missing P6 follow-up: `sql_query` opens a fresh read-only
   connection per call, so rows written (but not committed) by

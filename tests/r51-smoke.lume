@@ -1,0 +1,18 @@
+// #51 rolling-window smoke (2026-11-02): the #48 metrics applied to
+// every window of a return series — the backtesting shape. The first
+// window-1 slots answer NAN (preamble); inside each window the exact
+// #48 formula runs, so zero-spread windows answer NAN (data property,
+// not an error). Deterministic, no RNG.
+let rs = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+let a: list = rolling_sharpe(rs, 3, 0.0);
+print(a[0]);   // nan — preamble
+print(a[5]);   // last window [-0.02, 0.01, 0.03]
+let b: list = rolling_sortino(rs, 3, 0.0);
+print(b[0]);   // nan
+print(b[5]);
+let c: list = rolling_var(rs, 3, 0.25);
+print(c[0]);   // nan
+print(c[5]);
+let d: list = rolling_cvar(rs, 3, 0.25);
+print(d[0]);   // nan
+print(d[5]);

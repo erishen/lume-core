@@ -408,7 +408,9 @@ static Type *infer_node_type(CG *g, Node *n)
                 strcmp(name, "rand_dirichlet") == 0 || strcmp(name, "rand_binormal") == 0 ||
                 strcmp(name, "rand_gauss_copula") == 0 || strcmp(name, "rand_t_copula") == 0 ||
                 strcmp(name, "bootstrap_mean_ci") == 0 || strcmp(name, "bootstrap_median_ci") == 0 ||
-                strcmp(name, "bootstrap_stddev_ci") == 0)
+                strcmp(name, "bootstrap_stddev_ci") == 0 ||
+                strcmp(name, "rolling_sharpe") == 0 || strcmp(name, "rolling_sortino") == 0 ||
+                strcmp(name, "rolling_var") == 0 || strcmp(name, "rolling_cvar") == 0)
                 return type_list(type_prim(TY_FLOAT));
             /* rand_multinomial (2026-10-28) builds a fresh int list: the
              * success counts per category. */

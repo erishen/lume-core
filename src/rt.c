@@ -3733,6 +3733,107 @@ double lume_bi_sortino_ratio(const LumeList *l, double rf)
     return (m - rf) / ds;
 }
 
+/* Rolling-window portfolio evaluation (2026-11-02, #51): apply the #48
+ * metrics to every window of a return series and return the series of
+ * per-window results — the backtesting shape (windowed combination
+ * assessment called out after sim_portfolio). Contract: window in
+ * [2, len]; the first window-1 slots answer NAN (rolling preamble); each
+ * window reuses the exact #48 formula, so zero-spread windows answer NAN
+ * (a data property, not an error). Invalid window / non-finite rf /
+ * level outside (0,1) answers an empty list (the interpreter errors). */
+LumeList *lume_bi_rolling_sharpe(const LumeList *l, int64_t window, double rf)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || window < 2 || window > n || !isfinite(rf)) {
+        free(xs); return lume_list_new();
+    }
+    LumeList *out = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window - 1) { lume_list_push_f(out, NAN); continue; }
+        double m = 0.0, m2 = 0.0;
+        int64_t k = 0;
+        for (int64_t j = i - window + 1; j <= i; j++, k++) {
+            double d = xs[j] - m;
+            m += d / (double)(k + 1);
+            m2 += d * (xs[j] - m);
+        }
+        double sd = sqrt(m2 / (double)(window - 1));
+        if (!(sd > 0.0) || !isfinite(m)) lume_list_push_f(out, NAN);
+        else lume_list_push_f(out, (m - rf) / sd);
+    }
+    free(xs);
+    return out;
+}
+
+LumeList *lume_bi_rolling_sortino(const LumeList *l, int64_t window, double rf)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || window < 2 || window > n || !isfinite(rf)) {
+        free(xs); return lume_list_new();
+    }
+    LumeList *out = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window - 1) { lume_list_push_f(out, NAN); continue; }
+        double m = 0.0, dd = 0.0;
+        for (int64_t j = i - window + 1; j <= i; j++) {
+            m += xs[j];
+            double d = xs[j] - rf;
+            if (d < 0.0) dd += d * d;
+        }
+        m /= (double)window;
+        double ds = sqrt(dd / (double)window);
+        if (!(ds > 0.0) || !isfinite(m)) lume_list_push_f(out, NAN);
+        else lume_list_push_f(out, (m - rf) / ds);
+    }
+    free(xs);
+    return out;
+}
+
+LumeList *lume_bi_rolling_var(const LumeList *l, int64_t window, double level)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || window < 2 || window > n ||
+        !isfinite(level) || level <= 0.0 || level >= 1.0) {
+        free(xs); return lume_list_new();
+    }
+    double *win = (double *)malloc((size_t)window * sizeof(double));
+    LumeList *out = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window - 1) { lume_list_push_f(out, NAN); continue; }
+        for (int64_t j = 0; j < window; j++) win[j] = xs[i - window + 1 + j];
+        qsort(win, (size_t)window, sizeof(double), bi_quant_cmp_d);
+        double q = bi_percentile_sorted(win, window, level * 100.0);
+        lume_list_push_f(out, -q);
+    }
+    free(win);
+    free(xs);
+    return out;
+}
+
+LumeList *lume_bi_rolling_cvar(const LumeList *l, int64_t window, double level)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || window < 2 || window > n ||
+        !isfinite(level) || level <= 0.0 || level >= 1.0) {
+        free(xs); return lume_list_new();
+    }
+    double *win = (double *)malloc((size_t)window * sizeof(double));
+    LumeList *out = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        if (i < window - 1) { lume_list_push_f(out, NAN); continue; }
+        for (int64_t j = 0; j < window; j++) win[j] = xs[i - window + 1 + j];
+        qsort(win, (size_t)window, sizeof(double), bi_quant_cmp_d);
+        double q = bi_percentile_sorted(win, window, level * 100.0);
+        double s = 0.0; int64_t k = 0;
+        while (k < window && win[k] <= q) { s += win[k]; k++; }
+        if (k < 1) lume_list_push_f(out, NAN);
+        else lume_list_push_f(out, -(s / (double)k));
+    }
+    free(win);
+    free(xs);
+    return out;
+}
+
 /* Max drawdown of a price series, as a positive percentage: the largest
  * peak-to-trough drop, 0 for a monotonically rising series, NAN for n<2. */
 double lume_bi_max_drawdown(const LumeList *l)

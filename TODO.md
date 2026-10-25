@@ -767,6 +767,25 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   native-sql-consistency.lume/.expected grows to 12 rows, all three legs
   agree. This closes the last named open builtin in TODO — the SQL
   surface (query/write/tx + read-your-writes) is now complete.
+- [x] **Rolling window portfolio evaluation: `rolling_sharpe` /
+  `rolling_sortino` / `rolling_var` / `rolling_cvar` (2026-11-02).**
+  The backtesting shape: each builtin takes (returns, window, scalar) —
+  window in [2, len], scalar rf (Sharpe/Sortino) or level in (0,1)
+  (VaR/CVaR) — and answers a fresh float list with the exact #48
+  formula on every window; the first window-1 slots are NAN (rolling
+  preamble), zero-spread windows answer NAN (data property). Invalid
+  window / non-finite scalar error on the interpreter, empty list
+  natively. New emission group (list, i64, double) -> fresh float list
+  on text + LLVM (window truncates via lume_bi_ftoi, scalar widens via
+  lume_bi_float); inference joins the float list group.
+  tests/r51-smoke.lume pins preamble NAN + last-window values on all
+  three legs (Python recomputes: 0.264906 / 0.57735 / 0.005 / 0.02);
+  quant-consistency grows to 145 rows; quant-refcheck adds 5 cases (149
+  total) with rolling_*_ref; quant-fuzz grows to 10 series x 123 rows
+  (1230 checks). The quant/portfolio surface now spans simulation,
+  statistics, risk metrics, composition and rolling evaluation — a full
+  single-asset backtest loop (sim_gbm -> pct_change -> rolling metrics)
+  can be written in ~15 lines of Lume.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

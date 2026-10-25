@@ -1719,6 +1719,147 @@ static void native_sim_portfolio(VM *vm, int argc, Value *args, Value *out) {
     *out = val_obj(res);
 }
 
+/* ---- rolling window portfolio evaluation (2026-11-02, #51) ----
+ * Mirrors rt.c lume_bi_rolling_* step for step: every window of the
+ * return series gets the #48 metric, the first window-1 slots answer
+ * NAN, and zero-spread windows answer NAN (a data property — same as
+ * the whole-series metrics). Invalid window / non-finite scalar errors
+ * here, empty list natively. */
+static void native_rolling_sharpe(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double rf, wd;
+    if (argc < 3 || !arg_list(vm, args[0], &L) ||
+        !arg_num(vm, args[1], &wd) || !arg_num(vm, args[2], &rf)) return;
+    int64_t window = (int64_t)wd;
+    if (!isfinite(rf)) { vm_set_error(vm, "rolling_sharpe() needs a finite risk-free rate"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2 || window < 2 || window > n) {
+        free(xs);
+        vm_set_error(vm, "rolling_sharpe() needs window in [2, len]");
+        return;
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int i = 0; i < n; i++) {
+        if (i < window - 1) { list_push(vm, res, val_num(NAN)); continue; }
+        double m = 0.0, m2 = 0.0;
+        int k = 0;
+        for (int64_t j = i - window + 1; j <= i; j++, k++) {
+            double d = xs[j] - m;
+            m += d / (double)(k + 1);
+            m2 += d * (xs[j] - m);
+        }
+        double sd = sqrt(m2 / (double)(window - 1));
+        if (!(sd > 0.0) || !isfinite(m)) list_push(vm, res, val_num(NAN));
+        else list_push(vm, res, val_num((m - rf) / sd));
+    }
+    free(xs);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rolling_sortino(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double rf, wd;
+    if (argc < 3 || !arg_list(vm, args[0], &L) ||
+        !arg_num(vm, args[1], &wd) || !arg_num(vm, args[2], &rf)) return;
+    int64_t window = (int64_t)wd;
+    if (!isfinite(rf)) { vm_set_error(vm, "rolling_sortino() needs a finite risk-free rate"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2 || window < 2 || window > n) {
+        free(xs);
+        vm_set_error(vm, "rolling_sortino() needs window in [2, len]");
+        return;
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int i = 0; i < n; i++) {
+        if (i < window - 1) { list_push(vm, res, val_num(NAN)); continue; }
+        double m = 0.0, dd = 0.0;
+        for (int64_t j = i - window + 1; j <= i; j++) {
+            m += xs[j];
+            double d = xs[j] - rf;
+            if (d < 0.0) dd += d * d;
+        }
+        m /= (double)window;
+        double ds = sqrt(dd / (double)window);
+        if (!(ds > 0.0) || !isfinite(m)) list_push(vm, res, val_num(NAN));
+        else list_push(vm, res, val_num((m - rf) / ds));
+    }
+    free(xs);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rolling_var(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double level, wd;
+    if (argc < 3 || !arg_list(vm, args[0], &L) ||
+        !arg_num(vm, args[1], &wd) || !arg_num(vm, args[2], &level)) return;
+    int64_t window = (int64_t)wd;
+    if (!isfinite(level) || level <= 0.0 || level >= 1.0) {
+        vm_set_error(vm, "rolling_var() needs level in (0, 1)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2 || window < 2 || window > n) {
+        free(xs);
+        vm_set_error(vm, "rolling_var() needs window in [2, len]");
+        return;
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    double *win = (double *)malloc((size_t)window * sizeof(double));
+    if (!win) { free(xs); vm_set_error(vm, "rolling_var(): out of memory"); return; }
+    for (int i = 0; i < n; i++) {
+        if (i < window - 1) { list_push(vm, res, val_num(NAN)); continue; }
+        for (int64_t j = 0; j < window; j++) win[j] = xs[i - window + 1 + j];
+        qsort(win, (size_t)window, sizeof(double), cmp_d);
+        double q = boot_pctl_sorted(win, window, level * 100.0);
+        list_push(vm, res, val_num(-q));
+    }
+    free(win);
+    free(xs);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
+static void native_rolling_cvar(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double level, wd;
+    if (argc < 3 || !arg_list(vm, args[0], &L) ||
+        !arg_num(vm, args[1], &wd) || !arg_num(vm, args[2], &level)) return;
+    int64_t window = (int64_t)wd;
+    if (!isfinite(level) || level <= 0.0 || level >= 1.0) {
+        vm_set_error(vm, "rolling_cvar() needs level in (0, 1)");
+        return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (n < 2 || window < 2 || window > n) {
+        free(xs);
+        vm_set_error(vm, "rolling_cvar() needs window in [2, len]");
+        return;
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    double *win = (double *)malloc((size_t)window * sizeof(double));
+    if (!win) { free(xs); vm_set_error(vm, "rolling_cvar(): out of memory"); return; }
+    for (int i = 0; i < n; i++) {
+        if (i < window - 1) { list_push(vm, res, val_num(NAN)); continue; }
+        for (int64_t j = 0; j < window; j++) win[j] = xs[i - window + 1 + j];
+        qsort(win, (size_t)window, sizeof(double), cmp_d);
+        double q = boot_pctl_sorted(win, window, level * 100.0);
+        double s = 0.0; int64_t k = 0;
+        while (k < window && win[k] <= q) { s += win[k]; k++; }
+        if (k < 1) list_push(vm, res, val_num(NAN));
+        else list_push(vm, res, val_num(-(s / (double)k)));
+    }
+    free(win);
+    free(xs);
+    vm_pop(vm);
+    *out = val_obj(res);
+}
+
 static void native_covariance(VM *vm, int argc, Value *args, Value *out) {
     ObjList *X, *Y;
     if (argc < 2 || !arg_list(vm, args[0], &X) || !arg_list(vm, args[1], &Y)) return;
@@ -1980,4 +2121,8 @@ Value b_value_at_risk(VM *vm, int argc, Value *args)       { return vm_native(vm
 Value b_expected_shortfall(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_expected_shortfall); }
 Value b_sharpe_ratio(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_sharpe_ratio); }
 Value b_sortino_ratio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sortino_ratio); }
+Value b_rolling_sharpe(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rolling_sharpe); }
+Value b_rolling_sortino(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rolling_sortino); }
+Value b_rolling_var(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_rolling_var); }
+Value b_rolling_cvar(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_rolling_cvar); }
 Value b_sim_portfolio(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sim_portfolio); }

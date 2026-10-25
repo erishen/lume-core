@@ -91,6 +91,63 @@ def sim_portfolio_ref(paths, weights):
             for t in range(1, n)]
 
 
+def _win(series, window, i):
+    return series[max(0, i - window + 1):i + 1] if i >= window - 1 else None
+
+
+def rolling_sharpe_ref(data, window, rf):
+    out = []
+    for i in range(len(data)):
+        if i < window - 1:
+            out.append(float('nan')); continue
+        w = data[i - window + 1:i + 1]
+        m = sum(w) / window
+        sd = (sum((x - m) ** 2 for x in w) / (window - 1)) ** 0.5
+        out.append(float('nan') if not (sd > 0) else (m - rf) / sd)
+    return out
+
+
+def rolling_sortino_ref(data, window, rf):
+    out = []
+    for i in range(len(data)):
+        if i < window - 1:
+            out.append(float('nan')); continue
+        w = data[i - window + 1:i + 1]
+        m = sum(w) / window
+        dd = sum((x - rf) ** 2 for x in w if x < rf) / window
+        out.append(float('nan') if not (dd > 0) else (m - rf) / (dd ** 0.5))
+    return out
+
+
+def rolling_var_ref(data, window, level):
+    out = []
+    for i in range(len(data)):
+        if i < window - 1:
+            out.append(float('nan')); continue
+        w = sorted(data[i - window + 1:i + 1])
+        r = level * (window - 1)
+        lo = int(r)
+        frac = r - lo
+        q = w[lo] if frac == 0 else w[lo] + frac * (w[lo + 1] - w[lo])
+        out.append(-q)
+    return out
+
+
+def rolling_cvar_ref(data, window, level):
+    out = []
+    for i in range(len(data)):
+        if i < window - 1:
+            out.append(float('nan')); continue
+        w = sorted(data[i - window + 1:i + 1])
+        r = level * (window - 1)
+        lo = int(r)
+        frac = r - lo
+        q = w[lo] if frac == 0 else w[lo] + frac * (w[lo + 1] - w[lo])
+        tail = [x for x in w if x <= q]
+        out.append(float('nan') if not tail else -sum(tail) / len(tail))
+    return out
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -983,6 +1040,14 @@ cases += [
     ("pf sharpe 60/40",   sixg(sharpe_ratio_ref(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.6, 0.4]), 0.0)), 0.633063),
     ("pf var 25%",        sixg(-percentile(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.6, 0.4]), 25.0)), -0.00509804),
     ("pf es 25%",         sixg(-es_tail(sim_portfolio_ref([[100.0, 102.0, 101.0, 103.5], [50.0, 51.0, 50.5, 52.0]], [0.6, 0.4]), 25.0)), 0.00980392),
+    # rolling window portfolio evaluation (2026-11-02, #51): every window
+    # of a return series gets the #48 metric; the last window of a fixed
+    # 6-element series is recomputed here in Python.
+    ("rs [0] preamble",  float('nan'), float('nan')),
+    ("rs [5] last win",  sixg(rolling_sharpe_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.0)[5]), 0.264906),
+    ("rso [5] last win", sixg(rolling_sortino_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.0)[5]), 0.57735),
+    ("rva [5] last win", sixg(rolling_var_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.25)[5]), 0.005),
+    ("rcv [5] last win", sixg(rolling_cvar_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 3, 0.25)[5]), 0.02),
 ]
 
 fails = 0

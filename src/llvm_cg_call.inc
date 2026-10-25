@@ -2459,6 +2459,52 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 
+    /* rolling_sharpe/sortino/var/cvar (list, window, scalar): the #48
+     * metrics applied to every window — (i8*, i64, double) -> fresh
+     * float list with window-1 leading NANs. Window truncates via
+     * lume_bi_ftoi, the scalar widens via lume_bi_float. */
+    if (strcmp(bname, "rolling_sharpe") == 0 || strcmp(bname, "rolling_sortino") == 0 ||
+        strcmp(bname, "rolling_var") == 0 || strcmp(bname, "rolling_cvar") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: %s() takes (list, window, scalar)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: %s() needs a window size", n->line, bname);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { w.v };
+            w.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "wi");
+        }
+        Val s = cg_expr(g, n->as.call.args[2]);
+        if (!s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT)) {
+            ERRV(g, "line %zu: %s() needs a number for the third argument", n->line, bname);
+        }
+        if (s.ty->kind == TY_INT) {
+            LLVMTypeRef p2[1] = { g->i64 };
+            LLVMValueRef v2[1] = { s.v };
+            s.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->dbl, p2, 1, 0),
+                rt_decl(g, "lume_bi_float", g->dbl, p2, 1), v2, 1, "sf");
+        }
+        const char *fn = NULL;
+        if (strcmp(bname, "rolling_sharpe") == 0) fn = "lume_bi_rolling_sharpe";
+        else if (strcmp(bname, "rolling_sortino") == 0) fn = "lume_bi_rolling_sortino";
+        else if (strcmp(bname, "rolling_var") == 0) fn = "lume_bi_rolling_var";
+        else fn = "lume_bi_rolling_cvar";
+        LLVMTypeRef p3[3] = { g->i8ptr, g->i64, g->dbl };
+        LLVMValueRef v3[3] = { a.v, w.v, s.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p3, 3, 0),
+            rt_decl(g, fn, g->i8ptr, p3, 3), v3, 3, "rq");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
     if (strcmp(bname, "ewma") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: ewma() takes (list, alpha)", n->line);

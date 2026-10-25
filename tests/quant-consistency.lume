@@ -289,3 +289,21 @@ let pf_s: list = sim_portfolio([pf_a, pf_b], [0.6, 0.4]);
 print(sharpe_ratio(pf_s, 0.0));
 print(value_at_risk(pf_s, 0.25));
 print(expected_shortfall(pf_s, 0.25));
+
+// rolling window portfolio evaluation (2026-11-02, #51): the #48
+// metrics applied to every window of a return series — the backtesting
+// shape. Deterministic, no re-seeding; window-1 leading NANs; inside a
+// window the exact #48 formula runs, so zero-spread windows answer NAN.
+let rw = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+let rsa: list = rolling_sharpe(rw, 3, 0.0);
+print(rsa[0]);
+print(rsa[5]);
+let rso: list = rolling_sortino(rw, 3, 0.0);
+print(rso[0]);
+print(rso[5]);
+let rva: list = rolling_var(rw, 3, 0.25);
+print(rva[0]);
+print(rva[5]);
+let rcv: list = rolling_cvar(rw, 3, 0.25);
+print(rcv[0]);
+print(rcv[5]);

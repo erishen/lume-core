@@ -478,6 +478,10 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_kurtosis(i8*)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_mean(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_stddev(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_sharpe(i8*, i64, double)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_sortino(i8*, i64, double)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_var(i8*, i64, double)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_cvar(i8*, i64, double)\n");
     EMIT(g, "declare i8* @lume_bi_ewma(i8*, double)\n");
     EMIT(g, "declare i64 @lume_bi_ftoi(double)\n");
 
@@ -2680,6 +2684,52 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @%s(i8* %s, i64 %s)", fn, a.v, w.v);
         free(a.v); free(w.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* rolling_sharpe/sortino/var/cvar (list, window, scalar): the #48
+     * metrics applied to every window of a return series — the
+     * backtesting shape. (list, i64, double) -> fresh float list with
+     * window-1 leading NANs; the window truncates through lume_bi_ftoi,
+     * the scalar widens through lume_bi_float. */
+    if (strcmp(bname, "rolling_sharpe") == 0 || strcmp(bname, "rolling_sortino") == 0 ||
+        strcmp(bname, "rolling_var") == 0 || strcmp(bname, "rolling_cvar") == 0) {
+        if (argc != 3)
+            ERRV(g, "line %zu: %s() takes (list, window, scalar)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            free(a.v); free(w.v);
+            ERRV(g, "line %zu: %s() needs a window size", n->line, bname);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", w.v);
+            free(w.v);
+            w.v = wi;
+        }
+        Val s = cg_expr(g, n->as.call.args[2]);
+        if (!s.v || !s.ty || (s.ty->kind != TY_INT && s.ty->kind != TY_FLOAT)) {
+            free(a.v); free(w.v); free(s.v);
+            ERRV(g, "line %zu: %s() needs a number for the third argument", n->line, bname);
+        }
+        if (s.ty->kind == TY_INT) {
+            char *sf = emit_instrf(g, type_prim(TY_FLOAT),
+                                   "call double @lume_bi_float(i64 %s)", s.v);
+            free(s.v);
+            s.v = sf;
+        }
+        const char *fn = NULL;
+        if (strcmp(bname, "rolling_sharpe") == 0) fn = "lume_bi_rolling_sharpe";
+        else if (strcmp(bname, "rolling_sortino") == 0) fn = "lume_bi_rolling_sortino";
+        else if (strcmp(bname, "rolling_var") == 0) fn = "lume_bi_rolling_var";
+        else fn = "lume_bi_rolling_cvar";
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @%s(i8* %s, i64 %s, double %s)",
+                              fn, a.v, w.v, s.v);
+        free(a.v); free(w.v); free(s.v);
         return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 

@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 119                             # rows per dataset. The layout mirrors the
+RPP = 123                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -73,7 +73,10 @@ RPP = 119                             # rows per dataset. The layout mirrors the
                                       # level 0.05 / rf 0.0), then the
                                       # portfolio rows x5 (two seeded
                                       # positive price paths, equal
-                                      # weights, 5 period returns)
+                                      # weights, 5 period returns) and
+                                      # the rolling rows x4 (w=3 on the
+                                      # length-6 series: preamble NAN +
+                                      # last-window value x2 metrics)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -179,6 +182,32 @@ def rolling_mean(data, w):
 def rolling_stddev(data, w):
     return [float("nan") if i + 1 < w or w < 2 else st.stdev(data[i + 1 - w:i + 1])
             for i in range(len(data))]
+
+
+def rolling_sharpe_ref(data, w, rf):
+    out = []
+    for i in range(len(data)):
+        if i + 1 < w:
+            out.append(float("nan")); continue
+        seg = data[i + 1 - w:i + 1]
+        m = sum(seg) / w
+        sd = (sum((x - m) ** 2 for x in seg) / (w - 1)) ** 0.5
+        out.append(float("nan") if not (sd > 0) else (m - rf) / sd)
+    return out
+
+
+def rolling_var_ref(data, w, level):
+    out = []
+    for i in range(len(data)):
+        if i + 1 < w:
+            out.append(float("nan")); continue
+        seg = sorted(data[i + 1 - w:i + 1])
+        r = level * (w - 1)
+        lo = int(r)
+        frac = r - lo
+        q = seg[lo] if frac == 0 else seg[lo] + frac * (seg[lo + 1] - seg[lo])
+        out.append(-q)
+    return out
 
 
 def ewma(data, alpha):
@@ -1132,6 +1161,17 @@ def main():
         for k, v in enumerate(pfr):
             row(sixg(v))
             lines.append("print(pf%da[%d]);" % (i, k))
+        # rolling window portfolio evaluation (2026-11-02, #51): the #48
+        # metrics applied to every window (w=3 on length-6 series); row 0
+        # is the preamble NAN, the last row is recomputed in Python.
+        rsh = rolling_sharpe_ref(x, 3, 0.0)
+        lines.append("let rw%da: list = rolling_sharpe(%s, 3, 0.0);" % (i, da))
+        row(rsh[0]); lines.append("print(rw%da[0]);" % i)
+        row(sixg(rsh[len(x) - 1])); lines.append("print(rw%da[%d]);" % (i, len(x) - 1))
+        rva = rolling_var_ref(x, 3, 0.25)
+        lines.append("let rv%da: list = rolling_var(%s, 3, 0.25);" % (i, da))
+        row(rva[0]); lines.append("print(rv%da[0]);" % i)
+        row(sixg(rva[len(x) - 1])); lines.append("print(rv%da[%d]);" % (i, len(x) - 1))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

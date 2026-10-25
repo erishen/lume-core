@@ -450,6 +450,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "rand_dirichlet", "rand_binormal", "rand_gauss_copula", "rand_t_copula",
     "bootstrap_mean_ci", "bootstrap_median_ci", "bootstrap_stddev_ci", "bootstrap_se_mean",
     "value_at_risk", "expected_shortfall", "sharpe_ratio", "sortino_ratio",
+    "rolling_sharpe", "rolling_sortino", "rolling_var", "rolling_cvar",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -513,6 +514,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"rand_dirichlet",1,1}, {"rand_binormal",6,6}, {"rand_gauss_copula",2,2}, {"rand_t_copula",3,3},
     {"bootstrap_mean_ci",3,3}, {"bootstrap_median_ci",3,3}, {"bootstrap_stddev_ci",3,3}, {"bootstrap_se_mean",2,2},
     {"value_at_risk",2,2}, {"expected_shortfall",2,2}, {"sharpe_ratio",2,2}, {"sortino_ratio",2,2},
+    {"rolling_sharpe",3,3}, {"rolling_sortino",3,3}, {"rolling_var",3,3}, {"rolling_cvar",3,3},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},
