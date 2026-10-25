@@ -14,7 +14,7 @@ sql_tx_commit(boot);
 sql_write(db, "create table if not exists t (id int)");
 server {
   bind = "127.0.0.1";
-  port = 18091;
+  port = 18097;
 };
 get "/open", (req) => {
   let t: string = sql_tx_begin(db);
