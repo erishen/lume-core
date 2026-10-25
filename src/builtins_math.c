@@ -1077,6 +1077,42 @@ static void native_chisq_p(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(p < 0.0 ? 0.0 : p);
 }
 
+/* F-test family (2026-11-02): mirror rt.c — the sample-variance ratio
+ * and the F upper tail through bi_ibeta. */
+static double interp_sample_var(VM *vm, ObjList *L)
+{
+    if (L->count < 2) return NAN;
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return NAN;
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    return m2 / (double)(n - 1);
+}
+
+static void native_f_stat(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *A, *B;
+    if (argc < 2 || !arg_list(vm, args[0], &A) || !arg_list(vm, args[1], &B)) return;
+    double va = interp_sample_var(vm, A), vb = interp_sample_var(vm, B);
+    if (!(va == va) || !(vb == vb)) { *out = val_num(NAN); return; }
+    *out = val_num(vb == 0.0 ? NAN : va / vb);
+}
+
+static void native_f_pvalue(VM *vm, int argc, Value *args, Value *out) {
+    double f, df1, df2;
+    if (argc < 3 || !arg_num(vm, args[0], &f) || !arg_num(vm, args[1], &df1) ||
+        !arg_num(vm, args[2], &df2)) return;
+    if (!isfinite(f) || f < 0.0 || !isfinite(df1) || !isfinite(df2) ||
+        df1 <= 0.0 || df2 <= 0.0) { *out = val_num(NAN); return; }
+    double x = f * df1 / (f * df1 + df2);
+    double p = 1.0 - bi_ibeta(df1 / 2.0, df2 / 2.0, x);
+    *out = val_num(p < 0.0 ? 0.0 : p);
+}
+
 /* Multivariate / copula samplers (2026-10-30): independent interpreter-side
  * implementations of the same formulas as rt.c's lume_bi_rand_dirichlet /
  * rand_binormal / rand_gauss_copula / rand_t_copula, driven by this VM's own
@@ -1282,6 +1318,8 @@ Value b_tstat(VM *vm, int argc, Value *args)         { return vm_native(vm, argc
 Value b_ttest_p(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_ttest_p); }
 Value b_chisq_stat(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_chisq_stat); }
 Value b_chisq_p(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_chisq_p); }
+Value b_f_stat(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_f_stat); }
+Value b_f_pvalue(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_f_pvalue); }
 Value b_rand_dirichlet(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_rand_dirichlet); }
 Value b_rand_binormal(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_rand_binormal); }
 Value b_rand_gauss_copula(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_gauss_copula); }

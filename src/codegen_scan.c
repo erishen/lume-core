@@ -391,7 +391,8 @@ Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "bs_gamma") == 0 || strcmp(name, "bs_vega") == 0 ||
                  strcmp(name, "z_test") == 0 || strcmp(name, "z_pvalue") == 0 ||
                  strcmp(name, "tstat") == 0 || strcmp(name, "ttest_p") == 0 ||
-                 strcmp(name, "chisq_stat") == 0 || strcmp(name, "chisq_p") == 0))
+                 strcmp(name, "chisq_stat") == 0 || strcmp(name, "chisq_p") == 0 ||
+                 strcmp(name, "f_stat") == 0 || strcmp(name, "f_pvalue") == 0))
                 return type_prim(TY_FLOAT);
             /* Monte Carlo RNG integer flavours (2026-10-24): seed() returns
              * the seed it was given, rand_int() a bounded draw; the

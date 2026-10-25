@@ -1005,6 +1005,34 @@ def chisq_p_ref(x, df):
     return 1.0 - chisq_cdf_ref(x, df)
 
 
+def f_stat_ref(a, b):
+    """F statistic = sample-variance ratio (n-1 denominators); a zero
+    variance on the denominator side answers NAN (data property)."""
+    vb = st.variance(b)
+    if vb == 0.0:
+        return float('nan')
+    return st.variance(a) / vb
+
+
+def _f_pdf(x, d1, d2):
+    """F density f(x; d1, d2) — definition-based, independent of rt.c's
+    ibeta path. Combined with the u = ln x transform below so the
+    power-law tail stays well-behaved to large x."""
+    num = (d1 * x) ** d1 * d2 ** d2
+    den = (d1 * x + d2) ** (d1 + d2)
+    b = math.gamma(d1 / 2.0) * math.gamma(d2 / 2.0) / math.gamma((d1 + d2) / 2.0)
+    return math.sqrt(num / den) / b
+
+
+def f_pvalue_ref(f, d1, d2):
+    """F-distribution upper tail via density integration in log-x; the
+    x^(-d2/2) tail beyond 1e5 is below the 1e-6 tolerance for every pinned
+    case (worst: d2=3 leaves ~K*U^-1.5 ~ 1e-8)."""
+    if f <= 0.0:
+        return 1.0
+    return _simpson(lambda u: _f_pdf(math.exp(u), d1, d2), math.log(f), math.log(1e5))
+
+
 def pcg_dirichlet(seed, alphas, k):
     """iid Gamma(alpha_i, 1) draws via pcg_gamma (sequential stream
     positions), normalized; returns (flat vector list, next_k)."""
@@ -1242,6 +1270,18 @@ cases += [
     ("test chisq_p 3.84146", sixg(chisq_p_ref(3.84146, 1)), 0.05),
     ("test chisq_p 10 df4",  sixg(chisq_p_ref(10, 4)), 0.0404277),
     ("test z_pvalue 2.5758", sixg(z_pvalue_ref(2.5758)), 0.0100008),
+    # F-test family (2026-11-02, #60): closed-form statistics (equal and
+    # ratio cases, zero-variance denominator -> NAN) and p-values against
+    # the definition-based density-integration reference above.
+    ("test f_stat equal",    sixg(f_stat_ref([1, 2, 3], [4, 5, 6])), 1),
+    ("test f_stat ratio",    sixg(f_stat_ref([1, 2, 3, 4, 5], [1, 2, 4, 8, 16])), 0.0672043),
+    ("test f_stat zero",     sixg(f_stat_ref([1, 1, 1], [2, 3, 4])), 0),
+    ("test f_stat nan",      sixg(f_stat_ref([2, 3, 4], [1, 1, 1])), float('nan')),
+    ("test f_pvalue 1 2 3",  sixg(f_pvalue_ref(1.0, 2, 3)), 0.464758),
+    ("test f_pvalue 2.5 4 5", sixg(f_pvalue_ref(2.5, 4, 5)), 0.171067),
+    ("test f_pvalue 3.5 5 8", sixg(f_pvalue_ref(3.5, 5, 8)), 0.0567628),
+    ("test f_pvalue 0.8 4 12", sixg(f_pvalue_ref(0.8, 4, 12)), 0.54795),
+    ("test f_pvalue 3 8 12", sixg(f_pvalue_ref(3.0, 8, 12)), 0.0424224),
     # multivariate / copula (2026-10-30): absolute-stream references replay
     # each call from the start of the seed-42 stream (every consistency row
     # re-seeds first) — dirichlet normalizes iid gamma draws, binormal /

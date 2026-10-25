@@ -52,6 +52,7 @@ static const Bi BUILTINS[] = {
     { "z_pvalue",  NULL, NULL, NULL, 0, "lume_bi_z_pvalue",  "double", "double", 1 },
     { "ttest_p",   NULL, NULL, NULL, 0, "lume_bi_ttest_p",   "double", "double", 2 },
     { "chisq_p",   NULL, NULL, NULL, 0, "lume_bi_chisq_p",   "double", "double", 2 },
+    { "f_pvalue",  NULL, NULL, NULL, 0, "lume_bi_f_pvalue",  "double", "double", 3 },
     { "now",   "lume_bi_now",  NULL,     "i64",    0,  NULL,           NULL,         NULL,     0 },
     { "argv",  "lume_bi_argv", NULL,     "i8*",    0,  NULL,           NULL,         NULL,     0 },
 };
@@ -434,6 +435,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_z_test(i8*, double, double)\n");
     EMIT(g, "declare double @lume_bi_tstat(i8*, double)\n");
     EMIT(g, "declare double @lume_bi_chisq_stat(i8*, i8*)\n");
+    EMIT(g, "declare double @lume_bi_f_stat(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_rand_lognormal(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_gumbel(double, double)\n");
     EMIT(g, "declare double @lume_bi_rand_rayleigh(double)\n");
@@ -2876,6 +2878,24 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_tstat(i8* %s, double %s)",
                               a.v, m.v);
         free(a.v); free(m.v);
+        return val_make(type_prim(TY_FLOAT), t);
+    }
+
+    if (strcmp(bname, "f_stat") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: f_stat() takes (a, b)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: f_stat() needs a list", n->line);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: f_stat() needs a list", n->line);
+        }
+        char *t = emit_instrf(g, type_prim(TY_FLOAT),
+                              "call double @lume_bi_f_stat(i8* %s, i8* %s)",
+                              a.v, b.v);
+        free(a.v); free(b.v);
         return val_make(type_prim(TY_FLOAT), t);
     }
 

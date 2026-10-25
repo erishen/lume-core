@@ -3252,6 +3252,36 @@ double lume_bi_chisq_p(double x, double df)
     return p < 0.0 ? 0.0 : p;   /* ULP guard on the upper tail */
 }
 
+/* f_stat needs lume_bi_variance, whose definition sits later in this file;
+ * forward-declare it so the native-backend compile (rt.c as -DLUME_RT_SRC)
+ * sees a prototype (C11 makes the implicit declaration an error). */
+double lume_bi_variance(const LumeList *l);
+
+/* F-test family (2026-11-02): f_stat answers the sample-variance ratio
+ * s1^2 / s2^2 (n-1 denominators via lume_bi_variance, so df = n-1 on
+ * each side); a zero-variance denominator answers NAN. f_pvalue answers
+ * the F-distribution upper tail 1 - I_x(df1/2, df2/2) with
+ * x = f*df1 / (f*df1 + df2) through lume_bi_ibeta — the classic
+ * variance-comparison test missing from the z/t/chi2 set. */
+double lume_bi_f_stat(const LumeList *a, const LumeList *b)
+{
+    double va = lume_bi_variance(a);
+    double vb = lume_bi_variance(b);
+    if (!isfinite(va) || !isfinite(vb)) return NAN;
+    if (vb == 0.0) return NAN;   /* zero-variance denominator */
+    return va / vb;
+}
+
+double lume_bi_f_pvalue(double f, double df1, double df2)
+{
+    if (!isfinite(f) || f < 0.0 || !isfinite(df1) || !isfinite(df2) ||
+        df1 <= 0.0 || df2 <= 0.0) return NAN;
+    double x = f * df1 / (f * df1 + df2);   /* f = 0 -> x = 0 -> CDF 0 -> p 1 */
+    double cdf = lume_bi_ibeta(df1 / 2.0, df2 / 2.0, x);
+    double p = 1.0 - cdf;
+    return p < 0.0 ? 0.0 : p;   /* ULP guard on the upper tail */
+}
+
 /* Multivariate / copula samplers (2026-10-30): rand_dirichlet /
  * rand_binormal / rand_gauss_copula / rand_t_copula. All reuse the single
  * deterministic PCG32 stream through the helpers above — lume_bi_rand_normal

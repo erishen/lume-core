@@ -1578,6 +1578,8 @@ void bridge_seed_builtins(VM *vm) {
         {"ttest_p", b_ttest_p},
         {"chisq_stat", b_chisq_stat},
         {"chisq_p", b_chisq_p},
+        {"f_stat", b_f_stat},
+        {"f_pvalue", b_f_pvalue},
         {"rand_dirichlet", b_rand_dirichlet},
         {"rand_binormal", b_rand_binormal},
         {"rand_gauss_copula", b_rand_gauss_copula},

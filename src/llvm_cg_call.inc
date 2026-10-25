@@ -1763,6 +1763,7 @@ static Val cg_builtin(CG *g, Node *n)
             {"z_pvalue",  "lume_bi_z_pvalue",  1},
             {"ttest_p",   "lume_bi_ttest_p",   2},
             {"chisq_p",   "lume_bi_chisq_p",   2},
+            {"f_pvalue",  "lume_bi_f_pvalue",  3},
         };
         for (size_t i = 0; i < sizeof(stats) / sizeof(stats[0]); i++) {
             if (strcmp(bname, stats[i].name) == 0) {
@@ -2624,6 +2625,24 @@ static Val cg_builtin(CG *g, Node *n)
         LLVMValueRef r = LLVMBuildCall2(g->ab,
             LLVMFunctionType(g->dbl, p2, 2, 0),
             rt_decl(g, "lume_bi_tstat", g->dbl, p2, 2), v2, 2, "q");
+        return val_make(type_prim(TY_FLOAT), r);
+    }
+
+    if (strcmp(bname, "f_stat") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: f_stat() takes (a, b)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: f_stat() needs a list", n->line);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            ERRV(g, "line %zu: f_stat() needs a list", n->line);
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef v2[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->dbl, p2, 2, 0),
+            rt_decl(g, "lume_bi_f_stat", g->dbl, p2, 2), v2, 2, "q");
         return val_make(type_prim(TY_FLOAT), r);
     }
 

@@ -428,3 +428,21 @@ print(avg_win(t58l));
 print(profit_factor(t58w));
 print(avg_loss(t58w));
 print(max_consecutive_losses(t58w));
+
+// #60 F-test family (2026-11-02): f_stat answers the sample-variance
+// ratio s1^2/s2^2 (n-1 denominators), f_pvalue the F upper tail via the
+// regularized incomplete beta. Zero-variance denominator -> NAN.
+let f60a: list = [1.0, 2.0, 3.0];
+let f60b: list = [4.0, 5.0, 6.0];
+let f60c: list = [1.0, 2.0, 3.0, 4.0, 5.0];
+let f60d: list = [1.0, 2.0, 4.0, 8.0, 16.0];
+let f60z: list = [1.0, 1.0, 1.0];
+print(f_stat(f60a, f60b));
+print(f_stat(f60c, f60d));
+print(f_stat(f60z, f60b));
+print(f_stat(f60b, f60z));
+print(f_pvalue(1.0, 2.0, 3.0));
+print(f_pvalue(2.5, 4.0, 5.0));
+print(f_pvalue(3.5, 5.0, 8.0));
+print(f_pvalue(0.8, 4.0, 12.0));
+

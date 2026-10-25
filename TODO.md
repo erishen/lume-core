@@ -895,6 +895,23 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   python3/python fail, so a Windows install with an
   App-Execution-Alias stub no longer silently skips the quant
   reference leg.
+- [x] **F-test family: `f_stat` / `f_pvalue` (2026-11-02).** The
+  variance-comparison test missing from the z/t/chi2 set: `f_stat(a,b)`
+  answers the sample-variance ratio s1²/s2² (n−1 denominators via
+  lume_bi_variance, so df = n−1 each side; zero-variance denominator ->
+  NAN as a data property), `f_pvalue(F,df1,df2)` the F upper tail
+  1 − I_x(df1/2,df2/2), x = F·df1/(F·df1+df2), through lume_bi_ibeta
+  (ULP guard at 0). Emission: two-list -> double hand-written block on
+  both emitters (chisq_stat's pattern; LLVM must use rt_decl, never free
+  the ValueRef operands) plus a scalar-driven table row for f_pvalue
+  (3 doubles -> double); rt.c forward-declares lume_bi_variance for the
+  native runtime compile. Verification: r60-smoke 3 legs byte-identical
+  (1 / 0.0672043 / 0 / nan / 0.464758 / 0.171067 / 0.0567628),
+  quant-consistency 204 -> 212 rows, quant-refcheck 181 -> 190 cases
+  (f_pvalue references definition-based: F-density integration in log-x,
+  cross-checked via the F(1,d2)=t(d2)² identity), quant-fuzz RPP 149 ->
+  151 with the two rows appended at the dataset tail (1510 checks, 0
+  failures), native_backends 29 ok (serve errno 10038 known).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

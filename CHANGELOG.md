@@ -8,6 +8,24 @@ All notable changes to Lume are documented here. The format follows
 
 ### Added
 
+- **F-test family: `f_stat` / `f_pvalue`.** `f_stat(a, b)` answers the
+  sample-variance ratio s1²/s2² (n−1 denominators via `lume_bi_variance`,
+  so df = n−1 on each side); a zero-variance denominator answers NAN (data
+  property, matching the #48 contract). `f_pvalue(F, df1, df2)` answers
+  the F upper tail 1 − I_x(df1/2, df2/2) with x = F·df1/(F·df1+df2)
+  through `lume_bi_ibeta`, ULP-clamped at 0. Both are emitted as a
+  two-list → double hand-written block (text + LLVM, `chisq_stat`'s
+  pattern) with `f_pvalue` also in the scalar-driven stats table
+  (3 doubles → double). New cross-backend rows in
+  `quant-consistency.lume/.expected`, 9 pinned Python references
+  (`quant-refcheck.py`: `f_stat_ref` from `statistics.variance`, the
+  p-value against a definition-based F-density integration in log-x,
+  independently verified via the F(1,d2) = t(d2)² identity), and 2 fuzz
+  rows appended at the dataset tail (RPP 149 → 151, absolute row-numbered
+  property assertions untouched). Runtime note: rt.c forward-declares
+  `lume_bi_variance` for the native-backend compile, and the LLVM
+  `f_stat` block must not free the LLVMValueRef operands (heap
+  corruption); both fixed during bring-up.
 - **Statistical builtins infer `float` and emit on the native backends.**
   `normcdf` / `erf` / `gamma` / `lgamma` / `igamma` / `ibeta` /
   `tdist_cdf` / `chisq_cdf` had interpreter support and a text-backend Bi

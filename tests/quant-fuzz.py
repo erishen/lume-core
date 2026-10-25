@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 149                             # rows per dataset. The layout mirrors the
+RPP = 151                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -1076,6 +1076,36 @@ def chisq_p_ref(x, df):
     return 1.0 - chisq_cdf_ref(x, df)
 
 
+def _pv(a):
+    n = len(a)
+    m = sum(a) / n
+    return sum((v - m) ** 2 for v in a) / (n - 1.0)
+
+
+def f_stat_ref(a, b):
+    """F statistic = sample-variance ratio (n-1 denominators); zero
+    variance on the denominator side answers NAN."""
+    vb = _pv(b)
+    if vb == 0.0:
+        return float('nan')
+    return _pv(a) / vb
+
+
+def _f_pdf(x, d1, d2):
+    num = (d1 * x) ** d1 * d2 ** d2
+    den = (d1 * x + d2) ** (d1 + d2)
+    bt = math.gamma(d1 / 2.0) * math.gamma(d2 / 2.0) / math.gamma((d1 + d2) / 2.0)
+    return math.sqrt(num / den) / bt
+
+
+def f_pvalue_ref(f, d1, d2):
+    """F upper tail by density integration in log-x (tail beyond 1e5
+    below the tolerance for the pinned degrees of freedom)."""
+    if f <= 0.0:
+        return 1.0
+    return _simpson(lambda u: _f_pdf(math.exp(u), d1, d2), math.log(f), math.log(1e5))
+
+
 def sixg(v):
     return float("%.6g" % v)
 
@@ -1543,6 +1573,14 @@ def main():
         lines.append("print(avg_loss(%s));" % da)
         row(sixg(streak_ref(x)))
         lines.append("print(max_consecutive_losses(%s));" % da)
+        # F-test family (2026-11-02, #60): ratio against a fixed non-zero
+        # variance reference series, and a pinned p-value. Appended at the
+        # dataset tail so the absolute row-numbered property assertions
+        # above (r 39..104) stay untouched.
+        row(sixg(f_stat_ref(x, [9.0, 11.0, 10.0, 8.0, 12.0])))
+        lines.append("print(f_stat(%s, [9,11,10,8,12]));" % da)
+        row(sixg(f_pvalue_ref(2.5, 4, 5)))
+        lines.append("print(f_pvalue(2.5, 4, 5));")
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

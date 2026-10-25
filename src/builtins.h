@@ -168,6 +168,8 @@ Value b_tstat(VM *vm, int argc, Value *args);
 Value b_ttest_p(VM *vm, int argc, Value *args);
 Value b_chisq_stat(VM *vm, int argc, Value *args);
 Value b_chisq_p(VM *vm, int argc, Value *args);
+Value b_f_stat(VM *vm, int argc, Value *args);
+Value b_f_pvalue(VM *vm, int argc, Value *args);
 Value b_rand_dirichlet(VM *vm, int argc, Value *args);
 Value b_rand_binormal(VM *vm, int argc, Value *args);
 Value b_rand_gauss_copula(VM *vm, int argc, Value *args);
