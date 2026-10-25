@@ -867,6 +867,19 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   -0.01 / NAN), quant-consistency 186 -> 194 rows, quant-refcheck
   171 -> 176 cases, quant-fuzz 10 series x 144 rows (1440 checks),
   native_backends 18/19 (serve errno 10038 known).
+- [x] **Trading statistics: `profit_factor` / `win_rate` / `avg_win` /
+  `avg_loss` / `max_consecutive_losses` (2026-11-02).** The
+  backtest-quality layer: gross-wins-over-gross-losses, the fraction
+  of strictly positive returns, the mean of each side and the longest
+  strictly-negative streak. Data properties: no loss side -> NAN
+  (profit factor / avg_loss) with all-loss -> 0 for the factor; empty
+  win side -> NAN for avg_win; no losses -> 0 for the streak. All five
+  emit through the mean (i8*) -> double block, both emitters.
+  Verification: r58-smoke (3 legs byte-identical, Python recomputes
+  2.33333 / 0.571429 / 0.035 / -0.02 / 2 / 0 / NAN / NAN / NAN / 0),
+  quant-consistency 194 -> 204 rows, quant-refcheck 176 -> 181 cases,
+  quant-fuzz 10 series x 149 rows (1490 checks),
+  native_backends 18/19 (serve errno 10038 known).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

@@ -2273,7 +2273,10 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "annualized_volatility") == 0 ||
         strcmp(bname, "cumulative_return") == 0 ||
         strcmp(bname, "semivariance") == 0 ||
-        strcmp(bname, "kelly_fraction") == 0) {
+        strcmp(bname, "kelly_fraction") == 0 ||
+        strcmp(bname, "profit_factor") == 0 || strcmp(bname, "win_rate") == 0 ||
+        strcmp(bname, "avg_win") == 0 || strcmp(bname, "avg_loss") == 0 ||
+        strcmp(bname, "max_consecutive_losses") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2291,6 +2294,11 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "cumulative_return") == 0 ? "lume_bi_cumulative_return"
                        : strcmp(bname, "semivariance") == 0 ? "lume_bi_semivariance"
                        : strcmp(bname, "kelly_fraction") == 0 ? "lume_bi_kelly_fraction"
+                       : strcmp(bname, "profit_factor") == 0 ? "lume_bi_profit_factor"
+                       : strcmp(bname, "win_rate") == 0 ? "lume_bi_win_rate"
+                       : strcmp(bname, "avg_win") == 0 ? "lume_bi_avg_win"
+                       : strcmp(bname, "avg_loss") == 0 ? "lume_bi_avg_loss"
+                       : strcmp(bname, "max_consecutive_losses") == 0 ? "lume_bi_max_consecutive_losses"
                        : "lume_bi_kurtosis";
         LLVMTypeRef p[1] = { g->i8ptr };
         LLVMValueRef vs[1] = { a.v };

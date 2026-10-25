@@ -1,0 +1,18 @@
+// r58-smoke.lume: trading statistics (#58), 3 legs byte-identical.
+// Pinned rows recomputed in Python (r58.py).
+let rets: list = [0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04];
+print(profit_factor(rets));
+print(win_rate(rets));
+print(avg_win(rets));
+print(avg_loss(rets));
+print(max_consecutive_losses(rets));
+// degenerate: all losses -> profit factor 0 / avg_win NAN;
+// all wins -> profit factor NAN (no loss side) / avg_loss NAN /
+// max streak 0
+let all_l: list = [-0.01, -0.02, -0.03];
+let all_w: list = [0.01, 0.02, 0.03];
+print(profit_factor(all_l));
+print(avg_win(all_l));
+print(profit_factor(all_w));
+print(avg_loss(all_w));
+print(max_consecutive_losses(all_w));

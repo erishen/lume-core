@@ -406,7 +406,10 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "annualized_volatility") == 0 ||
                  strcmp(name, "cumulative_return") == 0 ||
                  strcmp(name, "semivariance") == 0 ||
-                 strcmp(name, "kelly_fraction") == 0))
+                 strcmp(name, "kelly_fraction") == 0 ||
+                 strcmp(name, "profit_factor") == 0 || strcmp(name, "win_rate") == 0 ||
+                 strcmp(name, "avg_win") == 0 || strcmp(name, "avg_loss") == 0 ||
+                 strcmp(name, "max_consecutive_losses") == 0))
                 return type_prim(TY_FLOAT);
             if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||

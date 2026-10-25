@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 144                             # rows per dataset. The layout mirrors the
+RPP = 149                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -90,7 +90,9 @@ RPP = 144                             # rows per dataset. The layout mirrors the
                                       # return / vol / Sharpe / cumulative)
                                       # and the risk-derivative rows x4
                                       # (semivariance / downside / param VaR /
-                                      # Kelly)
+                                      # Kelly) and the trading-stat rows x5
+                                      # (profit factor / win rate / avg win /
+                                      # avg loss / max streak)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -402,6 +404,37 @@ def kelly_ref(xs):
     var = m2 / (len(xs) - 1)
     if var <= 0: return float("nan")
     return m / var
+
+
+def profit_factor_ref(xs):
+    w = sum(v for v in xs if v > 0)
+    lo = sum(-v for v in xs if v <= 0)
+    return float("nan") if lo == 0 else w / lo
+
+
+def win_rate_ref(xs):
+    return sum(1 for v in xs if v > 0) / len(xs)
+
+
+def avg_win_ref(xs):
+    w = [v for v in xs if v > 0]
+    return float("nan") if not w else sum(w) / len(w)
+
+
+def avg_loss_ref(xs):
+    lo = [v for v in xs if v < 0]
+    return float("nan") if not lo else sum(lo) / len(lo)
+
+
+def streak_ref(xs):
+    run = best = 0
+    for v in xs:
+        if v < 0:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return float(best)
 
 
 def rolling_var_ref(data, w, level):
@@ -1498,6 +1531,18 @@ def main():
         lines.append("print(param_var(%s, 0.05));" % da)
         row(sixg(kelly_ref(x)))
         lines.append("print(kelly_fraction(%s));" % da)
+        # trading statistics (2026-11-02, #58): profit factor, win
+        # rate, average win / loss, longest consecutive-loss streak.
+        row(sixg(profit_factor_ref(x)))
+        lines.append("print(profit_factor(%s));" % da)
+        row(sixg(win_rate_ref(x)))
+        lines.append("print(win_rate(%s));" % da)
+        row(sixg(avg_win_ref(x)))
+        lines.append("print(avg_win(%s));" % da)
+        row(sixg(avg_loss_ref(x)))
+        lines.append("print(avg_loss(%s));" % da)
+        row(sixg(streak_ref(x)))
+        lines.append("print(max_consecutive_losses(%s));" % da)
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

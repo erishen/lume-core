@@ -4258,6 +4258,74 @@ double lume_bi_kelly_fraction(const LumeList *l)
     return m / var;
 }
 
+/* Trading statistics (#58): the backtest-quality layer — profit factor
+ * (gross wins / |gross losses|), win rate, average win / loss and the
+ * longest consecutive-loss run. Zero-loss-side properties answer NAN,
+ * a no-loss streak answers 0. */
+double lume_bi_profit_factor(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double w = 0.0, lo = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        if (xs[i] > 0.0) w += xs[i]; else lo += -xs[i];
+    }
+    free(xs);
+    if (lo == 0.0) return NAN;
+    return w / lo;
+}
+
+double lume_bi_win_rate(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    int64_t w = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (xs[i] > 0.0) w++;
+    }
+    free(xs);
+    return (double)w / (double)n;
+}
+
+double lume_bi_avg_win(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double w = 0.0; int64_t c = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (xs[i] > 0.0) { w += xs[i]; c++; }
+    }
+    free(xs);
+    if (c == 0) return NAN;
+    return w / (double)c;
+}
+
+double lume_bi_avg_loss(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double lo = 0.0; int64_t c = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (xs[i] < 0.0) { lo += xs[i]; c++; }
+    }
+    free(xs);
+    if (c == 0) return NAN;
+    return lo / (double)c;
+}
+
+double lume_bi_max_consecutive_losses(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    int64_t run = 0, best = 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (xs[i] < 0.0) { run++; if (run > best) best = run; }
+        else run = 0;
+    }
+    free(xs);
+    return (double)best;
+}
+
 /* Average ranks (1-based, ties share the mean of their rank range) over
  * a double copy — the monotonicity / IC primitive. A fresh float list;
  * empty for n < 1. */

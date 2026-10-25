@@ -411,3 +411,20 @@ print(semivariance(t57flat));
 print(downside_deviation(t57flat, 0.0));
 print(param_var(t53r, 0.5));
 print(kelly_fraction(t57flat));
+
+// #58 trading statistics (2026-11-02): the backtest-quality layer —
+// profit factor, win rate, average win / loss and the longest
+// consecutive-loss streak. All-loss -> 0 / NAN, all-win -> NAN / 0.
+let t58r: list = [0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04];
+let t58l: list = [-0.01, -0.02, -0.03];
+let t58w: list = [0.01, 0.02, 0.03];
+print(profit_factor(t58r));
+print(win_rate(t58r));
+print(avg_win(t58r));
+print(avg_loss(t58r));
+print(max_consecutive_losses(t58r));
+print(profit_factor(t58l));
+print(avg_win(t58l));
+print(profit_factor(t58w));
+print(avg_loss(t58w));
+print(max_consecutive_losses(t58w));

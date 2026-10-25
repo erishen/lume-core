@@ -371,6 +371,24 @@ All notable changes to Lume are documented here. The format follows
   `tests/quant-consistency.lume` grows to 194 rows,
   `tests/quant-refcheck.py` to 176 cases, `tests/quant-fuzz.py` to
   1440 checks (10 series × 144 rows).
+- **Trading statistics: `profit_factor` / `win_rate` / `avg_win` /
+  `avg_loss` / `max_consecutive_losses`.**
+  The backtest-quality layer of the quant surface.
+  `profit_factor(returns)` answers gross wins / |gross losses| (a
+  no-loss series → NAN; an all-loss series → 0);
+  `win_rate(returns)` answers the fraction of strictly positive
+  returns (0-returns are not wins); `avg_win` / `avg_loss` answer the
+  mean of the strictly positive / strictly negative returns (NAN when
+  the side is empty); `max_consecutive_losses(returns)` answers the
+  longest run of strictly negative returns (a no-loss series → 0).
+  Emission: all five are one-list scalars and join the mean (i8*) →
+  double block in both emitters, with the inference twin and the
+  text-leg declares. Verification: `tests/r58-smoke.lume` (3 legs
+  byte-identical; Python recomputes 2.33333 / 0.571429 / 0.035 /
+  −0.02 / 2 and the degenerate 0 / NAN / NAN / NAN / 0),
+  `tests/quant-consistency.lume` grows to 204 rows,
+  `tests/quant-refcheck.py` to 181 cases, `tests/quant-fuzz.py` to
+  1490 checks (10 series × 149 rows).
 - **Performance attribution — the benchmark-aware evaluation layer:
   `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
   risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but

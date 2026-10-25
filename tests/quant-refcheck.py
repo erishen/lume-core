@@ -368,6 +368,37 @@ def kelly_ref(xs):
     return m / var
 
 
+def profit_factor_ref(xs):
+    w = sum(v for v in xs if v > 0)
+    lo = sum(-v for v in xs if v <= 0)
+    return float('nan') if lo == 0 else w / lo
+
+
+def win_rate_ref(xs):
+    return sum(1 for v in xs if v > 0) / len(xs)
+
+
+def avg_win_ref(xs):
+    w = [v for v in xs if v > 0]
+    return float('nan') if not w else sum(w) / len(w)
+
+
+def avg_loss_ref(xs):
+    lo = [v for v in xs if v < 0]
+    return float('nan') if not lo else sum(lo) / len(lo)
+
+
+def streak_ref(xs):
+    run = best = 0
+    for v in xs:
+        if v < 0:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return float(best)
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1310,6 +1341,13 @@ cases += [
     ("param var",         sixg(param_var_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.05)), 0.0245027),
     ("kelly",             sixg(kelly_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03])), 22.7273),
     ("param var 50%",     sixg(param_var_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.5)), -0.01),
+    # trading statistics (2026-11-02, #58): profit factor, win rate,
+    # average win/loss, longest consecutive-loss streak.
+    ("profit factor",     sixg(profit_factor_ref([0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04])), 2.33333),
+    ("win rate",          sixg(win_rate_ref([0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04])), 0.571429),
+    ("avg win",           sixg(avg_win_ref([0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04])), 0.035),
+    ("avg loss",          sixg(avg_loss_ref([0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04])), -0.02),
+    ("max streak",        sixg(streak_ref([0.05, -0.02, 0.03, -0.01, -0.03, 0.02, 0.04])), 2),
 ]
 
 fails = 0

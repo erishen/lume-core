@@ -2541,6 +2541,79 @@ static void native_kelly_fraction(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(m / var);
 }
 
+/* Trading statistics (#58): mirror rt.c — backtest-quality layer with
+ * the same zero-loss-side NAN / zero-streak 0 data properties. */
+static void native_profit_factor(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "profit_factor() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double w = 0.0, lo = 0.0;
+    for (int i = 0; i < n; i++) {
+        if (xs[i] > 0.0) w += xs[i]; else lo += -xs[i];
+    }
+    free(xs);
+    *out = val_num(lo == 0.0 ? NAN : w / lo);
+}
+
+static void native_win_rate(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "win_rate() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    int64_t w = 0;
+    for (int i = 0; i < n; i++) {
+        if (xs[i] > 0.0) w++;
+    }
+    free(xs);
+    *out = val_num((double)w / (double)n);
+}
+
+static void native_avg_win(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "avg_win() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double w = 0.0; int64_t c = 0;
+    for (int i = 0; i < n; i++) {
+        if (xs[i] > 0.0) { w += xs[i]; c++; }
+    }
+    free(xs);
+    *out = val_num(c == 0 ? NAN : w / (double)c);
+}
+
+static void native_avg_loss(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "avg_loss() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double lo = 0.0; int64_t c = 0;
+    for (int i = 0; i < n; i++) {
+        if (xs[i] < 0.0) { lo += xs[i]; c++; }
+    }
+    free(xs);
+    *out = val_num(c == 0 ? NAN : lo / (double)c);
+}
+
+static void native_max_consecutive_losses(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "max_consecutive_losses() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    int64_t run = 0, best = 0;
+    for (int i = 0; i < n; i++) {
+        if (xs[i] < 0.0) { run++; if (run > best) best = run; }
+        else run = 0;
+    }
+    free(xs);
+    *out = val_num((double)best);
+}
+
 static void native_skew(VM *vm, int argc, Value *args, Value *out) {
     ObjList *L;
     if (argc < 1 || !arg_list(vm, args[0], &L)) return;
@@ -2706,3 +2779,8 @@ Value b_semivariance(VM *vm, int argc, Value *args)       { return vm_native(vm,
 Value b_downside_deviation(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_downside_deviation); }
 Value b_param_var(VM *vm, int argc, Value *args)          { return vm_native(vm, argc, args, native_param_var); }
 Value b_kelly_fraction(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_kelly_fraction); }
+Value b_profit_factor(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_profit_factor); }
+Value b_win_rate(VM *vm, int argc, Value *args)           { return vm_native(vm, argc, args, native_win_rate); }
+Value b_avg_win(VM *vm, int argc, Value *args)            { return vm_native(vm, argc, args, native_avg_win); }
+Value b_avg_loss(VM *vm, int argc, Value *args)           { return vm_native(vm, argc, args, native_avg_loss); }
+Value b_max_consecutive_losses(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_max_consecutive_losses); }
