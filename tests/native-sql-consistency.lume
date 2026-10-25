@@ -46,3 +46,16 @@ sql_tx_exec(tx, "INSERT INTO t (a,b) VALUES (?, ?)", [5, "v"]);
 print(sql_tx_commit(tx));
 let q4: list = sql_query("", "SELECT a, b FROM t WHERE a = 5");
 print(q4);
+
+// #50 read-your-writes (2026-11-02): the uncommitted row is visible to
+// sql_tx_query on the transaction's own connection (params path),
+// invisible to sql_query (fresh read-only connection), and gone after
+// rollback. a=6 stays free across reruns because this block always
+// rolls back.
+let ry1: string = sql_tx_begin("");
+sql_tx_exec(ry1, "INSERT INTO t (a,b) VALUES (?, ?)", [6, "ryw"]);
+let rq1: list = sql_tx_query(ry1, "SELECT b FROM t WHERE a = ?", [6]);
+print(rq1);
+print(len(sql_query("", "SELECT b FROM t WHERE a = 6")));
+print(sql_tx_rollback(ry1));
+print(len(sql_query("", "SELECT b FROM t WHERE a = 6")));

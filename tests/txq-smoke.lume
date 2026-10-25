@@ -1,0 +1,22 @@
+// #50 sql_tx_query smoke (2026-11-02): read-your-writes inside a
+// transaction. The uncommitted INSERT is visible to sql_tx_query on the
+// transaction's own connection (with params), disappears for every
+// connection after ROLLBACK, and becomes visible to an independent
+// sql_query after COMMIT. Deterministic, no RNG.
+let setup: string = sql_tx_begin("txq_smoke.db");
+sql_tx_exec(setup, "CREATE TABLE IF NOT EXISTS txq_t (k INTEGER PRIMARY KEY, v TEXT);");
+sql_tx_commit(setup);
+// inside the transaction — read back the uncommitted row, params path:
+let tx: string = sql_tx_begin("txq_smoke.db");
+sql_tx_exec(tx, "INSERT INTO txq_t (k, v) VALUES (2, 'para');");
+let a: list = sql_tx_query(tx, "SELECT v FROM txq_t WHERE k = ?1;", [2]);
+print(a[0]["v"]);
+sql_tx_rollback(tx);
+// rolled back — gone for an independent read-only connection too:
+let b: list = sql_query("txq_smoke.db", "SELECT v FROM txq_t WHERE k = 2;");
+print(len(b));
+// commit — visible to an independent query:
+let tx2: string = sql_tx_begin("txq_smoke.db");
+sql_tx_exec(tx2, "INSERT INTO txq_t (k, v) VALUES (3, 'third');");
+sql_tx_commit(tx2);
+print(sql_query("txq_smoke.db", "SELECT v FROM txq_t WHERE k = 3;")[0]["v"]);

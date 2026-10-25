@@ -1110,6 +1110,37 @@ long long lume_bi_sql_tx_exec(void *tx, const char *sql, void *params)
     return sqlite3_changes(t->db);
 }
 
+void *lume_bi_sql_tx_query(void *tx, const char *sql, void *params)
+{
+    LumeSqlTx *t = (LumeSqlTx *)tx;
+    if (!t || !t->db || t->state != 0) {
+        lume_sql_errf("sql_tx_query: transaction is already closed");
+        return NULL;
+    }
+    if (!sql || !sql[0]) { lume_error_set("sql_tx_query: empty SQL"); return NULL; }
+    char body[SQL_MAX];
+    const char *verr = sql_validate_read(sql, body, sizeof body);
+    if (verr) {
+        lume_sql_errf("sql_tx_query: %s", verr);
+        return NULL;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(t->db, body, -1, &st, NULL) != SQLITE_OK) {
+        lume_sql_errf("sql_tx_query: %s", sqlite3_errmsg(t->db));
+        return NULL;
+    }
+    sql_bind_params(st, params);
+    void *out = lume_list_new();
+    while (lume_list_len(out) < SQL_ROW_CAP &&
+           sqlite3_step(st) == SQLITE_ROW) {
+        void *row = lume_map_new();
+        sql_row_to_map(st, row);
+        lume_list_push_obj(out, row);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
 static long long sql_tx_end(void *tx, int commit)
 {
     LumeSqlTx *t = (LumeSqlTx *)tx;

@@ -411,7 +411,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "run", "print", "str", "int", "len", "keys", "get",
     /* SQLite (2026-10-12, builtins_sql.c): registered in every build;
      * without libsqlite3 the runtime stub reports the missing dep. */
-    "sql_query", "sql_write",
+    "sql_query", "sql_write", "sql_tx_query",
     /* SQLite transactions (2026-10-20, P6): sql_tx_begin returns a
      * GC-finalized handle; sql_tx_exec / commit / rollback take it. */
     "sql_tx_begin", "sql_tx_exec", "sql_tx_commit", "sql_tx_rollback",
@@ -522,7 +522,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"ewma",2,2},
     {"strftime",2,2}, {"replace",3,3}, {"put",3,3},
     /* bounded optional upper (runtime: argc > max rejected) */
-    {"sql_query",1,3}, {"sql_write",1,3},
+    {"sql_query",1,3}, {"sql_write",1,3}, {"sql_tx_query",2,3},
     /* variadic / optional (runtime: argc < min rejected, extra args accepted) */
     {"print",0,-1}, {"run",0,-1},
     {"str",1,-1}, {"int",1,-1}, {"float",1,-1}, {"string",1,-1}, {"bool",1,-1},

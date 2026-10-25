@@ -287,6 +287,25 @@ All notable changes to Lume are documented here. The format follows
   gamma loop and ibeta CDF; `tests/quant-fuzz.py` grows to 1050 checks
   (10 series × 105 rows) with (0,1) simplex-share / probability and
   finiteness assertions on the four new rows.
+- **Transaction read-your-writes: `sql_tx_query(tx, sql[, params])`.**
+  The missing P6 follow-up: `sql_query` opens a fresh read-only
+  connection per call, so rows written (but not committed) by
+  `sql_tx_exec` on the transaction's private connection are invisible to
+  it — `sql_tx_query` prepares the SELECT on the transaction's own
+  connection instead, returns the same row-map list shape (200-row cap,
+  optional params list), and shares the `sql_query` read whitelist, so a
+  write statement is rejected while the transaction stays OPEN exactly
+  like `sql_tx_exec`. All three backends: interpreter
+  (`native_sql_tx_query` in builtins_sql.c), native runtime
+  (`lume_bi_sql_tx_query` in bridge_native.c), and both emitters
+  (text/LLVM: two/three `i8*` args → fresh `i8*` row list; registered,
+  whitelisted, arity 2–3). `tests/txq-smoke.lume` pins the semantics on
+  all three legs (uncommitted read-back with params → visible; rollback
+  → 0 rows everywhere; commit → visible to an independent `sql_query`);
+  `tests/sqlite.lume` adds six check() cases (read-back, params bind,
+  out-of-tx invisibility, write-guard reject, tx stays open, closed
+  handle rejects); `tests/native-sql-consistency.lume/.expected` grows
+  to 12 rows and passes interp/text/LLVM byte-identical.
 - **Portfolio layer: `sim_portfolio(paths, weights)`.** A deterministic
   (no RNG) combination of several equal-length price paths into one
   portfolio-return series: `paths` is a list of strictly-positive finite

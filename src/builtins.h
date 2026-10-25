@@ -49,6 +49,7 @@ Value b_sql_query(VM *vm, int argc, Value *args);
 Value b_sql_write(VM *vm, int argc, Value *args);
 Value b_sql_tx_begin(VM *vm, int argc, Value *args);
 Value b_sql_tx_exec(VM *vm, int argc, Value *args);
+Value b_sql_tx_query(VM *vm, int argc, Value *args);
 Value b_sql_tx_commit(VM *vm, int argc, Value *args);
 Value b_sql_tx_rollback(VM *vm, int argc, Value *args);
 Value b_json(VM *vm, int argc, Value *args);

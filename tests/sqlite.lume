@@ -220,6 +220,29 @@ func main(): int {
   let noarg = try(() => { sql_tx_commit("oops"); return "ok"; });
   check("tx commit non-handle rejects", get(noarg, "err", null) != null);
 
+  // ---- sql_tx_query (2026-11-02, #50): read-your-writes ----
+  // sql_query opens a fresh read-only connection per call, so rows written
+  // (but not committed) on the transaction's private connection are
+  // invisible to it; sql_tx_query reads on the transaction's own connection
+  // instead. Same read whitelist as sql_query; errors keep the tx open.
+  let txqdb = "/tmp/lume-sqlite-txq-" + str(now()) + ".lume-test.db";
+  write_file(txqdb, "");
+  sql_write(txqdb, "CREATE TABLE t (id integer primary key autoincrement, name text)");
+  let txq = sql_tx_begin(txqdb);
+  sql_tx_exec(txq, "INSERT INTO t (name) VALUES (?)", ["ryw"]);
+  let inb = sql_tx_query(txq, "SELECT name FROM t");
+  check("txq sees uncommitted", len(inb) == 1 and get(inb[0], "name") == "ryw");
+  check("txq params bind",
+    len(sql_tx_query(txq, "SELECT name FROM t WHERE name = ?", ["ryw"])) == 1);
+  check("txq not visible out-of-tx", len(sql_query(txqdb, "SELECT name FROM t")) == 0);
+  // read whitelist: a write statement is rejected, tx stays open
+  let gq = try(() => { sql_tx_query(txq, "INSERT INTO t (name) VALUES ('x')"); return "ok"; });
+  check("txq write guard rejects", get(gq, "err", null) != null);
+  check("txq stays open after guard", sql_tx_rollback(txq) == true);
+  // closed handle rejects further reads
+  let qc = try(() => { sql_tx_query(txq, "SELECT name FROM t"); return "ok"; });
+  check("txq after close rejects", get(qc, "err", null) != null);
+
   return 0;
 }
 main();

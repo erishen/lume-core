@@ -1218,6 +1218,28 @@ static Val cg_builtin(CG *g, Node *n)
                                         3, "txe");
         return val_make(type_prim(TY_INT), r);
     }
+    if (strcmp(bname, "sql_tx_query") == 0) {
+        if (argc < 2 || argc > 3)
+            ERRV(g, "line %zu: sql_tx_query() takes a handle, SQL and optional params",
+                 n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL };
+        if (!a.v || !b.v || (argc == 3 && !c.v)) {
+            return (Val){ NULL, NULL };
+        }
+        LLVMTypeRef pp[3] = { g->i8ptr, g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+                                        LLVMFunctionType(g->i8ptr, pp, 3, 0),
+                                        rt_decl(g, "lume_bi_sql_tx_query",
+                                               g->i8ptr, pp, 3),
+                                        (LLVMValueRef[]){ a.v, b.v,
+                                                          argc == 3 ? c.v
+                                                                    : LLVMConstNull(g->i8ptr) },
+                                        3, "txq");
+        return val_make(list_type(), r);
+    }
     if (strcmp(bname, "sql_tx_commit") == 0 || strcmp(bname, "sql_tx_rollback") == 0) {
         int isc = strcmp(bname, "sql_tx_commit") == 0;
         if (argc != 1)

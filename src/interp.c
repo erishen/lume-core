@@ -1443,6 +1443,7 @@ void bridge_seed_builtins(VM *vm) {
         {"sql_write", b_sql_write},
         {"sql_tx_begin", b_sql_tx_begin},
         {"sql_tx_exec", b_sql_tx_exec},
+        {"sql_tx_query", b_sql_tx_query},
         {"sql_tx_commit", b_sql_tx_commit},
         {"sql_tx_rollback", b_sql_tx_rollback},
         {"json", b_json},

@@ -108,6 +108,7 @@ void native_sql_query(VM *vm, int argc, Value *args, Value *out);
 void native_sql_write(VM *vm, int argc, Value *args, Value *out);
 void native_sql_tx_begin(VM *vm, int argc, Value *args, Value *out);
 void native_sql_tx_exec(VM *vm, int argc, Value *args, Value *out);
+void native_sql_tx_query(VM *vm, int argc, Value *args, Value *out);
 void native_sql_tx_commit(VM *vm, int argc, Value *args, Value *out);
 void native_sql_tx_rollback(VM *vm, int argc, Value *args, Value *out);
 /* OBJ_SQLTX finalizer — value.c calls it when the GC reclaims a tx handle. */

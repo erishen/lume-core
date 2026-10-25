@@ -509,6 +509,65 @@ void native_sql_tx_exec(VM *vm, int argc, Value *args, Value *out) {
     *out = val_int(affected);
 }
 
+/* sql_tx_query(tx, sql[, params]) — read back YOUR OWN writes inside a
+ * transaction. sql_query opens an independent read-only connection per
+ * call, so rows written (but not yet committed) by sql_tx_exec on the
+ * transaction's private connection are invisible to it; this builtin runs
+ * the SELECT on the transaction's own connection instead. Same guard as
+ * sql_query (read whitelist), same row-map JSON shape, same 200-row cap,
+ * same optional params list. Errors leave the transaction OPEN exactly
+ * like sql_tx_exec. */
+void native_sql_tx_query(VM *vm, int argc, Value *args, Value *out) {
+    *out = val_null();
+    if (argc < 2 || argc > 3) {
+        vm_set_error(vm, "sql_tx_query needs (tx, sql[, params])");
+        return;
+    }
+    if (!IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_SQLTX) {
+        vm_set_error(vm, "sql_tx_query: first argument must be a transaction handle");
+        return;
+    }
+    Obj *tx = AS_OBJ(args[0]);
+    if (!tx->as.sqltx.db || tx->as.sqltx.state != 0) {
+        vm_set_error(vm, "sql_tx_query: transaction is already closed");
+        return;
+    }
+    const char *dummy = NULL, *sql = NULL, **params = NULL;
+    int nparams = 0;
+    if (sql_arg_bind(vm, argc - 1, args + 1, &dummy, &sql, &params, &nparams))
+        return;   /* vm_set_error already set */
+    char body[SQL_MAX];
+    const char *verr = sql_validate_read(sql, body, sizeof body);
+    if (verr) {
+        vm_set_error(vm, "sql_tx_query: %s", verr);
+        free_sql_params(params, nparams);
+        return;
+    }
+    sqlite3 *sq = (sqlite3 *)tx->as.sqltx.db;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, body, -1, &st, NULL) != SQLITE_OK) {
+        vm_set_error(vm, "sql_tx_query: %s", sqlite3_errmsg(sq));
+        free_sql_params(params, nparams);
+        return;
+    }
+    char err[512] = {0};
+    if (bind_params(st, params, nparams, err, sizeof err)) {
+        vm_set_error(vm, "sql_tx_query: %s", err[0] ? err : "bind failed");
+        sqlite3_finalize(st);
+        free_sql_params(params, nparams);
+        return;
+    }
+    sbuf b = {0};
+    dump_rows(st, &b);
+    sqlite3_finalize(st);
+    free_sql_params(params, nparams);
+    char jerr[256] = {0};
+    json_parse(vm, b.p ? b.p : "[]", jerr, sizeof jerr);
+    free(b.p);
+    if (vm->error) { *out = val_null(); return; }
+    *out = vm_pop(vm); /* json_parse pushed the result above the args */
+}
+
 /* Shared tail of commit / rollback. On success the connection is closed and
  * the handle is spent (state 1 = committed, 2 = rolled back). On failure the
  * transaction stays open and the caller decides what to do next. */

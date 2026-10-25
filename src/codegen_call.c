@@ -584,6 +584,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_sql_query(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_bi_sql_write(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_sql_tx_begin(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_sql_tx_query(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_bi_sql_tx_exec(i8*, i8*, i8*)\n");
     EMIT(g, "declare i64 @lume_bi_sql_tx_commit(i8*)\n");
     EMIT(g, "declare i64 @lume_bi_sql_tx_rollback(i8*)\n");
@@ -1636,6 +1637,26 @@ static Val cg_builtin(CG *g, Node *n)
         Val r = val_take(type_prim(TY_INT),
                          emit_instrf(g, type_prim(TY_INT),
                                      "call i64 @lume_bi_sql_tx_exec(i8* %s, i8* %s, i8* %s)",
+                                     a.v, b.v, argc == 3 ? c.v : "null"));
+        free(a.v); free(b.v); free(c.v);
+        return r;
+    }
+    if (strcmp(bname, "sql_tx_query") == 0) {
+        if (argc < 2 || argc > 3)
+            ERRV(g, "line %zu: sql_tx_query() takes a handle, SQL and optional params",
+                 n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = argc == 3 ? cg_expr(g, n->as.call.args[2])
+                          : (Val){ NULL, NULL, 0 };
+        if (!a.v || !b.v || (argc == 3 && !c.v)) {
+            free(a.v); free(b.v); free(c.v);
+            return (Val){ NULL, NULL, 0 };
+        }
+        Type *rt = list_type();
+        Val r = val_take(rt,
+                         emit_instrf(g, rt,
+                                     "call i8* @lume_bi_sql_tx_query(i8* %s, i8* %s, i8* %s)",
                                      a.v, b.v, argc == 3 ? c.v : "null"));
         free(a.v); free(b.v); free(c.v);
         return r;

@@ -752,6 +752,21 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   covers simulation, statistics, risk metrics and composition; the next
   natural step is backtesting-shaped builtins (rolling portfolio
   evaluation on windowed returns) or the P6 sql_tx_query leftover.
+- [x] **`sql_tx_query(tx, sql[, params])` — transaction read-your-writes
+  (2026-11-02).** `sql_query` opens a fresh read-only connection per call,
+  so rows written (but not committed) by sql_tx_exec on the transaction's
+  private connection were invisible to it; sql_tx_query prepares the
+  SELECT on the transaction's own connection instead — same row-map list
+  shape (200-row cap, optional params), same read whitelist as sql_query
+  (a write statement is rejected and the tx stays OPEN like sql_tx_exec).
+  Three backends: native_sql_tx_query (builtins_sql.c),
+  lume_bi_sql_tx_query (bridge_native.c), text/LLVM emission (two/three
+  i8* args -> fresh i8* row list) + typecheck whitelist/arity 2-3.
+  tests/txq-smoke.lume pins read-back/rollback/commit on all three legs
+  (byte-identical); tests/sqlite.lume +6 check() cases; tests/
+  native-sql-consistency.lume/.expected grows to 12 rows, all three legs
+  agree. This closes the last named open builtin in TODO — the SQL
+  surface (query/write/tx + read-your-writes) is now complete.
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
