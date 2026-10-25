@@ -6,7 +6,20 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-25
+
 ### Added
+
+- **Refactor: `src/builtins_math.c` split into domain `.inc` fragments.**
+  The 2824-line file (grown from 328 over the quant development) is now a
+  27-line hub that `#include`s `builtins_math_basic.inc` (fundamental
+  numerics), `builtins_math_stochastic.inc` (random / distribution /
+  sampling / financial paths / Black-Scholes / hypothesis tests / copula),
+  and `builtins_math_quant.inc` (quant statistics / portfolio / risk /
+  technical indicators / time series / trading stats). Single translation
+  unit, byte-identical behaviour, no build-list (`SRCS`) change, no
+  symbol/registry change; verified by `quant-consistency` and the
+  three-backend `native-consistency` harness.
 
 - **F-test family: `f_stat` / `f_pvalue`.** `f_stat(a, b)` answers the
   sample-variance ratio s1²/s2² (n−1 denominators via `lume_bi_variance`,
