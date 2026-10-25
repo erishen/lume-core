@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 136                             # rows per dataset. The layout mirrors the
+RPP = 140                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -85,7 +85,9 @@ RPP = 136                             # rows per dataset. The layout mirrors the
                                       # time-series rows x3 (ACF lag-1 /
                                       # Treynor / Omega on the series), then
                                       # the rank rows x3 (Spearman pair / IC
-                                      # lag-1 / first average rank)
+                                      # lag-1 / first average rank) and the
+                                      # annualization rows x4 (annualized
+                                      # return / vol / Sharpe / cumulative)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -305,6 +307,39 @@ def ic_ref(sig, ret, lag):
     m = len(sig) - lag
     if m < 2: return float("nan")
     return spearman_ref(sig[:m], ret[lag:])
+
+
+SQRT252 = math.sqrt(252)
+
+
+def annualized_return_ref(prices):
+    if any(v <= 0 for v in prices): return float("nan")
+    return (prices[-1] / prices[0]) ** (1.0 / (len(prices) - 1)) - 1.0
+
+
+def sample_std_ref(xs):
+    m = m2 = 0.0
+    for i, v in enumerate(xs, 1):
+        d = v - m
+        m += d / i
+        m2 += d * (v - m)
+    return math.sqrt(m2 / (len(xs) - 1))
+
+
+def annualized_vol_ref(xs):
+    return sample_std_ref(xs) * SQRT252
+
+
+def sharpe_annualized_ref(xs, rf):
+    sd = sample_std_ref(xs)
+    mu = sum(xs) / len(xs)
+    if sd <= 0 or not math.isfinite(mu): return float("nan")
+    return (mu - rf) / sd * SQRT252
+
+
+def cumulative_return_ref(prices):
+    if prices[0] <= 0 or prices[-1] <= 0: return float("nan")
+    return prices[-1] / prices[0] - 1.0
 
 
 def rolling_var_ref(data, w, level):
@@ -1380,6 +1415,17 @@ def main():
         lines.append("print(ic(%s, %s, 1));" % (emit(pca), emit(pcb)))
         row(sixg(rank_ref(pca)[0]))
         lines.append("let rk%da = rank(%s); print(rk%da[0]);" % (i, emit(pca), i))
+        # annualization & returns (2026-11-02, #56): geometric annualized
+        # return and cumulative return on path a, the sqrt(252)
+        # annualized volatility and annualized Sharpe on the series.
+        row(sixg(annualized_return_ref(pa)))
+        lines.append("print(annualized_return(%s));" % emit(pa))
+        row(sixg(annualized_vol_ref(x)))
+        lines.append("print(annualized_volatility(%s));" % da)
+        row(sixg(sharpe_annualized_ref(x, 0.0)))
+        lines.append("print(sharpe_annualized(%s, 0.0));" % da)
+        row(sixg(cumulative_return_ref(pa)))
+        lines.append("print(cumulative_return(%s));" % emit(pa))
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

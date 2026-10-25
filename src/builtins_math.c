@@ -2397,6 +2397,73 @@ static void native_ic(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(r);
 }
 
+/* Annualization & returns (#56): the daily->yearly sqrt(252) scale and
+ * the geometric/compound price forms, mirroring rt.c. */
+#define BI_ANNUAL_SCALE_I 15.874507866387544
+
+static void native_annualized_return(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "annualized_return() needs >= 2 prices"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    for (int i = 0; i < n; i++) {
+        if (!(xs[i] > 0.0)) { free(xs); *out = val_num(NAN); return; }
+    }
+    double r = pow(xs[n - 1] / xs[0], 1.0 / (double)(n - 1)) - 1.0;
+    free(xs);
+    *out = val_num(r);
+}
+
+static void native_annualized_volatility(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "annualized_volatility() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    *out = val_num(sqrt(m2 / (double)(n - 1)) * BI_ANNUAL_SCALE_I);
+}
+
+static void native_sharpe_annualized(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double rf;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &rf)) return;
+    if (L->count < 2) { vm_set_error(vm, "sharpe_annualized() needs >= 2 returns"); return; }
+    if (!isfinite(rf)) { vm_set_error(vm, "sharpe_annualized(): rf must be finite"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double sd = sqrt(m2 / (double)(n - 1));
+    if (!(sd > 0.0) || !isfinite(m)) { *out = val_num(NAN); return; }
+    *out = val_num(((m - rf) / sd) * BI_ANNUAL_SCALE_I);
+}
+
+static void native_cumulative_return(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "cumulative_return() needs >= 2 prices"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    if (!(xs[0] > 0.0) || !(xs[n - 1] > 0.0)) {
+        free(xs); *out = val_num(NAN); return;
+    }
+    double r = xs[n - 1] / xs[0] - 1.0;
+    free(xs);
+    *out = val_num(r);
+}
+
 static void native_skew(VM *vm, int argc, Value *args, Value *out) {
     ObjList *L;
     if (argc < 1 || !arg_list(vm, args[0], &L)) return;
@@ -2554,3 +2621,7 @@ Value b_omega_ratio(VM *vm, int argc, Value *args)        { return vm_native(vm,
 Value b_rank(VM *vm, int argc, Value *args)               { return vm_native(vm, argc, args, native_rank); }
 Value b_spearman(VM *vm, int argc, Value *args)           { return vm_native(vm, argc, args, native_spearman); }
 Value b_ic(VM *vm, int argc, Value *args)                 { return vm_native(vm, argc, args, native_ic); }
+Value b_annualized_return(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_annualized_return); }
+Value b_annualized_volatility(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_annualized_volatility); }
+Value b_sharpe_annualized(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sharpe_annualized); }
+Value b_cumulative_return(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_cumulative_return); }

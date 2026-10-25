@@ -4142,6 +4142,54 @@ double lume_bi_omega_ratio(const LumeList *l, double t)
     return g / lo;
 }
 
+/* Annualization & return families (#56). sqrt(252) is the standard
+ * daily->yearly scale. Geometric annualization from strictly positive
+ * prices (end/start ^ (1/(n-1)) - 1); a non-positive price answers NAN. */
+static const double BI_ANNUAL_SCALE = 15.874507866387544; /* sqrt(252) */
+
+double lume_bi_annualized_return(const LumeList *p)
+{
+    int64_t n; double *xs = bi_num_copy(p, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    for (int64_t i = 0; i < n; i++) {
+        if (!(xs[i] > 0.0)) { free(xs); return NAN; }
+    }
+    double r = pow(xs[n - 1] / xs[0], 1.0 / (double)(n - 1)) - 1.0;
+    free(xs);
+    return r;
+}
+
+double lume_bi_annualized_volatility(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    if (!isfinite(m2)) return NAN;
+    return sqrt(m2 / (double)(n - 1)) * BI_ANNUAL_SCALE;
+}
+
+double lume_bi_sharpe_annualized(const LumeList *l, double rf)
+{
+    double s = lume_bi_sharpe_ratio(l, rf);
+    return s == s ? s * BI_ANNUAL_SCALE : NAN;
+}
+
+double lume_bi_cumulative_return(const LumeList *p)
+{
+    int64_t n; double *xs = bi_num_copy(p, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    if (!(xs[0] > 0.0) || !(xs[n - 1] > 0.0)) { free(xs); return NAN; }
+    double r = xs[n - 1] / xs[0] - 1.0;
+    free(xs);
+    return r;
+}
+
 /* Average ranks (1-based, ties share the mean of their rank range) over
  * a double copy — the monotonicity / IC primitive. A fresh float list;
  * empty for n < 1. */

@@ -1,0 +1,16 @@
+// r56-smoke.lume: annualization & return families (#56),
+// 3 legs byte-identical. Pinned rows recomputed in Python (r56.py).
+let prices: list = [100.0, 102.0, 104.0, 106.0, 108.0, 110.0];
+print(annualized_return(prices));
+let rets: list = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+print(annualized_volatility(rets));
+print(sharpe_annualized(rets, 0.0));
+print(sharpe_annualized(rets, 0.002));
+print(cumulative_return(prices));
+// data properties: non-positive price -> NAN annualized/cumulative;
+// constant returns -> NAN sharpe_annualized (zero vol)
+let bad: list = [100.0, 0.0, 100.0, 100.0];
+print(annualized_return(bad));
+let flat: list = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01];
+print(sharpe_annualized(flat, 0.0));
+print(cumulative_return([80.0, 90.0, 100.0, 90.0]));

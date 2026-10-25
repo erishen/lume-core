@@ -332,6 +332,25 @@ All notable changes to Lume are documented here. The format follows
   `tests/quant-consistency.lume` grows to 178 rows,
   `tests/quant-refcheck.py` to 166 cases, `tests/quant-fuzz.py` to
   1360 checks (10 series × 136 rows).
+- **Annualization & return families: `annualized_return` /
+  `annualized_volatility` / `sharpe_annualized` / `cumulative_return`.**
+  The industry-standard reporting layer.
+  `annualized_return(prices)` answers the geometric per-period
+  annualization end/start^(1/(n−1))−1 on strictly positive prices
+  (non-positive price → NAN); `annualized_volatility(returns)` scales
+  the #33 sample standard deviation by √252 (the daily→yearly
+  convention); `sharpe_annualized(returns, rf)` reuses the #48
+  Sharpe and applies the same scale (zero-volatility series → NAN);
+  `cumulative_return(prices)` answers last/first−1 with NAN on
+  non-positive endpoints. Emission: the three price/return scalars join
+  the mean (i8*) → double block, sharpe_annualized joins the
+  bootstrap_se_mean (i8*, double) → double block — text and LLVM, with
+  the inference twin and the text-leg declares. Verification:
+  `tests/r56-smoke.lume` (3 legs byte-identical; Python recomputes
+  0.0192449 / 0.332986 / 7.56787 / 6.0543 / 0.1 / 0.125 and the two NAN
+  data properties), `tests/quant-consistency.lume` grows to 186 rows,
+  `tests/quant-refcheck.py` to 171 cases, `tests/quant-fuzz.py` to
+  1400 checks (10 series × 140 rows).
 - **Performance attribution — the benchmark-aware evaluation layer:
   `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
   risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but

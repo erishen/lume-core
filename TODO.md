@@ -843,6 +843,17 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   170 -> 178 rows, quant-refcheck 161 -> 166 cases, quant-fuzz 10 series
   x 136 rows (1360 checks), native_backends 18/19 (serve errno 10038
   known).
+- [x] **Annualization & return families: `annualized_return` /
+  `annualized_volatility` / `sharpe_annualized` / `cumulative_return`
+  (2026-11-02).** Geometric annualized return and cumulative return on
+  strictly positive prices (non-positive -> NAN), the sqrt(252)
+  annualized volatility and the annualized Sharpe (reuses #48).
+  Emission: price/return scalars join the mean block, sharpe_annualized
+  the bootstrap_se_mean block, both emitters. Verification: r56-smoke
+  (3 legs byte-identical, Python recomputes 0.0192449 / 0.332986 /
+  7.56787 / 6.0543 / 0.1 / 0.125), quant-consistency 178 -> 186 rows,
+  quant-refcheck 166 -> 171 cases, quant-fuzz 10 series x 140 rows
+  (1400 checks), native_backends 18/19 (serve errno 10038 known).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 

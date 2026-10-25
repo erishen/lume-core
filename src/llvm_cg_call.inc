@@ -1003,7 +1003,7 @@ static Val cg_builtin(CG *g, Node *n)
 
     if (strcmp(bname, "bootstrap_se_mean") == 0 || strcmp(bname, "value_at_risk") == 0 ||
         strcmp(bname, "expected_shortfall") == 0 || strcmp(bname, "sharpe_ratio") == 0 ||
-        strcmp(bname, "sortino_ratio") == 0) {
+        strcmp(bname, "sortino_ratio") == 0 || strcmp(bname, "sharpe_annualized") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (list, number)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -1024,6 +1024,7 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "expected_shortfall") == 0) fn = "lume_bi_expected_shortfall";
         else if (strcmp(bname, "sharpe_ratio") == 0) fn = "lume_bi_sharpe_ratio";
         else if (strcmp(bname, "sortino_ratio") == 0) fn = "lume_bi_sortino_ratio";
+        else if (strcmp(bname, "sharpe_annualized") == 0) fn = "lume_bi_sharpe_annualized";
         LLVMTypeRef pt[2] = { g->i8ptr, g->dbl };
         LLVMValueRef pv[2] = { a.v, s.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -2264,7 +2265,10 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "stddev") == 0 || strcmp(bname, "median") == 0 ||
         strcmp(bname, "max_drawdown") == 0 || strcmp(bname, "calmar_ratio") == 0 ||
         strcmp(bname, "skew") == 0 ||
-        strcmp(bname, "kurtosis") == 0) {
+        strcmp(bname, "kurtosis") == 0 ||
+        strcmp(bname, "annualized_return") == 0 ||
+        strcmp(bname, "annualized_volatility") == 0 ||
+        strcmp(bname, "cumulative_return") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2277,6 +2281,9 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "max_drawdown") == 0 ? "lume_bi_max_drawdown"
                        : strcmp(bname, "calmar_ratio") == 0 ? "lume_bi_calmar_ratio"
                        : strcmp(bname, "skew") == 0 ? "lume_bi_skew"
+                       : strcmp(bname, "annualized_return") == 0 ? "lume_bi_annualized_return"
+                       : strcmp(bname, "annualized_volatility") == 0 ? "lume_bi_annualized_volatility"
+                       : strcmp(bname, "cumulative_return") == 0 ? "lume_bi_cumulative_return"
                        : "lume_bi_kurtosis";
         LLVMTypeRef p[1] = { g->i8ptr };
         LLVMValueRef vs[1] = { a.v };

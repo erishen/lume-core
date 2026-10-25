@@ -401,7 +401,10 @@ static Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "information_ratio") == 0 || strcmp(name, "calmar_ratio") == 0 ||
                  strcmp(name, "autocorrelation") == 0 || strcmp(name, "treynor_ratio") == 0 ||
                  strcmp(name, "omega_ratio") == 0 ||
-                 strcmp(name, "spearman") == 0 || strcmp(name, "ic") == 0))
+                 strcmp(name, "spearman") == 0 || strcmp(name, "ic") == 0 ||
+                 strcmp(name, "annualized_return") == 0 ||
+                 strcmp(name, "annualized_volatility") == 0 ||
+                 strcmp(name, "cumulative_return") == 0))
                 return type_prim(TY_FLOAT);
             if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||

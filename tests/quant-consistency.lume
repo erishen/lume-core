@@ -380,3 +380,20 @@ print(ic(t55sig, t55fr, 1));
 print(ic(t55sig, t55fr, 2));
 print(spearman(t55const, [1.0, 2.0, 3.0, 4.0]));
 print(ic(t55sig, t55cref, 1));
+
+// #56 annualization & return families (2026-11-02): geometric
+// annualized return and cumulative return on strictly positive prices,
+// the sqrt(252) annualized volatility, and the annualized Sharpe
+// (reuses the #48 mean/std with the daily->yearly scale). A
+// non-positive price or a zero-volatility return series answers NAN.
+let t56p: list = [100.0, 102.0, 104.0, 106.0, 108.0, 110.0];
+let t56bad: list = [100.0, 0.0, 100.0, 100.0];
+let t56flat: list = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01];
+print(annualized_return(t56p));
+print(annualized_volatility(t53r));
+print(sharpe_annualized(t53r, 0.0));
+print(sharpe_annualized(t53r, 0.002));
+print(cumulative_return(t56p));
+print(annualized_return(t56bad));
+print(sharpe_annualized(t56flat, 0.0));
+print(cumulative_return([80.0, 90.0, 100.0, 90.0]));

@@ -304,6 +304,39 @@ def ic_ref(sig, ret, lag):
     return spearman_ref(sig[:m], ret[lag:])
 
 
+SQRT252 = math.sqrt(252)
+
+
+def annualized_return_ref(prices):
+    if any(v <= 0 for v in prices): return float('nan')
+    return (prices[-1] / prices[0]) ** (1.0 / (len(prices) - 1)) - 1.0
+
+
+def sample_std_ref(xs):
+    m = m2 = 0.0
+    for i, v in enumerate(xs, 1):
+        d = v - m
+        m += d / i
+        m2 += d * (v - m)
+    return math.sqrt(m2 / (len(xs) - 1))
+
+
+def annualized_vol_ref(xs):
+    return sample_std_ref(xs) * SQRT252
+
+
+def sharpe_annualized_ref(xs, rf):
+    sd = sample_std_ref(xs)
+    mu = sum(xs) / len(xs)
+    if sd <= 0 or not math.isfinite(mu): return float('nan')
+    return (mu - rf) / sd * SQRT252
+
+
+def cumulative_return_ref(prices):
+    if prices[0] <= 0 or prices[-1] <= 0: return float('nan')
+    return prices[-1] / prices[0] - 1.0
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1231,6 +1264,14 @@ cases += [
     ("spearman inv",      sixg(spearman_ref([1.0, 2.0, 3.0, 4.0, 5.0], [5.0, 4.0, 3.0, 2.0, 1.0])), -1),
     ("spearman tied",     sixg(spearman_ref([1.0, 2.0, 2.0, 3.0], [2.0, 2.0, 4.0, 8.0])), 0.833333),
     ("ic lag1",           sixg(ic_ref([2.0, 1.0, 3.0, 4.0, 5.0, 6.0], [0.1, 0.5, 0.2, 0.8, 0.9, 0.95], 1)), 1),
+    # annualization & returns (2026-11-02, #56): geometric annualized
+    # return and cumulative return on strictly positive prices, the
+    # sqrt(252) annualized volatility, and the annualized Sharpe.
+    ("ann return",        sixg(annualized_return_ref([100.0, 102.0, 104.0, 106.0, 108.0, 110.0])), 0.0192449),
+    ("ann vol",           sixg(annualized_vol_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03])), 0.332986),
+    ("sharpe ann 0",      sixg(sharpe_annualized_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.0)), 7.56787),
+    ("sharpe ann rf",     sixg(sharpe_annualized_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.002)), 6.0543),
+    ("cum return",        sixg(cumulative_return_ref([100.0, 102.0, 104.0, 106.0, 108.0, 110.0])), 0.1),
 ]
 
 fails = 0
