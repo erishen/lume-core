@@ -424,14 +424,17 @@ static Type *infer_node_type(CG *g, Node *n)
                 strcmp(name, "bootstrap_stddev_ci") == 0 ||
                 strcmp(name, "rolling_sharpe") == 0 || strcmp(name, "rolling_sortino") == 0 ||
                 strcmp(name, "rolling_var") == 0 || strcmp(name, "rolling_cvar") == 0 ||
-                strcmp(name, "rsi") == 0)
+                strcmp(name, "rsi") == 0 || strcmp(name, "rolling_max") == 0 ||
+                strcmp(name, "rolling_min") == 0 || strcmp(name, "williams_r") == 0 ||
+                strcmp(name, "atr") == 0 || strcmp(name, "obv") == 0)
                 return type_list(type_prim(TY_FLOAT));
             /* rand_multinomial (2026-10-28) builds a fresh int list: the
              * success counts per category. */
             if (strcmp(name, "rand_multinomial") == 0)
                 return type_list(type_prim(TY_INT));
             if (strcmp(name, "linreg") == 0 || strcmp(name, "macd") == 0 ||
-                strcmp(name, "bollinger") == 0 || strcmp(name, "alpha_beta") == 0)
+                strcmp(name, "bollinger") == 0 || strcmp(name, "alpha_beta") == 0 ||
+                strcmp(name, "kdj") == 0)
                 return type_anon_struct();
         }
 

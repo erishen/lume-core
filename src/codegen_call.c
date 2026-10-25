@@ -513,6 +513,12 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_rsi(i8*, i64)\n");
     EMIT(g, "declare i8* @lume_bi_macd(i8*, i64, i64, i64)\n");
     EMIT(g, "declare i8* @lume_bi_bollinger(i8*, i64, double)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_max(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_rolling_min(i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_kdj(i8*, i8*, i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_williams_r(i8*, i8*, i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_atr(i8*, i8*, i8*, i64)\n");
+    EMIT(g, "declare i8* @lume_bi_obv(i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_sharpe(i8*, i64, double)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_sortino(i8*, i64, double)\n");
     EMIT(g, "declare i8* @lume_bi_rolling_var(i8*, i64, double)\n");
@@ -2757,6 +2763,90 @@ static Val cg_builtin(CG *g, Node *n)
                               a.v, w.v, k.v);
         free(a.v); free(w.v); free(k.v);
         return val_make(type_anon_struct(), t);
+    }
+
+    /* Technical-indicator sequences (#54): rolling_max / rolling_min are the
+     * two trailing-window primitives KDJ / Williams %R / ATR need — one
+     * list plus an integer window, returning a fresh float list (window-1
+     * leading NANs), exactly like rolling_mean. kdj / williams_r / atr take
+     * three equal OHLC lists plus an integer period; obv takes two equal
+     * lists (close, volume). The three-list forms answer an opaque i8* like
+     * macd (kdj -> struct map) or a float list (williams_r / atr / obv). */
+    if (strcmp(bname, "rolling_max") == 0 || strcmp(bname, "rolling_min") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (list, window)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+            free(a.v); free(w.v);
+            ERRV(g, "line %zu: %s() needs a window size", n->line, bname);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            char *wi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", w.v);
+            free(w.v);
+            w.v = wi;
+        }
+        const char *fn = strcmp(bname, "rolling_max") == 0
+                             ? "lume_bi_rolling_max" : "lume_bi_rolling_min";
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @%s(i8* %s, i64 %s)", fn, a.v, w.v);
+        free(a.v); free(w.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    if (strcmp(bname, "kdj") == 0 || strcmp(bname, "williams_r") == 0 ||
+        strcmp(bname, "atr") == 0) {
+        if (argc != 4)
+            ERRV(g, "line %zu: %s() takes (high, low, close, period)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = cg_expr(g, n->as.call.args[2]);
+        Val p = cg_expr(g, n->as.call.args[3]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST ||
+            !c.v || !c.ty || c.ty->kind != TY_LIST) {
+            free(a.v); free(b.v); free(c.v); free(p.v);
+            ERRV(g, "line %zu: %s() needs three lists", n->line, bname);
+        }
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
+            free(a.v); free(b.v); free(c.v); free(p.v);
+            ERRV(g, "line %zu: %s() needs a period", n->line, bname);
+        }
+        if (p.ty->kind == TY_FLOAT) {
+            char *pi = emit_instrf(g, type_prim(TY_INT),
+                                   "call i64 @lume_bi_ftoi(double %s)", p.v);
+            free(p.v);
+            p.v = pi;
+        }
+        const char *fn = strcmp(bname, "kdj") == 0 ? "lume_bi_kdj"
+                             : strcmp(bname, "williams_r") == 0
+                                  ? "lume_bi_williams_r" : "lume_bi_atr";
+        Type *rty = strcmp(bname, "kdj") == 0 ? type_anon_struct()
+                                               : type_list(type_prim(TY_FLOAT));
+        char *t = emit_instrf(g, rty,
+                              "call i8* @%s(i8* %s, i8* %s, i8* %s, i64 %s)",
+                              fn, a.v, b.v, c.v, p.v);
+        free(a.v); free(b.v); free(c.v); free(p.v);
+        return val_make(rty, t);
+    }
+
+    if (strcmp(bname, "obv") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: obv() takes (close, volume)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: obv() needs two lists", n->line);
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_obv(i8* %s, i8* %s)", a.v, b.v);
+        free(a.v); free(b.v);
+        return val_make(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* Performance attribution (2026-11-02, #53): alpha_beta takes a

@@ -6,6 +6,31 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Technical-indicator sequence builtins (#54): `rolling_max` / `rolling_min` /
+  `kdj` / `williams_r` / `atr` / `obv`.** Adds the two trailing-window
+  extremum primitives KDJ / Williams %R / ATR build from, plus the multi-
+  sequence OHLC indicators that stock-analyzer's Python ETL computes. Signatures:
+  `rolling_max(list, window)` / `rolling_min(list, window)` → float list
+  (window−1 leading NANs, twin of `rolling_mean`); `kdj(high, low, close,
+  period)` → `{rsv, k, d, j}` map of full-length float lists (rsv is the
+  close's position in the trailing high/low band — a flat band answers 50 so
+  no NAN leaks into k/d; k/d are 1/3-EWMs seeded at the first valid rsv;
+  j = 3k − 2d); `williams_r(high, low, close, period)` → float list (−100 at
+  the band high, +100 at the band low, flat band 0); `atr(high, low, close,
+  period)` → float list (true range max(h−l, |h−prevC|, |l−prevC|) then the
+  rolling mean); `obv(close, volume)` → float list (on-balance volume, seeded
+  0, first element's NaN diff matches pandas `fillna(0)`). The three-list
+  forms are a new multi-`LumeList*` input shape (mirrors `alpha_beta`'s two-
+  list dispatch). Interpreted in `builtins_math_quant.inc`, mirrored in
+  `rt.c` (`lume_bi_rolling_max/min/kdj/williams_r/atr/obv`), wired through
+  both native emitters (text + LLVM `cg_builtin`/`cg_call`, `type_anon_struct`
+  boundary for `kdj`, `type_list(float)` for the rest), the `typecheck`
+  name + arity tables, and `interp` dispatch. Pinned by a new `#54` section in
+  `tests/quant-consistency.lume` (deterministic linear prices keep KDJ/Williams
+  constant so all three legs print byte-identically).
+
 ## [0.11.0] - 2026-10-25
 
 ### Added

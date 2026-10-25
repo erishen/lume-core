@@ -2786,6 +2786,98 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 
+    /* Technical-indicator sequences (#54): rolling_max / rolling_min mirror
+     * rolling_mean (one list + i64 window -> fresh float list); kdj /
+     * williams_r / atr take three equal OHLC lists + i64 period (the three
+     * i8* args follow the #53 multi-list shape); obv takes two equal lists.
+     * kdj answers an opaque struct map, the rest a fresh float list. */
+    if (strcmp(bname, "rolling_max") == 0 || strcmp(bname, "rolling_min") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes (list, window)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST)
+            ERRV(g, "line %zu: %s() needs a list", n->line, bname);
+        Val w = cg_expr(g, n->as.call.args[1]);
+        if (!w.v || !w.ty || (w.ty->kind != TY_INT && w.ty->kind != TY_FLOAT)) {
+
+            ERRV(g, "line %zu: %s() needs a window size", n->line, bname);
+        }
+        if (w.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { w.v };
+            w.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "wi");
+        }
+        const char *fn = strcmp(bname, "rolling_max") == 0
+                             ? "lume_bi_rolling_max" : "lume_bi_rolling_min";
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i64 };
+        LLVMValueRef v2[2] = { a.v, w.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p2, 2, 0),
+            rt_decl(g, fn, g->i8ptr, p2, 2), v2, 2, "q");
+
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
+    if (strcmp(bname, "kdj") == 0 || strcmp(bname, "williams_r") == 0 ||
+        strcmp(bname, "atr") == 0) {
+        if (argc != 4)
+            ERRV(g, "line %zu: %s() takes (high, low, close, period)", n->line, bname);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        Val c = cg_expr(g, n->as.call.args[2]);
+        Val p = cg_expr(g, n->as.call.args[3]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST ||
+            !c.v || !c.ty || c.ty->kind != TY_LIST) {
+
+            ERRV(g, "line %zu: %s() needs three lists", n->line, bname);
+        }
+        if (!p.v || !p.ty || (p.ty->kind != TY_INT && p.ty->kind != TY_FLOAT)) {
+
+            ERRV(g, "line %zu: %s() needs a period", n->line, bname);
+        }
+        if (p.ty->kind == TY_FLOAT) {
+            LLVMTypeRef p1[1] = { g->dbl };
+            LLVMValueRef v1[1] = { p.v };
+            p.v = LLVMBuildCall2(g->ab,
+                LLVMFunctionType(g->i64, p1, 1, 0),
+                rt_decl(g, "lume_bi_ftoi", g->i64, p1, 1), v1, 1, "pi");
+        }
+        const char *fn = strcmp(bname, "kdj") == 0 ? "lume_bi_kdj"
+                             : strcmp(bname, "williams_r") == 0
+                                  ? "lume_bi_williams_r" : "lume_bi_atr";
+        Type *rty = strcmp(bname, "kdj") == 0 ? type_anon_struct()
+                                               : type_list(type_prim(TY_FLOAT));
+        LLVMTypeRef p4[4] = { g->i8ptr, g->i8ptr, g->i8ptr, g->i64 };
+        LLVMValueRef v4[4] = { a.v, b.v, c.v, p.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p4, 4, 0),
+            rt_decl(g, fn, g->i8ptr, p4, 4), v4, 4, "q");
+
+        return val_make(rty, r);
+    }
+
+    if (strcmp(bname, "obv") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: obv() takes (close, volume)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST ||
+            !b.v || !b.ty || b.ty->kind != TY_LIST) {
+
+            ERRV(g, "line %zu: obv() needs two lists", n->line);
+        }
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef v2[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, p2, 2, 0),
+            rt_decl(g, "lume_bi_obv", g->i8ptr, p2, 2), v2, 2, "q");
+
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
     return (Val){ NULL, NULL };
 }
 

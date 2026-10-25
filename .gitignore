@@ -1,6 +1,8 @@
 # lume-core — build artifacts (regenerate with `make`)
 /build/
 /build-asan/
+# 本机测试脚手架 (mktemp/clang-xcrun shim, 沙箱写 /tmp 被锁时用的 workspace 内替代)
+.work/
 # 发布构建 (make pack 重编这套, 见 Makefile 的 PACK_CFLAGS)
 /build-pack/
 # fuzz-ci 的插桩对象 (SanCov+ASan, 带编译机绝对路径 DWARF)。构建目录刻意逐条

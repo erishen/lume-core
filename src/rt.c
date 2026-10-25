@@ -4591,3 +4591,178 @@ LumeList *lume_bi_ewma(const LumeList *l, double alpha)
     free(xs);
     return out;
 }
+
+/* Technical-indicator sequences (#54): native mirrors of the interpreter
+ * native_* in builtins_math_quant.inc. Same windows / leading-NAN / EMA
+ * seeding so every leg prints byte-identically. rolling_max / rolling_min are
+ * the trailing-window extrema KDJ / Williams %R / ATR build from; kdj answers
+ * a {rsv,k,d,j} map, williams_r / atr a float list, obv the on-balance volume
+ * line (two-list input). */
+LumeList *lume_bi_rolling_max(const LumeList *l, int64_t w)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || w < 1) { free(xs); return out; }
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 1 < w) { lume_list_push_f(out, NAN); continue; }
+        double m = xs[i + 1 - w];
+        for (int64_t j = i + 2 - w; j <= i; j++) if (xs[j] > m) m = xs[j];
+        lume_list_push_f(out, m);
+    }
+    free(xs);
+    return out;
+}
+
+LumeList *lume_bi_rolling_min(const LumeList *l, int64_t w)
+{
+    LumeList *out = lume_list_new();
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || w < 1) { free(xs); return out; }
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 1 < w) { lume_list_push_f(out, NAN); continue; }
+        double m = xs[i + 1 - w];
+        for (int64_t j = i + 2 - w; j <= i; j++) if (xs[j] < m) m = xs[j];
+        lume_list_push_f(out, m);
+    }
+    free(xs);
+    return out;
+}
+
+LumeMap *lume_bi_kdj(const LumeList *h, const LumeList *lo,
+                     const LumeList *c, int64_t w)
+{
+    int64_t nh, nl, nc;
+    double *hx = bi_num_copy(h, &nh), *lx = bi_num_copy(lo, &nl),
+           *cx = bi_num_copy(c, &nc);
+    if (!hx || !lx || !cx || nh != nl || nh != nc || nh < 2 || w < 2) {
+        free(hx); free(lx); free(cx); return NULL;
+    }
+    int64_t n = nh;
+    double *rsv = malloc((size_t)n * sizeof(double));
+    double *k = malloc((size_t)n * sizeof(double));
+    double *d = malloc((size_t)n * sizeof(double));
+    double *j = malloc((size_t)n * sizeof(double));
+    if (!rsv || !k || !d || !j) {
+        free(hx); free(lx); free(cx);
+        free(rsv); free(k); free(d); free(j); return NULL;
+    }
+    double alpha = 1.0 / 3.0;
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 1 < w) {
+            rsv[i] = k[i] = d[i] = j[i] = NAN;
+            continue;
+        }
+        int64_t s = i + 1 - w;
+        double hi = hx[s], lo2 = lx[s];
+        for (int64_t p = s + 1; p <= i; p++) {
+            if (hx[p] > hi) hi = hx[p];
+            if (lx[p] < lo2) lo2 = lx[p];
+        }
+        double den = hi - lo2;
+        rsv[i] = (den == 0.0) ? 50.0 : (cx[i] - lo2) / den * 100.0;
+    }
+    int64_t seed = (w - 1 < n) ? (w - 1) : -1;
+    double ek = 0.0, ed = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        if (i < seed || rsv[i] != rsv[i]) { k[i] = d[i] = NAN; continue; }
+        ek = (i == seed) ? rsv[i] : alpha * rsv[i] + (1.0 - alpha) * ek;
+        ed = (i == seed) ? ek : alpha * ek + (1.0 - alpha) * ed;
+        k[i] = ek; d[i] = ed; j[i] = 3.0 * ek - 2.0 * ed;
+    }
+    LumeMap *m = lume_map_new();
+    LumeList *lr = lume_list_new(), *lk = lume_list_new();
+    LumeList *ld = lume_list_new(), *lj = lume_list_new();
+    for (int64_t i = 0; i < n; i++) {
+        lume_list_push_f(lr, rsv[i]);
+        lume_list_push_f(lk, k[i]);
+        lume_list_push_f(ld, d[i]);
+        lume_list_push_f(lj, j[i]);
+    }
+    lume_map_put_obj(m, "rsv", lr);
+    lume_map_put_obj(m, "k", lk);
+    lume_map_put_obj(m, "d", ld);
+    lume_map_put_obj(m, "j", lj);
+    free(hx); free(lx); free(cx);
+    free(rsv); free(k); free(d); free(j);
+    return m;
+}
+
+LumeList *lume_bi_williams_r(const LumeList *h, const LumeList *lo,
+                             const LumeList *c, int64_t w)
+{
+    LumeList *out = lume_list_new();
+    int64_t nh, nl, nc;
+    double *hx = bi_num_copy(h, &nh), *lx = bi_num_copy(lo, &nl),
+           *cx = bi_num_copy(c, &nc);
+    if (!hx || !lx || !cx || nh != nl || nh != nc || nh < 2 || w < 2) {
+        free(hx); free(lx); free(cx); return out;
+    }
+    int64_t n = nh;
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 1 < w) { lume_list_push_f(out, NAN); continue; }
+        int64_t s = i + 1 - w;
+        double hi = hx[s], lo2 = lx[s];
+        for (int64_t p = s + 1; p <= i; p++) {
+            if (hx[p] > hi) hi = hx[p];
+            if (lx[p] < lo2) lo2 = lx[p];
+        }
+        double den = hi - lo2;
+        double v = (den == 0.0) ? 0.0 : (hi - cx[i]) / den * -100.0;
+        lume_list_push_f(out, v);
+    }
+    free(hx); free(lx); free(cx);
+    return out;
+}
+
+LumeList *lume_bi_atr(const LumeList *h, const LumeList *lo,
+                      const LumeList *c, int64_t w)
+{
+    LumeList *out = lume_list_new();
+    int64_t nh, nl, nc;
+    double *hx = bi_num_copy(h, &nh), *lx = bi_num_copy(lo, &nl),
+           *cx = bi_num_copy(c, &nc);
+    if (!hx || !lx || !cx || nh != nl || nh != nc || nh < 2 || w < 1) {
+        free(hx); free(lx); free(cx); return out;
+    }
+    int64_t n = nh;
+    double *tr = malloc((size_t)n * sizeof(double));
+    if (!tr) { free(hx); free(lx); free(cx); return out; }
+    for (int64_t i = 0; i < n; i++) {
+        double t = hx[i] - lx[i];
+        if (i > 0) {
+            double t2 = hx[i] - cx[i - 1]; if (t2 < 0) t2 = -t2;
+            double t3 = lx[i] - cx[i - 1]; if (t3 < 0) t3 = -t3;
+            double m = t2 > t3 ? t2 : t3;
+            tr[i] = m > t ? m : t;
+        } else {
+            tr[i] = t;
+        }
+    }
+    for (int64_t i = 0; i < n; i++) {
+        if (i + 1 < w) { lume_list_push_f(out, NAN); continue; }
+        double s = 0.0;
+        for (int64_t p = i + 1 - w; p <= i; p++) s += tr[p];
+        lume_list_push_f(out, s / (double)w);
+    }
+    free(tr); free(hx); free(lx); free(cx);
+    return out;
+}
+
+LumeList *lume_bi_obv(const LumeList *c, const LumeList *v)
+{
+    LumeList *out = lume_list_new();
+    int64_t nc, nv;
+    double *cx = bi_num_copy(c, &nc), *vx = bi_num_copy(v, &nv);
+    if (!cx || !vx || nc != nv || nc < 2) { free(cx); free(vx); return out; }
+    int64_t n = nc;
+    double obv = 0.0;
+    lume_list_push_f(out, obv);
+    for (int64_t i = 1; i < n; i++) {
+        double dd = cx[i] - cx[i - 1];
+        if (dd > 0.0) obv += vx[i];
+        else if (dd < 0.0) obv -= vx[i];
+        lume_list_push_f(out, obv);
+    }
+    free(cx); free(vx);
+    return out;
+}

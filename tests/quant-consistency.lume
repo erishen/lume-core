@@ -446,3 +446,31 @@ print(f_pvalue(2.5, 4.0, 5.0));
 print(f_pvalue(3.5, 5.0, 8.0));
 print(f_pvalue(0.8, 4.0, 12.0));
 
+
+// #54 technical-indicator sequences (2026-10-25): rolling_max / rolling_min
+// (trailing-window extrema), kdj (3-list stochastic {rsv,k,d,j}), williams_r,
+// atr (true-range mean), obv (on-balance volume, 2-list). Windows/leading-NAN
+// and the 1/3 EMA seeding are pinned so the three legs stay byte-identical.
+let p54hi:  list = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+let p54lo:  list = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+let p54cl:  list = [8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5, 16.5, 17.5];
+let p54vol: list = [100, 200, 150, 300, 250, 400, 350, 500, 450, 600];
+print(rolling_max(p54cl, 3));
+print(rolling_min(p54cl, 3));
+print(rolling_max(p54hi, 2));
+print(rolling_min(p54lo, 2));
+let p54kd = kdj(p54hi, p54lo, p54cl, 3);
+print(get(p54kd, "k", [])[5]);
+print(get(p54kd, "d", [])[5]);
+print(get(p54kd, "j", [])[5]);
+print(get(p54kd, "rsv", [])[5]);
+print(williams_r(p54hi, p54lo, p54cl, 3));
+print(atr(p54hi, p54lo, p54cl, 3));
+print(obv(p54cl, p54vol));
+// flat band -> williams_r answers 0 (no NaN leak); kdj band-midpoint 50.
+let p54fhi: list = [5, 5, 5, 5, 5];
+let p54flo: list = [5, 5, 5, 5, 5];
+let p54fcl: list = [5, 5, 5, 5, 5];
+print(williams_r(p54fhi, p54flo, p54fcl, 3));
+let p54fk = kdj(p54fhi, p54flo, p54fcl, 3);
+print(get(p54fk, "k", [])[2]);
