@@ -351,6 +351,26 @@ All notable changes to Lume are documented here. The format follows
   data properties), `tests/quant-consistency.lume` grows to 186 rows,
   `tests/quant-refcheck.py` to 171 cases, `tests/quant-fuzz.py` to
   1400 checks (10 series × 140 rows).
+- **Volatility & risk derivatives: `semivariance` /
+  `downside_deviation` / `param_var` / `kelly_fraction`.**
+  The lower-part-moment and model-based risk layer.
+  `semivariance(returns)` answers the mean-based lower-part moment
+  Σmin(0, x−μ)²/n — the variance that only the losses contribute (a
+  flat series answers 0); `downside_deviation(returns, threshold)`
+  answers √(Σmin(0, x−t)²/n) — the Sortino denominator exposed on its
+  own; `param_var(returns, level)` answers the normal-model value at
+  risk −(μ + z(level)·σ) with the #37 norminv z-score and the #48
+  positive-loss convention; `kelly_fraction(returns)` answers the
+  continuous Kelly bet μ/σ² (sample variance; zero variance → NAN).
+  Emission: semivariance/kelly join the mean (i8*) → double block,
+  downside_deviation/param_var join the bootstrap_se_mean (i8*,
+  double) → double block — text and LLVM, with the inference twin and
+  the text-leg declares. Verification: `tests/r57-smoke.lume` (3 legs
+  byte-identical; Python recomputes 0.000216667 / 0.00912871 /
+  0.0245027 / 22.7273 / 0 / 0 / −0.01 / NAN),
+  `tests/quant-consistency.lume` grows to 194 rows,
+  `tests/quant-refcheck.py` to 176 cases, `tests/quant-fuzz.py` to
+  1440 checks (10 series × 144 rows).
 - **Performance attribution — the benchmark-aware evaluation layer:
   `alpha_beta` / `information_ratio` / `calmar_ratio`.** Completes the
   risk/performance surface: #48's Sharpe/Sortino are risk-adjusted but

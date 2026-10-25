@@ -1003,7 +1003,8 @@ static Val cg_builtin(CG *g, Node *n)
 
     if (strcmp(bname, "bootstrap_se_mean") == 0 || strcmp(bname, "value_at_risk") == 0 ||
         strcmp(bname, "expected_shortfall") == 0 || strcmp(bname, "sharpe_ratio") == 0 ||
-        strcmp(bname, "sortino_ratio") == 0 || strcmp(bname, "sharpe_annualized") == 0) {
+        strcmp(bname, "sortino_ratio") == 0 || strcmp(bname, "sharpe_annualized") == 0 ||
+        strcmp(bname, "downside_deviation") == 0 || strcmp(bname, "param_var") == 0) {
         if (argc != 2)
             ERRV(g, "line %zu: %s() takes (list, number)", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -1025,6 +1026,8 @@ static Val cg_builtin(CG *g, Node *n)
         else if (strcmp(bname, "sharpe_ratio") == 0) fn = "lume_bi_sharpe_ratio";
         else if (strcmp(bname, "sortino_ratio") == 0) fn = "lume_bi_sortino_ratio";
         else if (strcmp(bname, "sharpe_annualized") == 0) fn = "lume_bi_sharpe_annualized";
+        else if (strcmp(bname, "downside_deviation") == 0) fn = "lume_bi_downside_deviation";
+        else if (strcmp(bname, "param_var") == 0) fn = "lume_bi_param_var";
         LLVMTypeRef pt[2] = { g->i8ptr, g->dbl };
         LLVMValueRef pv[2] = { a.v, s.v };
         LLVMValueRef r = LLVMBuildCall2(g->ab,
@@ -2268,7 +2271,9 @@ static Val cg_builtin(CG *g, Node *n)
         strcmp(bname, "kurtosis") == 0 ||
         strcmp(bname, "annualized_return") == 0 ||
         strcmp(bname, "annualized_volatility") == 0 ||
-        strcmp(bname, "cumulative_return") == 0) {
+        strcmp(bname, "cumulative_return") == 0 ||
+        strcmp(bname, "semivariance") == 0 ||
+        strcmp(bname, "kelly_fraction") == 0) {
         if (argc != 1)
             ERRV(g, "line %zu: %s() takes exactly one argument", n->line, bname);
         Val a = cg_expr(g, n->as.call.args[0]);
@@ -2284,6 +2289,8 @@ static Val cg_builtin(CG *g, Node *n)
                        : strcmp(bname, "annualized_return") == 0 ? "lume_bi_annualized_return"
                        : strcmp(bname, "annualized_volatility") == 0 ? "lume_bi_annualized_volatility"
                        : strcmp(bname, "cumulative_return") == 0 ? "lume_bi_cumulative_return"
+                       : strcmp(bname, "semivariance") == 0 ? "lume_bi_semivariance"
+                       : strcmp(bname, "kelly_fraction") == 0 ? "lume_bi_kelly_fraction"
                        : "lume_bi_kurtosis";
         LLVMTypeRef p[1] = { g->i8ptr };
         LLVMValueRef vs[1] = { a.v };

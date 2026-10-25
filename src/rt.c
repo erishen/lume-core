@@ -4190,6 +4190,74 @@ double lume_bi_cumulative_return(const LumeList *p)
     return r;
 }
 
+/* Volatility & risk derivatives (#57). Semivariance and downside
+ * deviation are the mean-based lower-part moments that Sortino's
+ * denominator came from; param_var is the normal-model VaR (same
+ * positive-loss convention as #48); kelly_fraction is the continuous
+ * Kelly bet mu/sigma^2. */
+double lume_bi_semivariance(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double m = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+    }
+    double sv = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        if (d < 0.0) sv += d * d;
+    }
+    free(xs);
+    return sv / (double)n;
+}
+
+double lume_bi_downside_deviation(const LumeList *l, double t)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !isfinite(t)) { free(xs); return NAN; }
+    double dd = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - t;
+        if (d < 0.0) dd += d * d;
+    }
+    free(xs);
+    return sqrt(dd / (double)n);
+}
+
+double lume_bi_param_var(const LumeList *l, double level)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2 || !(level > 0.0) || !(level < 1.0)) { free(xs); return NAN; }
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double sd = sqrt(m2 / (double)(n - 1));
+    double z = lume_bi_norminv(level);
+    return -(m + z * sd);
+}
+
+double lume_bi_kelly_fraction(const LumeList *l)
+{
+    int64_t n; double *xs = bi_num_copy(l, &n);
+    if (!xs || n < 2) { free(xs); return NAN; }
+    double m = 0.0, m2 = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double var = m2 / (double)(n - 1);
+    if (!(var > 0.0)) return NAN;
+    return m / var;
+}
+
 /* Average ranks (1-based, ties share the mean of their rank range) over
  * a double copy — the monotonicity / IC primitive. A fresh float list;
  * empty for n < 1. */

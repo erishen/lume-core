@@ -397,3 +397,17 @@ print(cumulative_return(t56p));
 print(annualized_return(t56bad));
 print(sharpe_annualized(t56flat, 0.0));
 print(cumulative_return([80.0, 90.0, 100.0, 90.0]));
+
+// #57 volatility & risk derivatives (2026-11-02): mean-based
+// semivariance and downside deviation, the normal-model VaR (same
+// positive-loss convention as #48) and the continuous Kelly fraction.
+// Flat series answer 0 / 0 / NAN as data properties.
+let t57flat: list = [1.0, 1.0, 1.0, 1.0];
+print(semivariance(t53r));
+print(downside_deviation(t53r, 0.0));
+print(param_var(t53r, 0.05));
+print(kelly_fraction(t53r));
+print(semivariance(t57flat));
+print(downside_deviation(t57flat, 0.0));
+print(param_var(t53r, 0.5));
+print(kelly_fraction(t57flat));

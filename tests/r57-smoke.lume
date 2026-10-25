@@ -1,0 +1,14 @@
+// r57-smoke.lume: volatility & risk derivatives (#57),
+// 3 legs byte-identical. Pinned rows recomputed in Python (r57.py).
+let rets: list = [0.02, -0.01, 0.03, -0.02, 0.01, 0.03];
+print(semivariance(rets));
+print(downside_deviation(rets, 0.0));
+print(param_var(rets, 0.05));
+print(kelly_fraction(rets));
+// degenerate properties: flat series -> semivariance 0 (no downside
+// vs mean), downside 0 at any threshold, kelly NAN (zero variance)
+let flat: list = [1.0, 1.0, 1.0, 1.0];
+print(semivariance(flat));
+print(downside_deviation(flat, 0.0));
+print(param_var(rets, 0.5));
+print(kelly_fraction(flat));

@@ -2464,6 +2464,83 @@ static void native_cumulative_return(VM *vm, int argc, Value *args, Value *out) 
     *out = val_num(r);
 }
 
+/* Volatility & risk derivatives (#57): mirror rt.c — mean-based
+ * lower-part moments, the normal-model VaR and the Kelly fraction. */
+static void native_semivariance(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "semivariance() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+    }
+    double sv = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        if (d < 0.0) sv += d * d;
+    }
+    free(xs);
+    *out = val_num(sv / (double)n);
+}
+
+static void native_downside_deviation(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double t;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &t)) return;
+    if (L->count < 2) { vm_set_error(vm, "downside_deviation() needs >= 2 returns"); return; }
+    if (!isfinite(t)) { vm_set_error(vm, "downside_deviation(): threshold must be finite"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double dd = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - t;
+        if (d < 0.0) dd += d * d;
+    }
+    free(xs);
+    *out = val_num(sqrt(dd / (double)n));
+}
+
+static void native_param_var(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L; double level;
+    if (argc < 2 || !arg_list(vm, args[0], &L) || !arg_num(vm, args[1], &level)) return;
+    if (L->count < 2) { vm_set_error(vm, "param_var() needs >= 2 returns"); return; }
+    if (!(level > 0.0) || !(level < 1.0)) {
+        vm_set_error(vm, "param_var(): level must be in (0, 1)"); return;
+    }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double sd = sqrt(m2 / (double)(n - 1));
+    double z = bi_norminv(level);
+    *out = val_num(-(m + z * sd));
+}
+
+static void native_kelly_fraction(VM *vm, int argc, Value *args, Value *out) {
+    ObjList *L;
+    if (argc < 1 || !arg_list(vm, args[0], &L)) return;
+    if (L->count < 2) { vm_set_error(vm, "kelly_fraction() needs >= 2 returns"); return; }
+    int n; double *xs = list_to_doubles(vm, L, &n);
+    if (!xs) return;
+    double m = 0.0, m2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        double d = xs[i] - m;
+        m += d / (double)(i + 1);
+        m2 += d * (xs[i] - m);
+    }
+    free(xs);
+    double var = m2 / (double)(n - 1);
+    if (!(var > 0.0)) { *out = val_num(NAN); return; }
+    *out = val_num(m / var);
+}
+
 static void native_skew(VM *vm, int argc, Value *args, Value *out) {
     ObjList *L;
     if (argc < 1 || !arg_list(vm, args[0], &L)) return;
@@ -2625,3 +2702,7 @@ Value b_annualized_return(VM *vm, int argc, Value *args)  { return vm_native(vm,
 Value b_annualized_volatility(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_annualized_volatility); }
 Value b_sharpe_annualized(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sharpe_annualized); }
 Value b_cumulative_return(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_cumulative_return); }
+Value b_semivariance(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_semivariance); }
+Value b_downside_deviation(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_downside_deviation); }
+Value b_param_var(VM *vm, int argc, Value *args)          { return vm_native(vm, argc, args, native_param_var); }
+Value b_kelly_fraction(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_kelly_fraction); }

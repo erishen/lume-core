@@ -28,7 +28,7 @@ TOL = 1e-5                          # %g six-digit printing rounds to ~5e-6 rel
 rng = random.Random(20261024)          # deterministic across machines
 N_SERIES = 10
 N = 6                                  # series length (pct_change -> 5 rows)
-RPP = 140                             # rows per dataset. The layout mirrors the
+RPP = 144                             # rows per dataset. The layout mirrors the
                                       # generated fixture exactly, including the
                                       # linreg slope row, which the fixture emits
                                       # as "let fit%da = linreg(...); print(...)"
@@ -88,6 +88,9 @@ RPP = 140                             # rows per dataset. The layout mirrors the
                                       # lag-1 / first average rank) and the
                                       # annualization rows x4 (annualized
                                       # return / vol / Sharpe / cumulative)
+                                      # and the risk-derivative rows x4
+                                      # (semivariance / downside / param VaR /
+                                      # Kelly)
 
 # ---------------------------------------------------------------- reference
 def percentile(data, p):
@@ -340,6 +343,65 @@ def sharpe_annualized_ref(xs, rf):
 def cumulative_return_ref(prices):
     if prices[0] <= 0 or prices[-1] <= 0: return float("nan")
     return prices[-1] / prices[0] - 1.0
+
+
+def welford_ref(xs):
+    m = m2 = 0.0
+    for i, v in enumerate(xs, 1):
+        d = v - m
+        m += d / i
+        m2 += d * (v - m)
+    return m, m2
+
+
+def norminv_ref(p):
+    # Acklam rational approximation (mirrors rt.c lume_bi_norminv)
+    a = [-3.969683028665376e+01, 2.209460984245205e+02,
+         -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01,
+         2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989793598661e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow = 0.02425
+    if p <= 0.0 or p >= 1.0:
+        return float("nan")
+    if p < plow:
+        q = math.sqrt(-2.0 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+    if p > 1.0 - plow:
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+                ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+
+
+def semivariance_ref(xs):
+    m, _ = welford_ref(xs)
+    return sum((v - m) ** 2 for v in xs if v < m) / len(xs)
+
+
+def downside_dev_ref(xs, t):
+    return math.sqrt(sum((v - t) ** 2 for v in xs if v < t) / len(xs))
+
+
+def param_var_ref(xs, level):
+    m, m2 = welford_ref(xs)
+    sd = math.sqrt(m2 / (len(xs) - 1))
+    return -(m + norminv_ref(level) * sd)
+
+
+def kelly_ref(xs):
+    m, m2 = welford_ref(xs)
+    var = m2 / (len(xs) - 1)
+    if var <= 0: return float("nan")
+    return m / var
 
 
 def rolling_var_ref(data, w, level):
@@ -1426,6 +1488,16 @@ def main():
         lines.append("print(sharpe_annualized(%s, 0.0));" % da)
         row(sixg(cumulative_return_ref(pa)))
         lines.append("print(cumulative_return(%s));" % emit(pa))
+        # volatility & risk derivatives (2026-11-02, #57): mean-based
+        # semivariance, downside deviation, normal-model VaR and Kelly.
+        row(sixg(semivariance_ref(x)))
+        lines.append("print(semivariance(%s));" % da)
+        row(sixg(downside_dev_ref(x, 0.0)))
+        lines.append("print(downside_deviation(%s, 0.0));" % da)
+        row(sixg(param_var_ref(x, 0.05)))
+        lines.append("print(param_var(%s, 0.05));" % da)
+        row(sixg(kelly_ref(x)))
+        lines.append("print(kelly_fraction(%s));" % da)
         expected.append(ref)
 
     with open(fixture, "w", encoding="utf-8", newline="\n") as f:

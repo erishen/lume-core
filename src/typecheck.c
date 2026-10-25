@@ -457,6 +457,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "rank", "spearman", "ic",
     "annualized_return", "annualized_volatility", "sharpe_annualized",
     "cumulative_return",
+    "semivariance", "downside_deviation", "param_var", "kelly_fraction",
     /* quant builtins (2026-10-24, builtins_math.c + rt.c) */
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
@@ -527,6 +528,8 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"rank",1,1}, {"spearman",2,2}, {"ic",3,3},
     {"annualized_return",1,1}, {"annualized_volatility",1,1},
     {"sharpe_annualized",2,2}, {"cumulative_return",1,1},
+    {"semivariance",1,1}, {"downside_deviation",2,2},
+    {"param_var",2,2}, {"kelly_fraction",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},

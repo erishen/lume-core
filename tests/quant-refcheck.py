@@ -337,6 +337,37 @@ def cumulative_return_ref(prices):
     return prices[-1] / prices[0] - 1.0
 
 
+def welford_ref(xs):
+    m = m2 = 0.0
+    for i, v in enumerate(xs, 1):
+        d = v - m
+        m += d / i
+        m2 += d * (v - m)
+    return m, m2
+
+
+def semivariance_ref(xs):
+    m, _ = welford_ref(xs)
+    return sum((v - m) ** 2 for v in xs if v < m) / len(xs)
+
+
+def downside_dev_ref(xs, t):
+    return math.sqrt(sum((v - t) ** 2 for v in xs if v < t) / len(xs))
+
+
+def param_var_ref(xs, level):
+    m, m2 = welford_ref(xs)
+    sd = math.sqrt(m2 / (len(xs) - 1))
+    return -(m + norminv_ref(level) * sd)
+
+
+def kelly_ref(xs):
+    m, m2 = welford_ref(xs)
+    var = m2 / (len(xs) - 1)
+    if var <= 0: return float('nan')
+    return m / var
+
+
 def max_drawdown(data):
     peak = data[0]
     mdd = 0.0
@@ -1272,6 +1303,13 @@ cases += [
     ("sharpe ann 0",      sixg(sharpe_annualized_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.0)), 7.56787),
     ("sharpe ann rf",     sixg(sharpe_annualized_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.002)), 6.0543),
     ("cum return",        sixg(cumulative_return_ref([100.0, 102.0, 104.0, 106.0, 108.0, 110.0])), 0.1),
+    # volatility & risk derivatives (2026-11-02, #57): mean-based
+    # semivariance, downside deviation, normal-model VaR and Kelly.
+    ("semivariance",      sixg(semivariance_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03])), 0.000216667),
+    ("downside dev",      sixg(downside_dev_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.0)), 0.00912871),
+    ("param var",         sixg(param_var_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.05)), 0.0245027),
+    ("kelly",             sixg(kelly_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03])), 22.7273),
+    ("param var 50%",     sixg(param_var_ref([0.02, -0.01, 0.03, -0.02, 0.01, 0.03], 0.5)), -0.01),
 ]
 
 fails = 0

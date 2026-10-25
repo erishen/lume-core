@@ -423,7 +423,9 @@ Type *infer_node_type(CG *g, Node *n)
                  strcmp(name, "spearman") == 0 || strcmp(name, "ic") == 0 ||
                  strcmp(name, "annualized_return") == 0 ||
                  strcmp(name, "annualized_volatility") == 0 ||
-                 strcmp(name, "cumulative_return") == 0))
+                 strcmp(name, "cumulative_return") == 0 ||
+                 strcmp(name, "semivariance") == 0 ||
+                 strcmp(name, "kelly_fraction") == 0))
                 return type_prim(TY_FLOAT);
             if (strcmp(name, "pct_change") == 0 || strcmp(name, "rolling_mean") == 0 ||
                 strcmp(name, "rolling_stddev") == 0 || strcmp(name, "ewma") == 0 ||

@@ -854,6 +854,19 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   7.56787 / 6.0543 / 0.1 / 0.125), quant-consistency 178 -> 186 rows,
   quant-refcheck 166 -> 171 cases, quant-fuzz 10 series x 140 rows
   (1400 checks), native_backends 18/19 (serve errno 10038 known).
+- [x] **Volatility & risk derivatives: `semivariance` /
+  `downside_deviation` / `param_var` / `kelly_fraction` (2026-11-02).**
+  Mean-based lower-part moments (semivariance, the Sortino denominator
+  exposed as downside_deviation), the normal-model VaR -(mu + z*sigma)
+  with the #37 norminv z-score and the #48 positive-loss convention,
+  and the continuous Kelly fraction mu/sigma^2 (zero variance -> NAN).
+  Emission: the two scalars join the mean block, the two
+  (list, scalar) forms join the bootstrap_se_mean block, both
+  emitters. Verification: r57-smoke (3 legs byte-identical, Python
+  recomputes 0.000216667 / 0.00912871 / 0.0245027 / 22.7273 / 0 / 0 /
+  -0.01 / NAN), quant-consistency 186 -> 194 rows, quant-refcheck
+  171 -> 176 cases, quant-fuzz 10 series x 144 rows (1440 checks),
+  native_backends 18/19 (serve errno 10038 known).
 
 ## P5 — Found 2026-10-17 (both closed same day)
 
