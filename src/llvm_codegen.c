@@ -149,6 +149,7 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
     a->v[a->n].ty   = ty;
     a->v[a->n].slot = slot;
     a->v[a->n].cap  = 0;
+    a->v[a->n].param = 0;
     a->v[a->n].shadow = 0;
     /* Declaration line — see codegen.c's asg_push. The flat pre-scanned
      * table can hold several same-name bindings (loop variable + a later

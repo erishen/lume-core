@@ -96,6 +96,10 @@ typedef struct {
     char path[1024];       /* path only, query stripped (URL-encoded) */
     char query[1024];      /* raw query string without '?' */
     char cookie[512];      /* raw Cookie header value (lume_sid=...), or "" */
+    /* SSE: 路由可以返回 { sse: [...] } 走流式; 但只有客户端 Accept 里明确
+     * 接受 text/event-stream 时才这么回 —— 否则同样的路由给浏览器(过代理、
+     * 中间层会缓冲)会卡住不显示。 */
+    char accept[256];      /* raw Accept header value, or "" */
     char body[REQ_BUF_MAX];
     size_t body_len;
     const char *label;     /* route label, or NULL */
@@ -434,6 +438,63 @@ static void send_resp(SockFd fd, int status, const char *ctype,
     if (body && blen) sock_send(fd, body, blen);
 }
 
+/* ---- SSE (text/event-stream) -----------------------------------------
+ * 为什么单独一个函数: SSE **不能有 Content-Length** —— 长度未知, 连接靠
+ * "服务端写完后关闭" 或客户端断开结束。send_resp 写死了 Content-Length 与
+ * Connection: close, 直接复用它会让客户端一直等一个永远读不满的 body。
+ *
+ * 这里发头之后立刻返回, 由调用方逐块写入(每块一次 send, 即一次 flush ——
+ * TCP 上小包会被 Nagle 合并, 但 Nagle 最多延迟 40ms, 对"看到进度"足够了)。
+ *
+ * 安全头与 send_resp 保持一致: nosniff / frame-deny / referrer-policy。
+ * 不设 CSP —— 事件流不是文档, CSP 对它无意义。
+ * 额外加 X-Accel-Buffering: no, 让 nginx 不缓冲(否则整个流会被攒起来,
+ * 等于没流式)。 */
+static void send_sse_head(SockFd fd, const char *set_cookie)
+{
+    char hdr[1024];
+    int n = snprintf(hdr, sizeof hdr,
+                     "HTTP/1.1 200 OK\r\n"
+                     "Content-Type: text/event-stream; charset=utf-8\r\n"
+                     "Cache-Control: no-cache\r\n"
+                     "X-Accel-Buffering: no\r\n"
+                     "Connection: close\r\n"
+                     "X-Content-Type-Options: nosniff\r\n"
+                     "X-Frame-Options: DENY\r\n"
+                     "Referrer-Policy: no-referrer\r\n");
+    if (n > 0 && set_cookie && set_cookie[0]) {
+        int n2 = snprintf(hdr + n, (size_t)sizeof hdr - (size_t)n,
+                          "Set-Cookie: %s\r\n", set_cookie);
+        if (n2 > 0) n += n2;
+    }
+    if (n > 0 && (size_t)n + 2 < sizeof hdr) {
+        memcpy(hdr + n, "\r\n", 3);
+        n += 2;
+    }
+    if (n > 0) sock_send(fd, hdr, (size_t)n);
+}
+
+/* 发一个 SSE 事件: "data: <json>\n\n"。json 里的换行必须已被序列化器转义
+ * (
+ 变成两个字符), 否则一个事件会被拆成多行 —— 客户端解析出错。
+ * 这里再做一次防御: 若真的含裸换行, 拆成多个 data: 行(RFC 允许)。 */
+static void send_sse_event(SockFd fd, const char *data, size_t len)
+{
+    static const char prefix[] = "data: ";
+    static const char nl = '\n';
+    size_t start = 0;
+    while (start <= len) {
+        size_t end = start;
+        while (end < len && data[end] != '\n') end++;
+        sock_send(fd, prefix, sizeof prefix - 1);
+        if (end > start) sock_send(fd, data + start, end - start);
+        sock_send(fd, &nl, 1);
+        sock_send(fd, &nl, 1);
+        if (end >= len) break;
+        start = end + 1;
+    }
+}
+
 /* case-insensitive substring search (Content-Length lookup) */
 static const char *ci_find(const char *hay, size_t hlen, const char *needle)
 {
@@ -488,6 +549,19 @@ static int parse_request(const char *head, size_t hlen, HttpReq *req)
     }
     if (!hdr_end) return -1;
     size_t body_off = (size_t)(hdr_end - head) + 4;
+
+    /* Accept header: 只用于判断能否回 SSE。取前 255 字节足够判前缀。 */
+    const char *acc = ci_find(head, body_off, "accept:");
+    if (acc) {
+        acc += 7;
+        while (*acc == ' ' || *acc == '\t') acc++;
+        size_t alen = strcspn(acc, "\r\n");
+        if (alen >= sizeof req->accept) alen = sizeof req->accept - 1;
+        memcpy(req->accept, acc, alen);
+        req->accept[alen] = '\0';
+    } else {
+        req->accept[0] = '\0';
+    }
 
     /* Cookie header: raw value, capped (only lume_sid= is consumed later). */
     const char *ck = ci_find(head, body_off, "cookie:");
@@ -834,6 +908,52 @@ void bridge_run(VM *vm)
             snprintf(ckbuf, sizeof ckbuf, "lume_sid=%s; Path=/; HttpOnly; SameSite=Lax",
                      vm->session_id);
             set_cookie = ckbuf;
+        }
+
+        /* ---- SSE: 路由返回 { sse: [...] } 且客户端接受 text/event-stream ----
+         * 形状: { sse: [ "data-one", {k:v}, ... ] }
+         *   - 数组每一项是一个事件; 字符串原样作为 data, 其它值 JSON 序列化
+         *   - 框架逐条发送, 全部发完即关闭连接(SSE 靠关闭表示结束)
+         *
+         * 为什么要有前提条件: 同样的路由给浏览器(不带 Accept)或过会缓冲的
+         * 中间层时, 流式反而会让页面"一直空白到结束"。所以只在客户端明确
+         * 声明接受 text/event-stream 时才流; 否则退回普通 JSON 一次性返回,
+         * 让调用方至少拿到完整数据而不是半个流。
+         */
+        int wants_sse = 0;
+        const char *acc = req.accept;
+        for (const char *p2 = acc; *p2; p2++) {
+            if (ci_find(p2, strlen(p2), "text/event-stream")) { wants_sse = 1; break; }
+        }
+        Value sse_items = val_null();
+        int has_sse = 0;
+        if (IS_OBJ(res) && AS_OBJ(res)->type == OBJ_MAP) {
+            int found = 0;
+            sse_items = map_get(vm, AS_OBJ(res), "sse", &found);
+            if (found && IS_OBJ(sse_items) && AS_OBJ(sse_items)->type == OBJ_LIST)
+                has_sse = 1;
+        }
+
+        /* 流式分支: 发头 -> 逐条写事件 -> 关闭。之后不再走普通序列化。 */
+        if (has_sse && wants_sse) {
+            Obj *list = AS_OBJ(sse_items);
+            send_sse_head(cfd, set_cookie);
+            for (int i = 0; i < list->as.list.count; i++) {
+                Value item = list->as.list.items[i];
+                if (IS_OBJ(item) && AS_OBJ(item)->type == OBJ_STRING) {
+                    Obj *it = AS_OBJ(item);
+                    send_sse_event(cfd, obj_string(it), obj_string_len(it));
+                } else {
+                    sbuf jb = {0};
+                    value_to_json(vm, &jb, item);
+                    send_sse_event(cfd, jb.p ? jb.p : "null",
+                                   jb.p ? jb.len : 4);
+                    free(jb.p);
+                }
+            }
+            sock_close(cfd);
+            (void)g_serve_csp;
+            continue;
         }
 
         sbuf b = {0};

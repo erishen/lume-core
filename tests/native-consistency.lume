@@ -1506,5 +1506,17 @@ func while_shadow(): int {
 }
 print(while_shadow());
 
+// ---- P12: a map / list parameter is read *inside* the callee (2026-10-28) ----
+// Both native backends used to emit `load i8*, i8** %p0` for an opaque-pointer
+// parameter: the parameter already IS the heap pointer, so the extra load read
+// the LumeMap header as a pointer and SIGSEGV'd on the first key access. The
+// interpreter was always correct, which is why only app-level code saw it.
+// Pinned: get / keys read the parameter without an extra deref.
+func p12_get(m: map, k: string): string { return str(get(m, k, "dflt")); }
+func p12_keys(m: map): int { return len(keys(m)); }
+print(p12_get({ a: 1, b: "two" }, "b"));        // two
+print(p12_get({ a: 1 }, "zz"));                 // dflt
+print(p12_keys({ a: 1, b: 2, c: 3 }));          // 3
+
 warmup();
 main();

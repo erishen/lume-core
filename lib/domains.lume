@@ -1,0 +1,118 @@
+// lib/domains.lume — 领域 → 审批链 的映射
+//
+// 为什么需要它: 光有"角色"(agent_reviewer) 还不够 —— **谁能当这个 reviewer
+// 取决于被审的对象**。lume-scanner 对股票数据有专业判断力, 但对"发布一篇
+// 博客"就无从判断。所以映射的键是 (领域), 值是"这个领域里谁来审"。
+//
+// ── 二审是跨领域的(本实现的核心决定) ────────────────────────────────
+// review_second **不是**"同领域更高级的专家", 而是**来自另一个领域的复核者**。
+// 理由: 同领域两人容易同源偏差(看法一致, 等于没复核); 换个领域的人会问
+// "这份数据凭什么可信"这类问题, 恰好是专业细节之外最该被问的。
+// 代价: 二审未必懂专业细节 —— 所以二审的否决理由要写清, 一审可以据此补证。
+//
+// ── 映射表放哪 ──────────────────────────────────────────────────────
+// 集中一份 `.data/domains.json`(宿主维护), 而不是各应用自带:
+//   - 跨领域复核要求"知道别的领域有哪些节点", 分散在各应用里做不到
+//   - 一处改完全局生效, 不用逐个重启节点
+// 应用侧只需在环境变量里声明"我叫什么、我属于哪个领域"。
+//
+// ── 未登记领域怎么办 ────────────────────────────────────────────────
+// **回退到 human_admin, 绝不降级到"无人审"**。新加的 lume-* 应用没登记领域
+// 时也必须有人过一眼, 否则等于默认放行。
+
+let registry_path = env("DOMAIN_REGISTRY");
+if (registry_path == null) { registry_path = ".data/domains.json"; }
+
+// 兜底链: 没登记领域 / 登记了但节点不可用, 都走这条。
+// 形状必须与正常链**完全一致**(map 数组) —— 否则调用方要写两套解析。
+func fallback_chain() {
+  return [{ stage: "final", role: "human_admin", node: "", why: "未登记领域或登记不完整, 人工终审" }];
+}
+
+// 读映射表; 缺失/损坏 -> null(调用方走兜底)
+export func load_registry() {
+  let txt = read_file(registry_path);
+  if (txt == null) { return null; }
+  let r = try(() => json(txt));
+  if (r.err != null || r.ok == null) { return null; }
+  return r.ok;
+}
+
+// 某领域的审批链。返回数组, 每项 {stage:"first"|"second"|"final",
+// role:<角色名>, node:<节点名>, why:<为什么是它>}
+//
+// 未登记 -> 兜底链(只要 human_admin 一级)。
+// 注意: 链里**必须先有 first 再有 second**; 登记错(只填 second)时按兜底处理,
+// 因为"没有一审就二审"在语义上不成立。
+export func chain_for_domain(domain: string) {
+  let reg = load_registry();
+  if (reg == null) { return fallback_chain(); }
+  let ds = get(reg, "domains", {});
+  let d = get(ds, domain, null);
+  if (d == null) { return fallback_chain(); }
+
+  let first = get(d, "first", null);
+  let second = get(d, "second", null);
+  let out = [];
+  if (first != null) {
+    push(out, {
+      stage: "first",
+      role: "agent_reviewer",
+      node: str(get(first, "node", "")),
+      why: str(get(first, "why", "")),
+    });
+  }
+  if (second != null) {
+    push(out, {
+      stage: "second",
+      role: "agent_reviewer_second",
+      node: str(get(second, "node", "")),
+      why: str(get(second, "why", "")),
+    });
+  }
+  // 只配了 second 没配 first: 语义不成立, 兜底
+  if (len(out) == 0 or str(get(get(out, 0, {}), "stage", "")) != "first") {
+    return fallback_chain();
+  }
+  // 终审永远是人
+  push(out, {
+    stage: "final",
+    role: "human_admin",
+    node: "",
+    why: "人工终审",
+  });
+  return out;
+}
+
+// 某个节点能审哪些领域(便于排障: "为什么这次没让 scanner 审?")
+export func domains_of(node: string) {
+  let reg = load_registry();
+  if (reg == null) { return []; }
+  let ds = get(reg, "domains", {});
+  let ks = keys(ds);
+  let out = [];
+  let i = 0;
+  while (i < len(ks)) {
+    let name = str(get(ks, i, ""));
+    let d = get(ds, name, {});
+    let f = get(d, "first", null);
+    let s = get(d, "second", null);
+    let hit = false;
+    if (f != null and str(get(f, "node", "")) == node) { hit = true; }
+    if (s != null and str(get(s, "node", "")) == node) { hit = true; }
+    if (hit) { push(out, name); }
+    i = i + 1;
+  }
+  return out;
+}
+
+// 链上当前这一关该谁(node 名)。stage 索引越界返回 ""。
+export func node_at(chain, idx: int) {
+  if (idx < 0 or idx >= len(chain)) { return ""; }
+  return str(get(get(chain, idx, {}), "node", ""));
+}
+
+export func role_at_idx(chain, idx: int) {
+  if (idx < 0 or idx >= len(chain)) { return ""; }
+  return str(get(get(chain, idx, {}), "role", ""));
+}

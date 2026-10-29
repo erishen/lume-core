@@ -1,0 +1,112 @@
+// lib/identity.lume — peer 身份可信层(每节点一把独立密钥)
+//
+// ── 解决什么问题 ────────────────────────────────────────────────────
+// 原协议所有节点共用一个 `PEER_SHARED`。签名里虽然带 node, 但**任何持有共享
+// 密钥的节点都能用别人的 node 名去签** —— 服务端没法区分"scanner 说自己是
+// scanner"和"crm 冒充 scanner"。于是:
+//   * 领域映射里的 "谁来审" 只是排班意图, 不是可验证的事实
+//   * 审计里的 actor 是调用方自称的, 不能作为证据
+//
+// 本模块把它变成可验证的: **每节点一把独立密钥**, 服务端按 node 名查到该节点
+// 的公钥派生密钥再验签。密钥不对 = 签名不对 = 冒充失败。
+//
+// ── 为什么是"按 node 查密钥"而不是"按密钥查 node" ──────────────────
+// 两种都行, 但按 node 查的好处是**错误信息能说清是谁在冒充**: 客户端声称
+// scanner 时, 服务端明确用 scanner 的密钥验, 失败了就是"scanner 的签名不对",
+// 而不是含糊的"某个密钥不对"。审计里也就能准确记下"有人声称 scanner 但验签失败"。
+//
+// ── 密钥怎么来 ──────────────────────────────────────────────────────
+// 一个主密钥 `PEER_ROOT`(部署时生成一次) + 节点名 → 派生密钥:
+//     peer_key(node) = hmac_sha256(PEER_ROOT, "peer:" + node)
+// 好处: 部署时只需要分发一个 root, 各节点只用 `PEER_ROOT` + `PEER_NAME`,
+// 不用为每个节点手写一把密钥再分发。撤销一个节点 = 从 `PEERS` 表里删掉它。
+//
+// 注意: 这是**密钥派生**, 不是非对称签名。root 泄漏 = 全节点可伪造, 所以
+// root 必须只存在于各节点本地环境变量里。要真正的"服务端无法伪造客户端"
+// 需要非对称签名(见文件末尾的边界说明)。
+
+let root_key = env("PEER_ROOT");
+if (root_key == null) { root_key = ""; }
+
+// 已知节点表。格式: "scanner,blog,lan,crm,nsgm,orbstack,talentlens"
+// 服务端**只认表里的节点** —— 未登记的名字直接拒, 不给验签机会。
+let peers_raw = env("PEERS");
+if (peers_raw == null) { peers_raw = ""; }
+
+let registry_path = env("PEER_REGISTRY");
+if (registry_path == null) { registry_path = ".data/peers-identity.json"; }
+
+// 派生某节点的密钥
+export func key_for(node: string): string {
+  return hmac_sha256(root_key, "peer:" + node);
+}
+
+// 是否启用身份层(配了 root 才算)
+export func enabled(): bool {
+  return len(root_key) > 0;
+}
+
+// 节点是否在允许列表里。
+// 优先读 `.data/peers-identity.json`(可热改, 撤销一个节点不用重启),
+// 没有文件时退回 env 的 `PEERS` 逗号列表。
+export func known(node: string): bool {
+  let txt = read_file(registry_path);
+  if (txt != null) {
+    let r = try(() => json(txt));
+    if (r.err == null and r.ok != null) {
+      let arr = get(r.ok, "peers", []);
+      let i = 0;
+      while (i < len(arr)) {
+        if (str(get(arr, i, "")) == node) { return true; }
+        i = i + 1;
+      }
+      // 文件存在且能解析 -> 以文件为准, 不再看 env
+      return false;
+    }
+  }
+  if (len(peers_raw) == 0) { return false; }
+  let ps = split(peers_raw, ",");
+  let j = 0;
+  while (j < len(ps)) {
+    // 容忍 "a, b" 这种带空格的写法
+    let nm = trim(str(get(ps, j, "")));
+    if (nm == node) { return true; }
+    j = j + 1;
+  }
+  return false;
+}
+
+// 某节点声明的身份信息(领域、角色), 供审批链校验"它是不是该审这个"。
+// 返回 { node, domains:[..], can_review:[..] } 或 null
+export func profile_of(node: string) {
+  let txt = read_file(registry_path);
+  if (txt == null) { return null; }
+  let r = try(() => json(txt));
+  if (r.err != null or r.ok == null) { return null; }
+  let profs = get(r.ok, "profiles", {});
+  return get(profs, node, null);
+}
+
+export func all_nodes() {
+  let txt = read_file(registry_path);
+  if (txt != null) {
+    let r = try(() => json(txt));
+    if (r.err == null and r.ok != null) {
+      return get(r.ok, "peers", []);
+    }
+  }
+  if (len(peers_raw) == 0) { return []; }
+  return split(peers_raw, ",");
+}
+
+// ── 边界(必须知道) ──────────────────────────────────────────────────
+// 这是**对称密钥派生**: 任何知道 root 的节点都能算出别人的密钥, 所以它能
+// 冒充。真正的不可否认需要非对称签名(每节点私钥签名, 服务端持公钥验签)。
+//
+// 为什么先这样: lume 内置只有 `hmac_sha256` / `sha256`, 没有 ed25519 / RSA。
+// 上非对称要么等内置支持(见 lume-core TODO), 要么在宿主进程里做签名、由
+// lume 侧验签 —— 后者会引入跨语言的一致性负担。
+//
+// 所以当前这层的定位是: **防误连与防串台**(节点 A 拿自己的密钥去冒充 B 会被
+// 服务端拒), 不是防恶意节点。前者是实际最常见的故障(配错 PEER_TARGETS、
+// 复制了别人的 .env), 后者需要非对称才能根治。

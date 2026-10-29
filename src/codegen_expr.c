@@ -308,6 +308,16 @@ static Val cg_var(CG *g, Node *n)
     if (a->ty->kind == TY_STRUCT && a->ty->name)
         return val_make(a->ty, a->slot);
 
+    /* A *parameter* slot for an opaque-pointer type (anonymous struct / list
+     * / enum / result / func, all i8*) ALREADY IS the value: the callee
+     * receives it as `i8* %pN` (see define_params' llvm_ptr_type_of arm), not
+     * as the address of a stack cell. Loading it would dereference the map
+     * pointer itself -- `load i8*, i8** %p0` reads the first two words of a
+     * LumeMap header as a pointer and then faults (P12). Locals keep their
+     * %lv_ slot, which *is* a stack cell and must be loaded. */
+    if (strncmp(a->slot, "%p", 2) == 0)
+        return val_make(a->ty, a->slot);
+
     char *r = emit_instrf(g, a->ty, "load %s, %s* %s", lt, lt, a->slot);
     if (!r) ERRV(g, "line %zu: cannot load '%s'", n->line, n->as.var.name);
     return val_take(a->ty, r);

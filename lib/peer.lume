@@ -1,0 +1,255 @@
+// lib/peer.lume — 节点间点对点通讯(局域网, HMAC 签名)
+//
+// 定位: 这是语言层网络能力的补全 —— `http_*` 给了出站调用、`server{}` 给了入站
+// 服务、`hmac_sha256` 给了签名，但「两个 lume 节点互信互调」这一层原来没有。
+// 本模块把四者组合成一套可直接用的 peer 协议, 并固化下列行为约定。
+//
+// 用法(调用方脚本与库同一目录树时按相对路径引用):
+//   import "../lib/peer.lume" as peer;
+//
+// ── 设计约束(2026-10 用真实 lume 进程实测, 不是推断) ────────────────
+// 1. **route handler 读不到请求头。** req 只有 method / path / query /
+//    query_params / params / body / session(见 src/bridge_serve.c 的
+//    make_req_map)。所以认证参数只能走 query 或 body, 用不了
+//    `X-Peer-Key` 这类自定义头。
+// 2. **req.path 包含 query 串**(实测 /a?x=1 → path="/a?x=1")。自己做签名
+//    scope 时必须剥掉 query(用 path_only)。
+// 3. **GET 的 req.body 是 null**, 一律 get(req, "body", "")。
+// 4. **出站必须 allow_private: true。** http_* 的 SSRF 闸门在开 socket 之前就
+//    拒回环/私网地址; 不加这个参数, 报错长得像「节点离线」, 实际是本地拦截。
+// 5. **http_* 不是流式**: 收完整个 body 才返回。对 SSE 端点只能整体收。
+// 6. **str_match 的 ^/$ 不按多行匹配。** 用 "^data: (...)$" 解析整段 SSE 会返回
+//    0 条; 必须用换行结尾的模式, 并给文本补一个尾随换行才能抓到最后一帧。
+// 7. **顶层标量在函数内赋值是复制**, 改不到外层。可变累加器要用 map + put()。
+// 8. 保留字: `tool` 不能作参数名, 也不能作 map 的裸键(用 "tool")。
+//
+// ── 认证模型 ────────────────────────────────────────────────────────
+//   sig = hmac_sha256(PEER_SHARED, node \n ts \n nonce \n scope)
+//   scope 把签名绑到具体动作, 防止挪用:
+//     GET  → "GET "  + path_only
+//     POST → "POST " + path_only + "\n" + body
+//   签名随 query 传(node/ts/nonce/sig), 因为 header 读不到。
+//   服务端校验: 时间窗(默认 ±120s) + 常量时间签名比较。
+//
+// ── 安全边界(务必知悉) ──────────────────────────────────────────────
+//   * 明文传输: lume 的 http_* 不支持自定义 CA, 内网自签证书走不通; 签名保证
+//     不可伪造/篡改/重放, 但**不加密**。不要经此通道传密码、密钥、证件号。
+//   * 未配 PEER_SHARED 时整面关闭(fail-closed), 不是放行。
+//   * 防重放是**时间窗**级别: 同一个 nonce 在窗口内重放仍会通过。要更强需要
+//     服务端维护已见 nonce 表(本模块不提供, 因为它需要持久化, 与纯函数定位冲突)。
+
+import "identity.lume" as identity;
+
+// ── 配置(全部经 env 注入, 不进代码) ─────────────────────────────────
+// 变量名刻意避开 API_KEY / KEY / SECRET / TOKEN 这类词: lume 的 env() 会把
+// 含敏感词的变量名读成 null(见 src/builtins_fs.c 的 env_is_sensitive), 那会
+// 让 peer 面**静默关闭**而不是报错。PEER_SHARED 两个词都不在词表里。
+// (旧名 PEER_KEY 目前能读 —— contains_word 按词边界匹配 —— 但踩在边上,
+//  词表一改就静默失效, 所以换掉。)
+let peer_key = env("PEER_SHARED");
+if (peer_key == null) { peer_key = ""; }
+let peer_name = env("PEER_NAME");
+if (peer_name == null) { peer_name = "lume-node"; }
+let peer_skew = env("PEER_SKEW_SECS");
+if (peer_skew == null) { peer_skew = "120"; }
+
+// ── 字符串工具(只用文档确认存在的内建) ──────────────────────────────
+
+// 取前 n 个字节。str_match 的 {0,n} 对纯 ASCII(hex)无歧义, 本模块只用它截 hex。
+export func prefix_of(s: string, n: int): string {
+  let rows = str_match("^(.{0," + str(n) + "})", s);
+  if (len(rows) == 0) { return ""; }
+  let g = get(get(rows, 0, null), "groups", []);
+  if (len(g) == 0) { return ""; }
+  return str(get(g, 0, ""));
+}
+
+// 取路径部分(剥掉 query): "/peer/x?a=1" → "/peer/x"
+export func path_only(p: string): string {
+  let rows = str_match("^([^?]*)", p);
+  if (len(rows) == 0) { return p; }
+  let g = get(get(rows, 0, null), "groups", []);
+  if (len(g) == 0) { return p; }
+  return str(get(g, 0, p));
+}
+
+// 常量时间比较。长度不同直接 false(对定长 hex 签名不泄漏有效信息);
+// 长度相同则逐字符累积, 不提前 return —— 避免按字节提前退出泄漏前缀。
+// 没有 byte_at 内建, 逐字符用 str_match 抓(比字节数组慢, 但签名是 64 字符, 可接受)。
+export func const_eq(a: string, b: string): bool {
+  if (len(a) != len(b)) { return false; }
+  if (len(a) == 0) { return true; }
+  let i = 0;
+  let diff = 0;
+  while (i < len(a)) {
+    let ca = str_match("^(.{" + str(i) + "})(.)", a);
+    let cb = str_match("^(.{" + str(i) + "})(.)", b);
+    let ga = get(get(ca, 0, null), "groups", []);
+    let gb = get(get(cb, 0, null), "groups", []);
+    if (str(get(ga, 1, "")) != str(get(gb, 1, ""))) { diff = diff + 1; }
+    i = i + 1;
+  }
+  return diff == 0;
+}
+
+export func sign(node: string, ts: string, nonce: string, scope: string): string {
+  return hmac_sha256(peer_key, node + "\n" + ts + "\n" + nonce + "\n" + scope);
+}
+
+func qp(req, k: string): string {
+  let q = get(req, "query_params", {});
+  let v = get(q, k, "");
+  if (v == null) { return ""; }
+  return str(v);
+}
+
+// ── 入站校验 → { ok, error, node } ──────────────────────────────────
+// 「配置缺失」放最前: 没配 PEER_SHARED 时整面关闭, 而不是放行。
+export func verify(req, method: string, scope: string) {
+  if (len(peer_key) == 0 and not identity.enabled()) {
+    return { ok: false, error: "peer disabled: PEER_SHARED / PEER_ROOT not set" };
+  }
+  let node = qp(req, "node");
+  let ts = qp(req, "ts");
+  let nonce = qp(req, "nonce");
+  let sig = qp(req, "sig");
+  if (len(node) == 0 || len(ts) == 0 || len(nonce) == 0 || len(sig) == 0) {
+    return { ok: false, error: "missing auth params (node/ts/nonce/sig)" };
+  }
+  let ts_i = int(ts);
+  if (ts_i <= 0) { return { ok: false, error: "bad ts" }; }
+  let drift = int(now()) - ts_i;
+  if (drift < 0) { drift = 0 - drift; }
+  if (drift > int(peer_skew)) {
+    return { ok: false, error: "ts outside window (" + str(drift) + "s)" };
+  }
+  // ── 身份可信: 配了 PEER_ROOT 就走"按节点派生密钥"验证 ──────────
+  // 关键差异: 共享密钥模式下, 任何持钥者都能用别人的 node 名去签; 这里
+  // 按**声称的 node** 取该节点的派生密钥验签 —— 拿自己的密钥冒充别人,
+  // 签名必然对不上。
+  if (identity.enabled()) {
+    if (not identity.known(node)) {
+      // 未登记节点: 明确拒, 且错误里点名, 便于审计与排障
+      return { ok: false, error: "unknown peer '" + node + "' (not in registry)" };
+    }
+    let expect = hmac_sha256(identity.key_for(node),
+                             node + "\n" + ts + "\n" + nonce + "\n" + scope);
+    if (!const_eq(expect, sig)) {
+      return { ok: false, error: "bad signature for peer '" + node + "'" };
+    }
+    return { ok: true, error: "", node: node };
+  }
+
+  // 回退: 未配 identity 时用共享密钥(向后兼容, 但无法防冒充)
+  let expect = sign(node, ts, nonce, scope);
+  if (!const_eq(expect, sig)) {
+    return { ok: false, error: "bad signature" };
+  }
+  return { ok: true, error: "", node: node };
+}
+
+// 便捷封装: 校验一个 GET 请求(自动算 scope)
+export func verify_get(req) {
+  return verify(req, "GET", "GET " + path_only(req.path));
+}
+
+// 便捷封装: 校验一个 POST 请求(body 参与签名)
+export func verify_post(req) {
+  let body = str(get(req, "body", ""));
+  return verify(req, "POST", "POST " + path_only(req.path) + "\n" + body);
+}
+
+// ── 出站: 生成带签名的完整 URL ───────────────────────────────────────
+// body 非空 → 按 POST 语义签名(scope 含 body); 空 → 按 GET 语义。
+export func signed_url(host: string, path: string, body: string): string {
+  let method = "GET";
+  if (len(body) > 0) { method = "POST"; }
+  let ts = str(int(now()));
+  let nonce = prefix_of(sha256(peer_name + ts + str(int(now()) * 31)), 32);
+  let scope = method + " " + path;
+  if (len(body) > 0) { scope = scope + "\n" + body; }
+  // 配了 identity -> 用**本节点自己**的派生密钥签名(服务端按 node 取同一把
+  // 密钥验); 没配 -> 退回共享密钥。出站入站必须同一套, 否则自己对不上。
+  let sig = sign(peer_name, ts, nonce, scope);
+  if (identity.enabled()) {
+    sig = hmac_sha256(identity.key_for(peer_name),
+                      peer_name + "\n" + ts + "\n" + nonce + "\n" + scope);
+  }
+  return "http://" + host + path +
+         "?node=" + peer_name + "&ts=" + ts + "&nonce=" + nonce + "&sig=" + sig;
+}
+
+// ── 出站便捷调用 ────────────────────────────────────────────────────
+// GET 一个 peer 端点, 返回 { ok, status, body, err, json }
+export func get_peer(host: string, path: string, timeout: int) {
+  let r = http_get(signed_url(host, path, ""),
+                   { timeout: timeout, max_bytes: 1048576, allow_private: true });
+  let parsed = try(() => json(str(get(r, "body", ""))));
+  return {
+    ok: get(r, "ok", false),
+    status: int(get(r, "status", 0)),
+    body: str(get(r, "body", "")),
+    err: str(get(r, "err", "")),
+    json: get(parsed, "ok", null),
+  };
+}
+
+// POST 一个 peer 端点(body 字符串会被签名), 返回同上
+export func post_peer(host: string, path: string, body: string, timeout: int) {
+  let r = http_post(signed_url(host, path, body),
+                    { timeout: timeout, max_bytes: 1048576, allow_private: true,
+                      headers: { "Content-Type": "application/json" }, body: body });
+  let parsed = try(() => json(str(get(r, "body", ""))));
+  return {
+    ok: get(r, "ok", false),
+    status: int(get(r, "status", 0)),
+    body: str(get(r, "body", "")),
+    err: str(get(r, "err", "")),
+    json: get(parsed, "ok", null),
+  };
+}
+
+export func node_info() {
+  return { name: peer_name, ts: int(now()) };
+}
+
+// 生成一个随机-ish nonce(用于出站); 供自定义协议场景复用
+export func new_nonce(label: string) {
+  return prefix_of(sha256(peer_name + label + str(int(now()) * 31)), 32);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// A2A 兼容层 —— 让 peer 节点的能力不仅自定义协议可见, 也能被标准 A2A 客户端
+// (Claude Desktop / LangGraph / 各大云厂商) 发现与调用。
+//
+// 为什么要这一层: 原 `/peer/tools` 是私有形状, 只有本仓库的 bridge 认识;
+// A2A 把能力声明放在 `/.well-known/agent-card.json` 这个**约定路径**上,
+// 任何客户端无需私有约定即可发现。两套并存, 私有协议保持轻量, A2A 负责
+// 对外互操作。
+//
+// 版本口径: 按 A2A v1.0 —— 能力端点用 `supportedInterfaces` 数组
+// (v0.3 的单个 `url` 字段在 v1.0 改名, 两者不兼容)。也保留 `url` 供
+// 仍读 v0.3 的客户端兜底, 因为多数实现同时认这两个。
+// ══════════════════════════════════════════════════════════════════════
+
+// A2A 任务状态(TaskState)。值域取自规范, 不要自造。
+//   submitted  已接收未开始
+//   working    处理中
+//   input-required 需要人补充信息(长任务/审批场景)
+//   completed  成功, 结果在 artifacts
+//   failed / canceled / rejected  失败/取消/拒绝
+export func task_state_submitted() { return "submitted"; }
+export func task_state_working() { return "working"; }
+export func task_state_completed() { return "completed"; }
+export func task_state_failed() { return "failed"; }
+
+// 生成本节点内的任务 ID。没有 uuid 内建, 用 sha256 拼够熵的十六进制。
+// 需要跨重启唯一时, 调用方应把 id 与持久化记录一起存。
+export func new_task_id() {
+  return prefix_of(sha256(peer_name + str(int(now())) + new_nonce("task")), 24);
+}
+
+// 同理: 消息 ID(contextId 由调用方给, 用于多轮对齐)
+export func new_message_id() {
+  return prefix_of(sha256(peer_name + str(int(now())) + new_nonce("msg")), 20);
+}

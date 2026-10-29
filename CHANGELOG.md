@@ -8,6 +8,99 @@ All notable changes to Lume are documented here. The format follows
 
 ### Added
 
+- **`lib/approval.lume` — multi-tier approval chain (duty separation, not role
+  levels).** Roles are `agent_operator` / `agent_reviewer` /
+  `agent_reviewer_second` / `human_admin`, each mapped to a **disjoint action
+  set** — `human_admin` can `approve` but cannot `execute`, so the final
+  approver cannot bypass the flow and act directly. A numeric `role_level`
+  model would have granted exactly that by inheritance, which is what
+  separation-of-duties forbids. Chains are chosen by risk (`peer`/`low` → one
+  tier; `medium`/`high`/unknown → three tiers; **unknown risk is treated as
+  strictest, never permissive**). The chain's state lives here; a stateless
+  decision engine would only ever answer the single question "may this role
+  act?", so the stateful flow is deliberately kept out of it. Mirrored in
+  `lume-lan/scripts/a2a_worker.py` (the worker runs in Python), with a
+  cross-implementation parity test feeding the same 8 scenarios to both and
+  comparing `(ok, done, next_role, rejected)`.
+
+- **`lib/identity.lume` — per-node signing keys (peer identity).** With a single
+  shared `PEER_SHARED`, any holder could sign under another node's name, so the
+  `node` in a signature proved nothing. Keys are now derived per node
+  (`hmac_sha256(PEER_ROOT, "peer:" + node)`) and the server verifies against the
+  key belonging to the **claimed** node — signing with your own key while
+  claiming to be someone else fails. Unknown nodes are rejected before
+  verification. Backward compatible: without `PEER_ROOT` the shared-key path
+  still runs, but a server with `PEER_ROOT` will reject shared-key callers
+  (fail-closed on purpose — mixing modes would leave a bypass).
+  **Boundary, stated plainly:** this is *symmetric* derivation, so a node that
+  knows the root can still forge. It stops misconfiguration and key mix-ups
+  (the common failures), not a malicious node — that needs asymmetric signing,
+  which lume has no builtin for yet.
+
+- **`lib/domains.lume` — domain → review-chain mapping (cross-domain second
+  reviewer).** A role alone is not enough: *who may review depends on what is
+  being reviewed* — `lume-scanner` can judge stock data but not a blog post.
+  So the registry is keyed by domain, and `review_second` is deliberately a
+  node from **another** domain: two experts in the same field tend to share
+  the same blind spot, which makes the second review redundant. The trade-off
+  (the second reviewer may miss domain detail) is accepted, since its job is
+  to ask "why should this be trusted" rather than to re-check the maths.
+  Unregistered or malformed domains fall back to `human_admin` — **never** to
+  "nobody reviews". Registry lives at `.data/domains.json` (one central file,
+  because cross-domain review requires knowing the other domains' nodes).
+  Mirrored in `lume-lan/scripts/a2a_worker.py` with a parity test.
+
+### Added
+
+- **Route-level SSE: a handler may return `{ sse: [...] }`.** The framework emits
+  each array element as an `data: <json>` event over `text/event-stream`, without
+  a `Content-Length` (SSE is close-delimited), and adds `X-Accel-Buffering: no`
+  so a buffering proxy cannot silently defeat it. Two deliberate guards: the
+  client must send `Accept: text/event-stream` — otherwise the same route
+  degrades to a normal JSON body, because streaming into a client that does not
+  expect it (a browser, a buffering middlebox) shows nothing until the end,
+  which is worse than a single response — and elements that are already strings
+  are sent verbatim, everything else is JSON-serialized. Embedded newlines are
+  split into multiple `data:` lines per RFC. Security headers match
+  `send_resp` (nosniff / frame-deny / referrer-policy); CSP is omitted since an
+  event stream is not a document.
+
+  Note this is *synchronous replay*: lume has no async primitive, so the handler
+  builds the whole array before any byte is written. Clients see a conformant
+  event order but not incremental progress.
+
+### Fixed
+
+- **Native backends SIGSEGV'd on any key access to a map/list function
+  parameter (P12).** `func f(m) { return str(get(m, "k", "d")); }` spliced the
+  map pointer into the callee as `i8* %p0`, but the read path then emitted
+  `load i8*, i8** %p0` — treating the parameter as a stack cell and
+  reinterpreting the first word of the LumeMap header as a pointer. The
+  interpreter was always correct; both native legs crashed on the first `get`
+  / `keys` / `[]` inside the callee. Fixed by marking opaque-pointer
+  parameters (anonymous struct / list / enum / result / func) as "slot IS the
+  value" and skipping the load — text in `cg_var` via the `%p` slot, libLLVM
+  via a new `Asg.param` flag plus `ptr_like_param()`. Named-struct parameters
+  keep their original address semantics. Pinned in
+  `tests/native-consistency.lume`; the suite had **zero** map-parameter
+  coverage before this, which is why the three-leg invariant never caught it.
+
+### Added
+- **`lib/peer.lume` — node-to-node peer protocol.** First module under a new
+  `lib/` (thin-stdlib convention): HMAC-SHA256 signed request/response between
+  lume nodes over LAN HTTP, built only from existing builtins
+  (`http_*` + `hmac_sha256` + `server{}`), so it works on every backend's
+  host path without new runtime. Exports `sign` / `verify` / `verify_get` /
+  `verify_post` / `signed_url` / `get_peer` / `post_peer` / `const_eq` /
+  `path_only` / `prefix_of` / `node_info` / `new_nonce`. Auth params ride the
+  query string (route handlers cannot read request headers — `make_req_map`
+  exposes only method/path/query/query_params/params/body/session), and the
+  signature scope binds method+path+body so a tampered body or a replayed
+  signature at another endpoint fails. Config via `PEER_KEY` / `PEER_NAME` /
+  `PEER_SKEW_SECS`; an empty `PEER_KEY` disables the whole surface
+  (fail-closed). Transport is plaintext HTTP (no custom CA support), so the
+  signature guarantees integrity/authenticity but not confidentiality.
+
 - **Technical-indicator sequence builtins (#54): `rolling_max` / `rolling_min` /
   `kdj` / `williams_r` / `atr` / `obv`.** Adds the two trailing-window
   extremum primitives KDJ / Williams %R / ATR build from, plus the multi-

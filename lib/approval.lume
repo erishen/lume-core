@@ -1,0 +1,157 @@
+// lib/approval.lume — 多级审批链(agent 出场即带角色)
+//
+// 定位: 与 peer/a2a 同一层级 —— **不依赖任何业务站点**, 也不依赖 kb-abac 那套
+// 教育角色表。任何 lume 应用 import 即用。
+//
+// ── 为什么不用 ROLE_LEVEL 那种"等级数字" ────────────────────────────
+// 审批链是**职责分离(SoD)**, 不是等级高低:
+//
+//   agent_operator        发起并执行
+//   agent_reviewer        一审
+//   agent_reviewer_second 二审(复核)
+//   human_admin           人类终审
+//
+// 如果做成 1/2/3/4 的等级, `role_level(x) >= min_role` 会让 human_admin
+// **自动拥有 operator 的权限** —— 而审批链的语义恰恰相反: 终审者不该能绕过
+// 流程直接执行。所以这里用「角色 → 允许的动作集合」而不是等级。
+//
+// ── 为什么审批链不塞进 ABAC 引擎 ────────────────────────────────────
+// ABAC 是无状态的(每次请求现算, 零网络); 而审批链必须记住「一审已通过,
+// 现在轮到二审」。这是流程状态, 不是属性判断。硬塞进去会让引擎不可测
+// (要造一堆假的历史审批记录才能测一次决策)。所以: 状态机在这里, 单次
+// 判定规则也在里, 引擎只负责"这一关这个角色能不能做这个动作"这一小问。
+
+// ── 角色与动作 ──────────────────────────────────────────────────────
+// 动作是**互斥的**, 不是包含关系: 审批者没有 execute, 执行者没有 approve。
+let ROLE_ACTIONS = {
+  agent_operator:        ["execute", "request"],
+  agent_reviewer:        ["review_first"],
+  agent_reviewer_second: ["review_second"],
+  human_admin:           ["approve", "override", "audit"],
+};
+
+// 审批链的顺序。空链 = 不需要审批(直接执行)。
+// 需要几级审批由任务自己声明(见 chain_for), 不是全局固定。
+let CHAIN_STANDARD = ["agent_reviewer", "agent_reviewer_second", "human_admin"];
+let CHAIN_SINGLE = ["human_admin"];
+let CHAIN_PEER = ["agent_reviewer"];
+
+export func known_role(r: string): bool {
+  return get(ROLE_ACTIONS, r, null) != null;
+}
+
+// 角色能不能做这个动作。未知角色一律 false(fail-closed)。
+export func can(role_name: string, action: string): bool {
+  let acts = get(ROLE_ACTIONS, role_name, []);
+  let i = 0;
+  while (i < len(acts)) {
+    if (str(get(acts, i, "")) == action) { return true; }
+    i = i + 1;
+  }
+  return false;
+}
+
+// 按风险等级选链。risk 由调用方给, 不认识的一律按最严处理。
+//   low    只读/可重跑       → 单级(人类确认)
+//   medium 有副作用          → 标准三级
+//   high   不可逆/涉及资金   → 标准三级 + (调用方自行加 human_admin 二次)
+//   peer   跨节点只读        → 单级机器审核
+export func chain_for(risk: string) {
+  let r = str(risk);
+  if (r == "peer") { return CHAIN_PEER; }
+  if (r == "low") { return CHAIN_SINGLE; }
+  if (r == "medium" or r == "high") { return CHAIN_STANDARD; }
+  // 未知风险等级: 按最严(标准链), 而不是放行
+  return CHAIN_STANDARD;
+}
+
+// 当前这一关该由谁审。idx 是链上的位置; 越界返回 "" 表示链已走完。
+export func role_at(chain, idx: int) {
+  if (idx < 0 or idx >= len(chain)) { return ""; }
+  return str(get(chain, idx, ""));
+}
+
+// ── 审批记录 ────────────────────────────────────────────────────────
+// 一条审批 = {role, actor, decision, at, note}
+//   actor 是"谁"—— 本协议里是节点名(peer_name), 不是人类账号
+//   decision: approve / reject
+export func record(role_name: string, actor: string, decision: string, note: string) {
+  return {
+    "role": role_name,
+    "actor": actor,
+    "decision": decision,
+    "at": int(now()),
+    "note": note,
+  };
+}
+
+// 从已有记录里算下一关该由谁审。
+// 返回 { done: bool, next_role: string, rejected: bool }
+export func next_of(chain, approvals) {
+  let i = 0;
+  while (i < len(chain)) {
+    let need = str(get(chain, i, ""));
+    let got = false;
+    let j = 0;
+    while (j < len(approvals)) {
+      let a = get(approvals, j, {});
+      if (str(get(a, "role", "")) == need) {
+        if (str(get(a, "decision", "")) == "reject") {
+          return { done: true, next_role: "", rejected: true };
+        }
+        if (str(get(a, "decision", "")) == "approve") { got = true; }
+      }
+      j = j + 1;
+    }
+    if (not got) {
+      return { done: false, next_role: need, rejected: false };
+    }
+    i = i + 1;
+  }
+  return { done: true, next_role: "", rejected: false };
+}
+
+// 尝试用某个角色批一关。
+// 返回 { ok, error, approvals, done, next_role, rejected }
+// approvals 是**新的**列表(不改入参, 便于调用方决定是否落盘)
+export func try_approve(chain, approvals, role_name: string, actor: string,
+                        decision: string, note: string) {
+  if (not known_role(role_name)) {
+    return { ok: false, error: "unknown role: " + role_name, approvals: approvals,
+             done: false, next_role: "", rejected: false };
+  }
+  if (decision != "approve" and decision != "reject") {
+    return { ok: false, error: "decision must be approve|reject",
+             approvals: approvals, done: false, next_role: "", rejected: false };
+  }
+  // 只有轮到的那一关能批 —— 防止二审抢先, 也防止同一个角色重复批
+  let st = next_of(chain, approvals);
+  if (st.done) {
+    return { ok: false, error: "chain already finished", approvals: approvals,
+             done: true, next_role: "", rejected: st.rejected };
+  }
+  let need = str(st.next_role);
+  if (need != role_name) {
+    return { ok: false, error: "not your turn (need " + need + ", got " + role_name + ")",
+             approvals: approvals, done: false, next_role: need, rejected: false };
+  }
+  let next = [];
+  let i = 0;
+  while (i < len(approvals)) { push(next, get(approvals, i, {})); i = i + 1; }
+  push(next, record(role_name, actor, decision, note));
+  let st2 = next_of(chain, next);
+  return {
+    ok: true,
+    error: "",
+    approvals: next,
+    done: st2.done,
+    next_role: str(st2.next_role),
+    rejected: st2.rejected,
+  };
+}
+
+// 审批链是否已完成(全部 approve 且无 reject)
+export func is_complete(chain, approvals) {
+  let st = next_of(chain, approvals);
+  return st.done and not st.rejected;
+}

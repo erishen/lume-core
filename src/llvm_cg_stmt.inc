@@ -2,6 +2,26 @@
  * Textually included by llvm_codegen.c (single translation unit).
  * Do not compile this file on its own. */
 
+/* True when a parameter of this type arrives as an opaque pointer that IS the
+ * value (anonymous struct / list / enum / result / func), rather than as the
+ * address of a stack cell. Mirrors llvm_ptr_type_of: the signature emits all
+ * of these as i8*, and a callee reads them without an extra load. A *named*
+ * struct also arrives as a pointer, but one whose slot is its address, so it
+ * is excluded (its read path returns the slot directly for a different
+ * reason — see cg_var). */
+static int ptr_like_param(Type *t)
+{
+    if (!t) return 0;
+    switch (t->kind) {
+    case TY_STRUCT: return t->name == NULL;
+    case TY_LIST:
+    case TY_ENUM:
+    case TY_RESULT:
+    case TY_FUNC:   return 1;
+    default:        return 0;
+    }
+}
+
 /* Match-arm binds, for the window their arm body's type is inferred in.
  * Mirrors codegen_scan.c's copy: a repeated name overwrites (no new
  * strdup), distinct names are strdup'd once and freed by arm_scope_clear
@@ -571,11 +591,29 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
          * context first when has_cap — so the readback below indexes
          * pv[i + 1] for a closure's own parameters. */
         LLVMGetParams(g->fn, pv);
-        for (int i = 0; i < arity; i++)
+        for (int i = 0; i < arity; i++) {
+            /* Both struct kinds arrive as a pointer argument and keep it as
+             * their slot: a *named* struct's slot is its address (that is
+             * what a callee dereferences), while an *anonymous* struct / list
+             * / enum / result / func (all i8* at the ABI level) is ALREADY
+             * the value — the same rule llvm_ptr_type_of applies to the
+             * signature. Storing the latter into an alloca and loading it
+             * back works, but marking it here keeps the read path identical
+             * to the text backend's `%pN` arm and avoids the extra
+             * indirection that caused P12's crash on the text leg. */
+            int ptrlike = ptr_like_param(params[i]);
+            /* A *named* struct keeps the original rule too: its slot is the
+             * incoming pointer, which a callee dereferences for its fields. */
+            int is_struct = params[i] && params[i]->kind == TY_STRUCT;
             asg_push(&g->locals, names[i], params[i],
-                     (params[i] && params[i]->kind == TY_STRUCT)
-                         ? pv[i + (has_cap ? 1 : 0)] : NULL,
+                     (is_struct || ptrlike) ? pv[i + (has_cap ? 1 : 0)] : NULL,
                      0);
+            /* Only the opaque-pointer kinds get the "slot IS the value" flag;
+             * a named struct's slot is an address and must stay loadable for
+             * field access, which struct_addr/aggregate paths rely on. */
+            if (ptrlike)
+                g->locals.v[g->locals.n - 1].param = 1;
+        }
     }
 
     /* Phase-2 captures (mirrors codegen_stmt.c): each captured name gets a
@@ -598,7 +636,7 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
 
     for (int i = 0; i < g->locals.n; i++) {
         Asg *a = &g->locals.v[i];
-        if (a->slot) continue;                       /* a struct parameter */
+        if (a->slot) continue;   /* a struct / opaque-pointer parameter */
         if (a->cap) continue;  /* a capture: the slot is the capture-array
                                 * pointer materialized below, no stack cell
                                 * — the %cap-prefix skip of the text alloca
@@ -676,7 +714,10 @@ static void cg_def(CG *g, const char *sym, char **names, Type **params,
     }
     if (pv) {
         for (int i = 0; i < arity; i++) {
+            /* Struct and opaque-pointer parameters already carry their value
+             * in the slot (ptr_like_param arm above): nothing to seed. */
             if (params[i] && params[i]->kind == TY_STRUCT) continue;
+            if (ptr_like_param(params[i])) continue;
             LLVMBuildStore(g->ab, pv[i + (has_cap ? 1 : 0)],
                            asg_find(&g->locals, names[i], 0)->slot);
         }

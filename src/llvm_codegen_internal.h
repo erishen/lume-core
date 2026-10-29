@@ -23,6 +23,10 @@
 typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line;
                  int cap;        /* cap: slot points into the closure's
                                   * capture array, not a local alloca */
+                 int param;      /* param: slot IS the incoming argument value
+                                  * (an opaque-pointer parameter — anonymous
+                                  * struct / list / enum / result / func). No
+                                  * stack cell, so cg_var must not load it. */
                  int shadow; } Asg;  /* shadows a module global: seed at entry */
 typedef struct { Asg *v; int n, cap; } Asgs;
 

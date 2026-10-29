@@ -1492,3 +1492,67 @@ bridge (`bridge_lsp.c`) have no sanitizer target yet:
       LspDoc from the open set) and exit-time `lsp_docs_clear()`; new
       `tests/lsp_smoke.sh` drives initialize/open/change/switch/hover/
       close/shutdown/exit and is wired into `make asan` under LSan.
+
+## P12 — Native backends SIGSEGV on key access to a map function parameter (filed + FIXED 2026-10-28)
+
+Found while porting a peer-to-peer module (`lib/peer.lume`) that passes the
+request map into helpers. **Interpreters are fine; both native backends crash.**
+
+Minimal repro:
+
+```lume
+func f(m, k: string): string { return str(get(m, k, "d")); }
+print(f({ k: "v" }, "k"));
+```
+
+- `lume-core repro.lume` → prints `v` (correct)
+- `lume-core --compile-text repro.lume && ./out/...` → **SIGSEGV**
+- `--compile-llvm` → same
+
+Scope narrowed by hand:
+
+| Case | Native result |
+|---|---|
+| pass a map to a function, never touch it | ok |
+| `print(m)` inside the callee | ok |
+| `get(m, k, d)` inside the callee | **SIGSEGV** |
+| `keys(m)` inside the callee | **SIGSEGV** |
+| `m["a"]` inside the callee | **SIGSEGV** |
+
+So it is not the call itself nor the annotation (unannotated `m`, `m: map`
+both crash) — it is *any key read of a map that arrived as a parameter*.
+
+Why it went unnoticed: `tests/native-consistency.lume` has **zero** cases
+passing a map into a function (`grep -c "func.*: map"` → 0), so the
+three-backend invariant never covered this shape.
+
+**Root cause (confirmed, not the suspected one):** the parameter really is
+the value, but `cg_var` loaded it anyway — the read path treated every
+`%lv_`-style slot as a stack cell. For an opaque-pointer parameter the slot
+already holds the heap pointer, so `load i8*, i8** %p0` reinterpreted the
+first word of the LumeMap header as a pointer and faulted on first key use.
+
+**Fix.** Both backends now mark opaque-pointer parameters as
+"slot IS the value" and skip the load:
+
+- text: `codegen_expr.c` `cg_var` returns the `%p` slot directly.
+- libLLVM: `Asg.param` (new field, zeroed in `asg_push`) +
+  `ptr_like_param()` (`llvm_cg_stmt.inc`) makes `llvm_cg_expr.inc`'s `cg_var`
+  return the slot; the entry-block alloca/seed loops skip those parameters.
+  A *named* struct parameter keeps the original rule (slot = incoming
+  pointer, dereferenced for field access) — narrowing that condition to
+  opaque kinds only broke `p.age`-style reads and was caught by the
+  consistency suite.
+
+- [x] Fix the codegen.
+- [x] Add a `native-consistency` case (P12 block: `get` / `keys` on a map
+      parameter, plus the default-value arm).
+- [ ] Audit the other container kinds (list, struct) as parameters for the
+      same shape. List parameters were exercised while narrowing the fix and
+      behave; a dedicated case is still worth adding (`p12_list` was dropped
+      because `list` annotations collide with `int[]` at the call site).
+
+Impact: any library module whose helpers take a map (very common — request
+maps, config maps) cannot be compiled by the native backends today. The
+interpreter and `server{}` (which runs on the interpreter/bridge path) are
+unaffected, which is why app-level code did not surface it.

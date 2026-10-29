@@ -97,8 +97,15 @@ static Val cg_var(CG *g, Node *n)
     /* A *named* struct is always *referenced*: the slot holds its address.
      * A list or a runtime map is a heap object behind an opaque pointer, so
      * the slot holds the pointer itself and has to be loaded -- passing the
-     * slot would make the runtime read its struct out of the stack frame. */
+     * slot would make the runtime read its struct out of the stack frame.
+     * A parameter of one of those opaque kinds is the exception: its slot IS
+     * the incoming value (see ptr_like_param / the param flag), with no stack
+     * cell behind it, so loading would dereference the map pointer itself
+     * (P12: `load ptr, ptr %p0` reads a LumeMap header as a pointer).
+     * Captures keep their existing load path: their slot is a *typed pointer*
+     * materialized from the capture array, not the value itself. */
     if (a->ty->kind == TY_STRUCT && a->ty->name) return val_make(a->ty, a->slot);
+    if (a->slot && a->param) return val_make(a->ty, a->slot);
 
     AT(g);
     return val_make(a->ty, LLVMBuildLoad2(g->ab, ty_of(g, a->ty), a->slot, "v"));
