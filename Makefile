@@ -1430,7 +1430,7 @@ route-cap-test: all
 	    if [ "$$code" = "200" ] && printf '%s' "$$body" | grep -q "$$want"; then break; fi; \
 	    sleep 1; \
 	  done; \
-	  if [ "$$code" != "200" ]; then echo "FAIL route-cap $$url: code=$$code"; fail=1; \
+	  if [ "$$code" != "200" ]; then echo "FAIL route-cap $$url: code=$$code"; cat /tmp/lume-route-cap-srv.log; fail=1; \
 	  elif ! printf '%s' "$$body" | grep -q "$$want"; then echo "FAIL route-cap $$url: body missing '$$want'"; printf '%s\n' "$$body"; fail=1; \
 	  else echo "ok   route-cap $$url"; fi; }; \
 	probe "/r1" '"n":1'; \
