@@ -1069,12 +1069,12 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_prim(TY_INT),
                               "call i64 @lume_bi_seed(i64 %s)", s.v);
         free(s.v);
-        return val_make(type_prim(TY_INT), t);
+        return val_take(type_prim(TY_INT), t);
     }
     if (strcmp(bname, "rand") == 0) {
         if (argc != 0)
             ERRV(g, "line %zu: rand() takes no arguments", n->line);
-        return val_make(type_prim(TY_FLOAT),
+        return val_take(type_prim(TY_FLOAT),
                         emit_instrf(g, type_prim(TY_FLOAT),
                                     "call double @lume_bi_rand()"));
     }
@@ -1123,7 +1123,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(double %s, double %s)", fn, a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
     if (strcmp(bname, "rand_int") == 0) {
         if (argc != 2)
@@ -1150,7 +1150,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_prim(TY_INT),
                               "call i64 @lume_bi_rand_int(i64 %s, i64 %s)", a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_prim(TY_INT), t);
+        return val_take(type_prim(TY_INT), t);
     }
 
     /* rand_binomial(n, p) (2026-10-27): mixed arity — n is an i64 count
@@ -1193,7 +1193,7 @@ static Val cg_builtin(CG *g, Node *n)
                               rt->kind == TY_FLOAT ? "double" : "i64",
                               fn, a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(rt, t);
+        return val_take(rt, t);
     }
 
     /* Distribution family (2026-10-25): rand_bool(p) / rand_exponential(rate)
@@ -1233,7 +1233,7 @@ static Val cg_builtin(CG *g, Node *n)
         const char *pty = is_float ? "double" : "i64";
         char *t = emit_instrf(g, rt, "call %s @%s(double %s)", pty, fn, p.v);
         free(p.v);
-        return val_make(rt, t);
+        return val_take(rt, t);
     }
     if (strcmp(bname, "shuffle") == 0) {
         if (argc != 1)
@@ -1244,7 +1244,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @lume_bi_shuffle(i8* %s)", a.v);
         free(a.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
     /* rand_multinomial(n, probs) (2026-10-28): n weighted draws against a
      * float list of category weights; answers a fresh int list. n
@@ -1268,7 +1268,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_INT)),
                               "call i8* @lume_bi_rand_multinomial(i64 %s, i8* %s)", a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_list(type_prim(TY_INT)), t);
+        return val_take(type_list(type_prim(TY_INT)), t);
     }
 
     /* Financial path simulators (2026-10-28): all-scalar inputs answering
@@ -1332,7 +1332,7 @@ static Val cg_builtin(CG *g, Node *n)
         free(vs);
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)), "%s", buf);
         free(buf);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* sim_portfolio(paths, weights) (2026-11-01): two list arguments — a
@@ -1355,7 +1355,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_sim_portfolio(i8* %s, i8* %s)",
                               a.v, w.v);
         free(a.v); free(w.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* rand_dirichlet(alphas) (2026-10-30): a fresh normalized probability
@@ -1371,7 +1371,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @lume_bi_rand_dirichlet(i8* %s)", a.v);
         free(a.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* Multivariate / copula samplers (2026-10-30): all-scalar inputs
@@ -1435,7 +1435,7 @@ static Val cg_builtin(CG *g, Node *n)
         free(vs);
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)), "%s", buf);
         free(buf);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* Bootstrap family (2026-10-30): list + scalars. The three CI builtins
@@ -1477,7 +1477,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @%s(i8* %s, double %s, double %s)",
                               fn, a.v, scal[0].v, scal[1].v);
         free(a.v); free(scal[0].v); free(scal[1].v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     if (strcmp(bname, "bootstrap_se_mean") == 0 || strcmp(bname, "value_at_risk") == 0 ||
@@ -1514,7 +1514,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @%s(i8* %s, double %s)",
                               fn, a.v, ni.v);
         free(a.v); free(ni.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     /* Black-Scholes pricing family (2026-10-28): five doubles in, one
@@ -1557,7 +1557,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @%s(double %s, double %s, double %s, double %s, double %s)",
                               fn, vv[0].v, vv[1].v, vv[2].v, vv[3].v, vv[4].v);
         for (int i = 0; i < 5; i++) free(vv[i].v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     /* File builtins (SPEC §6.2): read_file returns the file as a string or
@@ -2577,7 +2577,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s)", fn, a.v);
         free(a.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     if (strcmp(bname, "percentile") == 0 || strcmp(bname, "omega_ratio") == 0) {
@@ -2602,7 +2602,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s, double %s)", fn, a.v, p.v);
         free(a.v); free(p.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     /* Autocorrelation at a lag: a list plus an integer lag — the rolling
@@ -2627,7 +2627,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_autocorrelation(i8* %s, i64 %s)",
                               a.v, lag.v);
         free(a.v); free(lag.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     /* Information coefficient: rank correlation between a signal and its
@@ -2657,7 +2657,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_ic(i8* %s, i8* %s, i64 %s)",
                               s.v, r.v, lag.v);
         free(s.v); free(r.v); free(lag.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     if (strcmp(bname, "covariance") == 0 || strcmp(bname, "correlation") == 0 ||
@@ -2678,7 +2678,7 @@ static Val cg_builtin(CG *g, Node *n)
                                   "call i8* @lume_bi_linreg(i8* %s, i8* %s)",
                                   a.v, b.v);
             free(a.v); free(b.v);
-            return val_make(type_anon_struct(), t);
+            return val_take(type_anon_struct(), t);
         }
         const char *fn = strcmp(bname, "covariance") == 0 ? "lume_bi_covariance"
                        : strcmp(bname, "information_ratio") == 0 ? "lume_bi_information_ratio"
@@ -2687,7 +2687,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_prim(TY_FLOAT),
                               "call double @%s(i8* %s, i8* %s)", fn, a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     /* Technical indicators (2026-11-02, #52): macd takes a prices list
@@ -2729,7 +2729,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_macd(i8* %s, i64 %s, i64 %s, i64 %s)",
                               a.v, f.v, s.v, sig.v);
         free(a.v); free(f.v); free(s.v); free(sig.v);
-        return val_make(type_anon_struct(), t);
+        return val_take(type_anon_struct(), t);
     }
 
     if (strcmp(bname, "bollinger") == 0) {
@@ -2762,7 +2762,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_bollinger(i8* %s, i64 %s, double %s)",
                               a.v, w.v, k.v);
         free(a.v); free(w.v); free(k.v);
-        return val_make(type_anon_struct(), t);
+        return val_take(type_anon_struct(), t);
     }
 
     /* Technical-indicator sequences (#54): rolling_max / rolling_min are the
@@ -2794,7 +2794,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @%s(i8* %s, i64 %s)", fn, a.v, w.v);
         free(a.v); free(w.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     if (strcmp(bname, "kdj") == 0 || strcmp(bname, "williams_r") == 0 ||
@@ -2830,7 +2830,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @%s(i8* %s, i8* %s, i8* %s, i64 %s)",
                               fn, a.v, b.v, c.v, p.v);
         free(a.v); free(b.v); free(c.v); free(p.v);
-        return val_make(rty, t);
+        return val_take(rty, t);
     }
 
     if (strcmp(bname, "obv") == 0) {
@@ -2846,7 +2846,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @lume_bi_obv(i8* %s, i8* %s)", a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* Performance attribution (2026-11-02, #53): alpha_beta takes a
@@ -2878,7 +2878,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @lume_bi_alpha_beta(i8* %s, i8* %s, double %s)",
                               a.v, b.v, rf.v);
         free(a.v); free(b.v); free(rf.v);
-        return val_make(type_anon_struct(), t);
+        return val_take(type_anon_struct(), t);
     }
 
     /* Treynor ratio: same (returns, benchmark, rf) shape as alpha_beta
@@ -2907,7 +2907,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_treynor_ratio(i8* %s, i8* %s, double %s)",
                               a.v, b.v, rf.v);
         free(a.v); free(b.v); free(rf.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     /* Hypothesis tests (2026-10-29): z_test / tstat take a sample list plus
@@ -2944,7 +2944,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_z_test(i8* %s, double %s, double %s)",
                               a.v, m.v, s.v);
         free(a.v); free(m.v); free(s.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     if (strcmp(bname, "tstat") == 0) {
@@ -2968,7 +2968,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_tstat(i8* %s, double %s)",
                               a.v, m.v);
         free(a.v); free(m.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     if (strcmp(bname, "f_stat") == 0) {
@@ -2986,7 +2986,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_f_stat(i8* %s, i8* %s)",
                               a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     if (strcmp(bname, "chisq_stat") == 0) {
@@ -3004,7 +3004,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call double @lume_bi_chisq_stat(i8* %s, i8* %s)",
                               a.v, b.v);
         free(a.v); free(b.v);
-        return val_make(type_prim(TY_FLOAT), t);
+        return val_take(type_prim(TY_FLOAT), t);
     }
 
     if (strcmp(bname, "pct_change") == 0 || strcmp(bname, "rank") == 0) {
@@ -3018,7 +3018,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @%s(i8* %s)", fn, a.v);
         free(a.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* rolling_mean/rolling_stddev/rsi (list, window) and ewma (list, alpha):
@@ -3050,7 +3050,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @%s(i8* %s, i64 %s)", fn, a.v, w.v);
         free(a.v); free(w.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* rolling_sharpe/sortino/var/cvar (list, window, scalar): the #48
@@ -3096,7 +3096,7 @@ static Val cg_builtin(CG *g, Node *n)
                               "call i8* @%s(i8* %s, i64 %s, double %s)",
                               fn, a.v, w.v, s.v);
         free(a.v); free(w.v); free(s.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     if (strcmp(bname, "ewma") == 0) {
@@ -3119,7 +3119,7 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @lume_bi_ewma(i8* %s, double %s)", a.v, p.v);
         free(a.v); free(p.v);
-        return val_make(type_list(type_prim(TY_FLOAT)), t);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 
     /* ---- string tools (interpreter parity, builtins_str.c) ----
