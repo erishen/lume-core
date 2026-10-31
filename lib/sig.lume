@@ -1,0 +1,226 @@
+// sig.lume — 信号处理算法库（混合分层：.lume 算法层，零 C 摩擦）
+//
+// 设计约束（同 sci/optim/linalg）：lume 当前不支持「用户函数接收函数类型
+// 参数」，且 list 为值语义（不可原地索引赋值），故：
+//   · 复数用「[Re, Im] 两列矩阵」表示（行 k = [Re X[k], Im X[k]]），不引入
+//     自定义复数类型；三角函数 sin/cos 由 C 内核提供，三后端一致。
+//   · 所有「修改」经返回新数组/新矩阵的帮助函数实现（set_flt）。
+//
+// 三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，浮点运算顺序由 lume
+// 显式控制，故数值天然一致。
+//
+// 覆盖：
+//   卷积        convolve(a, b)        线性卷积 c[n]=Σ a[k]·b[n−k]
+//   FIR 滤波    fir_filter(x, h)      卷积实现 y = x ∗ h
+//   移动平均    moving_avg(x, w)      窗口宽度 w 的简单滑动平均
+//   离散傅里叶  dft(x)                返回 [Re,Im] 矩阵，行 k = X[k]
+//   逆 DFT      idft(X)               由 [Re,Im] 矩阵重建实序列
+//   快速傅里叶  fft_radix2(x)          迭代 Cooley–Tukey（长度须为 2 的幂）
+//
+// 使用：
+//   import "sig.lume" as sig;
+//   let X = sig.dft([1.0,2.0,3.0,4.0]);
+//
+// ── 已知语言限制（重要）─────────────────────────────────────────────
+// 1. lume 的 let 按「函数作用域」——同一函数内所有循环变量名必须唯一。
+// 2. 本地函数返回值无法被编译后端推断——绑定到本地函数结果的变量须显式标注。
+// 3. 模块级浮点常量在文本后端会触发 "integer constant must have integer
+//    type" 编译 bug，故本库改用**内联字面量**（如 1e30）或返回值函数，
+//    不定义模块级浮点常量。
+
+export let SIG_VERSION = "0.1.0";
+
+// ════════════════════════════════════════════════════════════════
+// 内部帮助函数
+// ════════════════════════════════════════════════════════════════
+
+// 返回新数组：第 idx 个元素置为 v（list 值语义，原地不可赋值）。
+func set_flt(a: float[], idx: int, v: float): float[] {
+  let n = len(a);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    if (i == idx) { out = push(out, v); }
+    else { out = push(out, a[i]); }
+  }
+  return out;
+}
+
+// 把整数 x 的 bits 个低位按位反转（不用位运算符，纯算术 + floor，跨后端安全）。
+// 注意：lume 的 '/' 恒产生 float 且「乘回去会精确还原」——如 2.0*(1.0/2.0)=1.0
+// 导致 `xx-2*(xx/2)` 对奇数得 0（把奇数误判为偶数），故求模必须用 floor：
+//   xx mod 2 = xx − 2·floor(xx/2)；整数除法 = floor(xx/2)。
+func bitrev(x: int, bits: int): int {
+  let r: int = 0;
+  let xx: float = x * 1.0;
+  for (let b = 0; b < bits; b = b + 1) {
+    let rem: float = xx - 2.0 * floor(xx / 2.0);   // 0.0 或 1.0（xx mod 2）
+    let bit: int = 0;
+    if (rem > 0.5) { bit = 1; }
+    r = r * 2 + bit;
+    xx = floor(xx / 2.0);                          // floor 整数除法
+  }
+  return r;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 时域：卷积 / 滤波 / 移动平均
+// ════════════════════════════════════════════════════════════════
+
+// 线性卷积：c[n] = Σ_k a[k]·b[n−k]，长度 = len(a)+len(b)−1。
+export func convolve(a: float[], b: float[]): float[] {
+  let na = len(a);
+  let nb = len(b);
+  let nc = na + nb - 1;
+  let out: float[] = [];
+  for (let n = 0; n < nc; n = n + 1) {
+    let s = 0.0;
+    for (let k = 0; k < na; k = k + 1) {
+      let j = n - k;
+      if (j >= 0) {
+        if (j < nb) {
+          s = s + a[k] * b[j];
+        }
+      }
+    }
+    out = push(out, s);
+  }
+  return out;
+}
+
+// FIR 滤波（卷积实现）：y = x ∗ h。
+export func fir_filter(x: float[], h: float[]): float[] {
+  return convolve(x, h);
+}
+
+// 简单移动平均（尾随窗口）：对位置 i，取 [max(0, i−w+1), i] 共 ≤w 个样本的均值。
+// 用尾随窗口可避免整数除法（lume 的 '/' 恒为 float），边界用可用样本、不补零。
+export func moving_avg(x: float[], w: int): float[] {
+  let n = len(x);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let lo = i - w + 1;
+    if (lo < 0) { lo = 0; }
+    let s = 0.0;
+    let cnt = 0;
+    for (let j = lo; j <= i; j = j + 1) {
+      s = s + x[j];
+      cnt = cnt + 1;
+    }
+    out = push(out, s / cnt);
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 频域：DFT / IDFT / FFT（复数用 [Re, Im] 两列矩阵表示）
+// ════════════════════════════════════════════════════════════════
+
+// 离散傅里叶变换：X[k] = Σ_n x[n]·e^{−2πi·kn/N}
+// 返回矩阵，行 k = [Re X[k], Im X[k]]。O(N²)，对任意长度可用。
+export func dft(x: float[]): float[][] {
+  let N = len(x);
+  let Nf: float = N;
+  let two_pi = 6.28318530718;
+  let out: float[][] = [];
+  for (let k = 0; k < N; k = k + 1) {
+    let re = 0.0;
+    let im = 0.0;
+    for (let n = 0; n < N; n = n + 1) {
+      let ang: float = two_pi * (k * n) / Nf;
+      re = re + x[n] * cos(ang);
+      im = im - x[n] * sin(ang);
+    }
+    let row: float[] = [];
+    row = push(row, re);
+    row = push(row, im);
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 逆离散傅里叶变换：x[n] = (1/N)·Σ_k X[k]·e^{+2πi·kn/N}
+// 输入 [Re,Im] 矩阵（行 k = [Re,Im]），返回重建的实序列。实输入下虚部≈0。
+export func idft(X: float[][]): float[] {
+  let N = len(X);
+  let Nf: float = N;
+  let two_pi = 6.28318530718;
+  let out: float[] = [];
+  for (let n = 0; n < N; n = n + 1) {
+    let s = 0.0;
+    for (let k = 0; k < N; k = k + 1) {
+      let ang: float = two_pi * (k * n) / Nf;
+      let re = X[k][0];
+      let im = X[k][1];
+      // (re + i·im)·(cosθ + i·sinθ) 的实部 = re·cosθ − im·sinθ
+      s = s + re * cos(ang) - im * sin(ang);
+    }
+    out = push(out, s / Nf);
+  }
+  return out;
+}
+
+// 快速傅里叶变换（迭代 Cooley–Tukey，长度 N 须为 2 的幂）。
+// 与 dft 等价（FFT 是 DFT 的分治实现），返回同样格式的 [Re,Im] 矩阵。
+// 若 N 非 2 的幂，结果未定义（演示/测试请传入 2 的幂长度）。
+export func fft_radix2(x: float[]): float[][] {
+  let N = len(x);
+  // 求 bits 使 2^bits == N
+  let bits = 0;
+  let p = 1;
+  for (let bi = 0; bi < 64; bi = bi + 1) {
+    if (p < N) { bits = bits + 1; p = p * 2; }
+  }
+  // 位反转置换
+  let re: float[] = [];
+  let im: float[] = [];
+  for (let ri = 0; ri < N; ri = ri + 1) {
+    re = push(re, x[ri]);
+    im = push(im, 0.0);
+  }
+  for (let rv = 0; rv < N; rv = rv + 1) {
+    let r: int = bitrev(rv, bits);   // 本地函数返回值须显式标注（编译后端无法推断）
+    if (r > rv) {
+      let tr = re[r];
+      let ti = im[r];
+      re = set_flt(re, r, re[rv]);
+      im = set_flt(im, r, im[rv]);
+      re = set_flt(re, rv, tr);
+      im = set_flt(im, rv, ti);
+    }
+  }
+  // 蝶形运算（自底向上，step = 当前子 DFT 长度）
+  let step = 1;
+  let pi = 3.14159265359;
+  for (let ls = 0; ls < bits; ls = ls + 1) {
+    let half = step;
+    for (let bi2 = 0; bi2 < N; bi2 = bi2 + half * 2) {
+      for (let j = 0; j < half; j = j + 1) {
+        let ang: float = pi * j / step;     // 旋转因子角 = π·j/step
+        let cs: float = cos(ang);
+        let sn: float = sin(ang);
+        let idx_l = bi2 + j;
+        let idx_h = bi2 + j + half;
+        let uR = re[idx_l];
+        let uI = im[idx_l];
+        let vR = re[idx_h];
+        let vI = im[idx_h];
+        let tR = cs * vR + sn * vI;
+        let tI = cs * vI - sn * vR;
+        re = set_flt(re, idx_l, uR + tR);
+        im = set_flt(im, idx_l, uI + tI);
+        re = set_flt(re, idx_h, uR - tR);
+        im = set_flt(im, idx_h, uI - tI);
+      }
+    }
+    step = step * 2;
+  }
+  // 组装 [Re,Im] 矩阵
+  let out: float[][] = [];
+  for (let ai = 0; ai < N; ai = ai + 1) {
+    let row: float[] = [];
+    row = push(row, re[ai]);
+    row = push(row, im[ai]);
+    out = push(out, row);
+  }
+  return out;
+}

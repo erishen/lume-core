@@ -1,0 +1,30 @@
+// sig-consistency.lume — sig.lume 三后端一致性测试
+// 由 tests/sig_backends.sh 驱动：解释器 / 文本 IR / LLVM 输出须逐字节一致。
+import "../lib/sig.lume" as sig;
+import "../lib/linalg.lume" as la;
+
+// ── 卷积 ──
+print(sig.convolve([1.0,2.0,3.0],[0.0,1.0,0.5]));
+print(sig.convolve([1.0],[1.0,2.0,3.0]));
+
+// ── FIR 滤波（= 卷积）──
+print(sig.fir_filter([1.0,2.0,3.0,4.0],[1.0,-1.0]));
+
+// ── 移动平均（尾随窗口 w=3）──
+print(sig.moving_avg([1.0,2.0,3.0,4.0,5.0],3));
+print(sig.moving_avg([2.0,4.0,6.0],5));
+
+// ── DFT 已知值：dft([1,2,3,4]) = [[10,0],[-2,2],[-2,0],[-2,-2]] ──
+print(sig.dft([1.0,2.0,3.0,4.0]));
+
+// ── IDFT 还原（dft ∘ idft = 恒等）──
+print(sig.idft(sig.dft([1.0,2.0,3.0,4.0])));
+
+// ── FFT 与 DFT 等价（N=8，含容差断言）──
+let x8 = [0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0];
+print(sig.fft_radix2(x8));
+print(sig.dft(x8));
+print(la.mat_eq_approx(sig.fft_radix2(x8), sig.dft(x8), 1e-6));
+
+// ── FFT N=4 与 DFT 逐点一致 ──
+print(la.mat_eq_approx(sig.fft_radix2([1.0,2.0,3.0,4.0]), sig.dft([1.0,2.0,3.0,4.0]), 1e-9));

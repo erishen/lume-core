@@ -1,0 +1,23 @@
+// sig_demo.lume — 信号处理库演示（convolve / fir / moving_avg / dft / idft / fft）
+import "../lib/sig.lume" as sig;
+import "../lib/linalg.lume" as la;
+
+print("== 卷积 ==");
+print(sig.convolve([1.0,2.0,3.0],[0.0,1.0,0.5]));
+
+print("== FIR 差分滤波 y[n]=x[n]-x[n-1] ==");
+print(sig.fir_filter([3.0,5.0,8.0,2.0],[1.0,-1.0]));
+
+print("== 移动平均（尾随窗口 3）==");
+print(sig.moving_avg([1.0,2.0,3.0,4.0,5.0],3));
+
+print("== DFT of [1,2,3,4] ==");
+print(sig.dft([1.0,2.0,3.0,4.0]));
+
+print("== IDFT 还原 ==");
+print(sig.idft(sig.dft([1.0,2.0,3.0,4.0])));
+
+print("== FFT(N=8) 与 DFT 等价？ ==");
+let x8 = [0.0,1.0,2.0,3.0,4.0,5.0,6.0,7.0];
+print(sig.fft_radix2(x8));
+print(la.mat_eq_approx(sig.fft_radix2(x8), sig.dft(x8), 1e-6));
