@@ -36,6 +36,12 @@ Value b_hmac_sha256(VM *vm, int argc, Value *args);
 /* Base64 (builtins_crypt.c; RFC 4648, 2026-10-16, PayPal OAuth2 Basic). */
 Value b_base64_encode(VM *vm, int argc, Value *args);
 Value b_base64_decode(VM *vm, int argc, Value *args);
+/* Ed25519 (builtins_crypt.c; RFC 8032 vendored in compat/ed25519/, 2026-10-31).
+ * hex in/out: 私钥 32B / 公钥 32B / 签名 64B。 */
+Value b_ed25519_pubkey(VM *vm, int argc, Value *args);
+Value b_ed25519_sign(VM *vm, int argc, Value *args);
+Value b_ed25519_verify(VM *vm, int argc, Value *args);
+Value b_ed25519_keypair(VM *vm, int argc, Value *args);
 Value b_len(VM *vm, int argc, Value *args);
 Value b_keys(VM *vm, int argc, Value *args);
 Value b_get(VM *vm, int argc, Value *args);

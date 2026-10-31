@@ -162,7 +162,8 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
             src/token.c src/bridge_stub.c src/bridge_serve.c src/bridge_mcp.c src/bridge_lsp.c src/bridge_native.c src/builtins_http.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/codegen_lit.c src/codegen_call.c src/codegen_match.c src/codegen_print.c src/irbuf.c src/backend.c \
-            src/compat/sha256/sha256.c
+            src/compat/sha256/sha256.c src/compat/sha512/sha512.c \
+            src/compat/ed25519/ed25519.c
 # --- 第二个原生后端:libLLVM C API(可选) ---------------------------------
 # 手写 IR 文本那条路(codegen*.c + clang)不依赖 LLVM:bin/lume-core 保持 ~2MB。
 # codegen.c 只是入口,发射器按区段拆在 codegen_{types,expr,scan,sig,stmt}.c,
@@ -348,6 +349,10 @@ build/compat/regex/%.o: src/compat/regex/tre.h src/compat/regex/regex.h
 # INT_HDRS cannot see it, so editing the header would leave a stale object.
 build/compat/sha256/%.o: src/compat/sha256/sha256.h
 
+# SHA-512 与 Ed25519 同理：各自一个 .c + 一个头，头改了必须重编。
+build/compat/sha512/%.o: src/compat/sha512/sha512.h
+build/compat/ed25519/%.o: src/compat/ed25519/ed25519.h src/compat/sha512/sha512.h
+
 # HAVE_LIBLLVM is a compile-time macro, so it is baked into main.o, not only
 # into llvm_codegen.o. Rebuilding only the libLLVM translation units after
 # llvm-config showed up (or after a version bump) links a half-fresh binary:
@@ -360,7 +365,7 @@ $(OBJS): $(LLVM_CONFIG_PATH)
 $(TARGET): $(OBJS) $(AH_LIB) | bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
-check: all crypt-test crypto-test builtins-test vm-reuse-test
+check: all crypt-test crypto-test ed25519-test builtins-test vm-reuse-test
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -1006,7 +1011,7 @@ endif
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
-         native-llvm native-bench native-consistency crypt-test crypto-test backend-parity pack packcheck \
+         native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
          ai-produce
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
@@ -1024,6 +1029,15 @@ crypto-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-crypto-test.out; then \
 		echo "==> crypto 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> crypto 单测全部通过"
+
+# Ed25519 内建单测（RFC 8032 官方向量 + 伪造拒绝 + 长消息）。
+# 与 crypto-test 分开: 后者是纯哈希, 这里是公钥签名, 失败时的排查路径不同。
+ed25519-test: all
+	@./$(TARGET) tests/test-crypto.lume > /tmp/lume-ed25519-test.out 2>&1; \
+	rc=$$?; grep -E "ed25519|FAIL" /tmp/lume-ed25519-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ed25519-test.out; then \
+		echo "==> ed25519 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> ed25519 单测全部通过"
 
 # 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
 # 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝

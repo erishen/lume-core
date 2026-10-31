@@ -103,3 +103,46 @@ check("base64 decode 长度非4倍数报错", get(be2, "err", null) != null);
 let be3 = try(() => base64_decode("Z=m9"));
 check("base64 decode 填充错位报错", get(be3, "err", null) != null);
 
+
+// ---- Ed25519 (RFC 8032) ----
+//
+// 向量来自 RFC 8032 §7.1，不是"自己签自己验"的闭环 —— 闭环只能证明实现
+// 自洽（签名和验签错在同一个地方仍会 PASS），外部向量才能证明协议兼容。
+// 这意味着别的实现（openssl / libsodium / python cryptography）生成的
+// 签名，我们验得通；我们生成的，它们也认。
+let sk1 = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+let pk1 = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+let sig1 = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b";
+
+check("ed25519 从私钥推导公钥(RFC 8032 #1)", ed25519_pubkey(sk1) == pk1);
+check("ed25519 签名(RFC 8032 #1 空消息)", ed25519_sign("", sk1) == sig1);
+check("ed25519 验签(RFC 8032 #1)", ed25519_verify("", sig1, pk1) == true);
+
+let sk2 = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+let pk2 = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+let sig2 = "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00";
+
+check("ed25519 从私钥推导公钥(RFC 8032 #2)", ed25519_pubkey(sk2) == pk2);
+check("ed25519 签名(RFC 8032 #2)", ed25519_sign("r", sk2) == sig2);
+check("ed25519 验签(RFC 8032 #2)", ed25519_verify("r", sig2, pk2) == true);
+
+// ---- 负例: 伪造必须被拒 ----
+check("ed25519 篡改消息应拒绝", ed25519_verify("x", sig2, pk2) == false);
+check("ed25519 错误公钥应拒绝",
+      ed25519_verify("r", sig2,
+        "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025") == false);
+check("ed25519 签名格式非法返回 false 而非报错",
+      ed25519_verify("r", "not-hex", pk2) == false);
+check("ed25519 空签名返回 false", ed25519_verify("r", "", pk2) == false);
+
+// ---- 密钥对与长消息 ----
+let kp = ed25519_keypair();
+check("ed25519_keypair 返回 sk/pk 各 64 hex",
+      len(get(kp, "sk", "")) == 64 && len(get(kp, "pk", "")) == 64);
+check("ed25519_keypair 公钥与私钥匹配",
+      ed25519_pubkey(get(kp, "sk", "")) == get(kp, "pk", ""));
+let longmsg = join(range(0, 300), ",");
+let lsig = ed25519_sign(longmsg, get(kp, "sk", ""));
+check("ed25519 长消息签名可验", ed25519_verify(longmsg, lsig, get(kp, "pk", "")) == true);
+check("ed25519 长消息改一位应拒绝",
+      ed25519_verify(longmsg + "!", lsig, get(kp, "pk", "")) == false);

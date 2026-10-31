@@ -25,6 +25,8 @@
 
 #include "builtins_internal.h"
 #include "compat/sha256/sha256.h"
+#include "compat/sha512/sha512.h"
+#include "compat/ed25519/ed25519.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -220,4 +222,149 @@ Value b_base64_encode(VM *vm, int argc, Value *args) {
 
 Value b_base64_decode(VM *vm, int argc, Value *args) {
     return vm_native(vm, argc, args, native_base64_decode);
+}
+
+
+/* ---- Ed25519 (2026-10-31) ----
+ *
+ * 四个内建，全部走 hex 字符串（不引入二进制 Value 类型）:
+ *   ed25519_pubkey(sk_hex)                  → pk_hex            (32B → 32B)
+ *   ed25519_sign(msg, sk_hex)               → sig_hex           (任意长 → 64B)
+ *   ed25519_verify(msg, sig_hex, pk_hex)    → bool
+ *   ed25519_keypair()                       → {sk_hex, pk_hex}  (新随机密钥)
+ *
+ * 为什么是这四个: peer 跨机需要"每节点自己持私钥、别人只拿公钥"。HMAC 那套
+ * 是对称的 —— 持 root 者能派生任何节点密钥, 等于能冒充任何节点。非对称之后,
+ * 一台机器泄露私钥只影响它自己。
+ *
+ * 随机源: /dev/urandom（Windows 用 BCryptGenRandom 不在此处处理, 该平台
+ * 走 vendored 路径之外的实现会 vm_set_error 明确报错, 而不是静默降级成
+ * 可预测的密钥 —— 后者会让整套信任模型形同虚设）。
+ */
+
+static int read_urandom(uint8_t *buf, size_t n) {
+#if defined(_WIN32)
+    (void)buf; (void)n;
+    return -1;   /* 见上方说明: 宁可不提供, 也不给可预测密钥 */
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) return -1;
+    size_t got = fread(buf, 1, n, f);
+    fclose(f);
+    return got == n ? 0 : -1;
+#endif
+}
+
+static void native_ed25519_pubkey(VM *vm, int argc, Value *args, Value *out) {
+    const char *sk_hex;
+    if (argc != 1) {
+        vm_set_error(vm, "ed25519_pubkey(): expects 1 argument (secret key hex)");
+        return;
+    }
+    if (!arg_string(vm, args[0], &sk_hex)) return;
+
+    uint8_t sk[32], pk[32];
+    if (ed25519_unhex(sk_hex, sk, 32) != 0) {
+        vm_set_error(vm, "ed25519_pubkey(): secret key must be 64 hex chars");
+        return;
+    }
+    if (ed25519_public_key(pk, sk) != 0) {
+        vm_set_error(vm, "ed25519_pubkey(): failed");
+        return;
+    }
+    char hex[65];
+    ed25519_hex(pk, 32, hex);
+    *out = make_string_cstr(vm, hex);
+}
+
+static void native_ed25519_sign(VM *vm, int argc, Value *args, Value *out) {
+    const char *msg, *sk_hex;
+    if (argc != 2) {
+        vm_set_error(vm, "ed25519_sign(): expects 2 arguments (message, secret key hex)");
+        return;
+    }
+    if (!arg_string(vm, args[0], &msg)) return;
+    if (!arg_string(vm, args[1], &sk_hex)) return;
+
+    uint8_t sk[32], pk[32], sig[64];
+    if (ed25519_unhex(sk_hex, sk, 32) != 0) {
+        vm_set_error(vm, "ed25519_sign(): secret key must be 64 hex chars");
+        return;
+    }
+    if (ed25519_public_key(pk, sk) != 0) {
+        vm_set_error(vm, "ed25519_sign(): bad secret key");
+        return;
+    }
+    if (ed25519_sign(sig, (const uint8_t *)msg, obj_string_len(AS_OBJ(args[0])),
+                     pk, sk) != 0) {
+        vm_set_error(vm, "ed25519_sign(): failed");
+        return;
+    }
+    char hex[129];
+    ed25519_hex(sig, 64, hex);
+    *out = make_string_cstr(vm, hex);
+}
+
+static void native_ed25519_verify(VM *vm, int argc, Value *args, Value *out) {
+    const char *msg, *sig_hex, *pk_hex;
+    if (argc != 3) {
+        vm_set_error(vm, "ed25519_verify(): expects 3 arguments (message, sig hex, pubkey hex)");
+        return;
+    }
+    if (!arg_string(vm, args[0], &msg)) return;
+    if (!arg_string(vm, args[1], &sig_hex)) return;
+    if (!arg_string(vm, args[2], &pk_hex)) return;
+
+    uint8_t sig[64], pk[32];
+    if (ed25519_unhex(sig_hex, sig, 64) != 0) {
+        /* 格式错就是验签失败, 不抛错 —— 调用方(中间件)拿到 false 走拒绝分支,
+         * 抛错反而会变成 500, 让"伪造签名"看起来像服务故障。 */
+        *out = val_bool(false);
+        return;
+    }
+    if (ed25519_unhex(pk_hex, pk, 32) != 0) {
+        *out = val_bool(false);
+        return;
+    }
+    int ok = ed25519_verify(sig, (const uint8_t *)msg, obj_string_len(AS_OBJ(args[0])), pk);
+    *out = val_bool(ok == 1);
+}
+
+static void native_ed25519_keypair(VM *vm, int argc, Value *args, Value *out) {
+    (void)args;
+    if (argc != 0) {
+        vm_set_error(vm, "ed25519_keypair(): expects no arguments");
+        return;
+    }
+    uint8_t sk[32], pk[32];
+    if (read_urandom(sk, 32) != 0) {
+        vm_set_error(vm, "ed25519_keypair(): no secure random source available");
+        return;
+    }
+    if (ed25519_public_key(pk, sk) != 0) {
+        vm_set_error(vm, "ed25519_keypair(): failed");
+        return;
+    }
+    char sk_hex[65], pk_hex[65];
+    ed25519_hex(sk, 32, sk_hex);
+    ed25519_hex(pk, 32, pk_hex);
+
+    Obj *m = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(m));   /* 填表期间需要 GC root，否则压缩会搬走它 */
+    map_set(vm, m, "sk", make_string_cstr(vm, sk_hex));
+    map_set(vm, m, "pk", make_string_cstr(vm, pk_hex));
+    *out = vm_pop(vm);
+}
+
+Value b_ed25519_pubkey(VM *vm, int argc, Value *args) {
+    return vm_native(vm, argc, args, native_ed25519_pubkey);
+}
+Value b_ed25519_sign(VM *vm, int argc, Value *args) {
+    return vm_native(vm, argc, args, native_ed25519_sign);
+}
+Value b_ed25519_verify(VM *vm, int argc, Value *args) {
+    return vm_native(vm, argc, args, native_ed25519_verify);
+}
+Value b_ed25519_keypair(VM *vm, int argc, Value *args) {
+    return vm_native(vm, argc, args, native_ed25519_keypair);
 }

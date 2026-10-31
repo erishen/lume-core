@@ -432,6 +432,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "crypt_sha512", /* sha512 crypt hash (2026-09-29) */
     "sha256", "hmac_sha256", /* message digests, hex out (2026-10-15, payment signing) */
     "base64_encode", "base64_decode", /* RFC 4648, binary-safe (2026-10-16, PayPal OAuth2 Basic) */
+    "ed25519_pubkey", "ed25519_sign", "ed25519_verify", "ed25519_keypair", /* RFC 8032, hex in/out (2026-10-31) */
     /* math builtins (2026-09-28, builtins_math.c) */
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
     "min", "max", "pi", "e",
@@ -509,6 +510,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"len",1,1}, {"keys",1,1}, {"json",1,-1}, {"stringify",1,-1},
     {"render",1,1}, {"sort",1,1}, {"str_match",2,2}, {"regex",2,2},
     {"sha256",1,1}, {"base64_encode",1,1}, {"base64_decode",1,1},
+    {"ed25519_pubkey",1,1}, {"ed25519_sign",2,2}, {"ed25519_verify",3,3}, {"ed25519_keypair",0,0},
     {"pow",2,2}, {"hmac_sha256",2,2}, {"push",2,2}, {"map",2,2}, {"filter",2,2},
     {"reduce",3,3}, {"igamma",2,2}, {"ibeta",3,3}, {"tdist_cdf",2,2}, {"chisq_cdf",2,2},
     {"sql_tx_begin",1,1}, {"sql_tx_exec",2,3}, {"sql_tx_commit",1,1}, {"sql_tx_rollback",1,1},

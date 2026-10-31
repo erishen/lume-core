@@ -48,6 +48,46 @@ import "identity.lume" as identity;
 //  词表一改就静默失效, 所以换掉。)
 let peer_key = env("PEER_SHARED");
 if (peer_key == null) { peer_key = ""; }
+
+// ⚠️ PEER_SHARED 与 PEER_ROOT / PEER_PRIVKEY 同时配置时, 后者**优先**。
+// 实测四个节点都同时配了两者(历史遗留), 运行的是 ROOT 派生模式 —— 但没人
+// 从配置上看得出来。这跟上一轮修的 PEER_BIND 是同一类问题: 配了不生效,
+// 现象却像另一回事(拿共享密钥签名一路 401, 看起来像密钥配错)。
+// 这里把"实际生效的是哪一套"暴露成可读的状态, 供 /peer/health 与启动日志用。
+export func key_mode(): string {
+  if (identity.asym_enabled()) { return "ed25519"; }
+  if (identity.enabled()) { return "derived"; }
+  if (len(peer_key) > 0) { return "shared"; }
+  return "off";
+}
+
+// 配置自检: 返回发现的问题列表(空 = 没问题)。只报告, 不改行为 ——
+// 静默改行为比问题本身更难查。
+export func config_warnings() {
+  let out = [];
+  // 优先级 ed25519 > derived > shared。每条警告都要指向**真正的赢家**,
+  // 不能笼统说"被覆盖了" —— 三套凭据都配时, 说"PEER_SHARED 被 PEER_ROOT
+  // 覆盖"是错的(实际是 PEER_PRIVKEY 赢), 照着这条去删配置会删错东西。
+  let asym = identity.asym_enabled();
+  let derived = identity.enabled();
+  // 私钥配了但加载失败: 这是最需要提前说的一类 —— 它会让整个 peer 面
+  // 按"未配置"处理, 而配置里明明有私钥路径。
+  let skerr = identity.secret_error();
+  if (len(skerr) > 0) {
+    push(out, skerr);
+  }
+  if (len(peer_key) > 0) {
+    if (asym) {
+      push(out, "PEER_SHARED is set but ignored: PEER_PRIVKEY takes precedence (mode=ed25519)");
+    } else if (derived) {
+      push(out, "PEER_SHARED is set but ignored: PEER_ROOT takes precedence (mode=derived)");
+    }
+  }
+  if (derived && asym) {
+    push(out, "PEER_ROOT is set but ignored: PEER_PRIVKEY takes precedence (mode=ed25519)");
+  }
+  return out;
+}
 let peer_name = env("PEER_NAME");
 if (peer_name == null) { peer_name = "lume-node"; }
 let peer_skew = env("PEER_SKEW_SECS");
@@ -92,8 +132,17 @@ export func const_eq(a: string, b: string): bool {
   return diff == 0;
 }
 
+// 待签名字符串。两种算法共用同一串。
+//
+// ⚠️ 这个串**不能随便改**(包括加版本前缀): 它已经出现在所有在跑的节点
+// 之间。改一次 = 全网签名同时失效, 而且表现为"全部 401", 很像密钥配错,
+// 排查成本很高。要演进协议请另开字段, 不要改动这个拼接。
+export func signing_string(node: string, ts: string, nonce: string, scope: string): string {
+  return node + "\n" + ts + "\n" + nonce + "\n" + scope;
+}
+
 export func sign(node: string, ts: string, nonce: string, scope: string): string {
-  return hmac_sha256(peer_key, node + "\n" + ts + "\n" + nonce + "\n" + scope);
+  return hmac_sha256(peer_key, signing_string(node, ts, nonce, scope));
 }
 
 func qp(req, k: string): string {
@@ -123,6 +172,23 @@ export func verify(req, method: string, scope: string) {
   if (drift > int(peer_skew)) {
     return { ok: false, error: "ts outside window (" + str(drift) + "s)" };
   }
+  // ── 非对称模式: 配了本节点私钥就走 ed25519 验签 ──────────────────
+  //
+  // 这一支必须放在 identity 之前, 且**一旦启用就不再回退**: 如果有私钥却
+  // 验不过就退回 hmac, 攻击者只要构造成 hmac 能过的签名就能绕过整套非对称
+  // 信任 —— 模式是部署时的决定, 不是每个请求的备选路径。
+  if (identity.asym_enabled()) {
+    let pk = identity.pubkey_for(node);
+    if (len(pk) == 0) {
+      // 配了私钥却查不到对方公钥: 部署缺一步, 明确说出来
+      return { ok: false, error: "no public key for peer '" + node + "' (Peer needs PEER_PUBKEYS or self-registration)" };
+    }
+    if (!ed25519_verify(signing_string(node, ts, nonce, scope), sig, pk)) {
+      return { ok: false, error: "bad signature for peer '" + node + "'" };
+    }
+    return { ok: true, error: "", node: node };
+  }
+
   // ── 身份可信: 配了 PEER_ROOT 就走"按节点派生密钥"验证 ──────────
   // 关键差异: 共享密钥模式下, 任何持钥者都能用别人的 node 名去签; 这里
   // 按**声称的 node** 取该节点的派生密钥验签 —— 拿自己的密钥冒充别人,
@@ -133,7 +199,7 @@ export func verify(req, method: string, scope: string) {
       return { ok: false, error: "unknown peer '" + node + "' (not in registry)" };
     }
     let expect = hmac_sha256(identity.key_for(node),
-                             node + "\n" + ts + "\n" + nonce + "\n" + scope);
+                             signing_string(node, ts, nonce, scope));
     if (!const_eq(expect, sig)) {
       return { ok: false, error: "bad signature for peer '" + node + "'" };
     }
@@ -171,9 +237,13 @@ export func signed_url(host: string, path: string, body: string): string {
   // 配了 identity -> 用**本节点自己**的派生密钥签名(服务端按 node 取同一把
   // 密钥验); 没配 -> 退回共享密钥。出站入站必须同一套, 否则自己对不上。
   let sig = sign(peer_name, ts, nonce, scope);
-  if (identity.enabled()) {
+  if (identity.asym_enabled()) {
+    // 非对称: 用本节点私钥签名。对端按我们的 node 名查公钥验证。
+    let sk = identity.secret_for_signing();
+    sig = ed25519_sign(signing_string(peer_name, ts, nonce, scope), sk);
+  } else if (identity.enabled()) {
     sig = hmac_sha256(identity.key_for(peer_name),
-                      peer_name + "\n" + ts + "\n" + nonce + "\n" + scope);
+                      signing_string(peer_name, ts, nonce, scope));
   }
   return "http://" + host + path +
          "?node=" + peer_name + "&ts=" + ts + "&nonce=" + nonce + "&sig=" + sig;

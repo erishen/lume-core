@@ -18,6 +18,7 @@
  */
 
 #include "lume.h"
+#include "server.h"   /* lume_http_serve 的唯一声明处 */
 #include "sbuf.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -695,12 +696,11 @@ static int serve_static(SockFd fd, const char *docroot, const char *path)
 }
 
 /* ---- entry point ---- */
-
-void bridge_run(VM *vm)
+static void bridge_run_read_config(VM *vm, const char **host, long *port, const char **docroot)
 {
-    const char *host = "127.0.0.1";
-    long port = 8082;
-    const char *docroot = NULL;
+    *host = "127.0.0.1";
+    *port = 8082;
+    *docroot = NULL;
 
     if (vm->server_config) {
         Obj *cfg = vm->server_config;
@@ -709,12 +709,12 @@ void bridge_run(VM *vm)
             Value v = cfg->as.map.vals[i];
             if (strcmp(k, "host") == 0 && IS_OBJ(v) &&
                 AS_OBJ(v)->type == OBJ_STRING)
-                host = obj_string(AS_OBJ(v));
+                *host = obj_string(AS_OBJ(v));
             else if (strcmp(k, "port") == 0 && IS_INT(v))
-                port = (long)v.as.i;
+                *port = (long)v.as.i;
             else if (strcmp(k, "docroot") == 0 && IS_OBJ(v) &&
                      AS_OBJ(v)->type == OBJ_STRING)
-                docroot = obj_string(AS_OBJ(v));
+                *docroot = obj_string(AS_OBJ(v));
             else if (strcmp(k, "csp") == 0 && IS_OBJ(v) &&
                      AS_OBJ(v)->type == OBJ_STRING) {
                 const char *c = obj_string(AS_OBJ(v));
@@ -723,26 +723,51 @@ void bridge_run(VM *vm)
             }
         }
     }
+}
 
+void bridge_run(VM *vm)
+{
+    const char *host = NULL;
+    long port = 0;
+    const char *docroot = NULL;
+    bridge_run_read_config(vm, &host, &port, &docroot);
+    lume_http_serve(host, port, SERVE_BACKLOG, vm);
+}
+
+static void lume_http_serve_internal(const char *host, long port, int backlog, VM *vm)
+{
+    (void)backlog;
     char portstr[16];
+    const char *g_docroot = NULL;
+    if (vm->server_config) {
+        Obj *cfg = vm->server_config;
+        for (int i = 0; i < cfg->as.map.count; i++) {
+            const char *k = cfg->as.map.keys[i];
+            Value v = cfg->as.map.vals[i];
+            if (strcmp(k, "docroot") == 0 && IS_OBJ(v) &&
+                AS_OBJ(v)->type == OBJ_STRING)
+                g_docroot = obj_string(AS_OBJ(v));
+        }
+    }
+    struct addrinfo hints, *res = NULL;
     snprintf(portstr, sizeof portstr, "%ld", port);
 
-    struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
 #if defined(_WIN32)
     if (!wsock_start()) {
-        fprintf(stderr, "lume: run(): WSAStartup failed\n");
+        fprintf(stderr, "lume: serve(): WSAStartup failed\n");
         exit(1);
     }
 #endif
 
     if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) {
-        fprintf(stderr, "lume: run(): cannot resolve %s:%s\n", host, portstr);
+        fprintf(stderr, "lume: serve(): cannot resolve %s:%s\n", host, portstr);
         exit(1);
     }
+    const char *docroot = g_docroot;
 
 #if defined(_WIN32)
     SockFd listener = INVALID_SOCKET;
@@ -772,7 +797,7 @@ void bridge_run(VM *vm)
     freeaddrinfo(res);
 
     if (SOCK_BADP(listener)) {
-        fprintf(stderr, "lume: run(): cannot listen on %s:%ld (errno %d)\n",
+        fprintf(stderr, "lume: serve(): cannot listen on %s:%ld (errno %d)\n",
                 host, port, sock_err());
         exit(1);
     }
@@ -970,8 +995,12 @@ void bridge_run(VM *vm)
             free(b.p);
         }
         sock_close(cfd);
-        (void)serve_now_ms;
     }
 
     sock_close(listener);
+}
+
+void lume_http_serve(const char *host, long port, int backlog, VM *vm)
+{
+    lume_http_serve_internal(host, port, backlog, vm);
 }

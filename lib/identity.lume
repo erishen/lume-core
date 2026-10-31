@@ -36,6 +36,137 @@ if (peers_raw == null) { peers_raw = ""; }
 let registry_path = env("PEER_REGISTRY");
 if (registry_path == null) { registry_path = ".data/peers-identity.json"; }
 
+// 自注册目录。每个节点把自己的档案写成 <dir>/<node>.json, 注册表靠"扫目录"
+// 得到已知节点, 而不是由人在 N 份白名单里逐个添加。
+//
+// 为什么需要它: 原来新增一个应用要改**每个**节点的 peers-identity.json
+// (N 个节点 = N 次编辑), 漏一个就得到 "unknown peer" 的 401, 而报错不说
+// 缺的是哪一份。目录方案把"谁存在"集中到一处, 加节点只需它自己写一个文件。
+//
+// 与 registry_path 的关系: **两者都认**, 取并集。老的白名单继续有效(不破坏
+// 现有部署), 新节点走自注册。空目录/目录不存在时静默跳过。
+let reg_dir = env("PEER_REG_DIR");
+if (reg_dir == null) { reg_dir = ".data/peers.d"; }
+
+// ── 非对称模式(可选, 默认关) ────────────────────────────────────────
+// 一个私钥文件, 里面是本节点自己的 ed25519 私钥(64 hex 字符)。
+// 配了它 = 打开非对称模式: 本节点用私钥签名, 按**对端公钥**验签。
+// 没配 = 退回原来的对称派生(hmac), 现有部署不受影响。
+//
+// 为什么用文件而不是 env: 私钥是长命凭据, 放 env 会随 `ps -E`、
+// 进程环境快照、容器 inspect 泄漏; 文件可以 chmod 600 且不进镜像层。
+let privkey_path = env("PEER_PRIVKEY");
+if (privkey_path == null) { privkey_path = ""; }
+
+// 本节点私钥(hex)。首次读就缓存到模块变量: 每个请求都读盘没必要,
+// 而且私钥文件按约定不该在运行时被改(轮换密钥请重启)。
+let cached_sk = "";
+let cached_err = "";
+let sk_loaded = false;
+
+// 私钥加载结果（显式返回，不依赖跨函数的可变模块状态）。
+//
+// 为什么不用"模块级 let + 函数内赋值": 实测模块变量在函数内赋值后，别的
+// 函数读到的仍是初始值 —— 错误信息永远为空，排障时等于没有。返回结构体
+// 没有这个歧义。
+//
+// 为什么要报错: 配了 PEER_PRIVKEY 但文件读不到/格式不对时，早先实现静默
+// 返回空串 → 整个 peer 面按"未配置"处理。运维看到的是"对端连不上"，而
+// 配置里明明写着私钥路径 —— 没有任何线索指向"密钥文件没读到"。这与
+// PEER_BIND 配了不生效是同一类问题。
+func load_secret_result() {
+  if (sk_loaded) {
+    return { sk: cached_sk, error: cached_err };
+  }
+  sk_loaded = true;
+  if (len(privkey_path) == 0) {
+    cached_sk = "";
+    cached_err = "";
+    return { sk: "", error: "" };
+  }
+  let raw = read_file(privkey_path);
+  if (raw == null) {
+    cached_sk = "";
+    // 只报"读不到"，**不报完整路径** —— 路径会暴露本机用户名与目录结构，
+    // 而这个字符串会进 /peer/health 响应和对端日志。运维本机查一眼配置就能
+    // 知道路径是什么，不需要让远端知道。
+    cached_err = "PEER_PRIVKEY file not readable (check the path in .env)";
+    return { sk: "", error: cached_err };
+  }
+  let t = trim(str(raw));
+  if (len(t) != 64) {
+    // 只报长度，不报内容 —— 私钥不能进日志，哪怕它是错的。
+    cached_sk = "";
+    cached_err = "PEER_PRIVKEY must be 64 hex chars (got " + str(len(t)) + ")";
+    return { sk: "", error: cached_err };
+  }
+  if (len(str_match("^[0-9a-fA-F]{64}$", t)) == 0) {
+    cached_sk = "";
+    cached_err = "PEER_PRIVKEY contains non-hex characters";
+    return { sk: "", error: cached_err };
+  }
+  cached_sk = t;
+  cached_err = "";
+  return { sk: t, error: "" };
+}
+
+func load_secret(): string {
+  return str(get(load_secret_result(), "sk", ""));
+}
+
+// 私钥加载失败原因（空串 = 无问题）。供启动自检与 /peer/health 用。
+export func secret_error(): string {
+  return str(get(load_secret_result(), "error", ""));
+}
+
+// 是否启用非对称模式
+export func asym_enabled(): bool {
+  return len(load_secret()) > 0;
+}
+
+// 本节点私钥(hex), 仅签名时用。调用方必须先确认 asym_enabled()。
+export func secret_for_signing(): string {
+  return load_secret();
+}
+
+// 本节点公钥(hex)。没配私钥时返回空串。
+export func own_pubkey(): string {
+  let sk = load_secret();
+  if (len(sk) == 0) { return ""; }
+  return ed25519_pubkey(sk);
+}
+
+// 取某节点的公钥。
+// 查找顺序: 自注册目录里的 <node>.json 的 "pk" 字段 → 注册表 peers-pubkey.json。
+// 都没找到返回空串(调用方据此拒绝 —— 配了私钥却查不到对方公钥, 说明部署缺一步)。
+func pubkey_in_dir(node: string): string {
+  let p = reg_dir + "/" + node + ".json";
+  let raw = read_file(p);
+  if (raw == null) { return ""; }
+  let r = try(() => json(str(raw)));
+  if (r.err != null or r.ok == null) { return ""; }
+  return trim(str(get(r.ok, "pk", "")));
+}
+
+let pubkey_path = env("PEER_PUBKEYS");
+if (pubkey_path == null) { pubkey_path = ".data/peers-pubkey.json"; }
+
+func pubkey_in_registry(node: string): string {
+  let raw = read_file(pubkey_path);
+  if (raw == null) { return ""; }
+  let r = try(() => json(str(raw)));
+  if (r.err != null or r.ok == null) { return ""; }
+  let v = get(r.ok, node, "");
+  if (v == null) { return ""; }
+  return trim(str(v));
+}
+
+export func pubkey_for(node: string): string {
+  let a = pubkey_in_dir(node);
+  if (len(a) > 0) { return a; }
+  return pubkey_in_registry(node);
+}
+
 // 派生某节点的密钥
 export func key_for(node: string): string {
   return hmac_sha256(root_key, "peer:" + node);
@@ -49,7 +180,17 @@ export func enabled(): bool {
 // 节点是否在允许列表里。
 // 优先读 `.data/peers-identity.json`(可热改, 撤销一个节点不用重启),
 // 没有文件时退回 env 的 `PEERS` 逗号列表。
+// 自注册目录里是否有这个节点。
+// 只认"文件名 = <node>.json"这一种形态; 文件内容不校验 —— 验签用的密钥
+// 本来就从 PEER_ROOT 派生, 文件只是个名册。
+func known_in_dir(node: string): bool {
+  if (len(node) == 0) { return false; }
+  let p = reg_dir + "/" + node + ".json";
+  return read_file(p) != null;
+}
+
 export func known(node: string): bool {
+  if (known_in_dir(node)) { return true; }
   let txt = read_file(registry_path);
   if (txt != null) {
     let r = try(() => json(txt));
@@ -87,16 +228,65 @@ export func profile_of(node: string) {
   return get(profs, node, null);
 }
 
+// 自注册目录里的全部节点名(去掉 .json 后缀)。
+func nodes_in_dir() {
+  let out = [];
+  let entries = files(reg_dir);
+  let i = 0;
+  while (i < len(entries)) {
+    let name = str(get(entries, i, ""));
+    let m = str_match("^([A-Za-z0-9_.-]+)\\.json$", name);
+    if (len(m) > 0) {
+      let g = get(get(m, 0, {}), "groups", []);
+      let nm = str(get(g, 0, ""));
+      if (len(nm) > 0) { push(out, nm); }
+    }
+    i = i + 1;
+  }
+  return out;
+}
+
+// 全部已知节点: 自注册目录 ∪ 白名单文件 ∪ env。
+//
+// 三者取并集而不取某一个: 迁移期新旧共存 —— 老节点还在白名单里, 新节点
+// 走自注册。取并集让"加一个节点"不需要同时改动所有地方的配置。
+// 去重是为了调用方(比如审批链校验)不看到重复项。
 export func all_nodes() {
+  let out = [];
+  let seen = {};
+  let i = 0;
+
+  let from_dir = nodes_in_dir();
+  while (i < len(from_dir)) {
+    let n = str(get(from_dir, i, ""));
+    if (len(n) > 0 and get(seen, n, null) == null) { push(out, n); put(seen, n, true); }
+    i = i + 1;
+  }
+
   let txt = read_file(registry_path);
   if (txt != null) {
     let r = try(() => json(txt));
     if (r.err == null and r.ok != null) {
-      return get(r.ok, "peers", []);
+      let arr = get(r.ok, "peers", []);
+      let j = 0;
+      while (j < len(arr)) {
+        let n = str(get(arr, j, ""));
+        if (len(n) > 0 and get(seen, n, null) == null) { push(out, n); put(seen, n, true); }
+        j = j + 1;
+      }
     }
   }
-  if (len(peers_raw) == 0) { return []; }
-  return split(peers_raw, ",");
+
+  if (len(peers_raw) > 0) {
+    let ps = split(peers_raw, ",");
+    let k = 0;
+    while (k < len(ps)) {
+      let n = trim(str(get(ps, k, "")));
+      if (len(n) > 0 and get(seen, n, null) == null) { push(out, n); put(seen, n, true); }
+      k = k + 1;
+    }
+  }
+  return out;
 }
 
 // ── 边界(必须知道) ──────────────────────────────────────────────────
@@ -107,6 +297,16 @@ export func all_nodes() {
 // 上非对称要么等内置支持(见 lume-core TODO), 要么在宿主进程里做签名、由
 // lume 侧验签 —— 后者会引入跨语言的一致性负担。
 //
-// 所以当前这层的定位是: **防误连与防串台**(节点 A 拿自己的密钥去冒充 B 会被
+// 所以对称模式的定位是: **防误连与防串台**(节点 A 拿自己的密钥去冒充 B 会被
 // 服务端拒), 不是防恶意节点。前者是实际最常见的故障(配错 PEER_TARGETS、
 // 复制了别人的 .env), 后者需要非对称才能根治。
+
+// ── 非对称模式(2026-10-31 起可用) ──────────────────────────────────
+// 配了 `PEER_PRIVKEY` 就切到 ed25519: 本节点用私钥签, 按 node 查**公钥**验。
+// 这时 root 泄漏不再意味着全节点可伪造 —— 每台机器的私钥各自独立, 丢一台
+// 只丢一台。要信任这个结论, 前提是:
+//   * 对方公钥是通过可信渠道登记的(不是从请求里拿的, 否则中间人自证)
+//   * 私钥文件权限收紧(0600), 且不进镜像/仓库
+//
+// 两种模式**不能混跑**: 一边签名一边验签用的是不同算法, 结果必然 401。
+// 切换需要所有节点同时改, 这也是为什么默认不切。

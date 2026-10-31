@@ -1555,4 +1555,222 @@ first word of the LumeMap header as a pointer and faulted on first key use.
 Impact: any library module whose helpers take a map (very common — request
 maps, config maps) cannot be compiled by the native backends today. The
 interpreter and `server{}` (which runs on the interpreter/bridge path) are
-unaffected, which is why app-level code did not surface it.
+unaffected, which is why app-level code did not surface it.## P13 — Language gaps exposed by the fastapi-web migration (filed 2026-10-30)
+
+Filed 2026-10-30 while scoping a FastAPI service onto a lume DSL server
+(`personal/web-services/fastapi-web`). The framework side turned out to
+cover most of it — MySQL is a real backend, static serving has
+gzip/ETag/Range, htpasswd/bcrypt/session cookies exist. What the
+**language** is missing is four things; two are an afternoon, one is a
+real project, one is a policy decision. Cross-refs: agent-httpd
+`TODO.md` P2 (the HTTP-side security items) and lume host `TODO.md` P13
+(the dependent-project disposition).
+
+Two constraints apply to every item below:
+
+1. **Five coordinated edits per builtin** — `LUME_BUILTIN_NAMES` and the
+   arity contract in `typecheck.c`, the dispatch table in `interp.c`, the
+   `b_*` wrapper in `builtins.c`, and the prototype in
+   `builtins_internal.h`. The single-source-of-truth list already exists
+   for the first two; the other three are still hand-maintained, which is
+   how a builtin ends up callable but untypable.
+
+2. **Land in core, then `make sync-lang`** into the host. A builtin added
+   in the host's `lang/` becomes DRIFT on the next sync (see lume host
+   `TODO.md` P13 for the in-flight warmup change, which is exactly this
+   shape).
+
+### Password verification — the one item with no workaround
+
+`builtins_crypt.c` has `crypt_sha512` (hash generation only) and
+`builtins_crypt.c`/`builtins_math.c` provide `sha256` +
+`hmac_sha256` + `base64_*`. There is **no verify side and no
+constant-time compare**, so a DSL program can create a password hash but
+cannot check one. Consequence is concrete: every login in the affected
+project has to stay at the framework gate (htpasswd + `htpasswd -B`),
+which means fixed accounts and no self-service registration, no password
+change, no per-user rows.
+
+- [ ] Add `crypt_verify(hash, password)` → bool. Dispatch on the `$N$`
+      prefix: `$5$`/`$6$` via `crypt(3)`, `$2a$`/`$2b$`/`$2y$` via the
+      bundled bcrypt. Reject plaintext/`{SHA}`/DES/`$1$`/`$apr1$` in
+      production builds (same policy as agent-httpd's `is_strong_hash`),
+      with the existing dev escape hatch if one is needed.
+- [ ] Add `const_time_eq(a, b)` → bool: equal-length branchless compare,
+      length itself is not secret. Needed both for the above and for any
+      token/CSRF compare written in the DSL.
+- [ ] bcrypt lives only in `agent-httpd/src/security/bcrypt.c` today, and
+      the host links it — decide whether core vendors it (a second copy
+      is the thing `make sync-lang` exists to avoid) or whether
+      `crypt_verify` is host-only with a documented "this build has no
+      `$2*`" limitation. The native-backend (`--compile-text` /
+      `--compile-llvm`) and interpreter paths must agree on the verdict
+      either way, so this needs a `native-consistency` case.
+
+### Request bodies — multipart, and the 64 KiB ceiling behind it
+
+Neither tree contains `multipart`/`boundary`/`Content-Disposition`
+handling, and `MAX_REQUEST_SIZE` (64 KiB, single read buffer,
+`agent-httpd/src/httpd.h:8`) means even a correct parser could not
+receive a photo. Uploading is therefore blocked by *two* layers, and the
+second is architectural: the 413 path force-closes and the body is a
+stack buffer, so "parse multipart" without "stream the body to a temp
+file" buys nothing.
+
+- [ ] Split the item: (a) a `multipart(req.body, req.content_type)` →
+      list of `{name, filename, type, body}` parts builtin, and (b) the
+      transport redesign that allows a body larger than one buffer. Do
+      not schedule (a) alone; it will be tested with 60 KiB files and
+      then fail in production.
+- [ ] (b) is the real project: resumable body-to-tempfile with its own
+      deadline, a configurable cap, and the existing force-close/desync
+      guarantees preserved (the chunked path was already factored into
+      `http_chunk.c` — reuse that shape rather than growing `http.c`).
+- [ ] Downloads are **not** blocked: Lume strings are NUL-safe, so
+      `read_file` + a `{type, headers, body}` envelope already serves
+      binary. Worth an example so projects stop reaching for uploads to
+      move files around.
+
+### `no_fs` is all-or-nothing — no path sandbox
+
+`fs_permitted()` (`builtins_fs.c`) only consults `vm->no_fs`
+(`--no-fs` / `LUME_NO_FS=1`). `read_file` / `write_file` / `files` accept
+any path the process can reach, and under `agent-httpd` the POST worker
+shares a UID with the server — so one string-concatenation bug in a
+handler reads `AUTH_SESSION_FILE` (every live bearer token), the
+htpasswd file, and `.env` (DB credentials). `env()` is likewise
+unfiltered.
+
+- [ ] Add a path allowlist mode: `LUME_FS_ROOT=<dir>` restricts
+      `read_file`/`write_file`/`files` to realpath-checked descendants
+      (reuse the boundary test from `agent-httpd/src/http/static.c`, not
+      a bare `strncmp` prefix), and `LUME_FS_RO=1` for read-only.
+- [ ] Keep `--no-fs` as the hard switch; the allowlist is the
+      middle setting.
+- [ ] Document the deployment-side mitigation that works today and is
+      not obvious: run the server as its own unprivileged user, keep
+      htpasswd / session / `.env` outside the docroot and unreadable by
+      the docroot owner, and never let a handler accept an arbitrary path
+      parameter (map an ID to a fixed directory instead). This is the
+      difference between a bug and a disclosure.
+
+### Deliberately not filed
+
+Recorded so the next review does not re-open them (see "Intentional
+boundaries" above): no ORM, no schema migrations, no OpenAPI generation,
+no Redis client, no middleware chain. Each was considered for the
+migration and rejected as a design trade for the zero-dependency
+property — which is also what removes the whole Python dependency CVE
+surface. `run()` is **not** shell execution (it is `bridge_run`, the
+agent loop); the dangerous primitives are the file/`env` ones above.
+
+## P14 — React SSR dependency puzzle, node-on-windows footprint, and a source-only litmus
+
+Filed 2026-10-30 from two real projects in this checkout:
+`personal/personal-site/nsbp` (React 19 + react-router-dom + `loadable`
++ webpack) and `personal/personal-site/nsbp-lume` (React 19 +
+react-router-dom + `loadable` + esbuild, SSR via `renderToPipeableStream`).
+Both depend on the same frontend substrate and hit the same dependency
+problem from opposite sides.
+
+### The `react-ssr` block is real and solvable, but it is not zero-dep
+
+React 19's `/server` entry point is ESM-only and webpacked the SSR
+client entry. esbuild customer code does not polyfill the missing
+react-dom symbol and errors loudly (`TypeError: Cannot resolve module
+'react-dom'`) when it touches `react-dom/server` — confirmed by
+**`work/lume/lume/frontend/react-ssr`**, an esbuild-based SSR toy that
+fails at build time unless the polyfill shim is wired. The block has a
+known fix shape (a CJS-bound polyfill module wired through esbuild's
+`banner`/`inject` contracts), and the same store ships a
+webpack-based SSR project that sidesteps the block entirely (webpack
+resolves `react-dom/server` with the React 19 CJS adapter), but neither
+the store's toy nor today's nsbp-lume build chains that fix yet.
+
+The consequence for the **language** (not the optional host framework) is
+that a react-ssr route is a **project**-side concern layered on top of
+lume-core's builtin server, not a `server{}`-键入 capability the core
+guarantees. Concretely:
+
+- a lume-core `server{}` route can serve the prebuilt HTML/JS shell and
+  the hydration boot script, and can do the REST/JSON/fs pieces a React
+  site needs — that works today;
+- the streaming SSR render itself (`renderToPipeableStream` + loadable
+  chunking + client hydration) is layered in the project's Node build
+  step and Node runtime, not in the lume-core binary;
+- esbuild can emit the client chunk and a Node server entry, but the
+  server entry that touches `react-dom/server` needs that polyfill chain
+  to build at all under esbuild — webpack does not have that problem.
+
+So lume as a host framework can replicate the **nsbp SSR stack**
+(大体上 一个 React 19 + react-router-dom + loadable + SSR 站点) inside
+its own DSL server, **provided** projects commit to the React SSR
+dependency surface and the build-time polyfill story. The lume-core
+binary does not and should not absorb React 19's ESM-only server entry.
+
+### Dependency puzzle itemized
+
+- [ ] Decide the React SSR story for lume-hosted projects:
+  - keep esbuild as the nsbp-lume-style bundler **and** wire the
+    documented `react-dom/server` polyfill shim (banner/inject/alias) so
+    the server entry builds under esbuild — then `npm run build` in a
+    lume-hosted React SSR project actually finishes;
+  - or keep esbuild for the **client only** and let the SSR server enter
+    be webpack (the nsbp path) — smaller esbuild surface, more tooling.
+  - or treat React SSR as a **project-local** concern (the store's
+    `react-ssr` toy is the exemplar) and stop trying to make lume-core's
+    build/runtime promise anything about `renderToPipeableStream`.
+- [ ] Fix the **leftover blocking surprises** that make the above decisions
+  hard to act on:
+  - the `lume-core build/lang/c` tree does not exist as a directory yet —
+    the lume-core build system emits C to `build/` / `out/` on demand and
+    does not mirror `lang/` there; any doc or TODO that assumes
+    `lume-core/lume-core/build/lang/c/…` is reading future state that is
+    not on disk — reword or drop the path assumption.
+  - the nsbp-lume server build's CJS shim documents a `require.cache`
+    shim for `tty`/`util` that the current esbuild server bundle path does
+    not yet wire deterministically — if a lume-hosted project copies the
+    nsbp-lume server build, verify the shim actually prevents the missing-
+    symbol crash on the target Windows node, not just on macOS node.
+- [ ] Keep the npm-side footguns explicit for any Windows box that runs these
+  projects: `npm` 9.6.0/9.6.1 is the known local poison for npm-linked
+  workspace packages; the locally installed `npm@10.9.2` is the working
+  tool on this Windows node. Do not assume the system `npm` is safe.
+
+### node-on-windows footprint
+
+This is a **host-framework/ops** note, not a lume-core language item.
+Both nsbp and nsbp-lume are Node services:
+
+- the nsbp site ships webpack + babel + a CJS SSR server entry and runs
+  on Node in production;
+- the nsbp-lume site ships esbuild + a CJS-wrapped ESM server entry and
+  runs on Node in development.
+
+That means a Windows deployment of either one needs a Node toolchain with
+reasonable disk/CPU headroom. Empirically on this Windows box, Node (npm,
+tsc, esbuild, webpack, react-dom/server) is the heaviest, slowest piece of
+the toolchain and the one that historically flakes on the system `npm`
+version. Current good state on this machine:
+
+- local node: `node@22.11.0` / `npm@10.9.2` (locally installed) — this is
+  the working combination for `npm run build` on nsbp-lume today;
+- system `npm@9.6.1` (and 9.6.0) fails on linked workspace packages —
+  blocking, not cosmetic.
+
+So the footprint question is mostly: **a Windows developer or deployer of a
+React-SSR-on-lume site needs a sane Node 20+ toolchain and enough disk for
+`node_modules` + the build output + (for webpack) the heavier webpack
+dependency tree.** The lume-core binary does not change that; the lume host
+framework inherits it when it hosts a React SSR project.
+
+### A source-only litmus: nsbp-lume is currently **not** built from lume
+
+Broader point for the record: **`personal/personal-site/nsbp-lume` does not
+currently depend on lume/lume-core at all.** It is a React 19 + react-
+router-dom + loadable + esbuild SSR project with a Hono/node-server entry,
+not a lume-hosted service. That is the object-level confirmation that the
+"can we do nsbp on lume" question is still open — the existing nsbp-lume
+code is **parallel** to lume, not **built on** lume. Closing that gap is the
+real follow-up (either a lume-hosted variant of nsbp-lume, or a concrete
+"lume does not help here" call), not editing TODOs.

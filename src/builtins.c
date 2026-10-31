@@ -280,6 +280,44 @@ static void native_default_route(VM *vm, int argc, Value *args, Value *out) {
     *out = vm_pop(vm);
 }
 
+/* route params for server{} apps that want explicit captures (nsbp-lume uses
+ * React router for pages, so this is only a helper the server runtime can wire
+ * into a future DSL route shape). */
+static void native_resolve(VM *vm, int argc, Value *args, Value *out) {
+    if (argc < 2 || !IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_STRING) {
+        vm_set_error(vm, "resolve() expects (req, path)");
+        return;
+    }
+    if (argc < 3 || !IS_OBJ(args[2]) || AS_OBJ(args[2])->type != OBJ_MAP) {
+        vm_set_error(vm, "resolve() expects (req, path, params)");
+        return;
+    }
+    const char *base = obj_string(AS_OBJ(args[0]));
+    const char *path = obj_string(AS_OBJ(args[1]));
+    Obj *params = AS_OBJ(args[2]);
+    Obj *m = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(m)); /* root while filling */
+    map_set(vm, m, "path", make_string_cstr(vm, path));
+    map_set(vm, m, "params", val_obj(params));
+    if (base && base[0]) {
+        /* Keep the same prefix semantics nsbp-lume used on the React side:
+         * /about stays /about, /lume/scatter stays /lume/scatter. */
+        const char *slash = strchr(path, '/');
+        if (slash) {
+            size_t plen = (size_t)(slash - path);
+            char buf[1024];
+            if (plen < sizeof buf) {
+                memcpy(buf, path, plen);
+                buf[plen] = '\0';
+                map_set(vm, m, "matched", make_string_cstr(vm, buf));
+            }
+        } else {
+            map_set(vm, m, "matched", make_string_cstr(vm, path));
+        }
+    }
+    *out = vm_pop(vm);
+}
+
 static void native_json(VM *vm, int argc, Value *args, Value *out) {
     if (argc < 1) { vm_set_error(vm, "json() needs an argument"); return; }
     /* Two directions, JS-style duality: a string argument is parsed (the
@@ -573,3 +611,4 @@ void native_sql_tx_rollback(VM *vm, int argc, Value *args, Value *out) { native_
 #endif
 
 Value b_default_route(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_default_route); }
+Value b_resolve(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_resolve); }
