@@ -239,8 +239,22 @@ static Val cg_literal(CG *g, Node *n)
             snprintf(buf, sizeof buf, "%.17g", n->as.lit.num);
             /* `16.0` comes out of %g as `16`, and LLVM reads that as an integer
              * constant — `double 16` then fails to parse. A decimal point or an
-             * exponent is what makes the value unambiguously a double. */
-            if (!strpbrk(buf, ".eE")) strcat(buf, ".0");
+             * exponent is what makes the value unambiguously a double… except
+             * `1e+30`: %g strips the mantissa's trailing zeros, so large powers
+             * of ten arrive with an exponent but NO decimal point, and the LLVM
+             * asm parser rejects `store double 1e+30` with "integer constant
+             * must have integer type". Inserting `.0` before the exponent
+             * (`1.0e+30`) parses everywhere. */
+            if (!strchr(buf, '.')) {
+                char *e = strpbrk(buf, "eE");
+                if (e) {
+                    memmove(e + 2, e, strlen(e) + 1);
+                    e[0] = '.';
+                    e[1] = '0';
+                } else {
+                    strcat(buf, ".0");
+                }
+            }
             return val_make(type_prim(TY_FLOAT), buf);
         }
         /* The i64 value comes straight from the literal, not from a round trip
