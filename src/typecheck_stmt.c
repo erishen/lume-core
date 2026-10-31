@@ -156,7 +156,12 @@ void ck_stmt(Checker *c, Node *n) {
              * they read let.annot directly and have no checker tables, so a
              * `Shape` shell must arrive as the TY_ENUM def (see pass C in
              * typecheck.c for the param/ret side of the same story). */
-            if (n->as.let.annot) n->as.let.annot = annot;
+            /* Write the resolved annotation back only on the reporting walk:
+             * a collecting-walk write can overwrite an unresolvable phantom
+             * (`let x: num`) with any_type(), so the second walk cannot
+             * reproduce ck_fail's "unknown type" and the noted error dies.
+             * Pass C's param/ret write-back is safe: it never runs collecting. */
+            if (n->as.let.annot && !c->collecting) n->as.let.annot = annot;
             Type *it = ck_expr(c, n->as.let.init, annot);
             if (annot && !type_compat(c, it, annot, n->line)) {
                 ck_fail(c, n->line, "'%s' is not assignable to the declared type '%s' of '%s'",

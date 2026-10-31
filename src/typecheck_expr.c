@@ -566,7 +566,10 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                               ? resolve(c, n->as.letx.annot, n->line) : NULL;
             /* Write the resolved annotation back for the native emitters,
              * same write-back a statement let does. */
-            if (n->as.letx.annot) n->as.letx.annot = annot;
+            /* Same collecting-walk rule as N_LET: do not overwrite the raw
+             * annotation during pass 0, or an unreproducible "unknown type"
+             * diagnostic would be swallowed. */
+            if (n->as.letx.annot && !c->collecting) n->as.letx.annot = annot;
             Type *it = ck_expr(c, n->as.letx.init, annot);
             if (annot && it && !type_compat(c, it, annot, n->line)) {
                 ck_fail(c, n->line,

@@ -69,6 +69,8 @@ typedef struct {
      * progress and replayed if it ends up set -- see ck_collect_note(). */
     bool collecting;
     bool collect_failed;
+    /* First diagnostic noted during the collecting walk (see ck_fail). */
+    char collect_err[256];
     /* module context (NULL for single-file / REPL checks): the module being
      * checked and the loader registry used to resolve `import "x" as ns`. */
     struct Module *self;

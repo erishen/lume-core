@@ -294,6 +294,18 @@ void ck_fail(Checker *c, size_t line, const char *fmt, ...) {
      * replayed after the second walk, which reports it for real. */
     if (c->collecting) {
         c->collect_failed = true;
+        /* Store the message: the second walk is supposed to re-raise every
+         * diagnostic, but a walk-1 mutation can make one unreproducible
+         * (N_LET writes the resolved annotation back over an unresolvable
+         * phantom), leaving collect_failed set with nothing re-reported. */
+        if (c->collect_err[0] == '\0') {
+            snprintf(c->collect_err, sizeof c->collect_err, "line %zu: ", line);
+            va_list apc;
+            va_start(apc, fmt);
+            size_t used = strlen(c->collect_err);
+            vsnprintf(c->collect_err + used, sizeof c->collect_err - used, fmt, apc);
+            va_end(apc);
+        }
         return;
     }
     c->failed = true;
@@ -1120,6 +1132,18 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
         for (int i = 0; i < prog->as.program.count && !c.failed; i++)
             ck_stmt_mode(&c, prog->as.program.stmts[i], collect);
         if (collect) c.scope = outer;
+    }
+
+    /* Deferred diagnostics of the collecting walk: the second walk re-raises
+     * them by re-walking the same nodes, but a walk-1 node mutation can make
+     * an error unreproducible. If something was noted and the second walk
+     * stayed silent, report the noted message rather than passing a program
+     * the checker complained about (that swallow is how `let x: num = 1.5;`
+     * used to type-check while every native backend refused or crashed). */
+    if (!c.failed && c.collect_failed && c.collect_err[0] != '\0' &&
+        errbuf && errbuf_size) {
+        snprintf(errbuf, errbuf_size, "%s", c.collect_err);
+        c.failed = true;
     }
 
     g_ck_scopes = NULL;
