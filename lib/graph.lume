@@ -1,0 +1,293 @@
+// graph.lume — 图论算法库（混合分层：.lume 算法层，零 C 摩擦）
+//
+// 图表示：邻接/权重用 list-of-list 矩阵（float[][]）。
+//   · BFS / DFS           用邻接矩阵 adj（元素 >0.5 表示有边，可表示有/无向图）
+//   · 最短路 / MST        用权重矩阵 W；**无连接边用哨兵 1e15**（等效 INF），
+//                         故「有边」判定为 W[u][v] < 1e14（真实权重远小于此）。
+// 节点索引为 int；返回遍历序用 int[]，距离用 float[]，全源最短路用 float[][]
+// （返回值类型已显式标注，规避编译后端「本地函数返回值无法推断」的限制）。
+//
+// 三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，故数值/顺序天然一致。
+//
+// 覆盖：
+//   遍历        graph_bfs(adj, start)       广度优先遍历序（迭代队列）
+//              graph_dfs(adj, start)       深度优先遍历序（迭代栈）
+//   最短路      dijkstra(W, src)            非负权单源最短路（O(V²)）
+//              bellman_ford(W, src)        可含负权单源最短路（O(VE)）
+//              floyd_warshall(W)           全源最短路（O(V³)）
+//   生成树      prim_mst(W, n)              最小生成树总权（Prim，O(V²)）
+//   拓扑        topo_sort(adj, n)           Kahn 算法（DAG 拓扑序）
+//
+// 使用：
+//   import "graph.lume" as g;
+//   let d = g.dijkstra(W, 0);
+//
+// ── 已知语言限制（重要）─────────────────────────────────────────────
+// 1. lume 的 let 按「函数作用域」——同一函数内循环变量名必须唯一。
+// 2. 本地函数返回值须显式类型标注（见各 export 函数内的 let 标注）。
+// 3. 模块级浮点常量在文本后端会编译失败（"integer constant must have
+//    integer type"），故 INF 哨兵一律用**内联字面量 1e15**，不定义模块常量。
+
+export let GRAPH_VERSION = "0.1.0";
+
+// ════════════════════════════════════════════════════════════════
+// 内部帮助函数（list 值语义，所有「修改」返回新容器）
+// ════════════════════════════════════════════════════════════════
+
+// 返回新 int[]：第 idx 位置 val。
+func set_int(a: int[], idx: int, val: int): int[] {
+  let n = len(a);
+  let out: int[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    if (i == idx) { out = push(out, val); }
+    else { out = push(out, a[i]); }
+  }
+  return out;
+}
+
+// 返回新 float[]：第 idx 位置 val。
+func set_flt(a: float[], idx: int, val: float): float[] {
+  let n = len(a);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    if (i == idx) { out = push(out, val); }
+    else { out = push(out, a[i]); }
+  }
+  return out;
+}
+
+// 返回新 float[][]：第 i 行第 j 列置 val。
+func set_m(M: float[][], i: int, j: int, val: float): float[][] {
+  let m = len(M);
+  let out: float[][] = [];
+  for (let r = 0; r < m; r = r + 1) {
+    if (r == i) {
+      let oi: float[] = M[i];
+      let nc = len(oi);
+      let nr: float[] = [];
+      for (let c = 0; c < nc; c = c + 1) {
+        if (c == j) { nr = push(nr, val); }
+        else { nr = push(nr, oi[c]); }
+      }
+      out = push(out, nr);
+    } else {
+      out = push(out, M[r]);
+    }
+  }
+  return out;
+}
+
+// 返回长度为 n、全为 val 的 int[]（初始化 visited / indeg 等）。
+func fill_int(n: int, val: int): int[] {
+  let out: int[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, val); }
+  return out;
+}
+
+// 返回长度为 n、全为 val 的 float[]（初始化距离数组，val 通常传 1e15）。
+func fill_flt(n: int, val: float): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, val); }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 遍历：BFS / DFS（邻接矩阵 adj，元素 >0.5 表有边）
+// ════════════════════════════════════════════════════════════════
+
+// 广度优先遍历序（迭代队列，head 指针推进，避免 pop 操作）。
+export func graph_bfs(adj: float[][], start: int): int[] {
+  let n = len(adj);
+  let vis: int[] = fill_int(n, 0);
+  let q: int[] = [];
+  q = push(q, start);
+  vis = set_int(vis, start, 1);
+  let order: int[] = [];
+  let qh = 0;
+  for (let guard = 0; guard < 100000; guard = guard + 1) {
+    if (qh >= len(q)) { break; }
+    let u = q[qh];
+    qh = qh + 1;
+    order = push(order, u);
+    for (let v = 0; v < n; v = v + 1) {
+      if (adj[u][v] > 0.5) {
+        if (vis[v] == 0) {
+          vis = set_int(vis, v, 1);
+          q = push(q, v);
+        }
+      }
+    }
+  }
+  return order;
+}
+
+// 深度优先遍历序（迭代栈，sp 指针推进；新邻居压栈后被优先处理 → DFS 序）。
+export func graph_dfs(adj: float[][], start: int): int[] {
+  let n = len(adj);
+  let vis: int[] = fill_int(n, 0);
+  let stack: int[] = [];
+  stack = push(stack, start);
+  vis = set_int(vis, start, 1);
+  let order: int[] = [];
+  let sp = 0;
+  for (let guard = 0; guard < 100000; guard = guard + 1) {
+    if (sp >= len(stack)) { break; }
+    let u = stack[sp];
+    sp = sp + 1;
+    order = push(order, u);
+    for (let v = 0; v < n; v = v + 1) {
+      if (adj[u][v] > 0.5) {
+        if (vis[v] == 0) {
+          vis = set_int(vis, v, 1);
+          stack = push(stack, v);
+        }
+      }
+    }
+  }
+  return order;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 最短路：Dijkstra（非负权）/ Bellman–Ford（可含负权）/ Floyd–Warshall（全源）
+// 权重矩阵 W：W[u][v] = 边权；无连接边 = 1e15（哨兵）。
+// ════════════════════════════════════════════════════════════════
+
+// 单源最短路（Dijkstra，要求非负权）。返回各点到 src 的距离（不可达 = 1e15）。
+export func dijkstra(W: float[][], src: int): float[] {
+  let n = len(W);
+  let dist: float[] = fill_flt(n, 1e15);
+  dist = set_flt(dist, src, 0.0);
+  let vis: int[] = fill_int(n, 0);
+  for (let it = 0; it < n; it = it + 1) {
+    // 取未确定中距离最小者
+    let u = -1;
+    let best = 1e15;
+    for (let i = 0; i < n; i = i + 1) {
+      if (vis[i] == 0) {
+        if (dist[i] < best) { best = dist[i]; u = i; }
+      }
+    }
+    if (u < 0) { break; }
+    vis = set_int(vis, u, 1);
+    for (let v = 0; v < n; v = v + 1) {
+      if (W[u][v] < 1e14) {          // 存在边 (u,v)
+        let nd: float = dist[u] + W[u][v];
+        if (nd < dist[v]) { dist = set_flt(dist, v, nd); }
+      }
+    }
+  }
+  return dist;
+}
+
+// 单源最短路（Bellman–Ford，允许负权，但含负环时结果无意义）。
+// 返回各点到 src 的距离（不可达 = 1e15）。最多松弛 n−1 轮，无更新即提前结束。
+export func bellman_ford(W: float[][], src: int): float[] {
+  let n = len(W);
+  let dist: float[] = fill_flt(n, 1e15);
+  dist = set_flt(dist, src, 0.0);
+  for (let it = 0; it < n - 1; it = it + 1) {
+    let changed = 0;
+    for (let u = 0; u < n; u = u + 1) {
+      if (dist[u] < 1e14) {
+        for (let v = 0; v < n; v = v + 1) {
+          if (W[u][v] < 1e14) {
+            let nd: float = dist[u] + W[u][v];
+            if (nd < dist[v]) { dist = set_flt(dist, v, nd); changed = 1; }
+          }
+        }
+      }
+    }
+    if (changed == 0) { break; }
+  }
+  return dist;
+}
+
+// 全源最短路（Floyd–Warshall，O(V³)，允许非负/负权边，不支持负环）。
+// 返回距离矩阵 D（D[i][j] = i→j 最短路；不可达 = 1e15）。含自环 D[i][i]=0。
+export func floyd_warshall(W: float[][]): float[][] {
+  let n = len(W);
+  let D: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, W[i][j]); }
+    D = push(D, row);
+  }
+  for (let k = 0; k < n; k = k + 1) {
+    for (let i = 0; i < n; i = i + 1) {
+      for (let j = 0; j < n; j = j + 1) {
+        if (D[i][k] < 1e14) {
+          if (D[k][j] < 1e14) {
+            let via: float = D[i][k] + D[k][j];
+            if (via < D[i][j]) { D = set_m(D, i, j, via); }
+          }
+        }
+      }
+    }
+  }
+  return D;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 最小生成树：Prim（权重矩阵 W 须对称，无连接边 = 1e15）
+// ════════════════════════════════════════════════════════════════
+
+// 最小生成树总权（Prim 算法，O(V²)）。图须连通，否则按已覆盖部分累计。
+export func prim_mst(W: float[][], n: int): float {
+  let in_tree: int[] = fill_int(n, 0);
+  in_tree = set_int(in_tree, 0, 1);
+  let total = 0.0;
+  for (let it = 0; it < n - 1; it = it + 1) {
+    let minw = 1e15;
+    let mp = -1;
+    let mq = -1;
+    for (let p = 0; p < n; p = p + 1) {
+      if (in_tree[p] == 1) {
+        for (let q = 0; q < n; q = q + 1) {
+          if (in_tree[q] == 0) {
+            if (W[p][q] < 1e14) {
+              if (W[p][q] < minw) { minw = W[p][q]; mp = p; mq = q; }
+            }
+          }
+        }
+      }
+    }
+    if (mp < 0) { break; }    // 图不连通
+    total = total + minw;
+    in_tree = set_int(in_tree, mq, 1);
+  }
+  return total;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 拓扑排序（Kahn 算法，DAG）。adj 为有向邻接矩阵（>0.5 表有向边 u→v）。
+// 返回拓扑序；若图中存在环，则返回长度 < n 的部分序（调用方据 len 判断）。
+// ════════════════════════════════════════════════════════════════
+
+export func topo_sort(adj: float[][], n: int): int[] {
+  let indeg: int[] = fill_int(n, 0);
+  for (let u = 0; u < n; u = u + 1) {
+    for (let v = 0; v < n; v = v + 1) {
+      if (adj[u][v] > 0.5) { indeg = set_int(indeg, v, indeg[v] + 1); }
+    }
+  }
+  let q: int[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    if (indeg[i] == 0) { q = push(q, i); }
+  }
+  let order: int[] = [];
+  let qh = 0;
+  for (let guard = 0; guard < 100000; guard = guard + 1) {
+    if (qh >= len(q)) { break; }
+    let u = q[qh];
+    qh = qh + 1;
+    order = push(order, u);
+    for (let v = 0; v < n; v = v + 1) {
+      if (adj[u][v] > 0.5) {
+        let d = indeg[v] - 1;
+        indeg = set_int(indeg, v, d);
+        if (d == 0) { q = push(q, v); }
+      }
+    }
+  }
+  return order;
+}
