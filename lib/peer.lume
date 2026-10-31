@@ -41,11 +41,14 @@
 import "identity.lume" as identity;
 
 // ── 配置(全部经 env 注入, 不进代码) ─────────────────────────────────
-// 变量名刻意避开 API_KEY / KEY / SECRET / TOKEN 这类词: lume 的 env() 会把
-// 含敏感词的变量名读成 null(见 src/builtins_fs.c 的 env_is_sensitive), 那会
-// 让 peer 面**静默关闭**而不是报错。PEER_SHARED 两个词都不在词表里。
-// (旧名 PEER_KEY 目前能读 —— contains_word 按词边界匹配 —— 但踩在边上,
-//  词表一改就静默失效, 所以换掉。)
+// 变量名刻意避开 env() 的敏感词屏蔽。env() 对变量名做**词边界匹配**, 命中
+//   API_KEY / SECRET / PASSWORD / PASSWD / TOKEN / CREDENTIAL
+// 之一就返回 null(见 src/builtins_fs.c 的 env_is_sensitive)。命中后 peer
+// 面会**静默关闭**而不是报错, 所以配的键名不能踩这些词。
+// 注意: 词表里**不含裸 KEY** —— 因此 PEER_SHARED / PEER_PRIVKEY /
+// PEER_PUBKEYS / PEER_ROOT 都能正常读出。早期注释说"避开 KEY"已过时
+// (裸 KEY 不会被屏蔽, 只有 API_KEY 这种带前缀的才会), 这里保留防御性
+// 命名只是避开真敏感词, 不是因为 KEY 本身会被屏蔽。
 let peer_key = env("PEER_SHARED");
 if (peer_key == null) { peer_key = ""; }
 
