@@ -1,0 +1,31 @@
+// sci-consistency.lume — 算法库三后端一致性套件（解释器 / 文本 IR / LLVM）
+//
+// 每个调用使用固定输入，输出应为确定性数值；三后端逐字节一致。
+// 运行：tests/sci_backends.sh   （或 bin/lume-core tests/sci-consistency.lume）
+//
+// 覆盖：信息论 / 数值积分 / 插值 / 多项式 / 多项式求根 / 参数化 RK4-ODE
+// 注：bisect/newton 间接覆盖 lume-core 的 abs 浮点三后端等价（P3）。
+
+import "../lib/sci.lume" as sci;
+
+print(sci.entropy([0.5, 0.5]));
+print(sci.entropy([0.25, 0.25, 0.25, 0.25]));
+print(sci.kl_divergence([0.9, 0.1], [0.5, 0.5]));
+print(sci.cross_entropy([0.9, 0.1], [0.5, 0.5]));
+print(sci.js_divergence([0.9, 0.1], [0.5, 0.5]));
+print(sci.mutual_information([[0.5, 0.0], [0.0, 0.5]]));
+print(sci.mutual_information([[0.25, 0.25], [0.25, 0.25]]));
+
+print(sci.trapz([0.0, 0.25, 0.5, 0.75, 1.0], [0.0, 0.0625, 0.25, 0.5625, 1.0]));
+print(sci.simpson([0.0, 0.25, 0.5, 0.75, 1.0], [0.0, 0.0625, 0.25, 0.5625, 1.0]));
+
+print(sci.interp_linear([0.0, 1.0, 2.0], [0.0, 1.0, 4.0], 1.5));
+print(sci.interp_lagrange([0.0, 1.0, 2.0], [0.0, 1.0, 4.0], 1.5));
+
+print(sci.poly_val([-2.0, 0.0, 1.0], 1.41421356));
+print(sci.bisect_poly([-2.0, 0.0, 1.0], 1.0, 2.0, 1e-12));
+print(sci.newton_poly([-2.0, 0.0, 1.0], 1.0, 1e-12));
+
+print(sci.rk4_linear(1.0, 1.0, 0.0, 1.0, 10)[10]);
+print(sci.rk4_poly([0.0, 1.0], 0.0, 0.0,1.0, 10)[10]);
+print(sci.rk4_affine(-2.0, 1.0, 0.0, 0.0, 1.0, 20)[20]);

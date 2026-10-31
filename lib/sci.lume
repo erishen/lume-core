@@ -1,0 +1,311 @@
+// sci.lume — 信息与计算科学算法库（混合分层：.lume 算法层，零 C 摩擦）
+//
+// 三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，浮点运算顺序由 lume
+// 显式控制，因此三后端天然一致，无需像 C native 那样手写镜像。
+//
+// 覆盖：
+//   信息论      entropy / cross_entropy / kl_divergence / mutual_information / js_divergence
+//   数值积分    trapz / simpson
+//   插值        interp_linear / interp_lagrange
+//   多项式      poly_val / poly_deriv
+//   多项式求根  bisect_poly / newton_poly
+//   参数化 ODE  rk4_linear / rk4_poly / rk4_affine   (RK4)
+//
+// 使用：
+//   import "sci.lume" as sci;
+//   sci.entropy([0.5, 0.5]);
+//
+// ── 已知语言限制（重要）─────────────────────────────────────────────
+// lume 当前**不支持「用户函数接收函数类型参数」**：编译后端（text/LLVM）
+// 拒绝无类型标注的 func 形参，且不存在 `func` / `any` 类型标注语法。
+// 因此「通用 f(x) 求根」「通用 f(t,y) 的 ODE 求解器」无法在三后端通用
+// 实现。本库改用：
+//   · 多项式求根（系数 list 参数）—— 覆盖任意多项式，科学计算最常见；
+//   · 参数化 RHS 的 RK4（线性 / 仿射 / 多项式 RHS）—— 覆盖最常见 ODE 族。
+// 通用闭包式接口（local lambda）在解释器可用，但编译后端尚未实现，故不
+// 纳入默认交付，待 lume 支持函数类型后升级为通用接口。
+// ───────────────────────────────────────────────────────────────────
+
+export let SCI_VERSION = "0.1.0";
+
+// 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
+let LN2 = log(2.0);
+
+// ════════════════════════════════════════════════════════════════
+// 信息论（Information Theory）
+// ════════════════════════════════════════════════════════════════
+
+// 香农熵 H(p)，单位 bit。p 为概率分布（自动归一化）。
+export func entropy(p: float[]): float {
+  let s = reduce((a, x) => a + x, p, 0.0);
+  if (s <= 0.0) { return 0.0; }
+  let h = 0.0;
+  for (let i = 0; i < len(p); i = i + 1) {
+    let pi = p[i] / s;
+    if (pi > 0.0) { h = h - pi * (log(pi) / LN2); }
+  }
+  return h;
+}
+
+// 交叉熵 H(p, q) = -Σ p_i log2(q_i)。q 接近 0 处做 eps 截断避免 log(0)。
+export func cross_entropy(p: float[], q: float[]): float {
+  let n = len(p);
+  let ce = 0.0;
+  let eps = 1e-12;
+  for (let i = 0; i < n; i = i + 1) {
+    let pi = p[i];
+    let qi = q[i];
+    if (qi < eps) { qi = eps; }
+    if (pi > 0.0) { ce = ce - pi * (log(qi) / LN2); }
+  }
+  return ce;
+}
+
+// KL 散度 D_KL(p || q) = Σ p_i log2(p_i / q_i)。
+// q_i 截断到 eps；p_i = 0 的项跳过（0·log = 0）。
+export func kl_divergence(p: float[], q: float[]): float {
+  let n = len(p);
+  let kl = 0.0;
+  let eps = 1e-12;
+  for (let i = 0; i < n; i = i + 1) {
+    let pi = p[i];
+    let qi = q[i];
+    if (qi < eps) { qi = eps; }
+    if (pi > 0.0) { kl = kl + pi * (log(pi / qi) / LN2); }
+  }
+  return kl;
+}
+
+// Jensen–Shannon 散度：JS(p||q) = 0.5·KL(p||m) + 0.5·KL(q||m)，m = (p+q)/2。
+// 值域 [0, 1]（bit 单位），对称、有界，比 KL 更适合做分布距离。
+export func js_divergence(p: float[], q: float[]): float {
+  let n = len(p);
+  let m: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    m = push(m, 0.5 * (p[i] + q[i]));
+  }
+  return 0.5 * kl_divergence(p, m) + 0.5 * kl_divergence(q, m);
+}
+
+// 互信息 I(X;Y)，从联合分布矩阵 joint（行=X，列=Y，joint[i][j]=P(X=i,Y=j)）计算。
+export func mutual_information(joint: float[][]): float {
+  let rows = len(joint);
+  if (rows == 0) { return 0.0; }
+  let cols = len(joint[0]);
+  let px: float[] = [];
+  let py: float[] = [];
+  for (let i = 0; i < rows; i = i + 1) {
+    px = push(px, reduce((a, x) => a + x, joint[i], 0.0));
+  }
+  for (let j = 0; j < cols; j = j + 1) {
+    let sj = 0.0;
+    for (let i = 0; i < rows; i = i + 1) {
+      sj = sj + joint[i][j];
+    }
+    py = push(py, sj);
+  }
+  let mi = 0.0;
+  for (let ii = 0; ii < rows; ii = ii + 1) {
+    for (let jj = 0; jj < cols; jj = jj + 1) {
+      let pij = joint[ii][jj];
+      if (pij > 0.0) {
+        let pxy = px[ii] * py[jj];
+        if (pxy > 0.0) { mi = mi + pij * (log(pij / pxy) / LN2); }
+      }
+    }
+  }
+  return mi;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 数值积分（Numerical Integration）—— 输入为数据点 (xs, ys)
+// ════════════════════════════════════════════════════════════════
+
+// 梯形法（支持非等距）。∫y dx ≈ Σ (y_i + y_{i+1})·(x_{i+1}-x_i)/2
+export func trapz(xs: float[], ys: float[]): float {
+  let n = len(xs);
+  if (n < 2) { return 0.0; }
+  let s = 0.0;
+  for (let i = 0; i < n - 1; i = i + 1) {
+    let h = xs[i + 1] - xs[i];
+    s = s + (ys[i] + ys[i + 1]) * h / 2.0;
+  }
+  return s;
+}
+
+// 复合辛普森法（默认等距；区间数为奇时末段退化为梯形）。
+export func simpson(xs: float[], ys: float[]): float {
+  let n = len(xs);
+  if (n < 3) { return trapz(xs, ys); }
+  let m = n - 1;                 // 子区间数
+  let even_m = m;
+  let trap_last = 0.0;
+  if (m % 2 == 1) {              // 奇数区间：前 even_m 段用辛普森，末段用梯形
+    even_m = m - 1;
+    trap_last = (ys[n - 2] + ys[n - 1]) * (xs[n - 1] - xs[n - 2]) / 2.0;
+  }
+  let h = (xs[even_m] - xs[0]) / float(even_m);   // 假定前 even_m 段等距
+  let s = ys[0] + ys[even_m];
+  for (let i = 1; i < even_m; i = i + 1) {
+    if (i % 2 == 1) { s = s + 4.0 * ys[i]; }
+    else { s = s + 2.0 * ys[i]; }
+  }
+  return s * h / 3.0 + trap_last;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 插值（Interpolation）
+// ════════════════════════════════════════════════════════════════
+
+// 线性插值：在 xs 已知点上对 x 求值（边界外夹取端点）。
+export func interp_linear(xs: float[], ys: float[], x: float): float {
+  let n = len(xs);
+  if (n == 0) { return 0.0; }
+  if (x <= xs[0]) { return ys[0]; }
+  if (x >= xs[n - 1]) { return ys[n - 1]; }
+  for (let i = 0; i < n - 1; i = i + 1) {
+    if (x >= xs[i] && x <= xs[i + 1]) {
+      let t = (x - xs[i]) / (xs[i + 1] - xs[i]);
+      return ys[i] + t * (ys[i + 1] - ys[i]);
+    }
+  }
+  return ys[n - 1];
+}
+
+// 拉格朗日插值：对 n 个互异节点精确通过，求 x 处值（高次振荡，慎用高 n）。
+export func interp_lagrange(xs: float[], ys: float[], x: float): float {
+  let n = len(xs);
+  let s = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    let term: float = ys[i];
+    for (let j = 0; j < n; j = j + 1) {
+      if (j != i) {
+        term = term * (x - xs[j]) / (xs[i] - xs[j]);
+      }
+    }
+    s = s + term;
+  }
+  return s;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 多项式工具（系数约定：coeffs[i] 为 x^i 系数，coeffs[0]=常数项）
+// ════════════════════════════════════════════════════════════════
+
+// Horner 法求值。
+export func poly_val(coeffs: float[], x: float): float {
+  let n = len(coeffs);
+  if (n == 0) { return 0.0; }
+  let val = coeffs[n - 1];
+  for (let i = n - 2; i >= 0; i = i - 1) {
+    val = val * x + coeffs[i];
+  }
+  return val;
+}
+
+// 形式导数：返回导数多项式系数。
+export func poly_deriv(coeffs: float[]): float[] {
+  let n = len(coeffs);
+  if (n <= 1) { return [0.0]; }
+  let d: float[] = [];
+  for (let i = 1; i < n; i = i + 1) {
+    d = push(d, float(i) * coeffs[i]);
+  }
+  return d;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 多项式求根（Root Finding，系数参数化 → 任意多项式通用）
+// ════════════════════════════════════════════════════════════════
+
+// 二分法：要求 [a,b] 异号（f(a)·f(b)<0）；否则返回区间中点作为兜底。
+export func bisect_poly(coeffs: float[], a: float, b: float, tol: float): float {
+  let fa: float = poly_val(coeffs, a);
+  let fb: float = poly_val(coeffs, b);
+  if (fa * fb > 0.0) { return (a + b) / 2.0; }
+  let lo = a;
+  let hi = b;
+  for (let i = 0; i < 200; i = i + 1) {
+    let mid = (lo + hi) / 2.0;
+    let fm: float = poly_val(coeffs, mid);
+    if (abs(fm) < tol || (hi - lo) / 2.0 < tol) { return mid; }
+    if (fa * fm < 0.0) { hi = mid; fb = fm; }
+    else { lo = mid; fa = fm; }
+  }
+  return (lo + hi) / 2.0;
+}
+
+// 牛顿法：x_{n+1} = x_n - f/f'，初值 x0。导数由 poly_deriv 给出。
+export func newton_poly(coeffs: float[], x0: float, tol: float): float {
+  let dcoeffs: float[] = poly_deriv(coeffs);
+  let x: float = x0;
+  for (let i = 0; i < 200; i = i + 1) {
+    let fx: float = poly_val(coeffs, x);
+    let dfx: float = poly_val(dcoeffs, x);
+    if (abs(dfx) < 1e-12) { return x; }
+    let xn: float = x - fx / dfx;
+    if (abs(xn - x) < tol) { return xn; }
+    x = xn;
+  }
+  return x;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 常微分方程（RK4，参数化 RHS）
+//   rk4_linear  : dy/dt = a·y                  （指数增长/衰减）
+//   rk4_affine  : dy/dt = a·y + b              （带漂移项）
+//   rk4_poly    : dy/dt = poly(t)              （RHS 仅为 t 的多项式）
+// 返回包含初值的轨迹 list（长度 n+1），便于与解析解或欧拉法对比。
+// 通用 dy/dt = f(t,y) 待 lume 支持函数类型后提供。
+// ════════════════════════════════════════════════════════════════
+
+export func rk4_linear(a: float, y0: float, t0: float, t1: float, n: int): float[] {
+  let h = (t1 - t0) / float(n);
+  let y = y0;
+  let out: float[] = [y0];
+  let t = t0;
+  for (let i = 0; i < n; i = i + 1) {
+    let k1: float = a * y;
+    let k2: float = a * (y + h / 2.0 * k1);
+    let k3: float = a * (y + h / 2.0 * k2);
+    let k4: float = a * (y + h * k3);
+    y = y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    t = t + h;
+    out = push(out, y);
+  }
+  return out;
+}
+
+export func rk4_affine(a: float, b: float, y0: float, t0: float, t1: float, n: int): float[] {
+  let h = (t1 - t0) / float(n);
+  let y = y0;
+  let out: float[] = [y0];
+  let t = t0;
+  for (let i = 0; i < n; i = i + 1) {
+    let k1: float = a * y + b;
+    let k2: float = a * (y + h / 2.0 * k1) + b;
+    let k3: float = a * (y + h / 2.0 * k2) + b;
+    let k4: float = a * (y + h * k3) + b;
+    y = y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    t = t + h;
+    out = push(out, y);
+  }
+  return out;
+}
+
+export func rk4_poly(coeffs: float[], y0: float, t0: float, t1: float, n: int): float[] {
+  let h = (t1 - t0) / float(n);
+  let y = y0;
+  let out: float[] = [y0];
+  let t = t0;
+  for (let i = 0; i < n; i = i + 1) {
+    let k1: float = poly_val(coeffs, t);
+    let k2: float = poly_val(coeffs, t + h / 2.0);
+    let k3: float = poly_val(coeffs, t + h / 2.0);
+    let k4: float = poly_val(coeffs, t + h);
+    y = y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    t = t + h;
+    out = push(out, y);
+  }
+  return out;
+}
