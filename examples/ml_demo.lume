@@ -1,0 +1,45 @@
+// ml_demo.lume —— lib/ml.lume AI/机器学习库演示。
+import "../lib/ml.lume" as ml;
+
+print("== 向量 / 分布基础 ==");
+print(ml.l2_normalize([3.0,4.0]));
+print(ml.softmax([1.0,2.0,3.0]));
+print(ml.cosine_sim([1.0,2.0],[2.0,4.0]));
+
+print("== kNN 分类 ==");
+let TX: float[][] = [[0.0,0.0],[0.5,0.2],[5.0,5.0],[5.5,4.8]];
+let ty: int[] = [0,0,1,1];
+print(ml.knn_classify(TX, ty, [0.2,0.1], 3));
+print(ml.knn_classify(TX, ty, [5.2,5.0], 3));
+
+print("== k-means 聚类 ==");
+let KM: float[][] = [[0.0,0.0],[1.0,0.0],[10.0,10.0],[11.0,10.0]];
+print(ml.kmeans(KM, 2, 10));
+
+print("== 逻辑回归 ==");
+let LX: float[][] = [[0.0],[1.0],[2.0],[3.0],[4.0],[5.0]];
+let ly: int[] = [0,0,0,1,1,1];
+let w: float[] = ml.logistic_fit(LX, ly, 500, 0.5);
+print(w);
+print(ml.logistic_prob(w, [5.0]));
+
+print("== 感知机 ==");
+let pw: float[] = ml.perceptron_fit(LX, [0,0,0,1,1,1], 5, 0.1);
+print(pw);
+
+print("== 高斯朴素贝叶斯 ==");
+print(ml.gaussian_nb(TX, ty, [0.1,0.0]));
+print(ml.gaussian_nb(TX, ty, [5.4,5.1]));
+
+print("== 神经网络 ==");
+print(ml.dense([[1.0,2.0],[3.0,4.0]],[0.5,0.5],[1.0,1.0]));
+let mout: float[] = ml.mlp2_forward(
+  [[1.0,0.0],[0.0,1.0]], [0.0,0.0],
+  [[2.0,1.0]], [0.0],
+  [1.0,2.0]);
+print(mout);
+let att: float[][] = ml.attention(
+  [[1.0,0.0],[0.0,1.0],[1.0,1.0]],
+  [[1.0,0.0],[0.0,1.0],[1.0,1.0]],
+  [[1.0,2.0],[3.0,4.0],[5.0,6.0]]);
+print(att);

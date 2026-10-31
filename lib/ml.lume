@@ -1,0 +1,434 @@
+// ml.lume —— AI/机器学习算法库（纯 .lume，零 C 改动，三后端一致）。
+// 复用 linalg（mat_mul/mat_transpose/mat_scale）与 C 内核（exp/log/sqrt）。
+// 语言约束规避（实证坑，见日志）：
+//   * lume 的 '/' 恒产生 float —— 所有「除以整数」处显式 * 1.0；
+//   * let 为函数作用域 —— 每个函数内循环变量名全局唯一；
+//   * 本地函数/native 调用返回值绑定的 let 一律显式标注类型；
+//   * list 为值语义 —— 所有「修改」经 set_* 帮助函数返回新容器。
+
+import "linalg.lume" as la;
+
+// ---------- 内部帮助函数 ----------
+
+func dotv(a: float[], b: float[]): float {
+  let s: float = 0.0;
+  for (let i = 0; i < len(a); i = i + 1) { s = s + a[i] * b[i]; }
+  return s;
+}
+
+func vmax(v: float[]): float {
+  let m: float = v[0];
+  for (let i = 1; i < len(v); i = i + 1) {
+    if (v[i] > m) { m = v[i]; }
+  }
+  return m;
+}
+
+func argmax(v: float[]): int {
+  let bi: int = 0;
+  let bv: float = v[0];
+  for (let i = 1; i < len(v); i = i + 1) {
+    if (v[i] > bv) { bv = v[i]; bi = i; }
+  }
+  return bi;
+}
+
+func maxi(v: int[]): int {
+  let m: int = v[0];
+  for (let i = 1; i < len(v); i = i + 1) {
+    if (v[i] > m) { m = v[i]; }
+  }
+  return m;
+}
+
+func sigmoid(z: float): float {
+  return 1.0 / (1.0 + exp(-z));
+}
+
+func zero_int(n: int): int[] {
+  let out: int[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, 0); }
+  return out;
+}
+
+func zero_flt(n: int): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, 0.0); }
+  return out;
+}
+
+func zero_mat(rows: int, cols: int): float[][] {
+  let M: float[][] = [];
+  for (let i = 0; i < rows; i = i + 1) {
+    let row: float[] = zero_flt(cols);
+    M = push(M, row);
+  }
+  return M;
+}
+
+func set_int(v: int[], i: int, x: int): int[] {
+  let out: int[] = [];
+  for (let j = 0; j < len(v); j = j + 1) {
+    if (j == i) { out = push(out, x); } else { out = push(out, v[j]); }
+  }
+  return out;
+}
+
+func set_flt(v: float[], i: int, x: float): float[] {
+  let out: float[] = [];
+  for (let j = 0; j < len(v); j = j + 1) {
+    if (j == i) { out = push(out, x); } else { out = push(out, v[j]); }
+  }
+  return out;
+}
+
+func set_m(M: float[][], i: int, row: float[]): float[][] {
+  let out: float[][] = [];
+  for (let j = 0; j < len(M); j = j + 1) {
+    if (j == i) { out = push(out, row); } else { out = push(out, M[j]); }
+  }
+  return out;
+}
+
+func dist_sq(a: float[], b: float[]): float {
+  let s: float = 0.0;
+  for (let i = 0; i < len(a); i = i + 1) {
+    let d: float = a[i] - b[i];
+    s = s + d * d;
+  }
+  return s;
+}
+
+// 给数据矩阵加偏置列（首列全 1），线性/感知机训练共用。
+func add_bias(X: float[][]): float[][] {
+  let out: float[][] = [];
+  for (let i = 0; i < len(X); i = i + 1) {
+    let row: float[] = [];
+    row = push(row, 1.0);
+    for (let j = 0; j < len(X[i]); j = j + 1) { row = push(row, X[i][j]); }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// ---------- 向量 / 分布基础 ----------
+
+// 欧氏距离。
+export func euclidean(a: float[], b: float[]): float {
+  return sqrt(dist_sq(a, b));
+}
+
+// 余弦相似度（零向量按 0 处理，加 1e-12 防除零）。
+export func cosine_sim(a: float[], b: float[]): float {
+  let na: float = sqrt(dotv(a, a)) + 1e-12;
+  let nb: float = sqrt(dotv(b, b)) + 1e-12;
+  return dotv(a, b) / (na * nb);
+}
+
+// L2 归一化（零向量安全）。
+export func l2_normalize(v: float[]): float[] {
+  let n: float = sqrt(dotv(v, v)) + 1e-12;
+  let out: float[] = [];
+  for (let i = 0; i < len(v); i = i + 1) { out = push(out, v[i] / n); }
+  return out;
+}
+
+// min-max 缩放到 [0,1]（常数向量安全）。
+export func minmax_scale(v: float[]): float[] {
+  let mn: float = v[0];
+  let mx: float = v[0];
+  for (let i = 1; i < len(v); i = i + 1) {
+    if (v[i] < mn) { mn = v[i]; }
+    if (v[i] > mx) { mx = v[i]; }
+  }
+  let rng: float = (mx - mn) + 1e-12;
+  let out: float[] = [];
+  for (let j = 0; j < len(v); j = j + 1) { out = push(out, (v[j] - mn) / rng); }
+  return out;
+}
+
+// z-score 标准化（方差加 1e-12 平滑）。
+export func standardize(v: float[]): float[] {
+  let n: int = len(v);
+  let mu: float = 0.0;
+  for (let i = 0; i < n; i = i + 1) { mu = mu + v[i]; }
+  mu = mu / (n * 1.0);
+  let va: float = 0.0;
+  for (let j = 0; j < n; j = j + 1) {
+    let d: float = v[j] - mu;
+    va = va + d * d;
+  }
+  let sd: float = sqrt(va / (n * 1.0)) + 1e-12;
+  let out: float[] = [];
+  for (let k = 0; k < n; k = k + 1) { out = push(out, (v[k] - mu) / sd); }
+  return out;
+}
+
+// 数值稳定 softmax（减最大值再取指数）。
+export func softmax(v: float[]): float[] {
+  let mx: float = vmax(v);
+  let es: float[] = [];
+  let s: float = 0.0;
+  for (let i = 0; i < len(v); i = i + 1) {
+    let e: float = exp(v[i] - mx);
+    es = push(es, e);
+    s = s + e;
+  }
+  let out: float[] = [];
+  for (let j = 0; j < len(v); j = j + 1) { out = push(out, es[j] / s); }
+  return out;
+}
+
+// one-hot 编码。
+export func onehot(label: int, ncls: int): float[] {
+  let out: float[] = zero_flt(ncls);
+  return set_flt(out, label, 1.0);
+}
+
+// ---------- 经典机器学习 ----------
+
+// k 近邻分类：训练集 trainX/trainy（标签 0..C-1），返回 x 的预测标签。
+// 用距离平方免 sqrt；k 次扫描取最近 + 多数投票。
+export func knn_classify(trainX: float[][], trainy: int[], x: float[], k: int): int {
+  let n: int = len(trainX);
+  let used: int[] = zero_int(n);
+  let votes: float[] = zero_flt(maxi(trainy) + 1);
+  for (let s = 0; s < k; s = s + 1) {
+    let bd: float = 1e30;
+    let bi: int = 0;
+    for (let i = 0; i < n; i = i + 1) {
+      if (used[i] == 0) {
+        let d2: float = dist_sq(x, trainX[i]);
+        if (d2 < bd) { bd = d2; bi = i; }
+      }
+    }
+    used = set_int(used, bi, 1);
+    let l: int = trainy[bi];
+    votes = set_flt(votes, l, votes[l] + 1.0);
+  }
+  return argmax(votes);
+}
+
+// k-means 聚类：以前 k 个样本为初始质心，迭代 iters 轮「分配-更新」。
+// 返回每个样本的簇标签 int[]。空簇保留原质心。
+export func kmeans(data: float[][], k: int, iters: int): int[] {
+  let n: int = len(data);
+  let dim: int = len(data[0]);
+  let cent: float[][] = zero_mat(k, dim);
+  for (let ci = 0; ci < k; ci = ci + 1) {
+    for (let cj = 0; cj < dim; cj = cj + 1) {
+      let crow: float[] = cent[ci];
+      crow = set_flt(crow, cj, data[ci][cj]);
+      cent = set_m(cent, ci, crow);
+    }
+  }
+  let labels: int[] = zero_int(n);
+  for (let it = 0; it < iters; it = it + 1) {
+    // 分配：每点到最近质心
+    for (let xi = 0; xi < n; xi = xi + 1) {
+      let bd: float = 1e30;
+      let ba: int = 0;
+      for (let cj2 = 0; cj2 < k; cj2 = cj2 + 1) {
+        let d2: float = dist_sq(data[xi], cent[cj2]);
+        if (d2 < bd) { bd = d2; ba = cj2; }
+      }
+      labels = set_int(labels, xi, ba);
+    }
+    // 更新：簇内均值
+    let counts: int[] = zero_int(k);
+    let sums: float[][] = zero_mat(k, dim);
+    for (let xi2 = 0; xi2 < n; xi2 = xi2 + 1) {
+      let l: int = labels[xi2];
+      counts = set_int(counts, l, counts[l] + 1);
+      let srow: float[] = sums[l];
+      for (let sj = 0; sj < dim; sj = sj + 1) {
+        srow = set_flt(srow, sj, srow[sj] + data[xi2][sj]);
+      }
+      sums = set_m(sums, l, srow);
+    }
+    for (let cu = 0; cu < k; cu = cu + 1) {
+      if (counts[cu] > 0) {
+        let crow2: float[] = cent[cu];
+        for (let cv = 0; cv < dim; cv = cv + 1) {
+          crow2 = set_flt(crow2, cv, sums[cu][cv] / (counts[cu] * 1.0));
+        }
+        cent = set_m(cent, cu, crow2);
+      }
+    }
+  }
+  return labels;
+}
+
+// 逻辑回归训练（梯度下降，内部加偏置列）：y ∈ {0,1}，返回权重 [bias, w1..wd]。
+export func logistic_fit(X: float[][], y: int[], iters: int, lr: float): float[] {
+  let n: int = len(X);
+  let d: int = len(X[0]);
+  let Xb: float[][] = add_bias(X);
+  let w: float[] = zero_flt(d + 1);
+  for (let it = 0; it < iters; it = it + 1) {
+    let g: float[] = zero_flt(d + 1);
+    for (let gi = 0; gi < n; gi = gi + 1) {
+      let p: float = sigmoid(dotv(Xb[gi], w));
+      let err: float = p - y[gi] * 1.0;
+      for (let gj = 0; gj < d + 1; gj = gj + 1) {
+        g = set_flt(g, gj, g[gj] + err * Xb[gi][gj]);
+      }
+    }
+    for (let wj = 0; wj < d + 1; wj = wj + 1) {
+      w = set_flt(w, wj, w[wj] - lr * g[wj] / (n * 1.0));
+    }
+  }
+  return w;
+}
+
+// 逻辑回归推理：w[0] 为偏置。
+export func logistic_prob(w: float[], x: float[]): float {
+  let z: float = w[0];
+  for (let j = 1; j < len(w); j = j + 1) { z = z + w[j] * x[j - 1]; }
+  return sigmoid(z);
+}
+
+// 感知机训练：y ∈ {-1,+1}，错分即 w += lr·y·x（含偏置）。
+export func perceptron_fit(X: float[][], y: int[], iters: int, lr: float): float[] {
+  let n: int = len(X);
+  let d: int = len(X[0]);
+  let Xb: float[][] = add_bias(X);
+  let w: float[] = zero_flt(d + 1);
+  for (let it = 0; it < iters; it = it + 1) {
+    for (let pi = 0; pi < n; pi = pi + 1) {
+      let act: float = dotv(Xb[pi], w);
+      let pred: float = 1.0;
+      if (act <= 0.0) { pred = -1.0; }
+      if (pred != y[pi] * 1.0) {
+        for (let pj = 0; pj < d + 1; pj = pj + 1) {
+          w = set_flt(w, pj, w[pj] + lr * y[pi] * Xb[pi][pj]);
+        }
+      }
+    }
+  }
+  return w;
+}
+
+// 高斯朴素贝叶斯分类（内部估计每类每维均值/方差，方差 +1e-9 平滑）：
+// 返回 x 的预测标签。评分用对数形式防下溢。
+export func gaussian_nb(X: float[][], y: int[], x: float[]): int {
+  let n: int = len(X);
+  let d: int = len(X[0]);
+  let ncls: int = maxi(y) + 1;
+  let cnt: int[] = zero_int(ncls);
+  for (let ci = 0; ci < n; ci = ci + 1) {
+    cnt = set_int(cnt, y[ci], cnt[y[ci]] + 1);
+  }
+  // 每类每维均值
+  let mu: float[][] = zero_mat(ncls, d);
+  for (let mi = 0; mi < n; mi = mi + 1) {
+    let l: int = y[mi];
+    let mrow: float[] = mu[l];
+    for (let mj = 0; mj < d; mj = mj + 1) {
+      mrow = set_flt(mrow, mj, mrow[mj] + X[mi][mj]);
+    }
+    mu = set_m(mu, l, mrow);
+  }
+  for (let mi2 = 0; mi2 < ncls; mi2 = mi2 + 1) {
+    if (cnt[mi2] > 0) {
+      let mrow2: float[] = mu[mi2];
+      for (let mj2 = 0; mj2 < d; mj2 = mj2 + 1) {
+        mrow2 = set_flt(mrow2, mj2, mrow2[mj2] / (cnt[mi2] * 1.0));
+      }
+      mu = set_m(mu, mi2, mrow2);
+    }
+  }
+  // 每类每维方差
+  let va: float[][] = zero_mat(ncls, d);
+  for (let vi = 0; vi < n; vi = vi + 1) {
+    let l2: int = y[vi];
+    let vrow: float[] = va[l2];
+    for (let vj = 0; vj < d; vj = vj + 1) {
+      let diff: float = X[vi][vj] - mu[l2][vj];
+      vrow = set_flt(vrow, vj, vrow[vj] + diff * diff);
+    }
+    va = set_m(va, l2, vrow);
+  }
+  for (let vi2 = 0; vi2 < ncls; vi2 = vi2 + 1) {
+    if (cnt[vi2] > 0) {
+      let vrow2: float[] = va[vi2];
+      for (let vj2 = 0; vj2 < d; vj2 = vj2 + 1) {
+        vrow2 = set_flt(vrow2, vj2, vrow2[vj2] / (cnt[vi2] * 1.0) + 1e-9);
+      }
+      va = set_m(va, vi2, vrow2);
+    }
+  }
+  // 对数后验 argmax
+  let best: int = 0;
+  let bs: float = -1e30;
+  for (let c2 = 0; c2 < ncls; c2 = c2 + 1) {
+    let s: float = log((cnt[c2] * 1.0) / (n * 1.0) + 1e-30);
+    for (let cj = 0; cj < d; cj = cj + 1) {
+      let v: float = va[c2][cj];
+      let diff2: float = x[cj] - mu[c2][cj];
+      s = s - 0.5 * log(6.283185307179586 * v) - diff2 * diff2 / (2.0 * v);
+    }
+    if (s > bs) { bs = s; best = c2; }
+  }
+  return best;
+}
+
+// 分类准确率。
+export func accuracy(pred: int[], truth: int[]): float {
+  let hit: int = 0;
+  for (let i = 0; i < len(pred); i = i + 1) {
+    if (pred[i] == truth[i]) { hit = hit + 1; }
+  }
+  return (hit * 1.0) / (len(pred) * 1.0);
+}
+
+// ---------- 神经网络原语 ----------
+
+// 全连接层前向：out[j] = b[j] + Σ_k W[j][k]·x[k]（W 形状 out×in）。
+export func dense(W: float[][], b: float[], x: float[]): float[] {
+  let out: float[] = [];
+  for (let j = 0; j < len(W); j = j + 1) {
+    let s: float = b[j];
+    for (let k = 0; k < len(x); k = k + 1) {
+      s = s + W[j][k] * x[k];
+    }
+    out = push(out, s);
+  }
+  return out;
+}
+
+// ReLU（向量版）。
+export func relu_vec(v: float[]): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < len(v); i = i + 1) {
+    let z: float = v[i];
+    if (z < 0.0) { z = 0.0; }
+    out = push(out, z);
+  }
+  return out;
+}
+
+// 两层 MLP 前向（隐藏层 ReLU，输出层 sigmoid，二分类输出概率）。
+export func mlp2_forward(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[]): float[] {
+  let h0: float[] = dense(W1, b1, x);
+  let h: float[] = relu_vec(h0);
+  let o0: float[] = dense(W2, b2, h);
+  let out: float[] = [];
+  for (let oi = 0; oi < len(o0); oi = oi + 1) {
+    out = push(out, sigmoid(o0[oi]));
+  }
+  return out;
+}
+
+// 缩放点积注意力：softmax(Q·Kᵀ/√dk)·V（单头，Q/K/V 均为 seq×dk）。
+export func attention(Q: float[][], K: float[][], V: float[][]): float[][] {
+  let dk: int = len(Q[0]);
+  let S: float[][] = la.mat_mul(Q, la.mat_transpose(K));
+  let Ss: float[][] = la.mat_scale(S, 1.0 / sqrt(dk * 1.0));
+  let A: float[][] = [];
+  for (let ri = 0; ri < len(Ss); ri = ri + 1) {
+    let r: float[] = softmax(Ss[ri]);
+    A = push(A, r);
+  }
+  return la.mat_mul(A, V);
+}
