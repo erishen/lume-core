@@ -1,0 +1,41 @@
+// optim_demo.lume — 最优化算法库演示 + 自校验
+//   运行：bin/lume-core examples/optim_demo.lume
+//         bin/lume-core --compile-text  -o t.exe examples/optim_demo.lume && t.exe
+//         bin/lume-core --compile-llvm  -o l.exe examples/optim_demo.lume && l.exe
+// 三后端输出应逐字节一致（同 AST，浮点运算顺序由 lume 显式控制）。
+import "../lib/optim.lume" as opt;
+
+print("=== 线性最小二乘 least_squares ===");
+// 观测点 (1,3)(2,5)(3,7) 精确落在 y = 2x + 1 上 → 系数 [截距, 斜率] = [1, 2]
+let A = [[1.0,1.0],[1.0,2.0],[1.0,3.0]];
+let y = [3.0,5.0,7.0];
+let coef = opt.least_squares(A, y);
+print(coef);                                  // [1, 2]
+
+print("=== 多项式拟合 poly_fit(deg=1) ===");
+// 等价地用 poly_fit 拟合一次多项式
+let pf = opt.poly_fit([1.0,2.0,3.0],[3.0,5.0,7.0],1);
+print(pf);                                    // [1, 2]
+
+print("=== 凸二次型梯度下降 quad_min ===");
+// f(x,y) = (x-1)^2 + (y-2)^2，极小点 (1,2)
+let qx = opt.quad_min([[2.0,0.0],[0.0,2.0]],[2.0,4.0],[0.0,0.0],300,0.1);
+print(qx);                                    // ~[1, 2]
+
+print("=== 共轭梯度 conj_grad（解 SPD 线性系统）===");
+// 解 [[2,1],[1,3]] x = [3,5]（已知 x=[0.8,1.4]）
+let cgx = opt.conj_grad([[2.0,1.0],[1.0,3.0]],[3.0,5.0],[0.0,0.0],30,1e-9);
+print(cgx);                                   // [0.8, 1.4]
+
+print("=== 线性规划 linprog_simplex（单纯形法）===");
+// max 3x1+2x2  s.t. x1+x2<=4, x1,x2>=0  →  (4,0)，最优值 12
+let lp1 = opt.linprog_simplex([3.0,2.0],[[1.0,1.0]],[4.0]);
+print(lp1);                                   // [4, 0]
+// max 3x+2y  s.t. x+y<=4, 2x+y<=6  →  (2,2)，最优值 10
+let lp2 = opt.linprog_simplex([3.0,2.0],[[1.0,1.0],[2.0,1.0]],[4.0,6.0]);
+print(lp2);                                   // [2, 2]
+
+print("=== 一元多项式极小 golden_poly_min ===");
+// min (x-1)^2 on [0,3] → 1
+let g = opt.golden_poly_min([1.0,-2.0,1.0],0.0,3.0,1e-7);
+print(g);                                     // ~1.0

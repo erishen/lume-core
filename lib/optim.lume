@@ -1,0 +1,298 @@
+// optim.lume — 最优化算法库（混合分层：.lume 算法层，零 C 摩擦）
+//
+// 设计约束（重要）：lume 当前**不支持「用户函数接收函数类型参数」**，故本库
+// 全部算法**数据驱动**——把「目标函数」化为数据（矩阵/向量/多项式系数），不
+// 传闭包。这与 sci.lume（参数化 RHS 的 RK4）同思路：
+//   · least_squares / poly_fit  → 法方程 (AᵀA)x = Aᵀb（线性代数直接解）
+//   · quad_min / conj_grad      → 凸二次函数 f(x)=½xᵀQx−cᵀx（Q 对称正定矩阵）
+//   · linprog_simplex           → 线性规划（A,b,c 数据，单纯形表）
+//   · golden_poly_min           → 一元多项式极小（golden-section，复用 sci.poly_val）
+//
+// 三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，浮点运算顺序由 lume 显式
+// 控制，故数值天然一致，无需像 C native 那样手写镜像。
+//
+// 覆盖：
+//   向量工具    vec_dot / vec_add / vec_sub / vec_scale / mat_vec_mul（内部）
+//   线性最小二乘 least_squares(A, b)          解 min_x ||Ax−b||²
+//   多项式拟合  poly_fit(xs, ys, deg)         最小二乘拟合 deg 次多项式
+//   梯度下降    quad_min(Q, c, x0, iters, lr) 凸二次型梯度下降
+//   共轭梯度    conj_grad(A, b, x0, maxit, tol) SPD 线性系统迭代解
+//   线性规划    linprog_simplex(c, A, b)        max cᵀx, s.t. Ax≤b, x≥0, b≥0
+//   一元极小    golden_poly_min(coeffs,a,b,tol) 多项式 golden-section 极小
+//
+// 使用：
+//   import "optim.lume" as opt;
+//   let x = opt.least_squares(A, b);
+//
+// ───────────────────────────────────────────────────────────────────
+// 注：linprog_simplex 采用「最负检验数进基 + 最小比值出基」的单纯形法，
+// 适用于右端 b ≥ 0 的标准型。返回最优解 x（float[]）；最优目标值 = vec_dot(c, x)。
+
+import "linalg.lume" as la;
+import "sci.lume" as sci;
+
+export let OPTIM_VERSION = "0.1.0";
+
+// ════════════════════════════════════════════════════════════════
+// 向量工具（内部）
+// ════════════════════════════════════════════════════════════════
+
+func vec_dot(u: float[], v: float[]): float {
+  let n = len(u);
+  let s = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    s = s + u[i] * v[i];
+  }
+  return s;
+}
+
+func vec_add(u: float[], v: float[]): float[] {
+  let n = len(u);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    out = push(out, u[i] + v[i]);
+  }
+  return out;
+}
+
+func vec_sub(u: float[], v: float[]): float[] {
+  let n = len(u);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    out = push(out, u[i] - v[i]);
+  }
+  return out;
+}
+
+func vec_scale(v: float[], s: float): float[] {
+  let n = len(v);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    out = push(out, v[i] * s);
+  }
+  return out;
+}
+
+// 矩阵×向量：M(m×n) · v(n) → (m) 向量。
+func mat_vec_mul(M: float[][], v: float[]): float[] {
+  let m = len(M);
+  let out: float[] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let s = 0.0;
+    let nv = len(v);
+    for (let j = 0; j < nv; j = j + 1) {
+      s = s + M[i][j] * v[j];
+    }
+    out = push(out, s);
+  }
+  return out;
+}
+
+// 返回新矩阵：将第 idx 行替换为 newrow（list 值语义，原地不可赋值）。
+func mat_set_row(M: float[][], idx: int, newrow: float[]): float[][] {
+  let m = len(M);
+  let out: float[][] = [];
+  for (let r = 0; r < m; r = r + 1) {
+    if (r == idx) { out = push(out, newrow); }
+    else { out = push(out, M[r]); }
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 线性最小二乘  min_x ||Ax − b||²   →   法方程 (AᵀA)x = Aᵀb
+// ════════════════════════════════════════════════════════════════
+
+export func least_squares(A: float[][], b: float[]): float[] {
+  let At = la.mat_transpose(A);
+  let AtA = la.mat_mul(At, A);
+  let Atb: float[] = mat_vec_mul(At, b);   // 本地函数返回值须显式标注
+  return la.mat_solve(AtA, Atb);
+}
+
+// 多项式最小二乘拟合：对 (xs, ys) 拟合 deg 次多项式，返回系数 coeffs（coeffs[k] 为 x^k 项）。
+// 等价于对 Vandermonde 矩阵做最小二乘。
+export func poly_fit(xs: float[], ys: float[], deg: int): float[] {
+  let m = len(xs);
+  let n = deg + 1;
+  let V: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    let xi = xs[i];
+    let pw = 1.0;
+    for (let j = 0; j < n; j = j + 1) {
+      row = push(row, pw);
+      pw = pw * xi;
+    }
+    V = push(V, row);
+  }
+  return least_squares(V, ys);
+}
+
+// ════════════════════════════════════════════════════════════════
+// 无约束最小化：凸二次函数  f(x) = ½ xᵀQx − cᵀx  （Q 对称正定）
+//   梯度 ∇f = Qx − c；梯度下降  x ← x − lr·∇f
+// ════════════════════════════════════════════════════════════════
+
+export func quad_min(Q: float[][], c: float[], x0: float[], iters: int, lr: float): float[] {
+  let x: float[] = x0;
+  for (let k = 0; k < iters; k = k + 1) {
+    let g: float[] = vec_sub(mat_vec_mul(Q, x), c);   // 本地函数返回值须显式标注
+    x = vec_sub(x, vec_scale(g, lr));
+  }
+  return x;
+}
+
+// 共轭梯度法（CG）：求解对称正定线性系统 Ax = b（迭代法，无函数参数，纯数据驱动）。
+// 对 n 维 SPD 系统，精确算术下 n 步内收敛；故 max_iter 取足够大即可。
+export func conj_grad(A: float[][], b: float[], x0: float[], max_iter: int, tol: float): float[] {
+  let x: float[] = x0;
+  let r: float[] = vec_sub(b, mat_vec_mul(A, x));   // 本地函数返回值须显式标注
+  let p: float[] = r;
+  let rsold: float = vec_dot(r, r);                  // 本地函数返回值须显式标注
+  let thresh = tol * tol;
+  for (let k = 0; k < max_iter; k = k + 1) {
+    if (rsold < thresh) { break; }
+    let Ap: float[] = mat_vec_mul(A, p);            // 本地函数返回值须显式标注
+    let pAp: float = vec_dot(p, Ap);                // 本地函数返回值须显式标注
+    let alpha: float = rsold / pAp;
+    x = vec_add(x, vec_scale(p, alpha));
+    r = vec_sub(r, vec_scale(Ap, alpha));
+    let rsnew: float = vec_dot(r, r);               // 本地函数返回值须显式标注
+    if (rsnew < thresh) { break; }
+    let beta: float = rsnew / rsold;
+    p = vec_add(r, vec_scale(p, beta));
+    rsold = rsnew;
+  }
+  return x;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 线性规划（单纯形法）
+//   max  cᵀx   s.t.  A x ≤ b,  x ≥ 0,  b ≥ 0
+// 标准型：增广 m 个松弛变量 → 初始典式表 (m+1)×(n+m+1)。
+// 进基：目标行最负检验数；出基：最小比值检验。返回最优解 x（float[]）。
+// ════════════════════════════════════════════════════════════════
+
+// 注：lume 的 let 按「函数作用域」而非块作用域，故本函数内所有循环变量
+// 必须唯一命名（ri/ci/si/oj/os/it/ej/lr/pj/ei/ec/xj/xb1/xb2），不可复用。
+export func linprog_simplex(c: float[], A: float[][], b: float[]): float[] {
+  let m = len(A);
+  let n = len(c);
+  let total = n + m;            // 含原变量 + 松弛变量的列数（不含 RHS）
+  // 构造初始单纯形表
+  let T: float[][] = [];
+  for (let ri = 0; ri < m; ri = ri + 1) {
+    let row: float[] = [];
+    for (let ci = 0; ci < n; ci = ci + 1) { row = push(row, A[ri][ci]); }
+    for (let si = 0; si < m; si = si + 1) {
+      if (si == ri) { row = push(row, 1.0); }
+      else { row = push(row, 0.0); }
+    }
+    row = push(row, b[ri]);
+    T = push(T, row);
+  }
+  let obj: float[] = [];
+  for (let oj = 0; oj < n; oj = oj + 1) { obj = push(obj, -c[oj]); }
+  for (let os = 0; os < m; os = os + 1) { obj = push(obj, 0.0); }
+  obj = push(obj, 0.0);
+  T = push(T, obj);
+
+  // 单纯形迭代（上限 200 步，足以覆盖中小规模；无进基列即最优）
+  for (let it = 0; it < 200; it = it + 1) {
+    // 进基：目标行最负检验数
+    let ent = -1;
+    let best = -1e-9;
+    for (let ej = 0; ej < total; ej = ej + 1) {
+      if (T[m][ej] < best) { best = T[m][ej]; ent = ej; }
+    }
+    if (ent < 0) { break; }    // 已最优
+    // 出基：最小比值检验（仅正系数列）
+    let lev = -1;
+    let minratio = -1.0;
+    for (let lr = 0; lr < m; lr = lr + 1) {
+      if (T[lr][ent] > 1e-12) {
+        let ratio: float = T[lr][total] / T[lr][ent];
+        if (lev < 0) { minratio = ratio; lev = lr; }
+        else {
+          if (ratio < minratio) { minratio = ratio; lev = lr; }
+        }
+      }
+    }
+    if (lev < 0) { break; }     // 无界（演示场景不会出现）
+    // 轴元归一
+    let piv: float = T[lev][ent];
+    let prow: float[] = [];
+    for (let pj = 0; pj < total + 1; pj = pj + 1) {
+      prow = push(prow, T[lev][pj] / piv);
+    }
+    T = mat_set_row(T, lev, prow);
+    // 消去其它行该列
+    for (let ei = 0; ei < m + 1; ei = ei + 1) {
+      if (ei != lev) {
+        let f: float = T[ei][ent];
+        if (abs(f) > 1e-12) {
+          let nr: float[] = [];
+          for (let ec = 0; ec < total + 1; ec = ec + 1) {
+            nr = push(nr, T[ei][ec] - f * prow[ec]);
+          }
+          T = mat_set_row(T, ei, nr);
+        }
+      }
+    }
+  }
+
+  // 提取解：原变量 j 所在列若为单位向量（恰一行≈1、其余行≈0，含目标行）
+  // 即视为基变量，其值为该基行 RHS；否则非基，值为 0。
+  // 注意：单位列判定必须覆盖全部 m+1 行（含目标行），否则 m=1 时会把
+  // 非基变量（其列如 [1, 3]）误判为基变量。
+  let x: float[] = [];
+  for (let xj = 0; xj < n; xj = xj + 1) {
+    let basic = -1;
+    for (let xb1 = 0; xb1 < m + 1; xb1 = xb1 + 1) {
+      if (abs(T[xb1][xj] - 1.0) < 1e-9) { basic = xb1; }
+    }
+    if (basic >= 0) {
+      let ok = 1;
+      for (let xb2 = 0; xb2 < m + 1; xb2 = xb2 + 1) {
+        if (xb2 != basic) {
+          if (abs(T[xb2][xj]) > 1e-9) { ok = 0; }
+        }
+      }
+      if (ok == 1) { x = push(x, T[basic][total]); }
+      else { x = push(x, 0.0); }
+    } else { x = push(x, 0.0); }
+  }
+  return x;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 一元多项式极小（Golden-section search）
+//   在 [a, b] 上最小化多项式 p(x)（由系数给出），复用 sci.poly_val 求值。
+//   黄金分割比取常数 0.61803398875（避免依赖 sqrt 内置）。
+// ════════════════════════════════════════════════════════════════
+
+export func golden_poly_min(coeffs: float[], a: float, b: float, tol: float): float {
+  let gr = 0.61803398875;
+  let c = b - gr * (b - a);
+  let d = a + gr * (b - a);
+  let fc: float = sci.poly_val(coeffs, c);
+  let fd: float = sci.poly_val(coeffs, d);
+  for (let i = 0; i < 200; i = i + 1) {
+    if (abs(b - a) < tol) { break; }
+    if (fc < fd) {
+      b = d;
+      d = c;
+      fd = fc;
+      c = b - gr * (b - a);
+      fc = sci.poly_val(coeffs, c);
+    } else {
+      a = c;
+      c = d;
+      fc = fd;
+      d = a + gr * (b - a);
+      fd = sci.poly_val(coeffs, d);
+    }
+  }
+  return (a + b) / 2.0;
+}
