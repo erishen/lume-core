@@ -323,7 +323,7 @@ build: ;
 bin: ;
 endif
 
-build/%.o: src/%.c src/lume.h $(INT_HDRS) | build $(AH_LIB)
+build/%.o: src/%.c src/lume.h $(INT_HDRS) Makefile | build $(AH_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -423,7 +423,7 @@ FUZZ_OBJS := $(SRCS:src/%.c=build-fuzz/%.o)
 build-fuzz:
 	@mkdir -p build-fuzz
 
-build-fuzz/%.o: src/%.c src/lume.h $(INT_HDRS) | build-fuzz
+build-fuzz/%.o: src/%.c src/lume.h $(INT_HDRS) Makefile | build-fuzz
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(CFLAGS) -fsanitize=fuzzer-no-link,address,undefined \
 	    -c $< -o $@
@@ -779,7 +779,7 @@ endif
 build-pack:
 	mkdir -p build-pack
 
-build-pack/%.o: src/%.c src/lume.h $(INT_HDRS) | build-pack
+build-pack/%.o: src/%.c src/lume.h $(INT_HDRS) Makefile | build-pack
 	@mkdir -p $(dir $@)   # 子目录型源 (compat/sha256, compat/regex) 同 build/%.o 的教训
 	$(CC) $(PACK_CFLAGS) -c $< -o $@
 
@@ -897,7 +897,7 @@ build/tests:
 build-asan/tests:
 	mkdir -p build-asan/tests
 
-build-asan/%.o: src/%.c src/lume.h $(INT_HDRS) | build-asan $(AH_LIB)
+build-asan/%.o: src/%.c src/lume.h $(INT_HDRS) Makefile | build-asan $(AH_LIB)
 	@mkdir -p $(dir $@)   # 子目录型源 (compat/sha256, compat/regex) 的目录规则同 build/%.o
 	$(CC) $(CFLAGS) $(ASAN_CFLAGS) -c $< -o $@
 
