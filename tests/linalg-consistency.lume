@@ -1,0 +1,39 @@
+// linalg-consistency.lume — 线性代数库三后端一致性套件
+// （解释器 / 文本 IR / LLVM）输出逐字节一致。
+// 运行：tests/linalg_backends.sh
+import "../lib/linalg.lume" as la;
+
+let A = [[2.0, 1.0], [1.0, 3.0]];
+let I2 = la.mat_identity(2);
+
+// 构造 / 基础运算
+print(la.mat_mul(A, I2));                 // = A
+print(la.mat_mul([[1.0,2.0],[3.0,4.0]], [[5.0,6.0],[7.0,8.0]]));  // [[19,22],[43,50]]
+print(la.mat_transpose([[1.0,2.0,3.0],[4.0,5.0,6.0]]));            // [[1,4],[2,5],[3,6]]
+print(la.mat_trace(A));                   // 5
+print(la.mat_diag([1.0,2.0,3.0]));       // 对角阵
+print(la.mat_add(A, A));                  // 2A
+print(la.mat_scale(A, 2.0));              // 2A
+print(la.mat_sub(la.mat_add(A,A), A));    // = A
+
+// 行列式
+print(la.mat_det(A));                     // 5
+print(la.mat_det([[2.0,0.0,0.0],[0.0,3.0,0.0],[0.0,0.0,4.0]]));    // 24
+
+// 求解 Ax = b
+let b = [3.0, 5.0];
+let x = la.mat_solve(A, b);
+print(x);                                // [0.8, 1.4]
+let bx: float[][] = [[x[0]], [x[1]]];
+print(la.mat_mul(A, bx));                 // [[3],[5]]
+
+// 求逆 + 验证 A^{-1} A = I
+let Ainv = la.mat_inv(A);
+print(Ainv);
+print(la.mat_eq_approx(la.mat_mul(Ainv, A), I2, 1e-9));   // true
+
+// LU 分解（紧凑 LU → L·U = A，本例无需主元交换）
+let LU = la.lu_decompose(A);
+print(la.mat_eq_approx(la.mat_mul(la.lu_l(LU), la.lu_u(LU)), A, 1e-9));  // true
+print(la.lu_l(LU));
+print(la.lu_u(LU));

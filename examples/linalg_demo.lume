@@ -1,0 +1,49 @@
+// linalg_demo.lume — 线性代数库演示与正确性校验
+// 每个结果都与已知解析解对照；三后端（解释器/文本/LLVM）输出应逐字节一致。
+import "../lib/linalg.lume" as la;
+
+// ---- 基础矩阵 ----
+let A = [[2.0, 1.0], [1.0, 3.0]];      // det = 5
+let I2 = la.mat_identity(2);
+
+// 矩阵乘
+print(la.mat_mul(A, I2));                // 应等于 A
+print(la.mat_mul([[1.0,2.0],[3.0,4.0]], [[5.0,6.0],[7.0,8.0]]));  // [[19,22],[43,50]]
+
+// 转置
+print(la.mat_transpose([[1.0,2.0,3.0],[4.0,5.0,6.0]]));  // [[1,4],[2,5],[3,6]]
+
+// 迹 / 对角阵
+print(la.mat_trace(A));                  // 5
+print(la.mat_diag([1.0,2.0,3.0]));      // 对角阵
+
+// 加 / 减 / 标量乘
+print(la.mat_add(A, A));                 // 2A
+print(la.mat_scale(A, 2.0));             // 2A
+print(la.mat_sub(la.mat_add(A,A), A));   // = A
+
+// 行列式
+print(la.mat_det(A));                    // 5
+print(la.mat_det([[2.0,0.0,0.0],[0.0,3.0,0.0],[0.0,0.0,4.0]]));  // 24
+
+// 求解 Ax = b：2x+y=3, x+3y=5 → x=0.8, y=1.4
+let b = [3.0, 5.0];
+let x = la.mat_solve(A, b);
+print(x);                                // [0.8, 1.4]
+// 验证 A x == b
+let bx: float[][] = [[x[0]], [x[1]]];
+print(la.mat_mul(A, bx));                 // [[3],[5]]
+
+// 求逆：A^{-1} = [[0.6,-0.2],[-0.2,0.4]]
+let Ainv = la.mat_inv(A);
+print(Ainv);
+// 验证 A^{-1} A == I
+print(la.mat_eq_approx(la.mat_mul(Ainv, A), I2, 1e-9));  // true
+
+// LU 分解：紧凑 LU 提取 L、U，应满足 L U == A
+let LU = la.lu_decompose(A);
+let L = la.lu_l(LU);
+let U = la.lu_u(LU);
+print(la.mat_eq_approx(la.mat_mul(L, U), A, 1e-9));  // true
+print(L);
+print(U);

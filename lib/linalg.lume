@@ -1,0 +1,452 @@
+// linalg.lume — 线性代数算法库（混合分层：.lume 算法层，零 C 摩擦）
+//
+// 矩阵用 list-of-list 表示：float[][]，约定 M[row][col]。
+// 因 lume 的 list 为值语义（不支持 r[i][j] = x 原地赋值），所有「修改」
+// 都通过返回新矩阵的帮助函数实现（mat_elim / mat_row_scale / mat_swap_rows
+// / mat_set），三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，故数值
+// 天然一致，无需像 C native 那样手写镜像。
+//
+// 覆盖：
+//   构造        mat_identity / mat_diag / mat_scale / mat_trace / mat_transpose
+//   运算        mat_add / mat_sub / mat_mul
+//   行列式      mat_det
+//   求解        mat_solve(A, b)                 高斯消元 + 部份主元
+//   求逆        mat_inv(A)                      Gauss–Jordan
+//   LU 分解     lu_decompose(A)                 返回紧凑 LU（含置换）
+//               lu_l(LU) / lu_u(LU)            从紧凑 LU 提取 L / U
+//   工具        mat_eq_approx(A, B, tol)        容差比较（测试/演示用）
+//
+// 使用：
+//   import "linalg.lume" as la;
+//   let R = la.mat_mul(A, la.mat_inv(B));
+//
+// ── 已知语言限制（重要）─────────────────────────────────────────────
+// lume 当前不支持「用户函数接收函数类型参数」，故迭代法（如共轭梯度）暂
+// 未纳入；本库聚焦直接法（高斯消元 / Gauss–Jordan / Doolittle LU），覆盖
+// 绝大多数中小规模线性代数需求。待 lume 支持函数类型后可补迭代法。
+// ───────────────────────────────────────────────────────────────────
+
+export let LINALG_VERSION = "0.1.0";
+
+// ════════════════════════════════════════════════════════════════
+// 内部帮助函数（函数式构造新矩阵，避免原地赋值）
+// ════════════════════════════════════════════════════════════════
+
+// 返回第 i 行（深拷贝，避免后续构造误改原矩阵）。
+func la_copy_row(M: float[][], i: int): float[] {
+  let nc = len(M[i]);
+  let out: float[] = [];
+  for (let k = 0; k < nc; k = k + 1) {
+    out = push(out, M[i][k]);
+  }
+  return out;
+}
+
+// 返回新矩阵：其中第 i 行 = 原 row_i + f * row_p。
+func la_elim(M: float[][], i: int, p: int, f: float): float[][] {
+  let m = len(M);
+  let out: float[][] = [];
+  for (let r = 0; r < m; r = r + 1) {
+    if (r == i) {
+      let oi: float[] = M[i];
+      let np: float[] = M[p];
+      let nc = len(oi);
+      let nr: float[] = [];
+      for (let c = 0; c < nc; c = c + 1) {
+        nr = push(nr, oi[c] + f * np[c]);
+      }
+      out = push(out, nr);
+    } else {
+      out = push(out, M[r]);
+    }
+  }
+  return out;
+}
+
+// 返回新矩阵：第 i 行整体乘以 s。
+func la_row_scale(M: float[][], i: int, s: float): float[][] {
+  let m = len(M);
+  let out: float[][] = [];
+  for (let r = 0; r < m; r = r + 1) {
+    if (r == i) {
+      let oi: float[] = M[i];
+      let nc = len(oi);
+      let nr: float[] = [];
+      for (let c = 0; c < nc; c = c + 1) {
+        nr = push(nr, oi[c] * s);
+      }
+      out = push(out, nr);
+    } else {
+      out = push(out, M[r]);
+    }
+  }
+  return out;
+}
+
+// 返回新矩阵：交换第 a、b 行。
+func la_swap_rows(M: float[][], a: int, b: int): float[][] {
+  let m = len(M);
+  let out: float[][] = [];
+  for (let r = 0; r < m; r = r + 1) {
+    if (r == a) { out = push(out, M[b]); }
+    else if (r == b) { out = push(out, M[a]); }
+    else { out = push(out, M[r]); }
+  }
+  return out;
+}
+
+// 返回新矩阵：第 i 行第 j 列置为 v。
+func la_set(M: float[][], i: int, j: int, v: float): float[][] {
+  let m = len(M);
+  let out: float[][] = [];
+  for (let r = 0; r < m; r = r + 1) {
+    if (r == i) {
+      let oi: float[] = M[i];
+      let nc = len(oi);
+      let nr: float[] = [];
+      for (let c = 0; c < nc; c = c + 1) {
+        if (c == j) { nr = push(nr, v); }
+        else { nr = push(nr, oi[c]); }
+      }
+      out = push(out, nr);
+    } else {
+      out = push(out, M[r]);
+    }
+  }
+  return out;
+}
+
+// 反转 float[]（回代时自尾部累积解，最后翻转为正序）。
+func la_reverse(xs: float[]): float[] {
+  let n = len(xs);
+  let out: float[] = [];
+  for (let i = n - 1; i >= 0; i = i - 1) {
+    out = push(out, xs[i]);
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 构造 / 基础运算
+// ════════════════════════════════════════════════════════════════
+
+// n 阶单位阵。
+export func mat_identity(n: int): float[][] {
+  let out: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (i == j) { row = push(row, 1.0); }
+      else { row = push(row, 0.0); }
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 由向量构造对角阵。
+export func mat_diag(v: float[]): float[][] {
+  let n = len(v);
+  let out: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (i == j) { row = push(row, v[i]); }
+      else { row = push(row, 0.0); }
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 转置 A^T。
+export func mat_transpose(A: float[][]): float[][] {
+  let m = len(A);
+  let n = len(A[0]);
+  let out: float[][] = [];
+  for (let j = 0; j < n; j = j + 1) {
+    let row: float[] = [];
+    for (let i = 0; i < m; i = i + 1) {
+      row = push(row, A[i][j]);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 标量乘：s * A。
+export func mat_scale(A: float[][], s: float): float[][] {
+  let m = len(A);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let oi: float[] = A[i];
+    let nc = len(oi);
+    let row: float[] = [];
+    for (let j = 0; j < nc; j = j + 1) {
+      row = push(row, oi[j] * s);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 矩阵加 C = A + B。
+export func mat_add(A: float[][], B: float[][]): float[][] {
+  let m = len(A);
+  let n = len(A[0]);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      row = push(row, A[i][j] + B[i][j]);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 矩阵减 C = A - B。
+export func mat_sub(A: float[][], B: float[][]): float[][] {
+  let m = len(A);
+  let n = len(A[0]);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      row = push(row, A[i][j] - B[i][j]);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 矩阵乘 C = A * B。
+export func mat_mul(A: float[][], B: float[][]): float[][] {
+  let m = len(A);
+  let n = len(B[0]);
+  let p = len(B);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      let s = 0.0;
+      for (let k = 0; k < p; k = k + 1) {
+        s = s + A[i][k] * B[k][j];
+      }
+      row = push(row, s);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 迹（方阵对角线之和）。
+export func mat_trace(A: float[][]): float {
+  let n = len(A);
+  let t = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    t = t + A[i][i];
+  }
+  return t;
+}
+
+// 容差比较：两矩阵在 tol 内逐元素相等。
+export func mat_eq_approx(A: float[][], B: float[][], tol: float): bool {
+  let m = len(A);
+  let n = len(A[0]);
+  for (let i = 0; i < m; i = i + 1) {
+    for (let j = 0; j < n; j = j + 1) {
+      if (abs(A[i][j] - B[i][j]) > tol) { return false; }
+    }
+  }
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 行列式（高斯消元 → 上三角，对角积 × 置换符号；部份主元）
+// ════════════════════════════════════════════════════════════════
+
+export func mat_det(A: float[][]): float {
+  let n = len(A);
+  let U: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = la_copy_row(A, i);
+    U = push(U, row);
+  }
+  let sign = 1.0;
+  for (let col = 0; col < n; col = col + 1) {
+    let piv = col;
+    let maxv: float = abs(U[col][col]);
+    for (let r = col + 1; r < n; r = r + 1) {
+      let av: float = abs(U[r][col]);
+      if (av > maxv) { maxv = av; piv = r; }
+    }
+    if (maxv < 1e-12) { return 0.0; }   // 近奇异
+    if (piv != col) { U = la_swap_rows(U, col, piv); sign = -sign; }
+    let diag = U[col][col];
+    for (let rr = col + 1; rr < n; rr = rr + 1) {
+      let f = U[rr][col] / diag;
+      U = la_elim(U, rr, col, -f);
+    }
+  }
+  let d = sign;
+  for (let ii = 0; ii < n; ii = ii + 1) {
+    d = d * U[ii][ii];
+  }
+  return d;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 求解 Ax = b（高斯消元 + 部份主元，单右端 b: float[]）
+// ════════════════════════════════════════════════════════════════
+
+export func mat_solve(A: float[][], b: float[]): float[] {
+  let n = len(A);
+  // 构造增广矩阵 [A | b]
+  let M: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = la_copy_row(A, i);
+    row = push(row, b[i]);
+    M = push(M, row);
+  }
+  // 前向消元
+  for (let col = 0; col < n; col = col + 1) {
+    let piv = col;
+    let maxv: float = abs(M[col][col]);
+    for (let r = col + 1; r < n; r = r + 1) {
+      let av: float = abs(M[r][col]);
+      if (av > maxv) { maxv = av; piv = r; }
+    }
+    if (piv != col) { M = la_swap_rows(M, col, piv); }
+    let diag = M[col][col];
+    for (let rr = col + 1; rr < n; rr = rr + 1) {
+      let f = M[rr][col] / diag;
+      M = la_elim(M, rr, col, -f);
+    }
+  }
+  // 回代（自尾部累积，最后翻转）
+  let xsol: float[] = [];
+  for (let ii = n - 1; ii >= 0; ii = ii - 1) {
+    let s = M[ii][n];
+    for (let j = ii + 1; j < n; j = j + 1) {
+      s = s - M[ii][j] * xsol[n - 1 - j];
+    }
+    let xi: float = s / M[ii][ii];
+    xsol = push(xsol, xi);
+  }
+  return la_reverse(xsol);
+}
+
+// ════════════════════════════════════════════════════════════════
+// 求逆 A^{-1}（Gauss–Jordan，增广 [A | I] → [I | A^{-1}]）
+// ════════════════════════════════════════════════════════════════
+
+export func mat_inv(A: float[][]): float[][] {
+  let n = len(A);
+  let M: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = la_copy_row(A, i);
+    for (let j = 0; j < n; j = j + 1) {
+      if (i == j) { row = push(row, 1.0); }
+      else { row = push(row, 0.0); }
+    }
+    M = push(M, row);
+  }
+  for (let col = 0; col < n; col = col + 1) {
+    let piv = col;
+    let maxv: float = abs(M[col][col]);
+    for (let r = col + 1; r < n; r = r + 1) {
+      let av: float = abs(M[r][col]);
+      if (av > maxv) { maxv = av; piv = r; }
+    }
+    if (piv != col) { M = la_swap_rows(M, col, piv); }
+    let diag = M[col][col];
+    M = la_row_scale(M, col, 1.0 / diag);
+    for (let rr = 0; rr < n; rr = rr + 1) {
+      if (rr != col) {
+        let f = M[rr][col];
+        M = la_elim(M, rr, col, -f);
+      }
+    }
+  }
+  // 取右侧 n 列
+  let inv: float[][] = [];
+  for (let ii = 0; ii < n; ii = ii + 1) {
+    let row: float[] = [];
+    for (let jj = n; jj < 2 * n; jj = jj + 1) {
+      row = push(row, M[ii][jj]);
+    }
+    inv = push(inv, row);
+  }
+  return inv;
+}
+
+// ════════════════════════════════════════════════════════════════
+// LU 分解（Doolittle + 部份主元），返回紧凑 LU：
+//   i < j  →  U[i][j]
+//   i == j →  U[i][j]（L 对角隐为 1）
+//   i > j  →  L[i][j]
+// 注意：带主元交换时满足 PA = LU（P 为行置换），即 L·U 重建的是「行置换后的 A」，
+//       而非原 A（无交换时二者相同）。可用 lu_l/lu_u 分别提取 L、U 验证。
+// ════════════════════════════════════════════════════════════════
+
+export func lu_decompose(A: float[][]): float[][] {
+  let n = len(A);
+  let LU: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = la_copy_row(A, i);
+    LU = push(LU, row);
+  }
+  for (let col = 0; col < n; col = col + 1) {
+    let piv = col;
+    let maxv: float = abs(LU[col][col]);
+    for (let r = col + 1; r < n; r = r + 1) {
+      let av: float = abs(LU[r][col]);
+      if (av > maxv) { maxv = av; piv = r; }
+    }
+    if (maxv < 1e-12) { return LU; }   // 近奇异，返回当前（含 0 主元）
+    if (piv != col) { LU = la_swap_rows(LU, col, piv); }
+    let diag = LU[col][col];
+    for (let rr = col + 1; rr < n; rr = rr + 1) {
+      let f = LU[rr][col] / diag;
+      // L[rr][col] = f（填下三角），同时消 U 的上方项
+      LU = la_set(LU, rr, col, f);
+      for (let c = col + 1; c < n; c = c + 1) {
+        let v: float = LU[rr][c] - f * LU[col][c];
+        LU = la_set(LU, rr, c, v);
+      }
+    }
+  }
+  return LU;
+}
+
+// 从紧凑 LU 提取 L（单位对角）。
+export func lu_l(LU: float[][]): float[][] {
+  let n = len(LU);
+  let out: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (i == j) { row = push(row, 1.0); }
+      else if (i > j) { row = push(row, LU[i][j]); }
+      else { row = push(row, 0.0); }
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 从紧凑 LU 提取 U（上三角，含对角）。
+export func lu_u(LU: float[][]): float[][] {
+  let n = len(LU);
+  let out: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (i <= j) { row = push(row, LU[i][j]); }
+      else { row = push(row, 0.0); }
+    }
+    out = push(out, row);
+  }
+  return out;
+}
