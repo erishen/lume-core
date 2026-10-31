@@ -100,3 +100,75 @@ Value b_round(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, 
 Value b_min(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_min); }
 Value b_max(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_max); }
 
+/* --- 三角函数 / 双曲 / 反三角 (信息计算科学扩展, 2026-10-31) --- */
+static void native_sin(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(sin(x));
+}
+static void native_cos(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(cos(x));
+}
+static void native_tan(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(tan(x));
+}
+static void native_asin(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    if (x < -1.0 || x > 1.0) { vm_set_error(vm, "asin(): domain [-1,1]"); return; }
+    *out = val_num(asin(x));
+}
+static void native_acos(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    if (x < -1.0 || x > 1.0) { vm_set_error(vm, "acos(): domain [-1,1]"); return; }
+    *out = val_num(acos(x));
+}
+static void native_atan(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(atan(x));
+}
+static void native_atan2(VM *vm, int argc, Value *args, Value *out) {
+    double y, x;
+    if (argc < 2 || !arg_num(vm, args[0], &y) || !arg_num(vm, args[1], &x)) return;
+    *out = val_num(atan2(y, x));
+}
+static void native_sinh(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(sinh(x));
+}
+static void native_cosh(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(cosh(x));
+}
+static void native_tanh(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(tanh(x));
+}
+static void native_asinh(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    *out = val_num(asinh(x));
+}
+static void native_acosh(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    if (x < 1.0) { vm_set_error(vm, "acosh(): domain [1,inf)"); return; }
+    *out = val_num(acosh(x));
+}
+static void native_atanh(VM *vm, int argc, Value *args, Value *out) {
+    double x; if (argc < 1 || !arg_num(vm, args[0], &x)) return;
+    if (x <= -1.0 || x >= 1.0) { vm_set_error(vm, "atanh(): domain (-1,1)"); return; }
+    *out = val_num(atanh(x));
+}
+Value b_sin(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_sin); }
+Value b_cos(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_cos); }
+Value b_tan(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_tan); }
+Value b_asin(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_asin); }
+Value b_acos(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_acos); }
+Value b_atan(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_atan); }
+Value b_atan2(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_atan2); }
+Value b_sinh(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_sinh); }
+Value b_cosh(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_cosh); }
+Value b_tanh(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_tanh); }
+Value b_asinh(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_asinh); }
+Value b_acosh(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_acosh); }
+Value b_atanh(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_atanh); }
+

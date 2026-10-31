@@ -436,6 +436,9 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* math builtins (2026-09-28, builtins_math.c) */
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
     "min", "max", "pi", "e",
+    /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
     /* statistical distribution builtins (2026-10-20, builtins_math.c + rt.c) */
     "normcdf", "norminv", "erf", "gamma", "lgamma", "igamma", "ibeta", "tdist_cdf", "chisq_cdf",
     /* Monte Carlo RNG (2026-10-24, builtins_math.c + rt.c) */
@@ -543,6 +546,9 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"avg_loss",1,1}, {"max_consecutive_losses",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
+    {"sin",1,1}, {"cos",1,1}, {"tan",1,1}, {"asin",1,1}, {"acos",1,1},
+    {"atan",1,1}, {"atan2",2,2}, {"sinh",1,1}, {"cosh",1,1}, {"tanh",1,1},
+    {"asinh",1,1}, {"acosh",1,1}, {"atanh",1,1},
     {"mean",1,1}, {"variance",1,1}, {"stddev",1,1}, {"median",1,1},
     {"percentile",2,2}, {"covariance",2,2}, {"correlation",2,2}, {"linreg",2,2},
     {"pct_change",1,1}, {"max_drawdown",1,1},

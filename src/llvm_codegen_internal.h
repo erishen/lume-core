@@ -185,7 +185,7 @@ typedef struct {
 } Bi;
 
 static const Bi BUILTINS[] = {
-    { "abs",   "lume_bi_abs",  "i64",    "i64",    1,  NULL,            NULL,          NULL,     0 },
+    { "abs",   "lume_bi_abs",  "i64",    "i64",    1,  "lume_bi_absf",  "double",      "double", 1 },
     { "min",   "lume_bi_min",  "i64",    "i64",    2,  "lume_bi_minf",  "double",      "double", 2 },
     { "max",   "lume_bi_max",  "i64",    "i64",    2,  "lume_bi_maxf",  "double",      "double", 2 },
     { "sqrt",  NULL,           NULL,     NULL,     0,  "lume_bi_sqrt",  "double",      "double", 1 },
@@ -200,6 +200,20 @@ static const Bi BUILTINS[] = {
     { "erf",       NULL, NULL, NULL, 0, "lume_bi_erf",       "double", "double", 1 },
     { "gamma",     NULL, NULL, NULL, 0, "lume_bi_gamma",     "double", "double", 1 },
     { "lgamma",    NULL, NULL, NULL, 0, "lume_bi_lgamma",    "double", "double", 1 },
+    /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
+    { "sin",   NULL, NULL, NULL, 0, "lume_bi_sin",   "double", "double", 1 },
+    { "cos",   NULL, NULL, NULL, 0, "lume_bi_cos",   "double", "double", 1 },
+    { "tan",   NULL, NULL, NULL, 0, "lume_bi_tan",   "double", "double", 1 },
+    { "asin",  NULL, NULL, NULL, 0, "lume_bi_asin",  "double", "double", 1 },
+    { "acos",  NULL, NULL, NULL, 0, "lume_bi_acos",  "double", "double", 1 },
+    { "atan",  NULL, NULL, NULL, 0, "lume_bi_atan",  "double", "double", 1 },
+    { "atan2", NULL, NULL, NULL, 0, "lume_bi_atan2", "double", "double", 2 },
+    { "sinh",  NULL, NULL, NULL, 0, "lume_bi_sinh",  "double", "double", 1 },
+    { "cosh",  NULL, NULL, NULL, 0, "lume_bi_cosh",  "double", "double", 1 },
+    { "tanh",  NULL, NULL, NULL, 0, "lume_bi_tanh",  "double", "double", 1 },
+    { "asinh", NULL, NULL, NULL, 0, "lume_bi_asinh", "double", "double", 1 },
+    { "acosh", NULL, NULL, NULL, 0, "lume_bi_acosh", "double", "double", 1 },
+    { "atanh", NULL, NULL, NULL, 0, "lume_bi_atanh", "double", "double", 1 },
     { "igamma",    NULL, NULL, NULL, 0, "lume_bi_igamma",    "double", "double", 2 },
     { "ibeta",     NULL, NULL, NULL, 0, "lume_bi_ibeta",     "double", "double", 3 },
     { "tdist_cdf", NULL, NULL, NULL, 0, "lume_bi_tdist_cdf", "double", "double", 2 },

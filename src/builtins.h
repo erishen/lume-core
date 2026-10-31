@@ -98,6 +98,20 @@ Value b_ceil(VM *vm, int argc, Value *args);
 Value b_round(VM *vm, int argc, Value *args);
 Value b_min(VM *vm, int argc, Value *args);
 Value b_max(VM *vm, int argc, Value *args);
+/* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
+Value b_sin(VM *vm, int argc, Value *args);
+Value b_cos(VM *vm, int argc, Value *args);
+Value b_tan(VM *vm, int argc, Value *args);
+Value b_asin(VM *vm, int argc, Value *args);
+Value b_acos(VM *vm, int argc, Value *args);
+Value b_atan(VM *vm, int argc, Value *args);
+Value b_atan2(VM *vm, int argc, Value *args);
+Value b_sinh(VM *vm, int argc, Value *args);
+Value b_cosh(VM *vm, int argc, Value *args);
+Value b_tanh(VM *vm, int argc, Value *args);
+Value b_asinh(VM *vm, int argc, Value *args);
+Value b_acosh(VM *vm, int argc, Value *args);
+Value b_atanh(VM *vm, int argc, Value *args);
 /* Statistical distribution builtins (P4, 2026-10-20): the interpreter
  * wrappers validate arguments and surface vm_set_error; the same numbers
  * are computed by rt.c's lume_bi_* for the native backends. */

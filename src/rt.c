@@ -183,6 +183,7 @@ char *lume_bi_cat(const char *a, const char *b)
 }
 
 int64_t lume_bi_abs(int64_t v)     { return v < 0 ? -v : v; }
+double lume_bi_absf(double v)      { return fabs(v); }
 int64_t lume_bi_min(int64_t a, int64_t b) { return a < b ? a : b; }
 int64_t lume_bi_max(int64_t a, int64_t b) { return a > b ? a : b; }
 double lume_bi_minf(double a, double b) { return a < b ? a : b; }
@@ -193,6 +194,21 @@ double lume_bi_pow(double a, double b) { return pow(a, b); }
 double lume_bi_floor(double v) { return floor(v); }
 double lume_bi_ceil(double v)  { return ceil(v); }
 double lume_bi_round(double v) { return round(v); }
+
+/* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
+double lume_bi_sin(double v)  { return sin(v); }
+double lume_bi_cos(double v)  { return cos(v); }
+double lume_bi_tan(double v)  { return tan(v); }
+double lume_bi_asin(double v) { return asin(v); }
+double lume_bi_acos(double v) { return acos(v); }
+double lume_bi_atan(double v) { return atan(v); }
+double lume_bi_atan2(double y, double x) { return atan2(y, x); }
+double lume_bi_sinh(double v) { return sinh(v); }
+double lume_bi_cosh(double v) { return cosh(v); }
+double lume_bi_tanh(double v) { return tanh(v); }
+double lume_bi_asinh(double v){ return asinh(v); }
+double lume_bi_acosh(double v){ return acosh(v); }
+double lume_bi_atanh(double v){ return atanh(v); }
 
 /* ------------------------------------------------------------------ *
  * Statistical distribution builtins (P4, 2026-10-20).

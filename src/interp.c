@@ -1505,6 +1505,20 @@ void bridge_seed_builtins(VM *vm) {
         {"floor", b_floor},
         {"ceil", b_ceil},
         {"round", b_round},
+        /* 三角函数 / 双曲 / 反三角 (信息计算科学扩展, 2026-10-31) */
+        {"sin", b_sin},
+        {"cos", b_cos},
+        {"tan", b_tan},
+        {"asin", b_asin},
+        {"acos", b_acos},
+        {"atan", b_atan},
+        {"atan2", b_atan2},
+        {"sinh", b_sinh},
+        {"cosh", b_cosh},
+        {"tanh", b_tanh},
+        {"asinh", b_asinh},
+        {"acosh", b_acosh},
+        {"atanh", b_atanh},
         /* 统计分布内建 (2026-10-20, builtins_math.c + rt.c): normcdf/erf/
          * gamma/lgamma/igamma/ibeta/tdist_cdf/chisq_cdf 三后端一致。 */
         {"normcdf", b_normcdf},

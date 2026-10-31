@@ -1518,5 +1518,24 @@ print(p12_get({ a: 1, b: "two" }, "b"));        // two
 print(p12_get({ a: 1 }, "zz"));                 // dflt
 print(p12_keys({ a: 1, b: 2, c: 3 }));          // 3
 
+// ---- 2026-10-31: trig / hyperbolic / inverse-trig (信息计算科学扩展) ----
+// Pinned: sin/cos/tan/asin/acos/atan/atan2/sinh/cosh/tanh/asinh/acosh/atanh
+// agree byte-for-byte across the interpreter and both native emitters.
+print(sin(0.0));
+print(cos(0.0));
+print(tan(0.0));
+print(sin(3.141592653589793 / 2.0));
+print(cos(3.141592653589793));
+print(asin(1.0));
+print(acos(1.0));
+print(atan(1.0));
+print(atan2(1.0, 1.0));
+print(sinh(0.0));
+print(cosh(0.0));
+print(tanh(0.0));
+print(asinh(1.0));
+print(acosh(1.0));
+print(atanh(0.5));
+
 warmup();
 main();
