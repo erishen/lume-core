@@ -30,7 +30,7 @@ CFLAGS   += $(TARGET_TRIPLE_DEFS) $(RT_DEFS)
 # 不再让 0.5.0 在 main.c / bridge_lsp.c / bridge_mcp.c 多处硬编码漂移。
 # 打 release 前在此递增值, 保证二进制自报与 GitHub Release tag 一致
 # (make pack 走 PACK_CFLAGS, 这个 -D 不在 RT_DEFS 里, 会一并带进去)。
-LUME_CORE_VERSION ?= 0.11.0
+LUME_CORE_VERSION ?= 0.12.1
 CFLAGS   += -DLUME_CORE_VERSION=\"$(LUME_CORE_VERSION)\"
 
 # --- 平台 feature-test: 与宿主版/agent-httpd/Makefile:8-22 同口径, 但这里不 ---
@@ -799,12 +799,18 @@ pack: all $(PACK_BIN)
 	@cp docs/ai-verify.md build-pack/docs/
 	@cp -R examples/ai-generated build-pack/examples/
 	@cp -R tests/ai-bad build-pack/tests/
+	# lib/: 这是 .lume 源码库(peer/identity/graph/ml/sci/...), 不是编进
+	# 二进制的东西 —— 应用侧写 `import "../lume-core/lib/peer.lume"`, 运行时
+	# 由解释器按路径去磁盘读。所以不打进包, 下游就只能从源码树复制,
+	# 而那正是"三份副本各自漂移"的根源(镜像里放着 13KB 的旧 peer.lume,
+	# 报错却是 "module 'peer' has no export 'config_warnings'")。
+	@mkdir -p build-pack/lib && cp lib/*.lume build-pack/lib/
 	tar -czf dist/$(PKG_NAME).tar.gz -C build-pack \
-	    README.md README.zh.md CHANGELOG.md bin/lume-core \
+	    README.md README.zh.md CHANGELOG.md bin/lume-core lib \
 	    scripts/verify-ai-lume.sh scripts/verify-ai-semantics.sh \
 	    scripts/ai-verify-loop.sh scripts/ai-gen-programs.sh scripts/ai-produce.sh \
 	    docs/ai-verify.md examples/ai-generated tests/ai-bad
-	@echo "==> packed dist/$(PKG_NAME).tar.gz (bin/lume-core + docs + AI gate scripts + seeds)"
+	@echo "==> packed dist/$(PKG_NAME).tar.gz (bin/lume-core + lib + docs + AI gate scripts + seeds)"
 	@./scripts/check-pack-privacy.sh dist/$(PKG_NAME).tar.gz
 	@echo "==> packcheck passed: no build-machine paths in dist/$(PKG_NAME).tar.gz"
 

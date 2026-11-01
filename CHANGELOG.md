@@ -4,6 +4,22 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`make pack` now ships `lib/`.** The tarball carried only `bin/lume-core`
+  plus docs and gate scripts, so every downstream project that writes
+  `import "../lume-core/lib/peer.lume"` had to copy those sources out of a
+  checkout by hand — and hand-copied trees drift silently. One image shipped a
+  13 KB stale `peer.lume` while the source tree had 17 KB; the only symptom was
+  `module 'peer' has no export 'config_warnings'`, which points at the call
+  site, not at the stale file. Packaging `lib/` lets a project pin a version
+  (`LUME_CORE_VERSION`) instead of copying, so the stale-copy failure mode
+  disappears rather than being detected after the fact.
+  Note this is source, not something compiled into the binary: the interpreter
+  reads these files at `import` time.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added

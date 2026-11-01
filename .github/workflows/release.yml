@@ -61,6 +61,12 @@ jobs:
           mkdir -p "dist/${{ matrix.asset }}/bin"
           cp bin/lume-core "dist/${{ matrix.asset }}/bin/"
           cp -r examples docs README.md README.zh.md CHANGELOG.md install.sh "dist/${{ matrix.asset }}/"
+          # lib/: .lume 源码库。应用侧写 `import "../lume-core/lib/peer.lume"`,
+          # 运行时由解释器按路径读 —— 它不是编进二进制的东西。不打进包的话,
+          # 下游只能用"从源码树手工复制"的办法, 而手工副本会静默漂移
+          # (曾出现镜像里放着 13KB 旧 peer.lume、源码已是 17KB, 报错却是
+          #  "module 'peer' has no export 'config_warnings'")。
+          cp -r lib "dist/${{ matrix.asset }}/"
           cd dist
           tar -czf "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
           if command -v sha256sum >/dev/null 2>&1; then
