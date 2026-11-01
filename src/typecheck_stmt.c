@@ -22,6 +22,8 @@ void ck_fn(Checker *c, char **names, Type *ft, Node *body) {
     bool in_saved = c->in_func;
     int loop_saved = c->loop_depth;
     c->scope = scope_new(saved);
+    c->scope->fn_root = 1;   /* P1-3: for-init 遮蔽检查只走到这里——更外层是
+                              * 模块全局/内置，局部遮蔽它们三后端一致安全 */
     for (int i = 0; i < ft->count; i++) {
         ck_ctor_shadow(c, names[i], body ? body->line : 0);
         /* Same reason as the top-level `let` in ck_stmt: the body is walked
@@ -291,6 +293,37 @@ void ck_stmt(Checker *c, Node *n) {
                 c->loop_depth--;
                 return;
             }
+            /* 语言演进提案 P1-3（2026-11-01）：经典 for 整体（init/cond/
+             * body/incr）活在自己的子作用域里——`for (let i = 0; ...)` 的 i
+             * 是循环私有，两个兄弟循环可以同名（optim.linprog 的 ri/ci/si
+             * 命名负担即此），循环结束后 init 变量不可见（C99 语义）。
+             *
+             * 但 for-init 不得遮蔽外层同名**函数局部**绑定：两编译后端的
+             * 局部解析是「扁平预扫描 + asg_find 按行号位置感知」，嵌套同名
+             * 循环会让外层 body 里位于内层声明行之后的读错接内层槽
+             * （cond/incr 在 for 行、早于内层声明，反而安全），与解释器的
+             * env_set 覆盖语义分歧。遮蔽模块全局/内置（如 pi）则安全：
+             * asg_find 先查 locals 再查 gvars，解释器调用 env 覆写全局
+             * ——故检查只走到 fn_root。兄弟循环行号区间不相交，位置查找
+             * 精确对应词法区间，安全。for-in 不在此列：迭代变量是
+             * 「绑定复用」（上方注释），语义保持。 */
+            CScope *loop_scope = c->scope;
+            if (n->as.fors.init && n->as.fors.init->type == N_LET) {
+                const char *vname = n->as.fors.init->as.let.name;
+                bool shadows_local = false;
+                for (CScope *sc = loop_scope; sc; sc = sc->parent) {
+                    for (CSym *it = sc->syms; it; it = it->next)
+                        if (strcmp(it->name, vname) == 0) { shadows_local = true; break; }
+                    if (shadows_local || sc->fn_root) break;
+                }
+                if (shadows_local) {
+                    ck_fail(c, n->as.fors.init->line,
+                            "for-init declaration of '%s' shadows an outer "
+                            "local; rename the loop variable", vname);
+                    return;
+                }
+            }
+            c->scope = scope_new(loop_scope);
             if (n->as.fors.init) ck_stmt(c, n->as.fors.init);
             if (n->as.fors.cond) {
                 Type *ct = ck_expr(c, n->as.fors.cond, NULL);
@@ -300,6 +333,7 @@ void ck_stmt(Checker *c, Node *n) {
             ck_stmt(c, n->as.fors.body);
             c->loop_depth--;
             if (n->as.fors.incr) ck_stmt(c, n->as.fors.incr);
+            c->scope = loop_scope;
             return;
         }
         case N_BREAK:

@@ -29,6 +29,10 @@ typedef struct CScope {
     CNS *nss;
     struct CScope *all_next; /* Checker->all_scopes chain, for ck_free();
                               * parent only points the other way */
+    int fn_root;             /* set on the function-body scope: the boundary
+                              * beyond which names are module globals/builtins
+                              * (shadowing those via a local is safe — locals
+                              * resolve before globals in every backend) */
 } CScope;
 
 typedef struct StructDef {

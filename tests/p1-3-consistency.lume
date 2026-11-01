@@ -1,0 +1,99 @@
+// p1-3-consistency.lume — 经典 for 循环作用域（P1-3）三后端一致性锚定
+// 运行：tests/p1-3_backends.sh（解释器/文本 IR/LLVM 三份输出逐字节比对）
+//
+// 语义（语言演进提案 P1-3, 2026-11-01）：
+//   1. `for (let i = 0; ...)` 的 i 循环私有——兄弟循环可同名（含不同类型），
+//      循环结束后 init 变量不可见（C99 语义，读它报 undefined variable）。
+//   2. for-init 不得遮蔽外层同名绑定（编译后端按行号位置解析局部槽，
+//      嵌套同名循环会让外层 cond/incr 错接内层槽 → 与解释器分歧）。
+//   3. for-in 迭代变量维持「绑定复用」语义不变（本套件仅锚定其兄弟同名
+//      用法照常工作）。
+
+func sibling_same_name(): int {
+  let total = 0;
+  for (let i = 0; i < 3; i = i + 1) { total = total + i * 2; }
+  for (let i = 0; i < 3; i = i + 1) { total = total + i * 3; }
+  return total;
+}
+print(sibling_same_name());               // 15（0+2+4 + 0+3+6）
+
+func sibling_diff_types(): float {
+  let total = 0.0;
+  for (let i = 0; i < 3; i = i + 1) { total = total + i * 1.0; }
+  for (let i = 0.5; i < 3.0; i = i + 0.5) { total = total + i; }
+  return total;
+}
+print(sibling_diff_types());              // 10.5（3 + 7.5）
+
+// for-init 变量与外层 let 同名 → 遮蔽被拒；不同名则照常
+func outer_name_distinct(): int {
+  let k = 7;
+  let total = 0;
+  for (let i = 0; i < 2; i = i + 1) { total = total + k; }
+  return total;
+}
+print(outer_name_distinct());             // 14
+
+// 同名变量在循环体内层块声明（既有块遮蔽行为不变，仅锚定不回归）
+func body_block_shadow(): int {
+  let total = 0;
+  let j = 1000;
+  for (let i = 0; i < 2; i = i + 1) {
+    let j = 5;
+    total = total + j;
+  }
+  return total + j;
+}
+print(body_block_shadow());               // 15（2×5 + 5：体内 let j 在解释器按名
+                                          // 覆写、编译后端按行号位置解析，此形态
+                                          // 下两条路径读到的都是体内的 j=5）
+
+// 循环体内赋值 init 变量（incr 之外的赋值路径）
+func body_assigns_init(): int {
+  let total = 0;
+  for (let i = 0; i < 10; i = i + 1) {
+    total = total + i;
+    if (i == 4) { i = 7; }
+  }
+  return total;
+}
+print(body_assigns_init());               // 0+1+2+3+4 跳到 8,9 → 27
+
+// for-in：兄弟循环同名迭代变量（绑定复用语义照常）
+func forin_sibling(): int {
+  let t = 0;
+  for (x in [1, 2, 3]) { t = t + x; }
+  for (x in [10, 20]) { t = t + x; }
+  return t;
+}
+print(forin_sibling());                   // 36
+
+// for-init 遮蔽模块全局/内置（pi）是允许的：局部先于全局解析，三后端一致；
+// 循环结束后函数内读 pi 仍是全局值
+// （注：顶层直接读 pi/e 等内置常量在两编译后端报 unknown variable——
+//   既有缺口，与 P1-3 无关，内置常量的全局注册是后续工作）
+func shadow_global_ok(): int {
+  let n = 0;
+  for (let pi = 0; pi < 3; pi = pi + 1) { n = n + pi; }
+  return n;
+}
+print(shadow_global_ok());                // 3
+
+func global_pi_intact(): bool {
+  for (let pi = 0; pi < 3; pi = pi + 1) { }
+  return pi > 3.0;
+}
+print(global_pi_intact());                // true（全局 pi 未受影响）
+
+// while 与嵌套块不受影响
+func while_unaffected(): int {
+  let n = 0;
+  let i = 0;
+  while (i < 3) {
+    let i2 = i * 10;
+    n = n + i2;
+    i = i + 1;
+  }
+  return n;
+}
+print(while_unaffected());                // 0+10+20 = 30
