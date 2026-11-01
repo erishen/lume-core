@@ -723,6 +723,22 @@ static void gvar_slot(char *buf, size_t cap, const char *name)
     snprintf(buf, cap, "@lv_%s_%d", name, s_uid++);
 }
 
+/* The "cannot infer" hint: when the init is a call, name the callee — the
+ * rule users must apply (annotate local-function/native-call bindings, while
+ * imported-function results do infer) is otherwise impossible to recall from
+ * a bare variable name (语言演进提案 P0-4). */
+static void infer_hint(char *buf, size_t cap, Node *init)
+{
+    if (init && init->type == N_CALL && init->as.call.callee &&
+        init->as.call.callee->type == N_VAR)
+        snprintf(buf, cap,
+                 " (the return type of '%s' is not inferable here — annotate "
+                 "the binding with an explicit type, e.g. ': float[]')",
+                 init->as.call.callee->as.var.name);
+    else
+        snprintf(buf, cap, " (add an explicit annotation)");
+}
+
 static void scan_stmt(CG *g, Node *n)
 {
     if (!n) return;
@@ -730,9 +746,12 @@ static void scan_stmt(CG *g, Node *n)
     switch (n->type) {
     case N_LET: {
         Type *ty = n->as.let.annot ? n->as.let.annot : infer_node_type(g, n->as.let.init);
-        if (!ty)
-            ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
-                 n->line, n->as.let.name);
+        if (!ty) {
+            char hint[160];
+            infer_hint(hint, sizeof hint, n->as.let.init);
+            ERRX(g, "line %zu: cannot infer a type for '%s'%s",
+                 n->line, n->as.let.name, hint);
+        }
         /* `let f: fn(int) => int = (x) => x * 2;` (SPEC §4.8): the annotated
          * TY_FUNC carries no back-pointer of its own, but `f(3)` recovers the
          * lambda through Type.func — thread the literal through so the call
@@ -812,9 +831,12 @@ static void scan_stmt(CG *g, Node *n)
         if (init && init->type == N_LET) {
             Type *ty = init->as.let.annot ? init->as.let.annot
                                           : infer_node_type(g, init->as.let.init);
-            if (!ty)
-                ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
-                     init->line, init->as.let.name);
+            if (!ty) {
+                char hint[160];
+                infer_hint(hint, sizeof hint, init->as.let.init);
+                ERRX(g, "line %zu: cannot infer a type for '%s'%s",
+                     init->line, init->as.let.name, hint);
+            }
             /* A C-style for's init `let` stays a plain local even at the top
              * level: the interpreter binds it for the loop, not for the
              * program, and no function can name it. */

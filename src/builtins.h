@@ -98,6 +98,9 @@ Value b_ceil(VM *vm, int argc, Value *args);
 Value b_round(VM *vm, int argc, Value *args);
 Value b_min(VM *vm, int argc, Value *args);
 Value b_max(VM *vm, int argc, Value *args);
+/* 整数除法/求模（语言演进提案 P0-2, 2026-11-01） */
+Value b_div(VM *vm, int argc, Value *args);
+Value b_mod(VM *vm, int argc, Value *args);
 /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
 Value b_sin(VM *vm, int argc, Value *args);
 Value b_cos(VM *vm, int argc, Value *args);

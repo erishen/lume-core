@@ -448,6 +448,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* math builtins (2026-09-28, builtins_math.c) */
     "abs", "sqrt", "exp", "log", "ln", "pow", "floor", "ceil", "round",
     "min", "max", "pi", "e",
+    /* 整数除法/求模 (语言演进提案 P0-2, 2026-11-01) */
+    "div", "mod",
     /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
     "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
@@ -557,6 +559,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"profit_factor",1,1}, {"win_rate",1,1}, {"avg_win",1,1},
     {"avg_loss",1,1}, {"max_consecutive_losses",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
+    {"div",2,2}, {"mod",2,2},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"sin",1,1}, {"cos",1,1}, {"tan",1,1}, {"asin",1,1}, {"acos",1,1},
     {"atan",1,1}, {"atan2",2,2}, {"sinh",1,1}, {"cosh",1,1}, {"tanh",1,1},

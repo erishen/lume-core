@@ -259,7 +259,11 @@ Node *parse_statement(Parser *p) {
         if (check(p, TOK_LET)) {
             /* `let` head: either `let x in xs` (for-in) or `let i = e` (C) */
             advance(p);
-            if (!check(p, TOK_IDENT)) {
+            /* HTTP method keywords (head/get/post/...) are only keywords in
+             * route-shorthand position (statement level, next tok is a
+             * string); as a binding name they are ordinary identifiers
+             * (语言演进提案 P0-3: graph 库 BFS 队列指针 let head 曾被误拒). */
+            if (!check(p, TOK_IDENT) && !is_method_keyword(peek(p).type)) {
                 perror_at(p, peek(p).line, "expected variable name after 'let'", NULL);
                 return NULL;
             }
@@ -354,7 +358,10 @@ Node *parse_statement(Parser *p) {
             return parse_let_pattern(p, t.line);
         if (check(p, TOK_LPAREN))
             return parse_tuple_pattern(p, t.line);
-        if (!check(p, TOK_IDENT)) {
+        /* HTTP method keywords are ordinary identifiers as binding names —
+         * only the route shorthand (method keyword + string literal) claims
+         * them (语言演进提案 P0-3, 2026-11-01). */
+        if (!check(p, TOK_IDENT) && !is_method_keyword(peek(p).type)) {
             perror_at(p, peek(p).line, "expected variable name after 'let'", NULL);
             return NULL;
         }

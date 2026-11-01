@@ -1,0 +1,94 @@
+// p0-consistency.lume —— 语言演进提案 P0 功能的三后端一致性测试。
+// 覆盖：div/mod 内置（P0-2）、HTTP 方法关键字作绑定名（P0-3）、
+// fn 类型形参/返回值的间接调用（P0-1）。
+import "../lib/linalg.lume" as la;
+
+// ---- P0-2: div / mod（整数除法与求模）----
+print(div(7,2));        // 3
+print(mod(7,2));        // 1
+print(div(-7,2));       // -3（截断除，符号随被除数）
+print(mod(-7,2));       // -1
+print(div(100,7));      // 14
+print(mod(100,7));      // 2
+print(div(5,0));        // 0（除零约定：返回 0，三后端一致）
+print(mod(5,0));        // 0
+// 求模做索引（'/' 时代的经典坑位）
+let xs: float[] = [10.0,20.0,30.0,40.0];
+print(xs[mod(5,4)]);    // 20
+// 偶数/奇数判定（曾因 x-2*(x/2) 静默出错的场景）
+func is_odd(n: int): int {
+  return mod(n,2);
+}
+print(is_odd(7));       // 1
+print(is_odd(8));       // 0
+
+// ---- P0-3: HTTP 方法关键字作普通绑定名 ----
+let head = 3;
+let get = 4;
+print(head + get);      // 7
+let opts: int[] = [9,8,7];
+print(opts[head]);      // 7
+
+// ---- P0-1: fn 类型值的间接调用 ----
+// fn 形参在函数体内被调用（原缺口用例）
+func apply(f: fn(float) => float, x: float): float {
+  return f(x);
+}
+print(apply((t: float) => t * t, 3.0));        // 9
+
+// 高阶：数值积分（fn 形参多次调用）
+func integrate(f: fn(float) => float, a: float, b: float, n: int): float {
+  let h: float = (b - a) / (n * 1.0);
+  let s: float = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    let xm: float = a + (i * 1.0 + 0.5) * h;
+    s = s + f(xm);
+  }
+  return s * h;
+}
+print(integrate((x: float) => x * x, 0.0, 1.0, 1000));  // ~0.333333
+
+// fn 返回值绑定后再调用
+func ident(f: fn(float) => float): fn(float) => float {
+  return f;
+}
+let g = ident((t: float) => t * 3.0);
+print(g(5.0));                                 // 15
+
+// fn 形参 + 函数内多次调用
+func twice(f: fn(float) => float, x: float): float {
+  return f(f(x));
+}
+print(twice((t: float) => t + 1.0, 10.0));     // 12
+
+// fn 形参复用库函数组合：对向量逐元素应用
+func map_vec(f: fn(float) => float, v: float[]): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < len(v); i = i + 1) {
+    out = push(out, f(v[i]));
+  }
+  return out;
+}
+print(map_vec((x: float) => x * 10.0, [1.0,2.0,3.0]));  // [10,20,30]
+
+// 二元 fn 形参
+func fold(f: fn(float, float) => float, v: float[], init: float): float {
+  let acc: float = init;
+  for (let j = 0; j < len(v); j = j + 1) {
+    acc = f(acc, v[j]);
+  }
+  return acc;
+}
+print(fold((a: float, b: float) => a + b, [1.0,2.0,3.0,4.0], 0.0));  // 10
+print(fold((a: float, b: float) => a * b, [2.0,3.0,4.0], 1.0));      // 24
+
+// fn 值与 linalg 组合：对矩阵每行求和后取最大
+func row_max_sum(M: float[][]): float {
+  let best: float = -1e15;
+  for (let r = 0; r < len(M); r = r + 1) {
+    let s: float = fold((a: float, b: float) => a + b, M[r], 0.0);
+    if (s > best) { best = s; }
+  }
+  return best;
+}
+print(row_max_sum([[1.0,2.0],[3.0,4.0],[0.0,0.5]]));   // 7

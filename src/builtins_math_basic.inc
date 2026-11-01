@@ -4,6 +4,31 @@ static void native_abs(VM *vm, int argc, Value *args, Value *out) {
     *out = val_num(fabs(x));
 }
 
+/* 整数除法/求模（语言演进提案 P0-2, 2026-11-01）。lume 的 `/` 恒产生
+ * float（无 int/int→int），索引与位操作场景只能算术模拟，且 `x - 2*(x/2)`
+ * 对奇数静默出错（浮点乘回去精确还原，余数恒 0）——div/mod 补上原语。
+ * 仅接受 int 实参：SPEC §3.2 规定 float→int 不隐式合法，编译后端 coerce
+ * 会拒绝，这里同样拒绝才能三后端行为一致。除零返回 0（不崩，保持三
+ * 后端一致——编译后端除零是 SIGFPE，解释器是 error，吞掉分歧最安全）。 */
+static void native_div(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "div(): needs two int arguments");
+        return;
+    }
+    long long a = AS_INT(args[0]), b = AS_INT(args[1]);
+    *out = val_int(b == 0 ? 0 : a / b);
+}
+
+static void native_mod(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "mod(): needs two int arguments");
+        return;
+    }
+    long long a = AS_INT(args[0]), b = AS_INT(args[1]);
+    /* C 语义：截断除，余数符号随被除数（mod(-7,2)==-1）。 */
+    *out = val_int(b == 0 ? 0 : a % b);
+}
+
 static void native_sqrt(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -89,6 +114,8 @@ static void native_max(VM *vm, int argc, Value *args, Value *out) {
 }
 
 Value b_abs(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_abs); }
+Value b_div(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_div); }
+Value b_mod(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_mod); }
 Value b_sqrt(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_sqrt); }
 Value b_exp(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_exp); }
 Value b_log(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_log); }

@@ -31,6 +31,8 @@ typedef struct {
  * signature, and the call site emits the type once and the values after. */
 static const Bi BUILTINS[] = {
     { "abs",   "lume_bi_abs",  "i64",    "i64",    1,  "lume_bi_absf",  "double",     "double", 1 },
+    { "div",   "lume_bi_div",  "i64",    "i64",    2,  NULL,            NULL,         NULL,     0 },
+    { "mod",   "lume_bi_mod",  "i64",    "i64",    2,  NULL,            NULL,         NULL,     0 },
     { "min",   "lume_bi_min",  "i64",    "i64",    2,  "lume_bi_minf", "double",     "double", 2 },
     { "max",   "lume_bi_max",  "i64",    "i64",    2,  "lume_bi_maxf", "double",     "double", 2 },
     { "sqrt",  NULL,           NULL,     NULL,     0,  "lume_bi_sqrt", "double",     "double", 1 },
@@ -83,6 +85,19 @@ static void clo_fn_type(Node *lambda, char *buf, size_t n)
     for (int i = 0; lambda->as.funclit.param_types &&
                     i < lambda->as.funclit.arity && off < n; i++) {
         const char *pt = llvm_ptr_type_of(lambda->as.funclit.param_types[i]);
+        off += (size_t)snprintf(buf + off, n - off, ", %s", pt ? pt : "i8*");
+    }
+    if (off < n) snprintf(buf + off, n - off, ")*");
+}
+
+/* 同 clo_fn_type，但签名来自 fn 注解的 TY_FUNC（types[]/ret）——用于无
+ * lambda 回链的函数值（形参、返回值），ABI 与 lambda closure 完全一致。 */
+static void clo_fn_type_sig(Type *ft, char *buf, size_t n)
+{
+    const char *rty = ft->ret ? llvm_type_of(ft->ret) : "void";
+    size_t off = (size_t)snprintf(buf, n, "%s (i8*", rty);
+    for (int i = 0; i < ft->count && off < n; i++) {
+        const char *pt = llvm_ptr_type_of(ft->types[i]);
         off += (size_t)snprintf(buf + off, n - off, ", %s", pt ? pt : "i8*");
     }
     if (off < n) snprintf(buf + off, n - off, ")*");
@@ -201,6 +216,113 @@ static char *cg_clo_invoke(CG *g, Node *lambda, const char *clo_v,
     EMIT(g, ")\n");
     free(capv);
     return xstrdup(res);
+}
+
+/* 签名版间接调用：签名来自 fn 注解的 TY_FUNC（而非 lambda 节点）。
+ * closure ABI 与 cg_clo_invoke 完全一致（{ i8* fn, i8* cap }，被调首参
+ * 为 cap）。服务「无 lambda 回链的函数值」——fn 类型形参、fn 返回值
+ * （语言演进提案 P0-1, 2026-11-01；解释器此前已支持，两个原生后端以
+ * call to unknown function 拒绝，是等价性缺口之首）。 */
+static char *cg_clo_invoke_sig(CG *g, Type *sig, const char *clo_v,
+                               Val *args, int argc)
+{
+    char ftype[256];
+    clo_fn_type_sig(sig, ftype, sizeof ftype);
+    const char *rty = sig->ret ? llvm_type_of(sig->ret) : NULL;
+
+    char *rec = emit_instrf(g, type_prim(TY_NULL),
+                            "bitcast i8* %s to { i8*, i8* }*", clo_v);
+    if (!rec) return NULL;
+    char *fnp = emit_instrf(g, type_prim(TY_NULL),
+        "getelementptr inbounds { i8*, i8* }, { i8*, i8* }* %s, i32 0, i32 0",
+        rec);
+    char *capp = emit_instrf(g, type_prim(TY_NULL),
+        "getelementptr inbounds { i8*, i8* }, { i8*, i8* }* %s, i32 0, i32 1",
+        rec);
+    free(rec);
+    if (!fnp || !capp) { free(fnp); free(capp); return NULL; }
+    char *fnv = emit_instrf(g, type_prim(TY_NULL), "load i8*, i8** %s", fnp);
+    char *capv = emit_instrf(g, type_prim(TY_NULL), "load i8*, i8** %s", capp);
+    free(fnp); free(capp);
+    if (!fnv || !capv) { free(fnv); free(capv); return NULL; }
+    char *fnbc = emit_instrf(g, type_prim(TY_NULL),
+                             "bitcast i8* %s to %s", fnv, ftype);
+    free(fnv);
+    if (!fnbc) { free(capv); return NULL; }
+
+    char res[48];
+    snprintf(res, sizeof res, "%%t%d", g->tid++);
+    if (rty) EMIT(g, "  %s = call %s %s(i8* %s", res, rty, fnbc, capv);
+    else     EMIT(g, "  call void %s(i8* %s", fnbc, capv);
+    free(fnbc);
+    for (int i = 0; i < argc; i++) {
+        const char *pt = args[i].ty ? llvm_ptr_type_of(args[i].ty) : "i8*";
+        EMIT(g, ", %s %s", pt ? pt : "i8*", args[i].v);
+    }
+    EMIT(g, ")\n");
+    free(capv);
+    return xstrdup(res);
+}
+
+/* 通过 fn 注解值调用（f 形参 / fn 返回值绑定）：签名取自注解类型，
+ * 不依赖 lambda 回链。 */
+static Val cg_annotated_fn_call(CG *g, Node *n, Type *sig)
+{
+    if (sig->variadic) {
+        /* fn 注解目前不产 variadic；防御性拒绝以保持三后端一致。 */
+        ERRV(g, "line %zu: variadic function values are not supported",
+             n->line);
+    }
+    if (n->as.call.argc != sig->count)
+        ERRV(g, "line %zu: this function value expects %d argument(s), got %d",
+             n->line, sig->count, n->as.call.argc);
+
+    Val clo = cg_expr(g, n->as.call.callee);
+    if (!clo.v) ERRV(g, "line %zu: cannot evaluate the function value", n->line);
+
+    Val *args = NULL;
+    if (n->as.call.argc > 0) {
+        args = (Val *)xmalloc((size_t)n->as.call.argc * sizeof *args);
+        for (int i = 0; i < n->as.call.argc; i++) {
+            Type *prev = g->expect;
+            g->expect = sig->types ? sig->types[i] : NULL;
+            args[i] = cg_expr(g, n->as.call.args[i]);
+            g->expect = prev;
+            if (args[i].ty && args[i].ty->kind == TY_STRUCT) {
+                Type *pt0 = sig->types ? sig->types[i] : NULL;
+                if (!args[i].ty->name && pt0 && pt0->kind == TY_STRUCT && pt0->name)
+                    ERRV(g, "line %zu: this function value expects a '%s' "
+                            "struct, but argument %d is an untyped map value",
+                         n->line, pt0->name, i + 1);
+                struct_addr(g, &args[i]);
+            }
+            Type *pt = sig->types ? sig->types[i] : NULL;
+            if (pt && args[i].v) args[i] = coerce(g, pt, args[i], n->line);
+            if (!args[i].v) {
+                for (int k = 0; k < i; k++) free(args[k].v);
+                free(args); free(clo.v);
+                ERRV(g, "line %zu: bad argument %d for the function value",
+                     n->line, i + 1);
+            }
+        }
+    }
+
+    char *res = cg_clo_invoke_sig(g, sig, clo.v, args, n->as.call.argc);
+    free(clo.v);
+    if (args) {
+        for (int i = 0; i < n->as.call.argc; i++) free(args[i].v);
+        free(args);
+    }
+    if (!res) ERRV(g, "line %zu: cannot call through this function value", n->line);
+    if (!sig->ret) {
+        free(res);
+        return val_make(type_prim(TY_NULL), "null");
+    }
+    Val v = val_make(sig->ret, res);
+    free(res);
+    const char *rty = llvm_type_of(sig->ret);
+    if (rty && rty[0] == '%') v.agg = 1;
+    return v;
 }
 
 static Val cg_clo_call(CG *g, Node *n, Node *lambda)
@@ -3479,6 +3601,14 @@ Val cg_call(CG *g, Node *n)
             if (ct && ct->kind == TY_FUNC && ct->func &&
                 ct->func->type == N_FUNC_LIT)
                 return cg_clo_call(g, n, ct->func);
+            /* A fn-annotated value without a lambda back-pointer — a fn-typed
+             * parameter or a fn-typed return (`let g = ident(lambda); g(5)`).
+             * The annotation's own signature drives an indirect call
+             * (语言演进提案 P0-1, 2026-11-01): the interpreter already
+             * accepted these, the native backends rejected them with
+             * "call to unknown function". */
+            if (ct && ct->kind == TY_FUNC && !ct->func)
+                return cg_annotated_fn_call(g, n, ct);
         }
 
         name = callee->as.var.name;

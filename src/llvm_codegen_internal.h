@@ -186,6 +186,8 @@ typedef struct {
 
 static const Bi BUILTINS[] = {
     { "abs",   "lume_bi_abs",  "i64",    "i64",    1,  "lume_bi_absf",  "double",      "double", 1 },
+    { "div",   "lume_bi_div",  "i64",    "i64",    2,  NULL,            NULL,          NULL,     0 },
+    { "mod",   "lume_bi_mod",  "i64",    "i64",    2,  NULL,            NULL,          NULL,     0 },
     { "min",   "lume_bi_min",  "i64",    "i64",    2,  "lume_bi_minf",  "double",      "double", 2 },
     { "max",   "lume_bi_max",  "i64",    "i64",    2,  "lume_bi_maxf",  "double",      "double", 2 },
     { "sqrt",  NULL,           NULL,     NULL,     0,  "lume_bi_sqrt",  "double",      "double", 1 },

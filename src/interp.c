@@ -1497,6 +1497,8 @@ void bridge_seed_builtins(VM *vm) {
 #endif
         /* 数值内建 (2026-09-28, builtins_math.c) */
         {"abs", b_abs},
+        {"div", b_div},
+        {"mod", b_mod},
         {"sqrt", b_sqrt},
         {"exp", b_exp},
         {"log", b_log},

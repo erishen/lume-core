@@ -184,6 +184,10 @@ char *lume_bi_cat(const char *a, const char *b)
 
 int64_t lume_bi_abs(int64_t v)     { return v < 0 ? -v : v; }
 double lume_bi_absf(double v)      { return fabs(v); }
+/* 整数除法/求模（语言演进提案 P0-2, 2026-11-01）：除零返回 0，与解释器
+ * native_div/native_mod 的选择一致（避免 error vs SIGFPE 的后端分裂）。 */
+int64_t lume_bi_div(int64_t a, int64_t b) { return b == 0 ? 0 : a / b; }
+int64_t lume_bi_mod(int64_t a, int64_t b) { return b == 0 ? 0 : a % b; }
 int64_t lume_bi_min(int64_t a, int64_t b) { return a < b ? a : b; }
 int64_t lume_bi_max(int64_t a, int64_t b) { return a > b ? a : b; }
 double lume_bi_minf(double a, double b) { return a < b ? a : b; }

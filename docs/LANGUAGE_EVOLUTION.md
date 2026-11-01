@@ -21,7 +21,7 @@
 
 ---
 
-## P0-1 编译后端支持 `fn` 参数的间接调用（等价性缺口之首）
+## P0-1 编译后端支持 `fn` 参数的间接调用（等价性缺口之首）✅ 已实现（2026-11-01）
 
 - **现象**：`func apply(f: fn(float) => float, x: float): float { return f(x); }`
   解释器输出正确；文本/LLVM 后端报 `call to unknown function 'f'`。
@@ -34,7 +34,7 @@
 - **验收**：`tests/_probe_fn8.lume` 中的 `apply`/`integrate` 用例三后端一致；
   sci/optim 各删掉参数化变体、提供通用版本，六套一致性测试保持全绿。
 
-## P0-2 整数除法与求模内置
+## P0-2 整数除法与求模内置 ✅ 已实现（2026-11-01）
 
 - **现象**：lume 的 `/` 恒产生 float（无 int/int→int），`w/2` 当索引用直接报
   `a list index must be an int`；求模写 `x - 2*(x/2)` 对奇数**静默出错**
@@ -47,7 +47,7 @@
 - **验收**：`mod(7,2)==1`、`div(7,2)==3` 三后端一致；bitrev 改用 `mod` 后
   FFT 一致性测试保持等价。
 
-## P0-3 HTTP 方法关键字不应全局保留
+## P0-3 HTTP 方法关键字不应全局保留 ✅ 已实现（2026-11-01）
 
 - **现象**：`head/get/post/put/patch/delete/options` 是 `server`/`route` 块的
   路由方法关键字（`src/lexer.c` KEYWORDS 表），却**全局**保留——graph.lume 的
@@ -59,7 +59,7 @@
 - **验收**：`let head = 0;` 在非 route 上下文三后端可用；既有 server 示例
   回归不变。
 
-## P0-4 诊断信息增强（低成本高收益）
+## P0-4 诊断信息增强（低成本高收益）✅ 首批已实现（2026-11-01）
 
 - `cannot infer a type for 'x'` 不指出**哪个调用的返回值**推不出来——
   ml/optim 里每个此类错误都要人工回溯（本地函数返回值、native 调用绑定均需
@@ -135,6 +135,18 @@
 | `1c21e6d` | 文本后端拒绝 `1e+30` 形态浮点字面量（`%.17g` 剥尾随零致 IR 无小数点） |
 | `74300b2` | checker 收集遍诊断吞没（`ck_collect_note()` 从未实现 + 注解提前写回），曾致 `let x: num = 1.5` 三后端三种行为、libLLVM 运行段错误 |
 | `f13c030` | `%.o` 规则缺 Makefile 依赖，CFLAGS/版本号变化后旧对象继续链接（幻绿） |
+
+## 实现落点（2026-11-01，tests/p0-consistency.lume 三后端一致全绿）
+
+| 项 | 实现 | 验证 |
+|---|---|---|
+| P0-1 | 文本/LLVM 后端新增 `cg_annotated_fn_call`：无 lambda 回链的 TY_FUNC 值按注解签名（`types[]`/`ret`）做 closure 间接调用（`{fn,cap}` ABI 与 lambda 一致） | fn 形参调用/高阶积分/fn 返回值/二元 fold 四类用例三后端逐字节一致 |
+| P0-2 | `div/mod` int 内置：interp native + rt.c 镜像 + 两张 BUILTINS 表（i64 flavour）；除零约定返回 0；仅接受 int 实参（float 实参三后端一致拒绝，符合 SPEC §3.2） | 负数/除零/作索引用例一致 |
+| P0-3 | `let` 绑定名接受 HTTP 方法关键字（仅 route 简写位置保留关键字语义），parser_stmt.c 两处 | `let head = 0` 三后端可用，route 示例回归不变 |
+| P0-4 | `cannot infer` 附被调函数名与修复建议；list index 非 int 且含 `/` 时附 floor()/div() 提示 | 两条消息实测输出 |
+
+另：探针修正 P1-4——lume 已有完整 Monte Carlo RNG（`seed/rand/rand_int/...`，
+2026-10-24 落地），该项从"新增"改为"文档化 + 一致性验证"。
 
 ## 优先级总览
 

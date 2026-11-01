@@ -136,6 +136,43 @@ static LLVMValueRef cg_clo_invoke(CG *g, Node *lambda, LLVMValueRef clo,
     return r;
 }
 
+/* 签名版间接调用：签名来自 fn 注解的 TY_FUNC（types[]/ret），closure ABI
+ * 与 cg_clo_invoke 一致（{ i8* fn, i8* cap }，首参 cap）。服务无 lambda
+ * 回链的函数值——fn 形参、fn 返回值（语言演进提案 P0-1, 2026-11-01）。 */
+static LLVMValueRef cg_clo_invoke_sig(CG *g, Type *sig, LLVMValueRef clo,
+                                      LLVMValueRef *args, int argc)
+{
+    AT(g);
+    LLVMTypeRef rec_elems[2] = { g->i8ptr, g->i8ptr };
+    LLVMTypeRef rec = LLVMStructTypeInContext(g->ctx, rec_elems, 2, 0);
+    LLVMValueRef fnp = LLVMBuildStructGEP2(g->ab, rec, clo, 0, "fnp");
+    LLVMValueRef capp = LLVMBuildStructGEP2(g->ab, rec, clo, 1, "capp");
+    if (!fnp || !capp) return NULL;
+    LLVMValueRef fnv = LLVMBuildLoad2(g->ab, g->i8ptr, fnp, "fn");
+    LLVMValueRef capv = LLVMBuildLoad2(g->ab, g->i8ptr, capp, "cap");
+    if (!fnv || !capv) return NULL;
+
+    LLVMTypeRef *pts = (LLVMTypeRef *)xmalloc(sizeof(LLVMTypeRef) * (size_t)(sig->count + 1));
+    pts[0] = g->i8ptr;
+    for (int i = 0; i < sig->count; i++) {
+        pts[i + 1] = sig->types ? ptr_of(g, sig->types[i]) : NULL;
+        if (!pts[i + 1]) { free(pts); return NULL; }
+    }
+    LLVMTypeRef rty = sig->ret ? ty_of(g, sig->ret) : g->void_ty;
+    LLVMTypeRef fty = LLVMFunctionType(rty ? rty : g->void_ty,
+                                       pts, (unsigned)(sig->count + 1), 0);
+    free(pts);
+    if (!fty) return NULL;
+
+    LLVMValueRef *all = (LLVMValueRef *)xmalloc(sizeof(LLVMValueRef) * (size_t)(argc + 1));
+    all[0] = capv;
+    for (int i = 0; i < argc; i++) all[i + 1] = args[i];
+    LLVMValueRef r = LLVMBuildCall2(g->ab, fty, fnv, all,
+                                    (unsigned)(argc + 1), sig->ret ? "c" : "");
+    free(all);
+    return r;
+}
+
 static Val cg_clo_call(CG *g, Node *n, Node *lambda)
 {
     AT(g);
@@ -184,6 +221,50 @@ static Val cg_clo_call(CG *g, Node *n, Node *lambda)
     if (!ret)
         return val_make(type_prim(TY_NULL), LLVMConstNull(g->i8ptr));
     return val_make(ret, r);
+}
+
+/* 通过 fn 注解值调用（f 形参 / fn 返回值绑定）：签名取自注解类型，
+ * 不依赖 lambda 回链（语言演进提案 P0-1, 2026-11-01）。 */
+static Val cg_annotated_fn_call(CG *g, Node *n, Type *sig)
+{
+    AT(g);
+    if (sig->variadic)
+        ERRV(g, "line %zu: variadic function values are not supported", n->line);
+    if (n->as.call.argc != sig->count)
+        ERRV(g, "line %zu: this function value expects %d argument(s), got %d",
+             n->line, sig->count, n->as.call.argc);
+
+    Val clo = cg_expr(g, n->as.call.callee);
+    if (!clo.v) ERRV(g, "line %zu: cannot evaluate the function value", n->line);
+
+    LLVMValueRef *avs = NULL;
+    if (n->as.call.argc > 0) {
+        avs = (LLVMValueRef *)xmalloc(
+            sizeof(LLVMValueRef) * (size_t)n->as.call.argc);
+        for (int i = 0; i < n->as.call.argc; i++) {
+            Type *prev = g->expect;
+            g->expect = sig->types ? sig->types[i] : NULL;
+            Val a = cg_expr(g, n->as.call.args[i]);
+            g->expect = prev;
+            if (a.ty && a.ty->kind == TY_STRUCT && !struct_is_addr(a.v)) {
+                LLVMValueRef slot = LLVMBuildAlloca(g->ab, ty_of(g, a.ty), "sa");
+                LLVMBuildStore(g->ab, a.v, slot);
+                a.v = slot;
+            }
+            Type *pt = sig->types ? sig->types[i] : NULL;
+            if (pt) a = coerce(g, pt, a, n->line);
+            if (!a.v) { free(avs); ERRV(g, "line %zu: bad argument %d for the "
+                                        "function value", n->line, i + 1); }
+            avs[i] = a.v;
+        }
+    }
+
+    LLVMValueRef r = cg_clo_invoke_sig(g, sig, clo.v, avs, n->as.call.argc);
+    free(avs);
+    if (!r) ERRV(g, "line %zu: cannot call through this function value", n->line);
+    if (!sig->ret)
+        return val_make(type_prim(TY_NULL), LLVMConstNull(g->i8ptr));
+    return val_make(sig->ret, r);
 }
 
 static Node *hof_lambda(CG *g, Node *a)
@@ -3034,6 +3115,12 @@ static Val cg_call(CG *g, Node *n)
             if (ct && ct->kind == TY_FUNC && ct->func &&
                 ct->func->type == N_FUNC_LIT)
                 return cg_clo_call(g, n, ct->func);
+            /* fn-annotated value without a lambda back-pointer — a fn-typed
+             * parameter or return. Indirect call driven by the annotation's
+             * own signature (语言演进提案 P0-1, 2026-11-01); the interpreter
+             * already accepted these. */
+            if (ct && ct->kind == TY_FUNC && !ct->func)
+                return cg_annotated_fn_call(g, n, ct);
         }
 
         name = callee->as.var.name;
