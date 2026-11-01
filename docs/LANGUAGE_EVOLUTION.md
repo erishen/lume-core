@@ -144,8 +144,8 @@
   while 不受影响）；15 套 backend 套件 + case-parity + lsp_smoke 全绿。
 - **顺带发现的既有缺口**（与 P1-3 无关，后续工作）：顶层直接读 `pi`/`e`
   等内置常量在两编译后端报 `unknown variable`（内置常量未注册进模块
-  gvar 表；函数内可读）。完整块作用域（普通块 also 拿到正确的槽位解析）
-  仍是长期方向。
+  gvar 表；函数内可读，**已在 P1-8 修复**）。完整块作用域（普通块 also
+  拿到正确的槽位解析）**已在 P1-9 落地**（见下）。
 
 ## P1-4 确定性 RNG 内置 ✅ 已实现（2026-11-01）
 
@@ -233,6 +233,62 @@
   （tests/enum.lume）与 trailing closure（tests/hof-consistency.lume）回归
   不变。
 
+## P1-8 顶层读内置常量 `pi` / `e`（编译后端）✅ 已实现（2026-11-01）
+
+- **现象**：解释器把 `pi`/`e` 种进 globals env，顶层 `let top = pi * 2.0 + e;`
+  可用；两编译后端只查 locals + gvars，报 `unknown variable 'pi'`（函数内
+  可读，仅顶层读失败）。
+- **实现**（4 处镜像）：两后端 `cg_var` 在 locals/gvars 均未命中时回退为
+  IR/LLVM double 常量；两份 `infer_node_type` N_VAR 同样回退答 `TY_FLOAT`
+  （无标注 `let` 不再塌类型）。用户 `let pi = ...` 遮蔽仍优先：先 locals
+  后 gvars，最后才撞常量回退，emit 与推断两条路径一致。
+- **顺带修复（bisect 定位 first bad = P1-6/7 提交）**：P1-7 在
+  `TOK_PIPE` 后插入 `TOK_AMP`/`TOK_CARET` 时没同步 `token.c` 的
+  `TOKEN_NAMES` 表，表从 `"("` 起整体错位 2 格——**所有标点 token 的诊断
+  名全错**（`expected ), got {` 打成 `expected }, got [`）。解析本身没坏，
+  但诊断 keyed 的负例测试（trailing-closure-bad/no-pipe 等）grep 不到期望
+  诊断而失败。修复表 + 加编译期护栏：`lume.h` 加 `TOK_MAX` 哨兵，
+  `token.c` 加 `_Static_assert`（表长 == TOK_MAX），以后加枚举漏表直接
+  编译报错。
+- **验收**：`tests/p1-8-consistency.lume` + `p1-8_backends.sh`（顶层读/
+  推断路径/函数内回归/局部遮蔽）三后端逐字节一致；`make test` 全绿
+  （含 trailing-closure-test）。
+- **教训**：改 `TokenType` 枚举必须同步三处——lexer、parser、
+  TOKEN_NAMES（现在有编译期护栏兜底）。
+
+## P1-9 完整块作用域 ✅ 已实现（2026-11-01）
+
+- **现象**：P1-3 只解决了 for 循环作用域；普通块 `{ }` 内 `let x` 在
+  三个后端一致地**永久覆盖**外层同名绑定（typecheck 的 `ck_blk` 本就开
+  子作用域，interp `env_set` 永久覆盖，编译后端 `asg_find` 只看「最近
+  声明 ≤ 行号」——各自错法碰巧一致）。
+- **语义**：块内 `let x` 是块自己的绑定——体内遮蔽外层同名，出块即消失
+  （C 风格）。
+- **实现**（三腿同步）：
+  - parser：`parse_block` 给块内**直接拥有**的 let 标注块尾 `}` 行号
+    （节点新字段 `let.end_line`；0 = 顶层 / for-init）。嵌套块各自标注。
+  - 解释器：`exec N_BLOCK` 保存块内直接 let/let-pat 名的外层旧值，执行后
+    恢复（新增绑定则 `env_del`，Env 新增该 API）。块内 return 经 longjmp
+    跳过恢复——函数帧整体销毁，语义天然正确。
+  - 编译后端：`Asg` 加 `end_line`，`asg_find` 加区间条件
+    `use_line <= end_line`；赋值定义（无 let 的 `x = e`）`end_line = 0`
+    保持函数级，对齐解释器「赋值定义新 cell」语义。
+- **已知边界**：行号粒度无法区分「块内最后语句行」与「块后同行语句」
+  （单行混合代码），多行代码（主流风格）精确；未来可升级列号。
+- **顺带修复**：
+  - **块内 `type` 声明从未真正工作过**——pass A 只注册顶层类型名，旧
+    「诊断吞没」缺陷（74300b2 已修）让它一直假绿。块内 type 现就地注册
+    进 struct 表；块内 enum 明确报错。
+  - `tests/native-consistency.lume` 的 `while_shadow` 钉子从 0 更新为 10
+    ——旧钉记录的正是被修掉的覆盖语义（P1-9 语义变更的预期影响）。
+- **验收**：`tests/p1-9-consistency.lume` + `p1-9_backends.sh`（兄弟块
+  同名同型/异型、两层嵌套、while 条件读外层、for 体重绑定、赋值穿透、
+  块内 lambda）三后端逐字节一致；全量 `make test` rc=0 零 fail。
+- **教训**：`asg_push` 新槽来自 `xrealloc` 不清零——结构体加字段必须在
+  push 里显式清零（`end_line` 垃圾值曾让 LLVM 期随机报
+  `'lex1' was not allocated by the scan pass`）；判测试成败必须看 make
+  退出码，`grep | head` 截断会吃掉失败行造成假绿。
+
 ## P2-1 受控可变数组（性能）
 
 - **现象**：值语义下逐元素更新经 `set_flt` 全量拷贝，`set_m` 更是每元素
@@ -309,6 +365,6 @@ P0-1 落地后把 sci/optim 的参数化变体升级为通用 fn 接口时，探
 | P0 | div/mod 内置 | 静默错值风险最高的一条 |
 | P0 | 保留字上下文化 | 纯误伤，修复成本最低 |
 | P0 | 诊断增强 | 全部后续开发受益 |
-| P1 | 返回类型推断（P1-1 已落地）/ 字面量元素类型通用推断（P1-2 已落地）/ 块作用域（P1-3 待办） | 高频摩擦逐个消除（RNG/P1-4、位运算/P1-5、函数返回值推断/P1-1、字面量元素推断/P1-2 已落地） |
+| P1 | 返回类型推断（P1-1 ✅）/ 字面量元素类型通用推断（P1-2 ✅）/ 循环作用域（P1-3 ✅）/ RNG 文档化（P1-4 ✅）/ 位运算内置（P1-5 ✅）/ 十六进制/二进制字面量（P1-6 ✅）/ 位运算中缀（P1-7 ✅）/ 顶层读 pi/e（P1-8 ✅）/ 完整块作用域（P1-9 ✅） | 高频摩擦逐个消除，P1 全清 |
 | P1 | 十六进制/二进制字面量 / 位运算中缀运算符（P1-6/P1-7 已落地） | 位运算落地后暴露的语法糖缺口，零语义风险 |
 | P2 | 可变数组 / 元组 | 性能与人体工学，等库规模再验证 |

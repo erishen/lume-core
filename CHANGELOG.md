@@ -6,8 +6,36 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Block scoping (P1-9): a `let` inside `{ }` is the block's own binding.**
+  Previously a block-level `let x` permanently clobbered an outer same-name
+  binding on all three backends (each in its own way, which is why the bug
+  hid); now it shadows for the body and disappears at the closing brace,
+  C-style. The checker's `ck_blk` already had block scope, so type-level
+  behavior is unchanged. Known boundary: line-granularity ranges cannot tell
+  a use in the block's LAST statement line apart from a same-line statement
+  AFTER the block; multi-line code is exact. Also fixed en route: block-level
+  `type` declarations never actually worked (pass A registers top-level names
+  only) — a nested `type` now registers into the struct table, and a nested
+  `enum` is a clear early error. Downstream code that relied on the old
+  clobber semantics needs review.
+
 ### Fixed
 
+- **Top-level reads of built-in `pi`/`e` (P1-8).** The interpreter seeds its
+  globals with the constants, but the compiling backends only resolved
+  locals + gvars, so `let top = pi * 2.0 + e;` failed with `unknown variable
+  'pi'` under `--compile-text`/`--compile` (in-function reads were fine).
+  Both `cg_var` and both inference legs now fall back to the constant;
+  a user `let pi` still shadows it.
+- **Parser diagnostics printed wrong token names.** Adding `TOK_AMP`/
+  `TOK_CARET` to the `TokenType` enum without extending the `TOKEN_NAMES`
+  table shifted every punctuation name by two — `expected ), got {` was
+  printed as `expected }, got [`. Parsing was correct; diagnostic-keyed
+  negative tests failed on the mismatch. The table is fixed and a
+  `_Static_assert` (table length == `TOK_MAX`) now turns "added a token,
+  forgot the table" into a compile error.
 - **`make pack` now ships `lib/`.** The tarball carried only `bin/lume-core`
   plus docs and gate scripts, so every downstream project that writes
   `import "../lume-core/lib/peer.lume"` had to copy those sources out of a
