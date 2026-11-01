@@ -70,9 +70,18 @@ static void emit_number(LexOut *o, const char *start, int len) {
     memcpy(buf, start, (size_t)len);
     buf[len] = '\0';
 
+    /* Hex/binary integer literals (P1-6) must be decided BEFORE the float
+     * heuristic below: hex digits legitimately contain 'e'/'E' (0x3E5,
+     * 0x9E37…), and treating those as scientific notation typed the literal
+     * float — splitmix64's constants all trip this. A based literal never
+     * takes the float path (no 0x1.8p3 support by design). */
+    bool based = len >= 2 && buf[0] == '0' &&
+                 (buf[1] == 'x' || buf[1] == 'X' || buf[1] == 'b' || buf[1] == 'B');
     bool is_float = false;
-    for (int i = 0; i < len; i++)
-        if (buf[i] == '.' || buf[i] == 'e' || buf[i] == 'E') { is_float = true; break; }
+    if (!based) {
+        for (int i = 0; i < len; i++)
+            if (buf[i] == '.' || buf[i] == 'e' || buf[i] == 'E') { is_float = true; break; }
+    }
 
     Token *t = &o->toks[o->count - 1];
     t->is_int = is_float ? 0 : 1;

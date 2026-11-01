@@ -70,6 +70,29 @@ static void native_bit_xor(VM *vm, int argc, Value *args, Value *out) {
     *out = val_int(AS_INT(args[0]) ^ AS_INT(args[1]));
 }
 
+/* 确定性 RNG 内置（语言演进提案 P1-4, 2026-11-01）：纯函数式 splitmix64，
+ * 与 rt.c 的 lume_bi_rand_* 逐算术步骤一致（三后端一致性的硬要求）；
+ * 与全局 PCG32 流（builtins_math_stochastic.inc）互补——无隐藏状态、
+ * 序无关，rand_next(seed + k) 可并行取值。 */
+static void native_rand_next(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 1 || !IS_INT(args[0])) {
+        vm_set_error(vm, "rand_next(): needs one int argument"); return;
+    }
+    unsigned long long z = (unsigned long long)AS_INT(args[0]) + 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    *out = val_int((long long)(z ^ (z >> 31)));
+}
+static void native_rand_float(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 1 || !IS_INT(args[0])) {
+        vm_set_error(vm, "rand_float(): needs one int argument"); return;
+    }
+    unsigned long long z = (unsigned long long)AS_INT(args[0]) + 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    *out = val_num((double)((z ^ (z >> 31)) >> 11) * (1.0 / 9007199254740992.0));
+}
+
 static void native_sqrt(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -162,6 +185,8 @@ Value b_shr(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args,
 Value b_bitand(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bitand); }
 Value b_bit_or(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bit_or); }
 Value b_bit_xor(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_bit_xor); }
+Value b_rand_next(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_rand_next); }
+Value b_rand_float(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_rand_float); }
 Value b_sqrt(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_sqrt); }
 Value b_exp(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_exp); }
 Value b_log(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_log); }

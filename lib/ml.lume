@@ -441,14 +441,12 @@ export func attention(Q: float[][], K: float[][], V: float[][]): float[][] {
 //   行 h+2    : b2（输出层偏置，单元素）
 // 训练：全批量梯度下降，BCE 损失 + sigmoid 输出 → 输出层残差 delta2 = p - y。
 
-func frac01(s: float): float {
-  return s - floor(s);
-}
-
-// 确定性伪随机 [0,1)（sin hash，跨后端一致，无 RNG 依赖）。
+// 确定性伪随机 [0,1)（纯函数式 splitmix64，语言演进提案 P1-4, 2026-11-01）。
+// 序无关、无隐藏状态：把下标 k 与种子混成一个状态字后过 rand_float，
+// 任意取值顺序/并行化都不影响结果。曾用 sin hash（12.9898/78.233/43758.5453），
+// 质量与周期均有限，已按 P1-4 提案换内置。
 func hash01(k: int, seed: int): float {
-  let s: float = sin(k * 1.0 * 12.9898 + seed * 1.0 * 78.233) * 43758.5453;
-  return frac01(s);
+  return rand_float(k * 0xF4243 + seed);   // 0xF4243 = 1000003（质数倍乘混匀下标）
 }
 
 // 取打包权重 P 的行块 [lo, hi)。

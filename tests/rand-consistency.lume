@@ -1,0 +1,86 @@
+// rand-consistency.lume — 确定性 RNG 内置（P1-4，纯函数式 splitmix64）三后端一致性锚定
+// 运行：tests/rand_backends.sh（解释器/文本 IR/LLVM 三份输出逐字节比对）
+//
+// 语义约定（纯整数算术，无隐藏状态，序无关）：
+//   rand_next(s)  = splitmix64 finalizer(s + 0x9E3779B97F4A7C15)   → int
+//   rand_float(s) = rand_next 输出高 53 位 × 2^-53                  → [0,1) float
+// 与全局 PCG32 流（seed/rand/…，2026-10-24）互补：按下标取值可乱序/并行，
+// ml.lume 的 mlp2_init（原 sin-hash）是点名受益场景。
+//
+// 本文件数值断言以注释标注期望值；三后端逐字节一致由 harness 保证。
+
+// ---------- 固定种子锚点（黄金值，防未来改动静默漂移） ----------
+print(rand_next(42));      // -4767286540954276203
+print(rand_next(0));       // -2152535657050944081
+print(rand_next(-1));      // -1956407806741107680
+print(rand_next(12345));   // 2454886589211414944
+print(rand_float(0));      // 0.883311
+print(rand_float(1));      // 0.566562
+print(rand_float(42));     // 0.741565
+
+// ---------- 确定性 / 无隐藏状态 ----------
+print(rand_next(42) == rand_next(42));   // true（同状态同值）
+print(rand_next(41) == rand_next(42));   // false（异状态异值）
+print(rand_float(42) == rand_float(42)); // true
+print(rand_next(0) == rand_next(1));     // false
+
+// ---------- 链式（把输出喂回当状态） ----------
+let s0 = 7;
+let s1 = rand_next(s0);
+let s2 = rand_next(s1);
+let s3 = rand_next(s2);
+print(s1 == s2);                         // false
+print(s2 == s3);                         // false
+print(s1 == rand_next(7));               // true（可复现）
+
+// ---------- 逐点取值（seed + k，ml 权重初始化模式） ----------
+let w0 = rand_float(1000003 * 0 + 99);
+let w1 = rand_float(1000003 * 1 + 99);
+let w2 = rand_float(1000003 * 2 + 99);
+print(w0 == w1);                         // false
+print(w1 == w2);                         // false
+print(w0 >= 0.0 && w0 < 1.0);            // true
+print(w1 >= 0.0 && w1 < 1.0);            // true
+
+// ---------- 分布健全性（确定性统计，非随机断言） ----------
+// 1000 个逐点采样全部落在 [0,1)
+let n = 1000;
+let in_range = 0;
+let above_half = 0;
+let total = 0.0;
+for (let k = 0; k < n; k = k + 1) {
+  let u = rand_float(k * 0xF4243 + 2026);
+  if (u >= 0.0 && u < 1.0) {
+    in_range = in_range + 1;
+  }
+  if (u > 0.5) {
+    above_half = above_half + 1;
+  }
+  total = total + u;
+}
+print(in_range);                         // 1000
+print(above_half);                       // 487（期望 ~500，粗界内即分布健康）
+print(total / n > 0.45 && total / n < 0.55);  // true（均值 ~0.5）
+
+// ---------- 与位运算原语互相印证（同一 finalizer 的 lume 侧复算） ----------
+// rand_next(s) 应等于用 shl/shr/bitand/bit_or/bit_xor 手工展开的 splitmix64。
+// 常量 > 2^63 的写补码负数（位模式等价；P1-6 边界：hex 字面量无 2^63 负号可化）：
+//   0x9E3779B97F4A7C15 = -0x61C8864680B583EB
+//   0xBF58476D1CE4E5B9 = -0x40BA7B92E31A9C47
+//   0x94D049BB133111EB = -0x6B2FB644ECCEE215
+func sm64_step(s: int): int {
+  let z = s + -0x61C8864680B583EB;
+  let a = bit_xor(z, shr(z, 30)) * -0x40BA7B92E31A9C47;
+  let b = bit_xor(a, shr(a, 27)) * -0x6B2FB644ECCEE215;
+  return bit_xor(b, shr(b, 31));
+}
+print(sm64_step(42) == rand_next(42));   // true（两实现逐算术步一致）
+print(sm64_step(12345) == rand_next(12345));  // true
+
+// ---------- P1-1 推断：let 绑定免标注（int 与 float 各一） ----------
+let xi = rand_next(42);
+let xf = rand_float(42);
+print(xi == rand_next(42));              // true
+print(xf == rand_float(42));             // true
+
+print("rand-consistency done");

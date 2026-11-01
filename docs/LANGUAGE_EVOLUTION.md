@@ -109,13 +109,39 @@
   循环变量被迫命名 `ri/ci/si/oj/...`。
 - **提案**：块作用域为长期方案；短期把报错改为指出「与第 N 行的 'j' 冲突」。
 
-## P1-4 确定性 RNG 内置
+## P1-4 确定性 RNG 内置 ✅ 已实现（2026-11-01）
 
-- **现象**：无随机数。ml.mlp2_init 被迫用 sin-hash
+- **现象**：ml.mlp2_init 被迫用 sin-hash
   `frac(sin(k·12.9898+seed·78.233)·43758.5453)` 自造，质量与周期均有限。
-- **提案**：内置 `rand_next(state: int): int`（如 PCG/ splitmix64，纯整数
-  算术 + 位运算）或带种子的 `rand(seed)` 序列，三后端逐字节一致。
-  与 P1-5 位运算配套。
+  2026-10-24 已有全局 PCG32 流（`seed/rand/rand_range/…`，三后端一致），但
+  **全局流有序、不可分叉**：按下标取值必须按序推进，无法并行/乱序。
+- **实现**：纯函数式 splitmix64 两个内置（纯整数算术 + P1-5 位原语，无隐藏
+  状态、序无关，`rand_next(seed + k)` 按下标独立取值）：
+  - `rand_next(s: int): int`——s+黄金比例常数后过 finalizer（两次 xor-shift
+    乘法混合）；
+  - `rand_float(s: int): float`——输出高 53 位 × 2^-53 映射到 [0,1)；
+  - 接线：`builtins_math_basic.inc`（interpreter natives + b_* 包装）、
+    `builtins.h`、`interp.c` 注册、`rt.c`（`lume_bi_rand_next/rand_float`）、
+    两张 BUILTINS 表（`codegen_call.c` + `llvm_codegen_internal.h`）、
+    typecheck 白名单/元数（1 元）。
+  - **Bi 表首个「int flavour 行、double 返回」**（rand_float）：顺带修三处
+    潜伏错位——① `builtin_infer_ret` 从「有 fn_i 就答 int」启发式改为读真实
+    `rty` 列（单一数据源再进一步）；② `cg_builtin`（text）与 llvm 等价发射
+    点的结果 Val 类型从 `want`（coerce 后实参类型）改为跟随 `rty` 列（既有行
+    pty==rty 时两者恒等，从未暴露；本次被 rand_float 双双炸出）。
+  - **顺手修 P1-6 漏网缺陷**：hex 数位含 `e/E`（如 `0x3E5`、splitmix 常量
+    `0x9E3779B97F4A7C15`）被浮点启发式当科学计数法定型成 float。修法：带
+    `0x/0X/0b/0B` 前缀的字面量在 `emit_number` 跳过 `.`/`e`/`E` 浮点探测，
+    直接走整数分支（带前缀即不可能是浮点，无 `0x1.8p3` 支持）。
+  - **库收益**：`ml.lume` 的 `hash01` 换 `rand_float(k * 0xF4243 + seed)`
+    （0xF4243=1000003 质数混匀下标，P1-6 字面量首次实战），sin-hash 退役；
+    mlp2_init 数值序列改变（确定性不破坏，ml 套件在新序列下自洽）。
+- **验收**：`tests/rand-consistency.lume` + `rand_backends.sh`：固定种子黄金
+  值锚点、同态可复现/异态异值、链式喂回、逐点取值互异、1000 样本落域
+  [0,1) 与均值 ~0.5 的确定性统计、**lume 侧用 P1-5 位原语手工展开 splitmix64
+  与 C 实现逐算术步互证**（含 >2^63 常量写补码负数的 P1-6 边界实践）、
+  P1-1 免标注推断 int/float 各一；13 套 backend 套件 + case-parity +
+  lsp_smoke 全绿。
 
 ## P1-5 整数位运算内置 ✅ 已实现（2026-11-01）
 

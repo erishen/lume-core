@@ -217,6 +217,9 @@ static const Bi BUILTINS[] = {
     { "bitand",  "lume_bi_bitand",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "bit_or",  "lume_bi_bit_or",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "bit_xor", "lume_bi_bit_xor", "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    /* 确定性 RNG（语言演进提案 P1-4, 2026-11-01）：与 codegen_call.c 同步 */
+    { "rand_next",  "lume_bi_rand_next",  "i64", "i64",    1,  NULL, NULL, NULL, 0 },
+    { "rand_float", "lume_bi_rand_float", "i64", "double", 1,  NULL, NULL, NULL, 0 },
     { "min",   "lume_bi_min",  "i64",    "i64",    2,  "lume_bi_minf",  "double",      "double", 2 },
     { "max",   "lume_bi_max",  "i64",    "i64",    2,  "lume_bi_maxf",  "double",      "double", 2 },
     { "sqrt",  NULL,           NULL,     NULL,     0,  "lume_bi_sqrt",  "double",      "double", 1 },

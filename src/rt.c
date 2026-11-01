@@ -195,6 +195,23 @@ int64_t lume_bi_shr(int64_t a, int64_t b)   { return (int64_t)((uint64_t)a >> (b
 int64_t lume_bi_bitand(int64_t a, int64_t b){ return a & b; }
 int64_t lume_bi_bit_or(int64_t a, int64_t b){ return a | b; }
 int64_t lume_bi_bit_xor(int64_t a, int64_t b){ return a ^ b; }
+/* 确定性 RNG（语言演进提案 P1-4, 2026-11-01）：纯函数式 splitmix64。
+ * 与 2026-10-24 的全局 PCG32 流互补：无隐藏状态、序无关，rand_next(seed + k)
+ * 可并行/乱序取值（ml 权重初始化场景）。rand_next 推进黄金比例常数后过
+ * finalizer，全部 64 位整数算术；rand_float 取输出高 53 位映射到 [0,1)
+ * （除数 2^53 精确表示，IEEE754 下三后端逐字节一致）。 */
+int64_t lume_bi_rand_next(int64_t s)
+{
+    uint64_t z = (uint64_t)s + 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return (int64_t)(z ^ (z >> 31));
+}
+double lume_bi_rand_float(int64_t s)
+{
+    uint64_t z = (uint64_t)lume_bi_rand_next(s);
+    return (double)(z >> 11) * (1.0 / 9007199254740992.0);   /* 2^-53 */
+}
 int64_t lume_bi_min(int64_t a, int64_t b) { return a < b ? a : b; }
 int64_t lume_bi_max(int64_t a, int64_t b) { return a > b ? a : b; }
 double lume_bi_minf(double a, double b) { return a < b ? a : b; }

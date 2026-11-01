@@ -107,6 +107,9 @@ Value b_shr(VM *vm, int argc, Value *args);
 Value b_bitand(VM *vm, int argc, Value *args);
 Value b_bit_or(VM *vm, int argc, Value *args);
 Value b_bit_xor(VM *vm, int argc, Value *args);
+/* 确定性 RNG（语言演进提案 P1-4, 2026-11-01）：纯函数式 splitmix64 */
+Value b_rand_next(VM *vm, int argc, Value *args);
+Value b_rand_float(VM *vm, int argc, Value *args);
 /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
 Value b_sin(VM *vm, int argc, Value *args);
 Value b_cos(VM *vm, int argc, Value *args);

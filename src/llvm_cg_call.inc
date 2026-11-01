@@ -636,7 +636,13 @@ static Val cg_builtin(CG *g, Node *n)
         LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(rt, pts, (unsigned)argc, 0),
                                         rt_decl(g, fn, rt, pts, argc), vv, (unsigned)argc, "b");
         free(pts); free(vv); free(av);
-        return val_make(want, r);
+        /* 结果类型跟随 rty 列而非 want：rand_float 是 int flavour 行、
+         * double 返回（P1-4）——与 codegen_call.c 的 cg_builtin 同步。 */
+        const char *rsp = isf ? b->rty_f : b->rty_i;
+        Type *rvt = want;
+        if (strcmp(rsp, "i64") == 0)        rvt = type_prim(TY_INT);
+        else if (strcmp(rsp, "double") == 0) rvt = type_prim(TY_FLOAT);
+        return val_make(rvt, r);
     }
 
     /* env(name): a host environment variable as a string; unset or masked

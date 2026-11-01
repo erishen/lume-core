@@ -1507,6 +1507,8 @@ void bridge_seed_builtins(VM *vm) {
         {"bitand", b_bitand},
         {"bit_or", b_bit_or},
         {"bit_xor", b_bit_xor},
+        {"rand_next", b_rand_next},
+        {"rand_float", b_rand_float},
         {"sqrt", b_sqrt},
         {"exp", b_exp},
         {"log", b_log},

@@ -39,6 +39,11 @@ static const Bi BUILTINS[] = {
     { "bitand",  "lume_bi_bitand",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "bit_or",  "lume_bi_bit_or",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "bit_xor", "lume_bi_bit_xor", "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    /* 确定性 RNG（语言演进提案 P1-4, 2026-11-01）：int 参；rand_next 返 i64、
+     * rand_float 返 double——int flavour 行的 rty_i 列独立于 pty_i 列，
+     * builtin_infer_ret 按 rty 列作答（勿再按「有 fn_i 就是 int」猜） */
+    { "rand_next",  "lume_bi_rand_next",  "i64", "i64",    1,  NULL, NULL, NULL, 0 },
+    { "rand_float", "lume_bi_rand_float", "i64", "double", 1,  NULL, NULL, NULL, 0 },
     { "min",   "lume_bi_min",  "i64",    "i64",    2,  "lume_bi_minf", "double",     "double", 2 },
     { "max",   "lume_bi_max",  "i64",    "i64",    2,  "lume_bi_maxf", "double",     "double", 2 },
     { "sqrt",  NULL,           NULL,     NULL,     0,  "lume_bi_sqrt", "double",     "double", 1 },
@@ -435,14 +440,21 @@ Type *builtin_infer_ret(const char *name, Type *arg0)
 {
     const Bi *b = builtin_find(name);
     if (!b) return NULL;
-    if (b->fn_f == NULL) return type_prim(TY_INT);     /* int-only (div/mod/shift/bitops) */
-    if (b->fn_i == NULL) return type_prim(TY_FLOAT);    /* float-only (sqrt/sin/cos/pow/...) */
-    /* both flavours: follow the operand, exactly like cg_builtin */
-    if (arg0) {
-        if (arg0->kind == TY_FLOAT) return type_prim(TY_FLOAT);
-        if (arg0->kind == TY_INT)   return type_prim(TY_INT);
-    }
-    return NULL;   /* arg0 untyped → leave the binding to an annotation */
+    /* 与 cg_builtin 的 flavour 选择逐字镜像，但返回类型改读真实的 rty 列
+     * （P1-4 的 rand_float 是 int flavour 行、double 返回——按「有 fn_i
+     * 就是 int」的启发式会答错）：float 实参或「float-only 遇 int 实参」
+     * 走 float 列；多态内置（abs/min/max）首参类型未知时维持旧行为返回
+     * NULL，绑定保持标注要求——绝不静默错型。 */
+    int isf = arg0 && b->fn_f &&
+              (arg0->kind == TY_FLOAT ||
+               (b->fn_i == NULL && arg0->kind == TY_INT));
+    if (!isf && b->fn_f && b->fn_i && !arg0) return NULL;
+    const char *rty = isf ? b->rty_f : b->rty_i;
+    if (!rty && !isf && b->fn_f) rty = b->rty_f;   /* float-only、首参未知 */
+    if (!rty) return NULL;
+    if (strcmp(rty, "i64") == 0)    return type_prim(TY_INT);
+    if (strcmp(rty, "double") == 0) return type_prim(TY_FLOAT);
+    return NULL;
 }
 
 /* The value type a literal key maps to in m's static shape — the key set a
@@ -1938,7 +1950,13 @@ static Val cg_builtin(CG *g, Node *n)
 
         for (int i = 0; i < argc; i++) free(av[i].v);
         free(av);
-        return val_make(want, tmp);
+        /* 结果类型跟随 rty 列而非 want：rand_float 是 int flavour 行、
+         * double 返回（P1-4），want 只描述 coerce 后的实参类型。既有行
+         * pty==rty 时两者恒等，此区分从未暴露。 */
+        Type *rvt = want;
+        if (strcmp(rty, "i64") == 0)        rvt = type_prim(TY_INT);
+        else if (strcmp(rty, "double") == 0) rvt = type_prim(TY_FLOAT);
+        return val_make(rvt, tmp);
     }
 
     /* map(fn, list) / filter(fn, list) / reduce(fn, list, init) — SPEC 4.8's
