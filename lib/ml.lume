@@ -432,3 +432,144 @@ export func attention(Q: float[][], K: float[][], V: float[][]): float[][] {
   }
   return la.mat_mul(A, V);
 }
+
+// ---------- MLP 反向传播训练 ----------
+// 权重打包格式（float[][]，h+3 行，规避 lume 无 struct/多返回值）：
+//   行 0..h-1 : W1（h×d，隐藏层权重）
+//   行 h      : b1（隐藏层偏置）
+//   行 h+1    : W2 单行（h，输出层权重，单神经元二分类）
+//   行 h+2    : b2（输出层偏置，单元素）
+// 训练：全批量梯度下降，BCE 损失 + sigmoid 输出 → 输出层残差 delta2 = p - y。
+
+func frac01(s: float): float {
+  return s - floor(s);
+}
+
+// 确定性伪随机 [0,1)（sin hash，跨后端一致，无 RNG 依赖）。
+func hash01(k: int, seed: int): float {
+  let s: float = sin(k * 1.0 * 12.9898 + seed * 1.0 * 78.233) * 43758.5453;
+  return frac01(s);
+}
+
+// 取打包权重 P 的行块 [lo, hi)。
+func rows_block(P: float[][], lo: int, hi: int): float[][] {
+  let out: float[][] = [];
+  for (let i = lo; i < hi; i = i + 1) {
+    out = push(out, P[i]);
+  }
+  return out;
+}
+
+// 初始化打包权重：W1/W2 用 sin-hash 小随机（对称破缺），偏置全 0。
+export func mlp2_init(d: int, h: int, seed: int): float[][] {
+  let P: float[][] = [];
+  for (let i = 0; i < h; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < d; j = j + 1) {
+      row = push(row, 0.4 * (hash01(i * d + j, seed) - 0.5));
+    }
+    P = push(P, row);
+  }
+  P = push(P, zero_flt(h));              // b1
+  let w2: float[] = [];
+  for (let k = 0; k < h; k = k + 1) {
+    w2 = push(w2, 0.4 * (hash01(1000 + k, seed + 7) - 0.5));
+  }
+  P = push(P, w2);                       // W2 单行
+  P = push(P, [0.0]);                    // b2
+  return P;
+}
+
+// 两层 MLP 训练（全批量梯度下降，iters 轮）：y ∈ {0,1}，返回训练后的打包权重。
+export func mlp2_train(X: float[][], y: int[], P0: float[][], iters: int, lr: float): float[][] {
+  let n: int = len(X);
+  let d: int = len(X[0]);
+  let h: int = len(P0) - 3;
+  let W1: float[][] = rows_block(P0, 0, h);
+  let b1: float[] = P0[h];
+  let W2r: float[] = P0[h + 1];
+  let b2: float[] = P0[h + 2];
+  for (let it = 0; it < iters; it = it + 1) {
+    let gW1: float[][] = zero_mat(h, d);
+    let gb1: float[] = zero_flt(h);
+    let gW2: float[] = zero_flt(h);
+    let gb2: float = 0.0;
+    for (let xi = 0; xi < n; xi = xi + 1) {
+      // 前向
+      let z1: float[] = dense(W1, b1, X[xi]);
+      let a1: float[] = relu_vec(z1);
+      let z2: float = dotv(W2r, a1) + b2[0];
+      let p: float = sigmoid(z2);
+      let d2: float = p - y[xi] * 1.0;    // BCE+sigmoid 的输出层残差
+      // 反向：隐藏层梯度（ReLU 导数：z1>0 才传播）
+      for (let j = 0; j < h; j = j + 1) {
+        if (z1[j] > 0.0) {
+          let d1: float = W2r[j] * d2;
+          let grow: float[] = gW1[j];
+          for (let k = 0; k < d; k = k + 1) {
+            grow = set_flt(grow, k, grow[k] + d1 * X[xi][k]);
+          }
+          gW1 = set_m(gW1, j, grow);
+          gb1 = set_flt(gb1, j, gb1[j] + d1);
+        }
+      }
+      // 输出层梯度
+      for (let j2 = 0; j2 < h; j2 = j2 + 1) {
+        gW2 = set_flt(gW2, j2, gW2[j2] + d2 * a1[j2]);
+      }
+      gb2 = gb2 + d2;
+    }
+    // 参数更新：w -= lr · grad / n
+    for (let uj = 0; uj < h; uj = uj + 1) {
+      let urow: float[] = W1[uj];
+      for (let uk = 0; uk < d; uk = uk + 1) {
+        urow = set_flt(urow, uk, urow[uk] - lr * gW1[uj][uk] / (n * 1.0));
+      }
+      W1 = set_m(W1, uj, urow);
+    }
+    for (let ub = 0; ub < h; ub = ub + 1) {
+      b1 = set_flt(b1, ub, b1[ub] - lr * gb1[ub] / (n * 1.0));
+    }
+    for (let uw = 0; uw < h; uw = uw + 1) {
+      W2r = set_flt(W2r, uw, W2r[uw] - lr * gW2[uw] / (n * 1.0));
+    }
+    b2 = set_flt(b2, 0, b2[0] - lr * gb2 / (n * 1.0));
+  }
+  let out: float[][] = [];
+  for (let r1 = 0; r1 < h; r1 = r1 + 1) {
+    out = push(out, W1[r1]);
+  }
+  out = push(out, b1);
+  out = push(out, W2r);
+  out = push(out, b2);
+  return out;
+}
+
+// 从打包权重推理：返回单元素 [P(class=1)]。
+export func mlp2_forward_packed(P: float[][], x: float[]): float[] {
+  let h: int = len(P) - 3;
+  let W1: float[][] = rows_block(P, 0, h);
+  let b1: float[] = P[h];
+  let W2r: float[] = P[h + 1];
+  let b2: float[] = P[h + 2];
+  let a1: float[] = relu_vec(dense(W1, b1, x));
+  let z2: float = dotv(W2r, a1) + b2[0];
+  let out: float[] = [];
+  out = push(out, sigmoid(z2));
+  return out;
+}
+
+// 平均 BCE 损失（评估用）。
+export func mlp2_loss(P: float[][], X: float[][], y: int[]): float {
+  let n: int = len(X);
+  let s: float = 0.0;
+  for (let i = 0; i < n; i = i + 1) {
+    let p: float = mlp2_forward_packed(P, X[i])[0];
+    let pc: float = p;
+    if (pc < 1e-12) { pc = 1e-12; }
+    if (pc > 1.0 - 1e-12) { pc = 1.0 - 1e-12; }
+    let yi: float = y[i] * 1.0;
+    s = s - (yi * log(pc) + (1.0 - yi) * log(1.0 - pc));
+  }
+  return s / (n * 1.0);
+}

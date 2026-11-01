@@ -43,3 +43,15 @@ let att: float[][] = ml.attention(
   [[1.0,0.0],[0.0,1.0],[1.0,1.0]],
   [[1.0,2.0],[3.0,4.0],[5.0,6.0]]);
 print(att);
+
+print("== MLP 反向传播训练（XOR） ==");
+let XOR: float[][] = [[0.0,0.0],[0.0,1.0],[1.0,0.0],[1.0,1.0]];
+let yxor: int[] = [0,1,1,0];
+let P0: float[][] = ml.mlp2_init(2, 8, 1);
+print(ml.mlp2_loss(P0, XOR, yxor));
+let Pt: float[][] = ml.mlp2_train(XOR, yxor, P0, 1500, 3.0);
+print(ml.mlp2_loss(Pt, XOR, yxor));
+print(ml.mlp2_forward_packed(Pt, [0.0,0.0]));
+print(ml.mlp2_forward_packed(Pt, [0.0,1.0]));
+print(ml.mlp2_forward_packed(Pt, [1.0,0.0]));
+print(ml.mlp2_forward_packed(Pt, [1.0,1.0]));
