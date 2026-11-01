@@ -45,19 +45,15 @@ func set_flt(a: float[], idx: int, v: float): float[] {
   return out;
 }
 
-// 把整数 x 的 bits 个低位按位反转（不用位运算符，纯算术 + floor，跨后端安全）。
-// 注意：lume 的 '/' 恒产生 float 且「乘回去会精确还原」——如 2.0*(1.0/2.0)=1.0
-// 导致 `xx-2*(xx/2)` 对奇数得 0（把奇数误判为偶数），故求模必须用 floor：
-//   xx mod 2 = xx − 2·floor(xx/2)；整数除法 = floor(xx/2)。
+// 把整数 x 的 bits 个低位按位反转（FFT 蝶形重排用）。
+// 此前用 floor/mod 浮点算术模拟（'/' 恒 float、乘回去精确还原会把奇数误判为
+// 偶数，曾静默出错）——现改用 P1-5 整数位运算原语，纯 int、跨后端一致、无浮点坑。
 func bitrev(x: int, bits: int): int {
   let r: int = 0;
-  let xx: float = x * 1.0;
+  let xx: int = x;
   for (let b = 0; b < bits; b = b + 1) {
-    let rem: float = xx - 2.0 * floor(xx / 2.0);   // 0.0 或 1.0（xx mod 2）
-    let bit: int = 0;
-    if (rem > 0.5) { bit = 1; }
-    r = r * 2 + bit;
-    xx = floor(xx / 2.0);                          // floor 整数除法
+    r = bit_or(shl(r, 1), bitand(xx, 1));
+    xx = shr(xx, 1);
   }
   return r;
 }

@@ -101,6 +101,12 @@ Value b_max(VM *vm, int argc, Value *args);
 /* 整数除法/求模（语言演进提案 P0-2, 2026-11-01） */
 Value b_div(VM *vm, int argc, Value *args);
 Value b_mod(VM *vm, int argc, Value *args);
+/* 整数位运算（语言演进提案 P1-5, 2026-11-01）：shl/shr/bitand/bit_or/bit_xor */
+Value b_shl(VM *vm, int argc, Value *args);
+Value b_shr(VM *vm, int argc, Value *args);
+Value b_bitand(VM *vm, int argc, Value *args);
+Value b_bit_or(VM *vm, int argc, Value *args);
+Value b_bit_xor(VM *vm, int argc, Value *args);
 /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
 Value b_sin(VM *vm, int argc, Value *args);
 Value b_cos(VM *vm, int argc, Value *args);

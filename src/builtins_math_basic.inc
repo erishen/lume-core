@@ -29,6 +29,47 @@ static void native_mod(VM *vm, int argc, Value *args, Value *out) {
     *out = val_int(b == 0 ? 0 : a % b);
 }
 
+/* 整数位运算内置（语言演进提案 P1-5, 2026-11-01）：bitrev / 哈希 / 打包整数
+ * 场景原本只能算术模拟（且因 '/' 恒 float 而坑上加坑）。六个 int 原语，走与
+ * div/mod 相同的 BUILTINS[i64 风格] 机制（text/LLVM 两份表同步，参照 trig
+ * 内置先例，成本已知且低）。仅接受 int 实参（与 div/mod 一致）；移位数先掩
+ * 0..63（C 对 >=64 移位未定义）；移位按无符号 64 位逻辑移位，与常见位操作
+ * 语义对齐（右移为逻辑而非算术）。 */
+static void native_shl(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "shl(): needs two int arguments"); return;
+    }
+    unsigned long long a = (unsigned long long)AS_INT(args[0]);
+    int n = (int)(AS_INT(args[1]) & 63);
+    *out = val_int((long long)(a << n));
+}
+static void native_shr(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "shr(): needs two int arguments"); return;
+    }
+    unsigned long long a = (unsigned long long)AS_INT(args[0]);
+    int n = (int)(AS_INT(args[1]) & 63);
+    *out = val_int((long long)(a >> n));   /* 逻辑右移（无符号） */
+}
+static void native_bitand(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "bitand(): needs two int arguments"); return;
+    }
+    *out = val_int(AS_INT(args[0]) & AS_INT(args[1]));
+}
+static void native_bit_or(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "bit_or(): needs two int arguments"); return;
+    }
+    *out = val_int(AS_INT(args[0]) | AS_INT(args[1]));
+}
+static void native_bit_xor(VM *vm, int argc, Value *args, Value *out) {
+    if (argc != 2 || !IS_INT(args[0]) || !IS_INT(args[1])) {
+        vm_set_error(vm, "bit_xor(): needs two int arguments"); return;
+    }
+    *out = val_int(AS_INT(args[0]) ^ AS_INT(args[1]));
+}
+
 static void native_sqrt(VM *vm, int argc, Value *args, Value *out) {
     double x;
     if (argc < 1 || !arg_num(vm, args[0], &x)) return;
@@ -116,6 +157,11 @@ static void native_max(VM *vm, int argc, Value *args, Value *out) {
 Value b_abs(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_abs); }
 Value b_div(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_div); }
 Value b_mod(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_mod); }
+Value b_shl(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_shl); }
+Value b_shr(VM *vm, int argc, Value *args)    { return vm_native(vm, argc, args, native_shr); }
+Value b_bitand(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bitand); }
+Value b_bit_or(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_bit_or); }
+Value b_bit_xor(VM *vm, int argc, Value *args){ return vm_native(vm, argc, args, native_bit_xor); }
 Value b_sqrt(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_sqrt); }
 Value b_exp(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_exp); }
 Value b_log(VM *vm, int argc, Value *args)   { return vm_native(vm, argc, args, native_log); }

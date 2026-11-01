@@ -450,6 +450,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "min", "max", "pi", "e",
     /* 整数除法/求模 (语言演进提案 P0-2, 2026-11-01) */
     "div", "mod",
+    /* 整数位运算 (语言演进提案 P1-5, 2026-11-01) */
+    "shl", "shr", "bitand", "bit_or", "bit_xor",
     /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
     "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
@@ -560,6 +562,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"avg_loss",1,1}, {"max_consecutive_losses",1,1},
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"div",2,2}, {"mod",2,2},
+    {"shl",2,2}, {"shr",2,2}, {"bitand",2,2}, {"bit_or",2,2}, {"bit_xor",2,2},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"sin",1,1}, {"cos",1,1}, {"tan",1,1}, {"asin",1,1}, {"acos",1,1},
     {"atan",1,1}, {"atan2",2,2}, {"sinh",1,1}, {"cosh",1,1}, {"tanh",1,1},

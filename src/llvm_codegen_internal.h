@@ -211,6 +211,12 @@ static const Bi BUILTINS[] = {
     { "abs",   "lume_bi_abs",  "i64",    "i64",    1,  "lume_bi_absf",  "double",      "double", 1 },
     { "div",   "lume_bi_div",  "i64",    "i64",    2,  NULL,            NULL,          NULL,     0 },
     { "mod",   "lume_bi_mod",  "i64",    "i64",    2,  NULL,            NULL,          NULL,     0 },
+    /* 整数位运算（语言演进提案 P1-5, 2026-11-01）：纯 int 风格，与 div/mod 同机制 */
+    { "shl",     "lume_bi_shl",     "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    { "shr",     "lume_bi_shr",     "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    { "bitand",  "lume_bi_bitand",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    { "bit_or",  "lume_bi_bit_or",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    { "bit_xor", "lume_bi_bit_xor", "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "min",   "lume_bi_min",  "i64",    "i64",    2,  "lume_bi_minf",  "double",      "double", 2 },
     { "max",   "lume_bi_max",  "i64",    "i64",    2,  "lume_bi_maxf",  "double",      "double", 2 },
     { "sqrt",  NULL,           NULL,     NULL,     0,  "lume_bi_sqrt",  "double",      "double", 1 },

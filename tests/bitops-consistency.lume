@@ -1,0 +1,52 @@
+// bitops-consistency.lume — 整数位运算内置（P1-5）三后端一致性锚定
+// 运行：tests/bitops_backends.sh（解释器/文本 IR/LLVM 三份输出逐字节比对）
+//
+// 注意：lume 不支持十六进制/二进制整数字面量，故位模式一律用十进制写出
+// （注释里标注对应的位模式），例如 0xF0=240、0x8000000000000000=负数最小。
+//
+// 语义约定（与 div/mod 同机制，纯 int 风格）：
+//   shl(a,n)    = a << (n&63)   逻辑左移（无符号 64 位）
+//   shr(a,n)    = a >> (n&63)   逻辑右移（无符号，非负号扩展）
+//   bitand/or/xor = 位与/或/异或
+// 仅接受 int 实参（float 实参解释器拒绝，编译后端 coerce，与 div/mod 一致）。
+
+// 基本与/或/异或（240=0xF0, 15=0x0F, 255=0xFF）
+print(bitand(240, 15));          // 0
+print(bitand(255, 15));          // 15
+print(bit_or(240, 15));          // 255
+print(bit_xor(255, 15));         // 240
+print(bit_xor(7, 7));            // 0
+
+// 移位
+print(shl(1, 0));                // 1
+print(shl(1, 3));                // 8
+print(shl(1, 63));               // 0x8000000000000000 = -9223372036854775808
+print(shr(-9223372036854775808, 63)); // 1  （逻辑右移，非负号扩展）
+print(shr(-1, 4));               // 0x0FFFFFFFFFFFFFFF = 1152921504606846975
+
+// 负数为逻辑右移（无符号语义）→ 与算术右移不同，是设计选择
+print(shr(-8, 1));               // 0x7FFFFFFFFFFFFFFC = 9223372036854775804
+print(shl(-1, 1));               // -2
+
+// 移位数 >= 64 掩 0..63（C 未定义 → 掩码防 UB）
+print(shl(1, 64));               // = shl(1, 0) = 1
+print(shr(-9223372036854775808, 64)); // = shr(..., 0) = -9223372036854775808
+print(shl(1, 127));              // = shl(1, 63) = -9223372036854775808
+
+// 组合：bitrev 风格低位提取（验证 sig.bitrev 可改用原语）
+// 176 = 0b10110000, 8 位反转 → 0b00001101 = 13；1 → 128
+func bitrev8(x: int): int {
+  let r = 0;
+  for (let i = 0; i < 8; i = i + 1) {
+    r = bit_or(shl(r, 1), bitand(x, 1));
+    x = shr(x, 1);
+  }
+  return r;
+}
+print(bitrev8(1));                // 128
+print(bitrev8(176));              // 13
+
+// 与 div/mod 回归（确保 P0-2 未受影响）
+print(div(7, 2));                 // 3
+print(mod(7, 2));                 // 1
+print(mod(-7, 2));                // -1

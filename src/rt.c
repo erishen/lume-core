@@ -188,6 +188,13 @@ double lume_bi_absf(double v)      { return fabs(v); }
  * native_div/native_mod 的选择一致（避免 error vs SIGFPE 的后端分裂）。 */
 int64_t lume_bi_div(int64_t a, int64_t b) { return b == 0 ? 0 : a / b; }
 int64_t lume_bi_mod(int64_t a, int64_t b) { return b == 0 ? 0 : a % b; }
+/* 整数位运算原语（语言演进提案 P1-5, 2026-11-01）：与 native_* 一致，移位按
+ * 无符号 64 位逻辑移位，移位数掩 0..63（C 对 >=64 移位未定义）。 */
+int64_t lume_bi_shl(int64_t a, int64_t b)   { return (int64_t)((uint64_t)a << (b & 63)); }
+int64_t lume_bi_shr(int64_t a, int64_t b)   { return (int64_t)((uint64_t)a >> (b & 63)); }
+int64_t lume_bi_bitand(int64_t a, int64_t b){ return a & b; }
+int64_t lume_bi_bit_or(int64_t a, int64_t b){ return a | b; }
+int64_t lume_bi_bit_xor(int64_t a, int64_t b){ return a ^ b; }
 int64_t lume_bi_min(int64_t a, int64_t b) { return a < b ? a : b; }
 int64_t lume_bi_max(int64_t a, int64_t b) { return a > b ? a : b; }
 double lume_bi_minf(double a, double b) { return a < b ? a : b; }

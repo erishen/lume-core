@@ -102,12 +102,22 @@
   算术 + 位运算）或带种子的 `rand(seed)` 序列，三后端逐字节一致。
   与 P1-5 位运算配套。
 
-## P1-5 整数位运算内置
+## P1-5 整数位运算内置 ✅ 已实现（2026-11-01）
 
 - **现象**：bitrev/哈希/打包整数场景无 `shl/shr/and/or/xor`，只能算术模拟
-  （且因 `/` 为 float 而坑上加坑）。
-- **提案**：`shl(i,n)/shr(i,n)/bitand/bit_or/bit_xor` 六个 int 内置，走
-  BUILTINS 表（text/LLVM 两份同步，参照 trig 内置先例，成本已知且低）。
+  （且因 `/` 为 float 而坑上加坑）——`lib/sig.lume` 的 `bitrev` 被迫用
+  `floor`/mod 浮点模拟，曾因「乘回去精确还原」把奇数误判为偶数。
+- **实现**：六个纯 int 风格内置 `shl/shr/bitand/bit_or/bit_xor`，完全复用
+  P0-2 `div/mod` 的 `BUILTINS[i64 风格]` 机制（text/LLVM 两份表同步 +
+  `rt.c` 镜像 + `interp.c` 注册 + `typecheck.c` 白名单/元数），零新机制。
+- **语义约定**：移位按无符号 64 位**逻辑**移位（右移非负号扩展），移位数先
+  掩 `& 63`（C 对 `>=64` 移位未定义 → 掩码防 UB）；仅接受 int 实参（float
+  实参解释器拒绝、编译后端 coerce，与 `div/mod` 同行为）。`and/or/xor` 不是
+  lume 表达式运算符，故命名为 `bitand/bit_or/bit_xor`（提案原命名）。
+- **验收**：`tests/bitops-consistency.lume` 覆盖基本位运算、负数逻辑右移、
+  大移位数掩码、`bitrev8` 组合、与 `div/mod` 回归，三后端逐字节一致。
+- **库收益**：`lib/sig.lume` 的 `bitrev` 改用 `shl/shr/bitand/bit_or` 重写，
+  消除浮点模隐患，`sig` 套件三后端不变。
 
 ## P2-1 受控可变数组（性能）
 
@@ -144,6 +154,7 @@
 | P0-2 | `div/mod` int 内置：interp native + rt.c 镜像 + 两张 BUILTINS 表（i64 flavour）；除零约定返回 0；仅接受 int 实参（float 实参三后端一致拒绝，符合 SPEC §3.2） | 负数/除零/作索引用例一致 |
 | P0-3 | `let` 绑定名接受 HTTP 方法关键字（仅 route 简写位置保留关键字语义），parser_stmt.c 两处 | `let head = 0` 三后端可用，route 示例回归不变 |
 | P0-4 | `cannot infer` 附被调函数名与修复建议；list index 非 int 且含 `/` 时附 floor()/div() 提示 | 两条消息实测输出 |
+| P1-5 | `shl/shr/bitand/bit_or/bit_xor` 六个 int 内置：复用 `div/mod` 的 `BUILTINS[i64 风格]` 机制（text/LLVM 表 + rt.c 镜像 + interp.c 注册 + typecheck 白名单/元数）；移位按无符号逻辑移位、移位数掩 `&63` 防 UB | `tests/bitops-consistency.lume` 三后端逐字节一致；`lib/sig.lume` 的 `bitrev` 改用原语重写消除浮点模隐患 |
 
 另：探针修正 P1-4——lume 已有完整 Monte Carlo RNG（`seed/rand/rand_int/...`，
 2026-10-24 落地），该项从"新增"改为"文档化 + 一致性验证"。
@@ -181,5 +192,5 @@ P0-1 落地后把 sci/optim 的参数化变体升级为通用 fn 接口时，探
 | P0 | div/mod 内置 | 静默错值风险最高的一条 |
 | P0 | 保留字上下文化 | 纯误伤，修复成本最低 |
 | P0 | 诊断增强 | 全部后续开发受益 |
-| P1 | 返回类型推断 / 字面量下推 / 块作用域 / RNG / 位运算 | 高频摩擦逐个消除 |
+| P1 | 返回类型推断 / 字面量下推 / 块作用域 | 高频摩擦逐个消除（RNG/P1-4 与位运算/P1-5 已落地） |
 | P2 | 可变数组 / 元组 | 性能与人体工学，等库规模再验证 |
