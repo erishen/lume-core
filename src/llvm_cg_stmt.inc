@@ -2,25 +2,8 @@
  * Textually included by llvm_codegen.c (single translation unit).
  * Do not compile this file on its own. */
 
-/* True when a parameter of this type arrives as an opaque pointer that IS the
- * value (anonymous struct / list / enum / result / func), rather than as the
- * address of a stack cell. Mirrors llvm_ptr_type_of: the signature emits all
- * of these as i8*, and a callee reads them without an extra load. A *named*
- * struct also arrives as a pointer, but one whose slot is its address, so it
- * is excluded (its read path returns the slot directly for a different
- * reason — see cg_var). */
-static int ptr_like_param(Type *t)
-{
-    if (!t) return 0;
-    switch (t->kind) {
-    case TY_STRUCT: return t->name == NULL;
-    case TY_LIST:
-    case TY_ENUM:
-    case TY_RESULT:
-    case TY_FUNC:   return 1;
-    default:        return 0;
-    }
-}
+/* ptr_like_param moved to llvm_codegen_internal.h — cg_funclit (llvm_cg_lit.inc,
+ * included before this file) boxes ptr-like parameters on capture. */
 
 /* Match-arm binds, for the window their arm body's type is inferred in.
  * Mirrors codegen_scan.c's copy: a repeated name overwrites (no new

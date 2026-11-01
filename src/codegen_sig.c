@@ -1836,6 +1836,72 @@ int codegen_infer_signatures(Node *prog, char *err, size_t err_size)
  * unresolved-parameter check disabled — an imported module's exported
  * functions have no call site inside the module itself; their untyped
  * parameters are filled by the entry's cross-module call sites. */
+/* Collect a module's lambdas into the shared signature table (multi-file
+ * builds). Mirrors preregister_lambdas' traversal, but pushes into an
+ * arbitrary table with the lambda's already-stamped cname as the key: the
+ * entry's fixed point then re-runs each lambda's body with every
+ * "<ns>.<name>" signature visible, so a body calling an imported function
+ * resolves its return type (see the caller for why this matters). */
+static void multi_collect_lambdas(Node *n, Sigs *shared)
+{
+    if (!n) return;
+    switch (n->type) {
+    case N_FUNC_LIT:
+        if (n->as.funclit.cname) {
+            sig_push(shared, n->as.funclit.cname, n->as.funclit.ret,
+                     n->as.funclit.param_types, n->as.funclit.arity);
+            Sig *s = &shared->v[shared->n - 1];
+            s->is_lambda = 1;
+            s->body   = n->as.funclit.body;
+            s->pnames = n->as.funclit.names;
+            s->node   = n;
+        }
+        multi_collect_lambdas(n->as.funclit.body, shared);
+        return;
+    case N_PROGRAM: case N_BLOCK:
+        for (int i = 0; i < n->as.block.count; i++)
+            multi_collect_lambdas(n->as.block.stmts[i], shared);
+        return;
+    case N_FUNC_DECL:
+        multi_collect_lambdas(n->as.func.body, shared);
+        return;
+    case N_LET:        multi_collect_lambdas(n->as.let.init, shared); return;
+    case N_LET_PAT:    multi_collect_lambdas(n->as.letpat.init, shared); return;
+    case N_LET_EXPR:
+        multi_collect_lambdas(n->as.letx.init, shared);
+        multi_collect_lambdas(n->as.letx.body, shared);
+        return;
+    case N_IF:
+        multi_collect_lambdas(n->as.ifs.cond, shared);
+        multi_collect_lambdas(n->as.ifs.then, shared);
+        multi_collect_lambdas(n->as.ifs.els,  shared);
+        return;
+    case N_WHILE:
+        multi_collect_lambdas(n->as.whiles.cond, shared);
+        multi_collect_lambdas(n->as.whiles.body, shared);
+        return;
+    case N_FOR:
+        multi_collect_lambdas(n->as.fors.init,     shared);
+        multi_collect_lambdas(n->as.fors.cond,     shared);
+        multi_collect_lambdas(n->as.fors.incr,     shared);
+        multi_collect_lambdas(n->as.fors.iterable, shared);
+        multi_collect_lambdas(n->as.fors.body,     shared);
+        return;
+    case N_RETURN:     multi_collect_lambdas(n->as.ret.expr, shared); return;
+    case N_EXPR_STMT:  multi_collect_lambdas(n->as.expr_stmt.expr, shared); return;
+    case N_ASSIGN:
+        multi_collect_lambdas(n->as.assign.value, shared);
+        return;
+    case N_CALL:
+        multi_collect_lambdas(n->as.call.callee, shared);
+        for (int i = 0; i < n->as.call.argc; i++)
+            multi_collect_lambdas(n->as.call.args[i], shared);
+        return;
+    default:
+        return;
+    }
+}
+
 int codegen_infer_signatures_multi(Node **mods, const char ***alias_list,
                                    const int *alias_cnt, int nmods,
                                    char *err, size_t err_size)
@@ -1880,6 +1946,20 @@ int codegen_infer_signatures_multi(Node **mods, const char ***alias_list,
                 }
             }
             free(fns);
+        }
+        if (!rc) {
+            /* Module lambdas join the shared table too. A module's own
+             * inference pass has no dependency signatures: its member calls
+             * into an imported module (`(t: float) => a.f(t)`) resolve
+             * nothing, so an expression-bodied lambda leaves funclit.ret
+             * NULL and the emitter spells `define void` around a body that
+             * ends in `ret double`. Re-running the lambda's Sig in the
+             * ENTRY fixed point — where every "<ns>.<name>" key is visible
+             * — lets its return/parameter types resolve and write back
+             * into the AST (the infer_sigs write-back only fills empty
+             * slots, so the earlier pass's partial results are kept).
+             * cnames are already stamped by this module's infer_program. */
+            multi_collect_lambdas(prog, &shared);
         }
         cleanup_cg(&g);
     }

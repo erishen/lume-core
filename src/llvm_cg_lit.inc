@@ -585,11 +585,30 @@ static Val cg_funclit(CG *g, Node *n)
                 ERRV(g, "line %zu: captured variable '%s' has no codegen type",
                      n->line, nm);
             }
-            /* Every slot is a pointer (alloca, module global, or a struct
-             * parameter's incoming pointer), so bitcast the *pointer value*
-             * to i8* — that address is what the closure reads back. */
-            LLVMValueRef addr = LLVMBuildBitCast(g->ab, a->slot, g->i8ptr,
-                                                 "capaddr");
+            /* The capture array's contract (shared with the readback in
+             * cg_def and with the text backend) is "one i8* per captured
+             * name, holding the ADDRESS of the outer variable's slot" —
+             * the closure dereferences it once. A ptr-like parameter's
+             * slot IS the value (no alloca — see ptr_like_param), so it
+             * must be boxed into a fresh cell first, mirroring the text
+             * backend where every parameter gets an alloca anyway.
+             * Storing the raw value here made the readback dereference
+             * the list head (SIGSEGV). */
+            LLVMValueRef addr;
+            if (a->param && ptr_like_param(a->ty)) {
+                LLVMValueRef box = LLVMBuildAlloca(g->ab, vt, "capbox");
+                if (!box || LLVMBuildStore(g->ab, a->slot, box) == NULL) {
+                    free(addrs);
+                    ERRV(g, "line %zu: cannot box capture '%s'", n->line, nm);
+                }
+                addr = LLVMBuildBitCast(g->ab, box, g->i8ptr, "capaddr");
+            } else {
+                /* Every other slot is a pointer (alloca, module global, or
+                 * a struct parameter's incoming pointer), so bitcast the
+                 * *pointer value* to i8* — that address is what the
+                 * closure reads back. */
+                addr = LLVMBuildBitCast(g->ab, a->slot, g->i8ptr, "capaddr");
+            }
             if (!addr) { free(addrs); ERRV(g, "line %zu: cannot capture '%s'",
                                            n->line, nm); }
             addrs[i] = addr;

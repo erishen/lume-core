@@ -139,6 +139,29 @@ typedef struct {
 
 typedef struct { LLVMValueRef v; Type *ty; } Val;
 
+/* True when a parameter of this type arrives as an opaque pointer that IS the
+ * value (anonymous struct / list / enum / result / func), rather than as the
+ * address of a stack cell. Mirrors llvm_ptr_type_of: the signature emits all
+ * of these as i8*, and a callee reads them without an extra load. A *named*
+ * struct also arrives as a pointer, but one whose slot is its address, so it
+ * is excluded (its read path returns the slot directly for a different
+ * reason — see cg_var). Lives here (not llvm_cg_stmt.inc) because cg_funclit
+ * in llvm_cg_lit.inc needs it too: capture readback assumes every captured
+ * slot is an address, so a ptr-like parameter's value must be boxed first.
+ * (Textually included once by llvm_codegen.c — single translation unit.) */
+static int ptr_like_param(Type *t)
+{
+    if (!t) return 0;
+    switch (t->kind) {
+    case TY_STRUCT: return t->name == NULL;
+    case TY_LIST:
+    case TY_ENUM:
+    case TY_RESULT:
+    case TY_FUNC:   return 1;
+    default:        return 0;
+    }
+}
+
 /* ---- compile-time limits ---- */
 #define AT(g)  LLVMPositionBuilderAtEnd((g)->ab, (g)->cur)
 

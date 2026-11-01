@@ -1,0 +1,84 @@
+// hof-consistency.lume — 高阶函数（fn 形参 + lambda 捕获）三后端一致性套件。
+// 运行：tests/hof_backends.sh
+//
+// 锚定两个编译器修复（2026-11-01，P0-1 后续缺口）：
+//   ① LLVM 后端：ptr-like 参数（float[] / float[][] / fn）被 lambda 捕获时，
+//      捕获数组存的是"值"而读回侧按"地址"解引用 → SIGSEGV。修复后创建侧
+//      先把值 box 进临时槽，与文本后端"每个参数都有 alloca"的约定对齐。
+//   ② 文本/LLVM 后端：被 import 模块内的 lambda 表达式体调用跨模块函数
+//      （`(t: float) => a.f(t)`）时返回类型推断失败 → `define void` 包着
+//      `ret double` 的坏 IR。修复后模块 lambda 加入 shared 表，在 entry
+//      固定点补推 ret/params。
+// 以及捕获约定本身：捕获标量 / 数组 / 二维数组 / 不逃逸约束，三后端逐字节一致。
+
+import "../lib/sci.lume" as sci;
+import "../lib/optim.lume" as opt;
+
+// ── 修复①：ptr-like 参数的捕获（此前 LLVM SIGSEGV）─────────────────
+func apply1(f: fn(float) => float, x: float): float { return f(x); }
+func applyv(f: fn(float[]) => float[], x: float[]): float[] { return f(x); }
+
+// 捕获 float[] 形参
+func cap_list(v: float[]): float {
+  let g = (t: float) => v[0] + t;
+  return apply1(g, 1.0);
+}
+print(cap_list([7.0, 8.0]));                                  // 8
+
+// 捕获 float[][] 形参
+func cap_mat(M: float[][]): float {
+  let g = (t: float) => M[1][0] + t;
+  return apply1(g, 1.0);
+}
+print(cap_mat([[1.0,2.0],[3.0,4.0]]));                        // 4
+
+// 捕获 fn 形参（fn 本身也是 ptr-like）
+func cap_fn(f: fn(float) => float, x: float): float {
+  let g = (t: float) => f(t) + 1.0;
+  return apply1(g, x);
+}
+print(cap_fn((t: float) => t * 2.0, 5.0));                    // 11
+
+// 捕获向量形参 + 返回数组（单层 lambda：捕获二维/一维数组）。
+// 已知边界：lambda 嵌套时内层再捕获外层 lambda 的参数尚不支持
+// （"captured variable has no codegen slot"），库内算法均为单层。
+func cap_vec(M: float[][], c: float[]): float[] {
+  return applyv((x: float[]) => [x[0] + M[0][0], x[1] + c[1]], M[0]);
+}
+print(cap_vec([[1.0,2.0],[3.0,4.0]], [10.0, 20.0]));          // [2, 22]
+
+// ── 修复②：被 import 模块内 lambda 调跨模块函数（此前坏 IR）────────
+// golden_poly_min / quad_min 薄包装正是这个形状：lambda 在 optim.lume
+// （被 import 模块）内，表达式体调 sci.poly_val / vec_sub。
+print(opt.golden_poly_min([1.0,-2.0,1.0], 0.0, 3.0, 1e-7));   // ~1
+print(opt.quad_min([[2.0,0.0],[0.0,2.0]],[2.0,4.0],[0.0,0.0],300,0.1));  // ~[1,2]
+
+// ── 捕获约定（shared env）：标量捕获读写可见，数组捕获共享单元 ──────
+func cap_scalar(k: float): float {
+  let acc = k;
+  let g = (t: float) => acc + t;
+  return apply1(g, 0.5);
+}
+print(cap_scalar(2.0));                                       // 2.5
+
+// 局部 let（非参数）的数组捕获：slot 是 alloca，两条路径都覆盖
+func cap_local(): float {
+  let v = [10.0, 20.0];
+  let g = (t: float) => v[1] + t;
+  return apply1(g, 1.0);
+}
+print(cap_local());                                           // 21
+
+// 组合：lambda 链（内层捕获外层的捕获，同帧不逃逸）
+func cap_chain(a: float, b: float): float {
+  let inner = (t: float) => t * b;
+  let outer = (t: float) => inner(t) + a;
+  return apply1(outer, 3.0);
+}
+print(cap_chain(1.0, 2.0));                                   // 7
+
+// 与库组合：通用 RK4（捕获标量参数 a）三后端一致
+func trace_decay(a: float, n: int): float {
+  return sci.rk4((t: float, y: float) => a * y, 1.0, 0.0, 1.0, n)[n];
+}
+print(trace_decay(-2.0, 20));                                 // e^-2 ≈ 0.1353

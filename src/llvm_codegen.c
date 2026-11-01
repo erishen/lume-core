@@ -771,10 +771,18 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
         int nclos = 0, capc = 0;
         for (int m = 0; m < nmods; m++) {
             Node *mp = mods[m];
-            if (mp && mp->type == N_PROGRAM)
-                collect_lambdas(mp, &clos, &nclos, &capc);
+            if (!(mp && mp->type == N_PROGRAM)) continue;
+            int before = nclos;
+            collect_lambdas(mp, &clos, &nclos, &capc);
+            /* Per-module cur_ns (mirrors codegen.c): a plain call inside a
+             * lambda body resolves "<ns>.<name>" first — pass 2 reset it to
+             * NULL, which made same-module helper calls inside a closure
+             * fail with "call to unknown function". */
+            cg.cur_ns = (m > 0 && alias_list && alias_cnt &&
+                         alias_cnt[m] > 0) ? alias_list[m][0] : NULL;
+            for (int i = before; i < nclos; i++) cg_closure(&cg, clos[i]);
         }
-        for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
+        cg.cur_ns = NULL;
         free(clos);
     }
 

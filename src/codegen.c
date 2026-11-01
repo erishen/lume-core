@@ -1015,16 +1015,24 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
     /* Closures: every lambda the signature pass named gets its own define.
      * All module files are walked (not just the entry), and every file's
      * lambda carries its module index in the cname — the fixed form of the
-     * former "module lambdas are a known boundary" note. */
+     * former "module lambdas are a known boundary" note. Collected and
+     * emitted per module with that module's alias in cur_ns: pass 2 reset
+     * it to NULL, and a plain call inside a lambda body resolves
+     * "<ns>.<name>" first (the multi-file signature key) — with cur_ns NULL
+     * a same-module helper call failed with "call to unknown function". */
     {
         Node **clos = NULL;
         int nclos = 0, capc = 0;
         for (int m = 0; m < nmods; m++) {
             Node *mp = mods[m];
-            if (mp && mp->type == N_PROGRAM)
-                collect_lambdas(mp, &clos, &nclos, &capc);
+            if (!(mp && mp->type == N_PROGRAM)) continue;
+            int before = nclos;
+            collect_lambdas(mp, &clos, &nclos, &capc);
+            cg.cur_ns = (m > 0 && alias_list && alias_cnt &&
+                         alias_cnt[m] > 0) ? alias_list[m][0] : NULL;
+            for (int i = before; i < nclos; i++) cg_closure(&cg, clos[i]);
         }
-        for (int i = 0; i < nclos; i++) cg_closure(&cg, clos[i]);
+        cg.cur_ns = NULL;
         free(clos);
     }
     free(fns);

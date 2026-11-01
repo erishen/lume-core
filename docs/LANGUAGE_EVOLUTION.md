@@ -148,6 +148,31 @@
 另：探针修正 P1-4——lume 已有完整 Monte Carlo RNG（`seed/rand/rand_int/...`，
 2026-10-24 落地），该项从"新增"改为"文档化 + 一致性验证"。
 
+## P0-1 后续缺口与算法库升级（2026-11-01，tests/hof-consistency.lume 三后端一致全绿）
+
+P0-1 落地后把 sci/optim 的参数化变体升级为通用 fn 接口时，探针暴露两个
+编译器缺口（均在"lambda 捕获"与"跨模块"的组合下）：
+
+| 缺陷 | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| LLVM 捕获 ptr-like 参数 | lambda 捕获 `float[]`/`float[][]`/fn 形参 → SIGSEGV | 捕获数组的约定是"存外部 slot 的**地址**"，读回侧解引用一次；但 ptr-like 参数的 slot IS the value（无 alloca），创建侧存了值本身 | `llvm_cg_lit.inc` 创建侧对 ptr-like 参数先 box 进临时 alloca（对齐文本后端"每个参数都有 alloca"的约定）；`ptr_like_param` 上移到 `llvm_codegen_internal.h`（lit.inc 在 stmt.inc 之前 include） |
+| 跨模块 lambda 返回类型推断失败 | 被 import 模块内 `(t: float) => a.f(t)` 表达式体 → `define void` 包 `ret double` 的坏 IR（clang 拒） | 各模块先独立推断（无依赖模块签名），entry 推断时 shared 表只注入**命名函数**不含模块 lambda，lambda 的 ret 无从补推 | `codegen_infer_signatures_multi` 把每个模块的 lambda（cname 已盖戳）也注册进 shared，entry 固定点补推 ret/params 并写回 AST（写回只填空槽，幂等） |
+| 文本/LLVM 闭包内 plain call 跨模块 unknown | 模块内 lambda 体调同模块函数 `poly_val` 报 `call to unknown function` | 多文件 pass 2 结束后 `cur_ns` 重置为 NULL，closure 统一生成阶段 plain call 按 bare name 查表，而多文件注册 key 是 `"<ns>.<name>"` | 两处 closure 生成循环（codegen.c / llvm_codegen.c）按所属模块恢复 `cur_ns` |
+
+**已知边界**（探针确认，记录不修）：lambda 捕获不可逃逸（返回捕获闭包编译
+后端明确拒绝）；lambda 嵌套时内层捕获外层 lambda 的参数尚不支持
+（"captured variable has no codegen slot"）。库内算法均为单层不逃逸。
+
+**库升级**（sci/optim v0.2.0，双轨接口——通用 fn 内核 + 数据驱动薄包装）：
+
+| 库 | 新通用内核 | 薄包装（原变体，签名不变） |
+|---|---|---|
+| sci.lume | `rk4(f, y0, t0, t1, n)` / `bisect(f, a, b, tol)` / `newton(f, df, x0, tol)` / `integrate(f, a, b, n)` | rk4_linear / rk4_affine / rk4_poly / bisect_poly / newton_poly |
+| optim.lume | `golden_min(f, a, b, tol)` / `grad_desc(grad, x0, iters, lr)` | golden_poly_min / quad_min |
+
+薄包装全部走"内部 lambda 捕获不逃逸"路径，三后端逐字节一致；原有黄金值
+断言（√2、e、Dottie number、∫x²=1/3 等）全部保持。
+
 ## 优先级总览
 
 | 级别 | 项 | 一句话理由 |

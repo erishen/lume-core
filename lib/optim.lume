@@ -1,8 +1,10 @@
 // optim.lume — 最优化算法库（混合分层：.lume 算法层，零 C 摩擦）
 //
-// 设计约束（重要）：lume 当前**不支持「用户函数接收函数类型参数」**，故本库
-// 全部算法**数据驱动**——把「目标函数」化为数据（矩阵/向量/多项式系数），不
-// 传闭包。这与 sci.lume（参数化 RHS 的 RK4）同思路：
+// 双轨接口：P0-1（fn 类型形参）落地后，一维/向量内核升级为通用 fn 版本，
+// 原数据驱动变体改为薄包装（内部 lambda 捕获不逃逸，三后端一致）：
+//   · golden_min(f, a, b, tol)          ← 通用 f；golden_poly_min 为其包装
+//   · grad_desc(grad, x0, iters, lr)    ← 通用 ∇f；quad_min 为其包装
+// 其余算法仍数据驱动（把目标函数化为数据，矩阵/向量/多项式系数）：
 //   · least_squares / poly_fit  → 法方程 (AᵀA)x = Aᵀb（线性代数直接解）
 //   · quad_min / conj_grad      → 凸二次函数 f(x)=½xᵀQx−cᵀx（Q 对称正定矩阵）
 //   · linprog_simplex           → 线性规划（A,b,c 数据，单纯形表）
@@ -13,16 +15,19 @@
 //
 // 覆盖：
 //   向量工具    vec_dot / vec_add / vec_sub / vec_scale / mat_vec_mul（内部）
-//   线性最小二乘 least_squares(A, b)          解 min_x ||Ax−b||²
-//   多项式拟合  poly_fit(xs, ys, deg)         最小二乘拟合 deg 次多项式
-//   梯度下降    quad_min(Q, c, x0, iters, lr) 凸二次型梯度下降
+//   线性最小二乘 least_squares(A, b)            解 min_x ||Ax−b||²
+//   多项式拟合  poly_fit(xs, ys, deg)           最小二乘拟合 deg 次多项式
+//   梯度下降    grad_desc(grad, x0, iters, lr)  通用 ∇f 梯度下降
+//               quad_min(Q, c, x0, iters, lr)   凸二次型（薄包装）
 //   共轭梯度    conj_grad(A, b, x0, maxit, tol) SPD 线性系统迭代解
 //   线性规划    linprog_simplex(c, A, b)        max cᵀx, s.t. Ax≤b, x≥0, b≥0
-//   一元极小    golden_poly_min(coeffs,a,b,tol) 多项式 golden-section 极小
+//   一元极小    golden_min(f, a, b, tol)        golden-section 极小
+//               golden_poly_min(coeffs,a,b,tol) 多项式（薄包装）
 //
 // 使用：
 //   import "optim.lume" as opt;
 //   let x = opt.least_squares(A, b);
+//   let r = opt.golden_min((t: float) => (t - 2.0) * (t - 2.0), 0.0, 5.0, 1e-9);
 //
 // ───────────────────────────────────────────────────────────────────
 // 注：linprog_simplex 采用「最负检验数进基 + 最小比值出基」的单纯形法，
@@ -31,7 +36,7 @@
 import "linalg.lume" as la;
 import "sci.lume" as sci;
 
-export let OPTIM_VERSION = "0.1.0";
+export let OPTIM_VERSION = "0.2.0";
 
 // ════════════════════════════════════════════════════════════════
 // 向量工具（内部）
@@ -130,17 +135,22 @@ export func poly_fit(xs: float[], ys: float[], deg: int): float[] {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 无约束最小化：凸二次函数  f(x) = ½ xᵀQx − cᵀx  （Q 对称正定）
-//   梯度 ∇f = Qx − c；梯度下降  x ← x − lr·∇f
+// 无约束最小化（梯度下降）
+//   grad_desc（通用）：grad(x) 给出 ∇f，迭代 x ← x − lr·∇f
+//   quad_min（薄包装）：凸二次 f(x)=½xᵀQx−cᵀx（Q 对称正定），∇f = Qx − c
 // ════════════════════════════════════════════════════════════════
 
-export func quad_min(Q: float[][], c: float[], x0: float[], iters: int, lr: float): float[] {
+export func grad_desc(grad: fn(float[]) => float[], x0: float[], iters: int, lr: float): float[] {
   let x: float[] = x0;
   for (let k = 0; k < iters; k = k + 1) {
-    let g: float[] = vec_sub(mat_vec_mul(Q, x), c);   // 本地函数返回值须显式标注
+    let g: float[] = grad(x);
     x = vec_sub(x, vec_scale(g, lr));
   }
   return x;
+}
+
+export func quad_min(Q: float[][], c: float[], x0: float[], iters: int, lr: float): float[] {
+  return grad_desc((x: float[]) => vec_sub(mat_vec_mul(Q, x), c), x0, iters, lr);
 }
 
 // 共轭梯度法（CG）：求解对称正定线性系统 Ax = b（迭代法，无函数参数，纯数据驱动）。
@@ -267,17 +277,18 @@ export func linprog_simplex(c: float[], A: float[][], b: float[]): float[] {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 一元多项式极小（Golden-section search）
-//   在 [a, b] 上最小化多项式 p(x)（由系数给出），复用 sci.poly_val 求值。
+// 一元极小（Golden-section search）
+//   golden_min（通用）：在 [a, b] 上最小化 f（要求 f 单峰）。
+//   golden_poly_min（薄包装）：多项式目标，复用 sci.poly_val 求值。
 //   黄金分割比取常数 0.61803398875（避免依赖 sqrt 内置）。
 // ════════════════════════════════════════════════════════════════
 
-export func golden_poly_min(coeffs: float[], a: float, b: float, tol: float): float {
+export func golden_min(f: fn(float) => float, a: float, b: float, tol: float): float {
   let gr = 0.61803398875;
   let c = b - gr * (b - a);
   let d = a + gr * (b - a);
-  let fc: float = sci.poly_val(coeffs, c);
-  let fd: float = sci.poly_val(coeffs, d);
+  let fc: float = f(c);
+  let fd: float = f(d);
   for (let i = 0; i < 200; i = i + 1) {
     if (abs(b - a) < tol) { break; }
     if (fc < fd) {
@@ -285,14 +296,18 @@ export func golden_poly_min(coeffs: float[], a: float, b: float, tol: float): fl
       d = c;
       fd = fc;
       c = b - gr * (b - a);
-      fc = sci.poly_val(coeffs, c);
+      fc = f(c);
     } else {
       a = c;
       c = d;
       fc = fd;
       d = a + gr * (b - a);
-      fd = sci.poly_val(coeffs, d);
+      fd = f(d);
     }
   }
   return (a + b) / 2.0;
+}
+
+export func golden_poly_min(coeffs: float[], a: float, b: float, tol: float): float {
+  return golden_min((x: float) => sci.poly_val(coeffs, x), a, b, tol);
 }

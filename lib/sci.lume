@@ -5,28 +5,27 @@
 //
 // 覆盖：
 //   信息论      entropy / cross_entropy / kl_divergence / mutual_information / js_divergence
-//   数值积分    trapz / simpson
+//   数值积分    trapz / simpson / integrate（通用 f）
 //   插值        interp_linear / interp_lagrange
 //   多项式      poly_val / poly_deriv
-//   多项式求根  bisect_poly / newton_poly
-//   参数化 ODE  rk4_linear / rk4_poly / rk4_affine   (RK4)
+//   求根        bisect（通用 f）/ newton（通用 f, f'）+ 多项式薄包装
+//   ODE         rk4（通用 dy/dt = f(t,y)）+ 线性/仿射/多项式薄包装
 //
 // 使用：
 //   import "sci.lume" as sci;
 //   sci.entropy([0.5, 0.5]);
+//   sci.rk4((t: float, y: float) => -2.0 * y, 1.0, 0.0, 1.0, 100);
 //
-// ── 已知语言限制（重要）─────────────────────────────────────────────
-// lume 当前**不支持「用户函数接收函数类型参数」**：编译后端（text/LLVM）
-// 拒绝无类型标注的 func 形参，且不存在 `func` / `any` 类型标注语法。
-// 因此「通用 f(x) 求根」「通用 f(t,y) 的 ODE 求解器」无法在三后端通用
-// 实现。本库改用：
-//   · 多项式求根（系数 list 参数）—— 覆盖任意多项式，科学计算最常见；
-//   · 参数化 RHS 的 RK4（线性 / 仿射 / 多项式 RHS）—— 覆盖最常见 ODE 族。
-// 通用闭包式接口（local lambda）在解释器可用，但编译后端尚未实现，故不
-// 纳入默认交付，待 lume 支持函数类型后升级为通用接口。
+// ── 高阶函数接口（P0-1 落地后）────────────────────────────────────
+// lume 支持 fn 类型形参（`fn(float) => float`）后，本库提供通用算法
+// 内核：rk4 / bisect / newton / integrate 接收函数参数，原有数据驱动
+// 变体（rk4_linear / bisect_poly / …）全部改为薄包装（内部 lambda 捕
+// 获不逃逸，三后端一致），不再各自维护一份算法循环。
+// 已知边界：lambda 捕获外层变量**不可逃逸**（不能作为返回值带回），
+// 编译后端会明确报错；函数内直接传给算法内核则三后端全部可用。
 // ───────────────────────────────────────────────────────────────────
 
-export let SCI_VERSION = "0.1.0";
+export let SCI_VERSION = "0.2.0";
 
 // 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
 let LN2 = log(2.0);
@@ -215,19 +214,20 @@ export func poly_deriv(coeffs: float[]): float[] {
 }
 
 // ════════════════════════════════════════════════════════════════
-// 多项式求根（Root Finding，系数参数化 → 任意多项式通用）
+// 求根（Root Finding：通用 f 内核 + 多项式薄包装）
 // ════════════════════════════════════════════════════════════════
 
-// 二分法：要求 [a,b] 异号（f(a)·f(b)<0）；否则返回区间中点作为兜底。
-export func bisect_poly(coeffs: float[], a: float, b: float, tol: float): float {
-  let fa: float = poly_val(coeffs, a);
-  let fb: float = poly_val(coeffs, b);
+// 二分法（通用）：f 在 [a,b] 连续且 f(a)·f(b)<0 时收敛到根；
+// 异号性不满足时返回区间中点作为兜底（与调用方约定）。
+export func bisect(f: fn(float) => float, a: float, b: float, tol: float): float {
+  let fa: float = f(a);
+  let fb: float = f(b);
   if (fa * fb > 0.0) { return (a + b) / 2.0; }
   let lo = a;
   let hi = b;
   for (let i = 0; i < 200; i = i + 1) {
     let mid = (lo + hi) / 2.0;
-    let fm: float = poly_val(coeffs, mid);
+    let fm: float = f(mid);
     if (abs(fm) < tol || (hi - lo) / 2.0 < tol) { return mid; }
     if (fa * fm < 0.0) { hi = mid; fb = fm; }
     else { lo = mid; fa = fm; }
@@ -235,13 +235,12 @@ export func bisect_poly(coeffs: float[], a: float, b: float, tol: float): float 
   return (lo + hi) / 2.0;
 }
 
-// 牛顿法：x_{n+1} = x_n - f/f'，初值 x0。导数由 poly_deriv 给出。
-export func newton_poly(coeffs: float[], x0: float, tol: float): float {
-  let dcoeffs: float[] = poly_deriv(coeffs);
+// 牛顿法（通用）：x_{n+1} = x_n − f/f'，初值 x0。导数由调用方以函数给出。
+export func newton(f: fn(float) => float, df: fn(float) => float, x0: float, tol: float): float {
   let x: float = x0;
   for (let i = 0; i < 200; i = i + 1) {
-    let fx: float = poly_val(coeffs, x);
-    let dfx: float = poly_val(dcoeffs, x);
+    let fx: float = f(x);
+    let dfx: float = df(x);
     if (abs(dfx) < 1e-12) { return x; }
     let xn: float = x - fx / dfx;
     if (abs(xn - x) < tol) { return xn; }
@@ -250,62 +249,69 @@ export func newton_poly(coeffs: float[], x0: float, tol: float): float {
   return x;
 }
 
+// 多项式二分：对 bisect 的薄包装（f = poly_val(coeffs, ·)）。
+export func bisect_poly(coeffs: float[], a: float, b: float, tol: float): float {
+  return bisect((x: float) => poly_val(coeffs, x), a, b, tol);
+}
+
+// 多项式牛顿：对 newton 的薄包装（导数由 poly_deriv 给出）。
+export func newton_poly(coeffs: float[], x0: float, tol: float): float {
+  let dcoeffs: float[] = poly_deriv(coeffs);
+  return newton((x: float) => poly_val(coeffs, x),
+                (x: float) => poly_val(dcoeffs, x), x0, tol);
+}
+
 // ════════════════════════════════════════════════════════════════
-// 常微分方程（RK4，参数化 RHS）
-//   rk4_linear  : dy/dt = a·y                  （指数增长/衰减）
-//   rk4_affine  : dy/dt = a·y + b              （带漂移项）
-//   rk4_poly    : dy/dt = poly(t)              （RHS 仅为 t 的多项式）
+// 常微分方程（RK4：通用 f(t,y) 内核 + 数据驱动薄包装）
+//   rk4        : dy/dt = f(t, y)        —— 任意 RHS
+//   rk4_linear : dy/dt = a·y            （指数增长/衰减）
+//   rk4_affine : dy/dt = a·y + b        （带漂移项）
+//   rk4_poly   : dy/dt = poly(t)        （RHS 仅为 t 的多项式）
 // 返回包含初值的轨迹 list（长度 n+1），便于与解析解或欧拉法对比。
-// 通用 dy/dt = f(t,y) 待 lume 支持函数类型后提供。
 // ════════════════════════════════════════════════════════════════
 
-export func rk4_linear(a: float, y0: float, t0: float, t1: float, n: int): float[] {
+// 经典四阶 Runge-Kutta：dy/dt = f(t, y)。步数 n，起点 (t0, y0)。
+// k1 = f(t, y)，k2/k3 在中点、k4 在全步，权重 1:2:2:1。
+export func rk4(f: fn(float, float) => float, y0: float, t0: float, t1: float, n: int): float[] {
   let h = (t1 - t0) / float(n);
   let y = y0;
   let out: float[] = [y0];
   let t = t0;
   for (let i = 0; i < n; i = i + 1) {
-    let k1: float = a * y;
-    let k2: float = a * (y + h / 2.0 * k1);
-    let k3: float = a * (y + h / 2.0 * k2);
-    let k4: float = a * (y + h * k3);
+    let k1: float = f(t, y);
+    let k2: float = f(t + h / 2.0, y + h / 2.0 * k1);
+    let k3: float = f(t + h / 2.0, y + h / 2.0 * k2);
+    let k4: float = f(t + h, y + h * k3);
     y = y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
     t = t + h;
     out = push(out, y);
   }
   return out;
+}
+
+export func rk4_linear(a: float, y0: float, t0: float, t1: float, n: int): float[] {
+  return rk4((t: float, y: float) => a * y, y0, t0, t1, n);
 }
 
 export func rk4_affine(a: float, b: float, y0: float, t0: float, t1: float, n: int): float[] {
-  let h = (t1 - t0) / float(n);
-  let y = y0;
-  let out: float[] = [y0];
-  let t = t0;
-  for (let i = 0; i < n; i = i + 1) {
-    let k1: float = a * y + b;
-    let k2: float = a * (y + h / 2.0 * k1) + b;
-    let k3: float = a * (y + h / 2.0 * k2) + b;
-    let k4: float = a * (y + h * k3) + b;
-    y = y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
-    t = t + h;
-    out = push(out, y);
-  }
-  return out;
+  return rk4((t: float, y: float) => a * y + b, y0, t0, t1, n);
 }
 
 export func rk4_poly(coeffs: float[], y0: float, t0: float, t1: float, n: int): float[] {
-  let h = (t1 - t0) / float(n);
-  let y = y0;
-  let out: float[] = [y0];
-  let t = t0;
+  return rk4((t: float, y: float) => poly_val(coeffs, t), y0, t0, t1, n);
+}
+
+// ════════════════════════════════════════════════════════════════
+// 数值积分（通用 f）：中点法 ∫[a,b] f(x) dx，n 个等宽子区间。
+// 与 trapz/simpson（数据驱动）互补：f 为闭包时用它。
+// ════════════════════════════════════════════════════════════════
+
+export func integrate(f: fn(float) => float, a: float, b: float, n: int): float {
+  let h: float = (b - a) / (n * 1.0);
+  let s: float = 0.0;
   for (let i = 0; i < n; i = i + 1) {
-    let k1: float = poly_val(coeffs, t);
-    let k2: float = poly_val(coeffs, t + h / 2.0);
-    let k3: float = poly_val(coeffs, t + h / 2.0);
-    let k4: float = poly_val(coeffs, t + h);
-    y = y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
-    t = t + h;
-    out = push(out, y);
+    let xm: float = a + (i * 1.0 + 0.5) * h;
+    s = s + f(xm);
   }
-  return out;
+  return s * h;
 }
