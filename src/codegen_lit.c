@@ -297,13 +297,16 @@ Type *infer_list_elem(CG *g, Node *lit)
             default: break;
             }
         }
-        else if (e->type == N_UNARY && e->as.unary.op == OP_NEG) {
+        else if (e->type == N_UNARY && e->as.unary.op == OP_NEG &&
+                 e->as.unary.operand && e->as.unary.operand->type == N_LITERAL) {
             /* `-3.2` / `-7`: a negated literal is still a literal (the parser
              * only folds the LLONG_MIN overflow case, everything else keeps
              * the OP_NEG wrapper). Without this a list like [-3.2, 1.5]
              * decays to list<any>, HOF dispatch falls back to INT slots, and
              * the double bit patterns print as i64 garbage — the exact drift
-             * this pinning exists to prevent. */
+             * this pinning exists to prevent. A negated *variable* is left
+             * for the general fallback below: matching the node here without
+             * answering would consume it and force the decay. */
             Node *op = e->as.unary.operand;
             if (op && op->type == N_LITERAL) {
                 switch (op->as.lit.kind) {
@@ -337,8 +340,19 @@ Type *infer_list_elem(CG *g, Node *lit)
             Type *inner = infer_list_elem(g, e);
             t = inner ? type_list(inner) : NULL;
         }
-        /* Anything else (a call, another list, ...) is a kind this emitter
-         * cannot read statically. */
+        else if (g) {
+            /* P1-2（2026-11-01）：变量 / 调用 / 算术元素走通用 infer_node_type
+             * （slots→globals→scope→arm 的解析链、sig_find→builtin_infer_ret）。
+             * 之前任何非字面量元素都让整个字面量塌 list<any>——`f([big])`
+             * 传 float[] 参数报签名不匹配，用户被迫先 `let a: float[] = [big]`。
+             * 只接受可静态拼写的类型（prim/list/enum）；any 与 struct（匿名
+             * 形状的归一由下方 anon 规则与 ck_list 管）维持旧的塌缩行为。 */
+            t = infer_node_type(g, e);
+            if (t && t->kind != TY_INT && t->kind != TY_FLOAT &&
+                t->kind != TY_BOOL && t->kind != TY_STRING &&
+                t->kind != TY_LIST && t->kind != TY_ENUM)
+                t = NULL;
+        }
         if (!t) return NULL;
         if (et && et->kind != t->kind) return NULL;
         /* Two anonymous shapes unify only field-for-field: `(1, 2)` and

@@ -25,13 +25,15 @@ static Type *infer_list_elem(CG *g, Node *lit)
             default: break;
             }
         }
-        else if (e->type == N_UNARY && e->as.unary.op == OP_NEG) {
+        else if (e->type == N_UNARY && e->as.unary.op == OP_NEG &&
+                 e->as.unary.operand && e->as.unary.operand->type == N_LITERAL) {
             /* `-3.2` / `-7`: a negated literal is still a literal (the parser
              * only folds the LLONG_MIN overflow case, everything else keeps
              * the OP_NEG wrapper). Without this a list like [-3.2, 1.5]
              * decays to list<any>, HOF dispatch falls back to INT slots, and
              * the double bit patterns print as i64 garbage — the exact drift
-             * this pinning exists to prevent. Mirror of codegen_lit.c's copy. */
+             * this pinning exists to prevent. Mirror of codegen_lit.c's copy;
+             * a negated *variable* falls to the general fallback below. */
             Node *op = e->as.unary.operand;
             if (op && op->type == N_LITERAL) {
                 switch (op->as.lit.kind) {
@@ -57,7 +59,18 @@ static Type *infer_list_elem(CG *g, Node *lit)
              * has no static field type to dispatch a getter with. */
             t = infer_node_type(g, e);
         }
-        if (!t) return NULL;          /* a call, another list, ... is not static */
+        else if (g) {
+            /* P1-2（2026-11-01）：变量 / 调用 / 算术元素走通用 infer_node_type。
+             * 镜像 codegen_lit.c 的同名函数——任何非字面量元素曾让整个字面量
+             * 塌 list<any>（`f([big])` 传 float[] 参数报签名不匹配）。只接受
+             * 可静态拼写的类型（prim/list/enum）；any/struct 维持旧塌缩。 */
+            t = infer_node_type(g, e);
+            if (t && t->kind != TY_INT && t->kind != TY_FLOAT &&
+                t->kind != TY_BOOL && t->kind != TY_STRING &&
+                t->kind != TY_LIST && t->kind != TY_ENUM)
+                t = NULL;
+        }
+        if (!t) return NULL;          /* unresolvable element → list<any> */
         if (et && et->kind != t->kind) return NULL;
         /* Two anonymous shapes unify only field-for-field: `(1, 2)` and
          * `(3, "x")` are both TY_STRUCT but must not melt into one element

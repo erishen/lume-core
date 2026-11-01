@@ -1,0 +1,66 @@
+// p1-2-consistency.lume — 数组字面量元素类型通用推断（P1-2）三后端一致性锚定
+// 运行：tests/p1-2_backends.sh（解释器/文本 IR/LLVM 三份输出逐字节比对）
+//
+// 修复前：任何非字面量元素（变量/调用/算术）都让整个字面量塌 list<any>，
+// `f([big])` 传 float[] 参数报「argument 1 of 'f1' is a ?[], but the
+// parameter was already resolved as a float[]」，用户被迫先
+// `let a: float[] = [big]` 再传入。修复后：变量/调用/算术元素走通用
+// infer_node_type（只接受 prim/list/enum，any/struct 维持旧塌缩）。
+
+let big = 9.9;
+let row: float[] = [1.5, 2.5];
+
+func sum1(xs: float[]): float {
+  let s = 0.0;
+  for (let i = 0; i < len(xs); i = i + 1) {
+    s = s + xs[i];
+  }
+  return s;
+}
+func sum2(W: float[][]): float {
+  let s = 0.0;
+  for (let i = 0; i < len(W); i = i + 1) {
+    for (let j = 0; j < len(W[i]); j = j + 1) {
+      s = s + W[i][j];
+    }
+  }
+  return s;
+}
+func total(is: int[]): int {
+  let s = 0;
+  for (let i = 0; i < len(is); i = i + 1) {
+    s = s + is[i];
+  }
+  return s;
+}
+
+// ---------- 1-D：变量元素直接传参（修复前塌 ?[] 报签名不匹配） ----------
+print(sum1([big, 1.0]));            // 10.9
+print(sum1([-big, 0.5]));           // -9.4（取负变量元素）
+print(sum1([row[0], row[1]]));      // 4（索引元素）
+
+// ---------- 2-D：嵌套字面量含变量 ----------
+print(sum2([[1.0, big]]));          // 10.9
+print(sum2([[1.0, big], [3.0, 4.0]]));  // 17.9（混合：一个内层含变量、一个全常量）
+print(sum2([row, [7.0, 8.0]]));     // 19（变量行 + 常量行）
+
+// ---------- int 侧 ----------
+let n = 7;
+print(total([n, 1, 2]));            // 10（int 变量元素）
+print(total([n * 2, n]));           // 21（算术元素）
+
+// ---------- 调用元素（infer_node_type → sig_find / builtin_infer_ret） ----------
+print(sum1([sqrt(4.0), cos(0.0)])); // 3（native 内置元素）
+
+// ---------- for-in / HOF 消费路径不受影响 ----------
+let acc: float[] = [];
+for (let x in [big, 2.0]) {
+  acc = push(acc, x * 2.0);
+}
+print(sum1(acc));                   // 23.8
+
+// ---------- 异质仍塌（float+int 混合 → list<any>，与 ck_list 一致） ----------
+// 传给 float[] 参数会报签名不匹配——这里只验证合法路径，异质报错由
+// --check 的既有行为保证，不入本套件（三后端只比对可运行输出）。
+
+print("p1-2-consistency done");
