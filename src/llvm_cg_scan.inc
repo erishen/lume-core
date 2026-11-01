@@ -155,12 +155,15 @@ static Type *infer_node_type(CG *g, Node *n)
         /* A top-level binding lifts to a module global (SPEC 8.1 #10). */
         a = gvar_find(&g->gvars, n->as.var.name);
         if (a) return a->ty;
+        /* A match arm whose body is being type-inferred: its binds. */
+        Type *at = lt_find(&g->arm_scope, n->as.var.name);
+        if (at) return at;
         /* Built-in numeric constants read back as float (mirrors
-         * codegen_scan.c / cg_var's fallback). */
+         * codegen_scan.c / cg_var's fallback). Checked LAST: an arm bind
+         * spelled `pi` must keep its own type. */
         if (strcmp(n->as.var.name, "pi") == 0 || strcmp(n->as.var.name, "e") == 0)
             return type_prim(TY_FLOAT);
-        /* A match arm whose body is being type-inferred: its binds. */
-        return lt_find(&g->arm_scope, n->as.var.name);
+        return NULL;
     }
     case N_FUNC_LIT: {
         /* A closure value; thread the node through Type.func (mirrors
@@ -754,6 +757,10 @@ static void scan_stmt(CG *g, Node *n)
                 asg_push(&g->locals, nm, ty, slot, n->line);
             } else {
                 asg_push(&g->locals, nm, ty, NULL, n->line);
+                /* Block scoping (P1-9): mirrors the N_LET stamp (and
+                 * codegen_scan.c's N_LET_PAT) — a destructured shadow
+                 * binding dies with its block. */
+                g->locals.v[g->locals.n - 1].end_line = n->as.letpat.end_line;
             }
         }
         break;

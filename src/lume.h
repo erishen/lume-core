@@ -689,7 +689,11 @@ typedef struct Node {
                                     * SEPARATE strdup so both arrays free
                                     * independently). */
                  Type **types; int count;
-                 struct Node *init; } letpat;
+                 struct Node *init;
+                 /* Block scoping (P1-9): the owning block's closing-brace
+                  * line, stamped by parse_block like N_LET's (0 = top
+                  * level). One line covers every name of the pattern. */
+                 size_t end_line; } letpat;
         struct { char *name; } var;
         struct { char *name; struct Node *value; } assign;
         struct { struct Node *obj; char *name; struct Node *value; } assign_mem;

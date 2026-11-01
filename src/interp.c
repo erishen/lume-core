@@ -947,6 +947,13 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
                     saved[nsaved].name = nm;
                     saved[nsaved].old = env_get(env, nm,
                                                 &saved[nsaved].existed);
+                    /* The VM value stack is a gc_collect root: once the
+                     * block's `let` overwrites the env slot, this saved old
+                     * value is the ONLY remaining reference, and a
+                     * collection triggered inside the body would free it
+                     * before we restore it (observed: a shadowed string
+                     * came back as null). env_set uses the same idiom. */
+                    vm_push(vm, saved[nsaved].old);
                     nsaved++;
                 }
             }
@@ -964,6 +971,10 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
                 else
                     env_del(env, saved[j].name);
             }
+            /* Drop our GC root pinning (the pushes from the save phase).
+             * A `return` longjmps past this — fine: the call frame resets
+             * stack_count to its slot base, discarding them with it. */
+            for (int j = 0; j < nsaved; j++) vm_pop(vm);
             free(saved);
             return;
         }

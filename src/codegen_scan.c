@@ -147,16 +147,20 @@ Type *infer_node_type(CG *g, Node *n)
          * type was fixed by the driver's pre-scan. */
         a = gvar_find(&g->gvars, n->as.var.name);
         if (a) return a->ty;
-        /* Built-in numeric constants read back as float (interp.c seeds
-         * them into the globals env; mirrors cg_var's fallback). */
-        if (strcmp(n->as.var.name, "pi") == 0 || strcmp(n->as.var.name, "e") == 0)
-            return type_prim(TY_FLOAT);
         /* The signature pass runs before any slot is allocated, so a name it
          * already typed is the only other source. */
         Type *st = lt_find(&g->scope, n->as.var.name);
         if (st) return st;
         /* A match arm whose body is being type-inferred: its binds. */
-        return lt_find(&g->arm_scope, n->as.var.name);
+        Type *at = lt_find(&g->arm_scope, n->as.var.name);
+        if (at) return at;
+        /* Built-in numeric constants read back as float (interp.c seeds
+         * them into the globals env; mirrors cg_var's fallback). Checked
+         * LAST: a match-arm bind or signature-typed name that happens to
+         * be spelled `pi` must keep its own type. */
+        if (strcmp(n->as.var.name, "pi") == 0 || strcmp(n->as.var.name, "e") == 0)
+            return type_prim(TY_FLOAT);
+        return NULL;
     }
     case N_FUNC_LIT: {
         /* A function literal is a closure value. Thread the node through
@@ -823,6 +827,9 @@ static void scan_stmt(CG *g, Node *n)
                 asg_push(&g->locals, nm, ty, slot, n->line);
             } else {
                 asg_push(&g->locals, nm, ty, NULL, n->line);
+                /* Block scoping (P1-9): mirrors the N_LET stamp — a
+                 * destructured shadow binding dies with its block. */
+                g->locals.v[g->locals.n - 1].end_line = n->as.letpat.end_line;
             }
         }
         break;

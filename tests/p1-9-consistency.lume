@@ -73,6 +73,35 @@ func lambda_in_block(): int {
     return r;                              // 15（r 是外层绑定，赋值穿透）
 }
 
+// 块内 let-pat（解构）同样块级：出块恢复外层绑定
+// （曾三后端分歧：interp 恢复 1，编译后端 end_line=0 永久覆盖成 22）
+func letpat_block(): int {
+    let a = 1;
+    if (true) {
+        let { a, b } = {a: 22, b: 33};
+        print(a);              // 22
+        print(b);              // 33
+    }
+    print(a);                  // 1 —— 解构绑定出块即亡
+    return a;                  // 1
+}
+
+// GC 压力下的块级遮蔽：外层旧值在块体执行期间仅存活于 save/restore，
+// 块体大量分配会触发 gc_collect——曾把恢复值收走（读回 null/UAF）。
+// interp 用 VM 值栈钉住旧值（值栈是 GC 根）；编译后端无此问题，作对照。
+func gc_pressure_shadow(): string {
+    let s = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    if (true) {
+        let s = "shadow";
+        let i = 0;
+        while (i < 200000) {
+            let g = "garbage-" + str(i) + "-padpadpadpadpad";
+            i = i + 1;
+        }
+    }
+    return s;                  // 完整 36 字符——不被 GC 收走
+}
+
 print(shadow_basic());        // 2 1 1
 print(shadow_siblings());     // 7 2.5 0.5
 print(shadow_nested());       // 300 20 1 1
@@ -81,3 +110,5 @@ shadow_for_body();            // 10 20 30
 print(shadow_for_body());     // 0
 print(assign_reaches_outer());// 42
 print(lambda_in_block());     // 15
+print(letpat_block());        // 22 33 1 1
+print(gc_pressure_shadow());  // ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789

@@ -237,7 +237,12 @@ static Node *parse_block_impl(Parser *p) {
     size_t end_line = previous_line(p);
     for (int i = 0; i < n->as.block.count; i++) {
         Node *s = n->as.block.stmts[i];
-        if (s && s->type == N_LET) s->as.let.end_line = end_line;
+        if (!s) continue;
+        /* N_LET_PAT gets the same stamp: the interpreter's block save/
+         * restore covers destructured names too, so the native backends'
+         * asg_find must stop resolving them past the block as well. */
+        if (s->type == N_LET) s->as.let.end_line = end_line;
+        else if (s->type == N_LET_PAT) s->as.letpat.end_line = end_line;
     }
     return n;
 }
