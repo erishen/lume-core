@@ -102,6 +102,7 @@ jobs:
           mkdir -p "dist/lume-core-darwin-x64/bin"
           cp bin/lume-core "dist/lume-core-darwin-x64/bin/"
           cp -r examples docs README.md README.zh.md CHANGELOG.md install.sh "dist/lume-core-darwin-x64/"
+          cp -r lib "dist/lume-core-darwin-x64/"
           cd dist
           tar -czf lume-core-darwin-x64.tar.gz lume-core-darwin-x64
           if command -v sha256sum >/dev/null 2>&1; then
