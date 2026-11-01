@@ -519,13 +519,20 @@ static Type *infer_node_type(CG *g, Node *n)
         }
 
         Sig *s = sig_find(&g->sigs, name);
-        if (!s) return NULL;
-        /* `f()?` is the `ok` payload, not a Result -- see the same branch in
-         * codegen_scan.c. Reading the declared return type here alloca'd a
-         * pointer for an int payload and the emitter then printed the integer
-         * through lume_map_print, which segfaulted. */
-        if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
-        return s->ret;
+        if (s) {
+            /* `f()?` is the `ok` payload, not a Result -- see the same branch
+             * in codegen_scan.c. Reading the declared return type here alloca'd
+             * a pointer for an int payload and the emitter then printed the
+             * integer through lume_map_print, which segfaulted. */
+            if (n->as.call.propagate) return s->ret ? s->ret->elem : NULL;
+            return s->ret;
+        }
+        /* Native builtin (cos / sqrt / abs / min / ...): 语言演进提案 P1-1 —
+         * its return type is known from the Bi table, so `let x = cos(...)`
+         * infers without an annotation. Mirrors codegen_scan.c. */
+        return builtin_infer_ret(name, n->as.call.argc >= 1
+                                     ? infer_node_type(g, n->as.call.args[0])
+                                     : NULL);
     }
     case N_LIST_LIT: { Type *et = infer_list_elem(g, n); return type_list(et ? et : any_type()); }
     case N_INDEX: {

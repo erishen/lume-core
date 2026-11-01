@@ -1,0 +1,42 @@
+// p1-1-consistency.lume — 验证「本地/导入/native 函数返回值向 let 绑定传播」
+// （语言演进提案 P1-1，2026-11-01）在三后端一致。此前 `let x = cos(...)` /
+// `let y = abs(z)` 在编译后端须显式标注，解释器却可推断——本测试确认三类
+// 调用不再需要标注，且多态 abs/min/max 按首参类型推断（int→int, float→float）。
+
+import "../lib/sci.lume" as sci;
+
+// ── 本地函数（标注 / 无标注，返回 float 与 list）──
+func local_f(x: float): float { return x * 2.0; }
+func local_unannot(a: float, b: float) { return a + b; }   // 无返回标注
+func local_list(n: int): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, float(i)); }
+  return out;
+}
+
+func use() {
+  // 本地函数（标注）
+  let a = local_f(3.0);        print(a);                    // 6
+  // 本地函数（无返回标注，从 body 推断）
+  let b = local_unannot(1.0, 2.0); print(b);                // 3
+  // 本地函数（返回 list）
+  let c = local_list(3);       print(c[0]); print(c[2]);    // 0, 2
+  // native trig / math 内置（此前须标注）
+  let s = sin(0.5);            print(s);                    // 0.479426
+  let co = cos(0.5);           print(co);                   // 0.877583
+  let sq = sqrt(2.0);          print(sq);                   // 1.41421
+  let pw = pow(2.0, 10.0);     print(pw);                   // 1024
+  let fl = floor(1.7);         print(fl);                   // 1
+  // 多态 abs / min / max：按首参类型推断
+  let ai = abs(7);             print(ai);                   // 7 (int)
+  let af = abs(-3.0);          print(af);                   // 3 (float)
+  let mi = min(4, 9);          print(mi);                   // 4 (int)
+  let mf = max(3.0, 5.0);      print(mf);                   // 5 (float)
+  // 导入函数（sci.entropy，此前可推断）
+  let en = sci.entropy([0.5, 0.5]); print(en);               // 1
+  // 嵌套：native 包本地函数调用
+  let nested = abs(local_f(-2.0)); print(nested);            // 4
+  // 链式：native 作实参喂本地函数
+  let chained = local_f(cos(0.0)); print(chained);           // 2
+}
+use();

@@ -233,6 +233,10 @@ void emit_builtin_declares(CG *g);
 char *emit_instrf(CG *g, Type *ty, const char *fmt, ...);
 Type *infer_list_elem(CG *g, Node *lit);
 Type *infer_node_type(CG *g, Node *n);
+/* Native builtin return type for static inference (P1-1): NULL when not a
+ * builtin or the first argument is untyped; otherwise a primitive TY_INT /
+ * TY_FLOAT matching cg_builtin's flavour selection. */
+Type *builtin_infer_ret(const char *name, Type *arg0);
 const char *llvm_ptr_type_of(Type *t);
 const char *llvm_type_of(Type *t);
 const char *src_type_name(Type *t);

@@ -71,14 +71,29 @@
   （`parameter 't' of the lambda has no known type — annotate it or call it
   with a value of a known type`）——以此为准绳统一诊断风格。
 
-## P1-1 本地函数返回值类型推断（编译后端）
+## P1-1 本地/导入/native 函数返回值类型推断（编译后端）✅ 已实现（2026-11-01）
 
 - **现象**：`let x = 本模块函数(...)` 报 `cannot infer a type for 'x'`；
   `let cs = cos(ang)`（native 调用）同样；但**导入函数**（`la.mat_mul(...)`）
   可推断。同一份 ml-consistency 在解释器通过、文本后端编译失败，靠逐个补
   `: float[]` 修绿。
-- **提案**：checker 第二遍把已解析的函数签名（本地/导入/native）传播到
-  let 绑定。机械工作，收益是消除库开发中最高频的编译报错。
+- **实现**：根因是 `infer_node_type` 的 `N_CALL` 通用路径只 `sig_find` 本地/
+  导入函数签名，**native 内置不以 bare name 注册进 sigs**，且 `sin/cos/tan/
+  sqrt/pow/floor/ceil/round/abs/min/max` 等数学/trig 内置漏在硬编码推断列表
+  之外（只有 `exp/log/ln` 在列），于是落到 `sig_find` 返回 NULL。修法：
+  - 新增共享 helper `builtin_infer_ret(name, arg0)`（`src/codegen_call.c`，
+    基于 `Bi` 表）：float-only 内置恒答 float、int-only 恒答 int、多态
+    `abs/min/max` 按首参静态类型答 int/float；首参类型未知则答 NULL（安全
+    回退，绝不静默错型，与 `cg_builtin` 的 flavour 选择逐位对齐）。
+  - 文本后端 `codegen_scan.c` 与 LLVM 后端 `llvm_cg_scan.inc` 的 `N_CALL`
+    通用路径改为「先 `sig_find` 本地/导入函数，查不到再 `builtin_infer_ret`」
+    —— 单一数据源，`Bi` 表即权威，新增内置自动获得推断，不再维护两份长列表。
+- **验收**：`tests/p1-1-consistency.lume` 覆盖 native trig/math 内置、本地函数
+  （标注/无标注/返回 list）、导入函数、嵌套 `abs(local_f(...))`、链式
+  `local_f(cos(...))`、多态 `abs/min/max` 按首参类型；三后端逐字节一致。首参
+  类型未知时仍正确报 `cannot infer`（带提示），无类型不匹配崩溃。
+- **收益**：消除库开发中最高频的「native 调用须补 `: float` 标注」摩擦；
+  `ml`/`sci`/`optim` 等库后续可甩掉大量冗余标注。
 
 ## P1-2 数组字面量的期望类型下推
 
@@ -119,6 +134,26 @@
 - **库收益**：`lib/sig.lume` 的 `bitrev` 改用 `shl/shr/bitand/bit_or` 重写，
   消除浮点模隐患，`sig` 套件三后端不变。
 
+## P1-6 十六进制 / 二进制整数字面量支持（TODO）
+
+- **现象**：写 `0xF0` / `0b1010` 会被 lexer 拆成 `0` + 标识符（`xF0` /
+  `b1010`），直接报 `unexpected token` / `unknown identifier`；位模式只能
+  十进制写。
+- **踩坑场景**：`bitops-consistency.lume` / `sig_demo.lume` 里所有位模式常量
+  被迫十进制（`255`/`15`/`240` 配注释），可读性差、易错（已踩两次）。
+- **提案**：lexer 支持 `0x`/`0X` 十六进制、`0b`/`0B` 二进制整数字面量
+  （仅 int，float 不考虑 `0x1.8p3` 形态）。
+- **验收**：三后端解析一致；`0xFF == 255`、`0b1010 == 10`、`-0x10 == -16`。
+
+## P1-7 位运算中缀运算符（`|` / `&` / `^`）（TODO）
+
+- **现象**：`|` / `&` / `^` 不是表达式运算符，写 `a | b` 报 `expected ;`；
+  只能调用函数式 `bit_or(a,b)` / `bitand(a,b)` / `bit_xor(a,b)`。P1-5 落地后
+  位运算可用但写法仍笨重。
+- **提案**：把位或 / 位与 / 位异或提升为中缀运算符（优先级低于 `+` / `-`、
+  高于比较，与 C 一致），int 语义；`bit_*` 函数保留作等价别名。
+- **验收**：三后端一致；`(3 | 4) == 7`、`(5 & 3) == 1`、`(5 ^ 3) == 6`。
+
 ## P2-1 受控可变数组（性能）
 
 - **现象**：值语义下逐元素更新经 `set_flt` 全量拷贝，`set_m` 更是每元素
@@ -155,6 +190,7 @@
 | P0-3 | `let` 绑定名接受 HTTP 方法关键字（仅 route 简写位置保留关键字语义），parser_stmt.c 两处 | `let head = 0` 三后端可用，route 示例回归不变 |
 | P0-4 | `cannot infer` 附被调函数名与修复建议；list index 非 int 且含 `/` 时附 floor()/div() 提示 | 两条消息实测输出 |
 | P1-5 | `shl/shr/bitand/bit_or/bit_xor` 六个 int 内置：复用 `div/mod` 的 `BUILTINS[i64 风格]` 机制（text/LLVM 表 + rt.c 镜像 + interp.c 注册 + typecheck 白名单/元数）；移位按无符号逻辑移位、移位数掩 `&63` 防 UB | `tests/bitops-consistency.lume` 三后端逐字节一致；`lib/sig.lume` 的 `bitrev` 改用原语重写消除浮点模隐患 |
+| P1-1 | 共享 helper `builtin_infer_ret(name, arg0)`（`src/codegen_call.c`，基于 `Bi` 表）：float-only 恒答 float、int-only 恒答 int、多态 `abs/min/max` 按首参静态类型；文本/LLVM 两后端 `N_CALL` 通用路径改为「先 `sig_find` 本地/导入函数，查不到再 `builtin_infer_ret`」（单一数据源，新增内置自动获得推断） | `tests/p1-1-consistency.lume` 三后端逐字节一致；覆盖 native trig/math 内置、本地函数（标注/无标注/list）、导入函数、嵌套/链式、多态按首参类型；首参未知仍报 `cannot infer`（带提示），无错型崩溃 |
 
 另：探针修正 P1-4——lume 已有完整 Monte Carlo RNG（`seed/rand/rand_int/...`，
 2026-10-24 落地），该项从"新增"改为"文档化 + 一致性验证"。
@@ -192,5 +228,6 @@ P0-1 落地后把 sci/optim 的参数化变体升级为通用 fn 接口时，探
 | P0 | div/mod 内置 | 静默错值风险最高的一条 |
 | P0 | 保留字上下文化 | 纯误伤，修复成本最低 |
 | P0 | 诊断增强 | 全部后续开发受益 |
-| P1 | 返回类型推断 / 字面量下推 / 块作用域 | 高频摩擦逐个消除（RNG/P1-4 与位运算/P1-5 已落地） |
+| P1 | 返回类型推断（P1-1 已落地）/ 字面量下推 / 块作用域 | 高频摩擦逐个消除（RNG/P1-4、位运算/P1-5、函数返回值推断/P1-1 已落地） |
+| P1 | 十六进制/二进制字面量 / 位运算中缀运算符 | P1-6/P1-7：位运算落地后暴露的语法糖缺口，零语义风险 |
 | P2 | 可变数组 / 元组 | 性能与人体工学，等库规模再验证 |

@@ -422,6 +422,29 @@ static const Bi *builtin_find(const char *name)
     return NULL;
 }
 
+/* Return type of a native builtin call, for the compile backends' static
+ * inference (语言演进提案 P1-1): `let x = cos(...)` / `let y = abs(z)` should
+ * infer without an explicit annotation, the way imported-function results
+ * already do. Mirrors cg_builtin's flavour selection (codegen_call.c ~1884): a
+ * float-only builtin always answers float; an int-only one always int; a
+ * polymorphic one (abs/min/max) answers from the first argument's static type.
+ * Returns NULL when the name is not a builtin or the first argument's type is
+ * unknown — the binding keeps requiring an annotation (safe: never a type
+ * mismatch with the emitter). */
+Type *builtin_infer_ret(const char *name, Type *arg0)
+{
+    const Bi *b = builtin_find(name);
+    if (!b) return NULL;
+    if (b->fn_f == NULL) return type_prim(TY_INT);     /* int-only (div/mod/shift/bitops) */
+    if (b->fn_i == NULL) return type_prim(TY_FLOAT);    /* float-only (sqrt/sin/cos/pow/...) */
+    /* both flavours: follow the operand, exactly like cg_builtin */
+    if (arg0) {
+        if (arg0->kind == TY_FLOAT) return type_prim(TY_FLOAT);
+        if (arg0->kind == TY_INT)   return type_prim(TY_INT);
+    }
+    return NULL;   /* arg0 untyped → leave the binding to an annotation */
+}
+
 /* The value type a literal key maps to in m's static shape — the key set a
  * map literal carries, or a named struct's declared fields — or NULL when the
  * key is not a string literal or the shape does not mention it. get(m, "k")

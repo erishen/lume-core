@@ -341,6 +341,9 @@ static void arm_scope_push(CG *g, const char *name, Type *ty);
 static void arm_scope_clear(CG *g);
 static Type *infer_node_type(CG *g, Node *n);
 static Type *for_in_elem_type(CG *g, Node *n);
+/* Native builtin return type for static inference (P1-1); defined in
+ * codegen_call.c and linked into the same binary. */
+Type *builtin_infer_ret(const char *name, Type *arg0);
 /* from llvm_cg_scan.inc: the one value shape a struct's fields share, or
  * NULL when they disagree. The get() scan case and emit_get_call
  * (llvm_cg_call.inc) both answer with it, so it is forward-declared here
