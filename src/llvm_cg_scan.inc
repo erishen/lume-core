@@ -587,6 +587,11 @@ static Type *infer_node_type(CG *g, Node *n)
         int op = (int)n->as.binary.op;
         if (op == OP_AND || op == OP_OR) return type_prim(TY_BOOL);
         if (op >= OP_EQ && op <= OP_GE)  return type_prim(TY_BOOL);
+        /* Bitwise operators — P1-7. Both operands are int and the result is
+         * int; return it explicitly so a stray float-typed operand can never
+         * widen the result to float (the checker rejects float bitwise). */
+        if (op == OP_BITAND || op == OP_BITOR || op == OP_BITXOR)
+            return type_prim(TY_INT);
         Type *lt = infer_node_type(g, n->as.binary.left);
         Type *rt = infer_node_type(g, n->as.binary.right);
         bool lf = lt && lt->kind == TY_FLOAT;

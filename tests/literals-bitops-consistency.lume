@@ -1,0 +1,93 @@
+// literals-bitops-consistency.lume — P1-6 十六进制/二进制字面量 + P1-7 位运算
+// 中缀运算符（| & ^）三后端一致性锚定
+// 运行：tests/literals_bitops_backends.sh（解释器/文本 IR/LLVM 三份输出逐字节比对）
+//
+// P1-6：lexer 支持 0x/0X 十六进制、0b/0B 二进制整数字面量（仅 int，i64 有符号
+// 二进制补码；溢出报错，不提供十进制 2^63 那样的负号可化特例）。
+// P1-7：| & ^ 提升为中缀运算符，优先级低于 + -、高于比较/相等
+// （`a & b == c` 解析为 `(a & b) == c`）；bitand/bit_or/bit_xor 函数保留为等价别名。
+
+func plus_one(x: int): int {
+    let y = x + 1;
+    return y;
+}
+
+func double_it(x: int): int {
+    return x * 2;
+}
+
+// ---------- P1-6 基本解析 ----------
+print(0xFF);                     // 255
+print(0xff);                     // 255（小写 x 与数字）
+print(0X1F);                     // 31（大写 X）
+print(0b1010);                   // 10
+print(0B11);                     // 3（大写 B）
+print(0x0);                      // 0
+print(0b0);                      // 0
+print(-0x10);                    // -16（一元负号作用于字面量）
+print(-0b100);                   // -4
+print(0x7FFFFFFFFFFFFFFF);       // 9223372036854775807（i64 最大）
+print(0x10 + 16);                // 32（与十进制混算）
+print(0xFF == 255);              // true
+print(0b1010 == 10);             // true
+
+// ---------- P1-6 + P1-1 返回值推断：字面量经函数往返 ----------
+print(plus_one(0x0F));           // 16（let x = 0x0F + 1 推断 int）
+print(double_it(0b101));         // 10
+
+// ---------- P1-7 基本运算（与函数式别名逐一对齐） ----------
+print(240 & 15);                 // 0   == bitand(240, 15)
+print(255 & 15);                 // 15
+print(240 | 15);                 // 255 == bit_or(240, 15)
+print(255 | 15);                 // 255
+print(255 ^ 15);                 // 240 == bit_xor(255, 15)
+print(7 ^ 7);                    // 0
+print(3 | 4);                    // 7
+print(5 & 3);                    // 1
+print(5 ^ 3);                    // 6
+
+// ---------- P1-7 与函数式别名等价 ----------
+print((255 & 15) == bitand(255, 15));   // true
+print((240 | 15) == bit_or(240, 15));   // true
+print((255 ^ 15) == bit_xor(255, 15));  // true
+
+// ---------- P1-7 优先级：低于 + -，高于比较/相等 ----------
+print(7 & 3 == 3);               // true   —— (7 & 3) == 3
+print(1 | 2 + 3);                // 5      —— 1 | (2 + 3)，+ 优先
+print(6 & 1 + 1);                // 2      —— 6 & (1 + 1)
+print(1 | 2 | 4);                // 7（左结合链）
+print(1 ^ 2 ^ 3);                // 0（左结合链）
+print(1 | 2 ^ 2);                // 1      —— 1 | (2 ^ 2)，^ 比 | 紧
+print(3 ^ 1 & 1);                // 2      —— 3 ^ (1 & 1)，& 最紧
+
+// ---------- P1-6/P1-7 组合掩码 ----------
+print((0xF0 | 0x0F) & 0xFF);     // 255
+print(0b1100 ^ 0b1010);          // 6
+print(0xFF & 0x0F);              // 15
+print(0xF0 | 0x0F);              // 255
+
+// ---------- 与 P1-5 移位内置组合 ----------
+print((shl(1, 4) | 0xF) == 0x1F);        // true（16 | 15 == 31）
+print(shr(0xFF, 4));             // 15
+print(-9223372036854775808 == shl(1, 63)); // true（位模式移位；0x8000000000000000=2^63 溢出有符号 i64，故用十进制最小值）
+print(shr(-1, 4) == 0x0FFFFFFFFFFFFFFF); // true（逻辑右移非符号扩展）
+
+// ---------- 与 P0-2 div/mod 组合 ----------
+print(mod(0xFF, 0x10));          // 15
+print(div(0xFF, 0x10));          // 15
+print(0xFF / 16);                // 15.9375（/ 仍为浮点除，未受影响）
+
+// ---------- 负数操作数（补码语义三后端一致） ----------
+print(-1 & 0xFF);                // 255
+print(-1 | 0);                   // -1
+print(-1 ^ -1);                  // 0
+print(-16 & 0xFF);               // 240
+
+// ---------- bool 语义不受影响（逻辑 and/or 是关键字，位运算是运算符） ----------
+print(true and false);           // false
+print(true or false);            // true
+print(1 < 2 and 2 < 3);          // true
+print(not (1 & 1 == 0));         // true
+
+// ---------- 溢出边界：i64 最大值仍可表示 ----------
+print(0x7FFFFFFFFFFFFFFF + 1 == shl(-1, 63));  // true（环绕，与编译后端 add i64 一致）

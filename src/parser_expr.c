@@ -948,6 +948,7 @@ static Node *parse_term_impl(Parser *p) {
 }
 
 static Node *parse_comparison_impl(Parser *p);
+Node *parse_bitor(Parser *p);
 
 Node *parse_comparison(Parser *p) {
     if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
@@ -958,7 +959,9 @@ Node *parse_comparison(Parser *p) {
 }
 
 static Node *parse_comparison_impl(Parser *p) {
-    Node *left = parse_term(p);
+    /* Bitwise (P1-7) sits just below comparison: `(a & b) == c` without
+     * parens, while `+ -` still bind tighter than any bitwise operator. */
+    Node *left = parse_bitor(p);
     if (!left) return NULL;
     while (check(p, TOK_LT) || check(p, TOK_LE) || check(p, TOK_GT) || check(p, TOK_GE)) {
         Token t = peek(p);
@@ -996,6 +999,94 @@ static Node *parse_equality_impl(Parser *p) {
         if (!right) return NULL;
         Node *n = nalloc(N_BINARY, t.line);
         n->as.binary.op = (t.type == TOK_EQEQ) ? OP_EQ : OP_NE;
+        n->as.binary.left = left;
+        n->as.binary.right = right;
+        left = n;
+    }
+    return left;
+}
+
+/* Bitwise operators — language evolution proposal P1-7 (2026-11-01). They sit
+ * below the additive operators (`+ -`) and above the comparison/equality
+ * operators (`a & b == c` parses as `(a & b) == c`), so bitwise results can be
+ * compared without parens while `+` still binds tighter. Three levels: `&`
+ * binds tightest, then `^`, then `|`. The lone `|` token (TOK_PIPE) is shared
+ * with enum-variant separation and trailing-closure delimiters, but those are
+ * consumed in their own grammar positions (type-decl / postfix), so here it is
+ * unambiguously the bitwise OR of two expressions. */
+
+static Node *parse_bitand_impl(Parser *p);
+static Node *parse_bitxor_impl(Parser *p);
+static Node *parse_bitor_impl(Parser *p);
+
+Node *parse_bitand(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_bitand_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_bitand_impl(Parser *p) {
+    Node *left = parse_term(p);
+    if (!left) return NULL;
+    while (check(p, TOK_AMP)) {
+        Token t = peek(p);
+        advance(p);
+        Node *right = parse_term(p);
+        if (!right) return NULL;
+        Node *n = nalloc(N_BINARY, t.line);
+        n->as.binary.op = OP_BITAND;
+        n->as.binary.left = left;
+        n->as.binary.right = right;
+        left = n;
+    }
+    return left;
+}
+
+Node *parse_bitxor(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_bitxor_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_bitxor_impl(Parser *p) {
+    Node *left = parse_bitand(p);
+    if (!left) return NULL;
+    while (check(p, TOK_CARET)) {
+        Token t = peek(p);
+        advance(p);
+        Node *right = parse_bitand(p);
+        if (!right) return NULL;
+        Node *n = nalloc(N_BINARY, t.line);
+        n->as.binary.op = OP_BITXOR;
+        n->as.binary.left = left;
+        n->as.binary.right = right;
+        left = n;
+    }
+    return left;
+}
+
+Node *parse_bitor(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_bitor_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_bitor_impl(Parser *p) {
+    Node *left = parse_bitxor(p);
+    if (!left) return NULL;
+    while (check(p, TOK_PIPE)) {
+        Token t = peek(p);
+        advance(p);
+        Node *right = parse_bitxor(p);
+        if (!right) return NULL;
+        Node *n = nalloc(N_BINARY, t.line);
+        n->as.binary.op = OP_BITOR;
         n->as.binary.left = left;
         n->as.binary.right = right;
         left = n;

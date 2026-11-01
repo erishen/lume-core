@@ -811,6 +811,9 @@ static void eval_expr_binary(VM *vm, Node *n, Env *env) {
             case OP_ADD: vm_push(vm, val_int((long long)((unsigned long long)a + (unsigned long long)b))); return;
             case OP_SUB: vm_push(vm, val_int((long long)((unsigned long long)a - (unsigned long long)b))); return;
             case OP_MUL: vm_push(vm, val_int((long long)((unsigned long long)a * (unsigned long long)b))); return;
+            case OP_BITAND: vm_push(vm, val_int(a & b)); return;
+            case OP_BITOR:  vm_push(vm, val_int(a | b)); return;
+            case OP_BITXOR: vm_push(vm, val_int(a ^ b)); return;
             case OP_LT:  vm_push(vm, val_bool(a <  b)); return;
             case OP_LE:  vm_push(vm, val_bool(a <= b)); return;
             case OP_GT:  vm_push(vm, val_bool(a >  b)); return;

@@ -510,6 +510,18 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                 }
                 return type_prim(TY_BOOL);
             }
+            if (op == OP_BITAND || op == OP_BITOR || op == OP_BITXOR) {
+                /* Bitwise operators — P1-7. Both operands must be int; the
+                 * result is always int. (Float operands are rejected: there is
+                 * no integer→float coercion for bits, matching the `div`/`mod`
+                 * rule that arithmetic on ints stays integral.) */
+                Type *lt = ck_expr(c, n->as.binary.left, NULL);
+                Type *rt = ck_expr(c, n->as.binary.right, NULL);
+                if (lt && rt && lt->kind != TY_ANY && rt->kind != TY_ANY &&
+                    (lt->kind != TY_INT || rt->kind != TY_INT))
+                    ck_fail(c, n->line, "bitwise operator needs int operands");
+                return type_prim(TY_INT);
+            }
             /* arithmetic */
             Type *lt = ck_expr(c, n->as.binary.left, NULL);
             Type *rt = ck_expr(c, n->as.binary.right, NULL);

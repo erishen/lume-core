@@ -77,6 +77,38 @@ static void emit_number(LexOut *o, const char *start, int len) {
     Token *t = &o->toks[o->count - 1];
     t->is_int = is_float ? 0 : 1;
     if (!is_float) {
+        /* Hex (`0x`/`0X`) and binary (`0b`/`0B`) integer literals — language
+         * evolution proposal P1-6 (2026-11-01). The scanner already collected
+         * only valid digits for the detected base, so `buf` here is e.g.
+         * "0xFF" / "0b1010". Parse with the matching base; the int is still a
+         * signed i64 (two's complement, docs/SPEC.md), so an overflow is an
+         * error, same as a too-large decimal. Unlike decimal, hex/binary do
+         * NOT get the 2^63 negatable carve-out: `-0x8000000000000000` is not
+         * representable as the negation of a clamped magnitude the way decimal
+         * `-9223372036854775808` is, so we just reject overflow outright. */
+        if (len >= 2 && buf[0] == '0' &&
+            (buf[1] == 'x' || buf[1] == 'X' || buf[1] == 'b' || buf[1] == 'B')) {
+            int base = (buf[1] == 'b' || buf[1] == 'B') ? 2 : 16;
+            const char *digits = buf + 2;
+            if (digits[0] == '\0') {  /* guarded by the scanner, but be safe */
+                t->is_int = 0;
+                lx_error(&o->lx, "invalid hexadecimal/binary literal");
+                return;
+            }
+            errno = 0;
+            char *end = NULL;
+            long long v = strtoll(digits, &end, base);
+            if (end == digits || *end != '\0' || errno == ERANGE) {
+                t->is_int = 0;
+                lx_error(&o->lx, "integer literal does not fit in int (i64)");
+                return;
+            }
+            t->inum = v;
+            t->num = (double)v;
+            t->neg_min = 0;
+            t->is_int = 1;
+            return;
+        }
         errno = 0;
         char *end = NULL;
         long long v = strtoll(buf, &end, 10);
@@ -115,6 +147,9 @@ static bool is_ident_char(char c) {
     return is_ident_start(c) || (c >= '0' && c <= '9');
 }
 static bool is_digit(char c) { return c >= '0' && c <= '9'; }
+static bool is_hexdigit(char c) {
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
 
 static const struct {
     const char *word;
@@ -397,6 +432,29 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
         size_t save_pos = o.lx.pos;
 
         if (is_digit(c)) {
+            /* Hex (`0x`/`0X`) and binary (`0b`/`0B`) literals — P1-6. The
+             * `0` is a digit, so this branch also catches them; detect the
+             * base prefix up front and scan only valid digits for that base
+             * before handing the whole run to emit_number(). A prefix with no
+             * valid digit after it (`0x`, `0xG`, `0b2`) is a lex error. */
+            char n1 = source[o.lx.pos + 1];
+            if (c == '0' && (n1 == 'x' || n1 == 'X' || n1 == 'b' || n1 == 'B')) {
+                bool is_hex = (n1 == 'x' || n1 == 'X');
+                const char *p = source + o.lx.pos + 2;
+                if (is_hex) {
+                    while (is_hexdigit(*p)) p++;
+                } else {
+                    while (*p == '0' || *p == '1') p++;
+                }
+                if (p == source + o.lx.pos + 2) {
+                    lx_error(&o.lx, "invalid hexadecimal/binary literal");
+                    o.lx.pos += 2;
+                    break;
+                }
+                o.lx.pos = (size_t)(p - source);
+                emit_number(&o, tok_start, (int)(p - tok_start));
+                continue;
+            }
             const char *p = tok_start;
             while (is_digit(*p)) p++;
             if (*p == '.') {
@@ -486,7 +544,12 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
                 t = source[o.lx.pos + 1] == '|' ? (width = 2, TOK_OR) : TOK_PIPE;
                 break;
             case '&':
-                t = source[o.lx.pos + 1] == '&' ? (width = 2, TOK_AND) : TOK_ERROR;
+                t = source[o.lx.pos + 1] == '&' ? (width = 2, TOK_AND) : TOK_AMP;
+                break;
+            case '^':
+                /* bitwise XOR — language evolution proposal P1-7 (2026-11-01);
+                 * previously an "unexpected character" lex error. */
+                t = TOK_CARET;
                 break;
             default:
                 t = TOK_ERROR;

@@ -430,6 +430,9 @@ static Val cg_binary(CG *g, Node *n)
             break;
         }
         case OP_MOD: r = LLVMBuildSRem(g->ab, a.v, b.v, "a"); break;
+        case OP_BITAND: r = LLVMBuildAnd(g->ab, a.v, b.v, "a"); break;
+        case OP_BITOR:  r = LLVMBuildOr(g->ab, a.v, b.v, "a"); break;
+        case OP_BITXOR: r = LLVMBuildXor(g->ab, a.v, b.v, "a"); break;
         default:     ERRV(g, "line %zu: bad operator", n->line);
         }
     }

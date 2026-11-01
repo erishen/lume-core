@@ -615,6 +615,10 @@ Type *infer_node_type(CG *g, Node *n)
             Type *l = infer_node_type(g, n->as.binary.left);
             return l ? l : infer_node_type(g, n->as.binary.right);
         }
+        /* Bitwise operators — P1-7. Both operands are int and the result is
+         * int, regardless of any any-typed operand on either side. */
+        case OP_BITAND: case OP_BITOR: case OP_BITXOR:
+            return type_prim(TY_INT);
         default: {
             Type *l = infer_node_type(g, n->as.binary.left);
             Type *r = infer_node_type(g, n->as.binary.right);

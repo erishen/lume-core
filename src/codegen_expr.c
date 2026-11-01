@@ -761,6 +761,9 @@ static Val cg_binary(CG *g, Node *n)
             break;
         }
         case OP_MOD: r = emit_instrf(g, rty, "srem %s %s, %s", i64, a.v, b.v); break;
+        case OP_BITAND: r = emit_instrf(g, rty, "and %s %s, %s", i64, a.v, b.v); break;
+        case OP_BITOR:  r = emit_instrf(g, rty, "or %s %s, %s", i64, a.v, b.v); break;
+        case OP_BITXOR: r = emit_instrf(g, rty, "xor %s %s, %s", i64, a.v, b.v); break;
         default:     ERRV(g, "line %zu: bad operator", n->line);
         }
     }

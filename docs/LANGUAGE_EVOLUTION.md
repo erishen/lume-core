@@ -134,25 +134,40 @@
 - **库收益**：`lib/sig.lume` 的 `bitrev` 改用 `shl/shr/bitand/bit_or` 重写，
   消除浮点模隐患，`sig` 套件三后端不变。
 
-## P1-6 十六进制 / 二进制整数字面量支持（TODO）
+## P1-6 十六进制 / 二进制整数字面量支持 ✅ 已实现（2026-11-01）
 
 - **现象**：写 `0xF0` / `0b1010` 会被 lexer 拆成 `0` + 标识符（`xF0` /
   `b1010`），直接报 `unexpected token` / `unknown identifier`；位模式只能
   十进制写。
-- **踩坑场景**：`bitops-consistency.lume` / `sig_demo.lume` 里所有位模式常量
-  被迫十进制（`255`/`15`/`240` 配注释），可读性差、易错（已踩两次）。
-- **提案**：lexer 支持 `0x`/`0X` 十六进制、`0b`/`0B` 二进制整数字面量
-  （仅 int，float 不考虑 `0x1.8p3` 形态）。
-- **验收**：三后端解析一致；`0xFF == 255`、`0b1010 == 10`、`-0x10 == -16`。
+- **实现**：scanner 在数字分支前探测 `0x`/`0X`/`0b`/`0B` 前缀，按对应进制
+  收集数字（hex 用 is_hexdigit、binary 只收 0/1），`emit_number` 按前缀选
+  `strtoll` 基数 16/2。int 仍是有符号 i64（二进制补码），溢出报错；与十进制
+  不同，hex/binary **不提供** 2^63 负号可化特例（`-0x8000000000000000` 不可
+  表示，直接拒绝——十进制 `-9223372036854775808` 的 clamp+negate 机制对
+  hex 无意义）。前缀后无有效数字（`0x`、`0xG`、`0b2`）是词法错误。
+- **验收**：`tests/literals-bitops-consistency.lume` 覆盖大小写前缀、负号、
+  i64 最大值 `0x7FFFFFFFFFFFFFFF`、与十进制混算、经函数往返（P1-1 推断
+  协同）；三后端逐字节一致。
 
-## P1-7 位运算中缀运算符（`|` / `&` / `^`）（TODO）
+## P1-7 位运算中缀运算符（`|` / `&` / `^`）✅ 已实现（2026-11-01）
 
 - **现象**：`|` / `&` / `^` 不是表达式运算符，写 `a | b` 报 `expected ;`；
-  只能调用函数式 `bit_or(a,b)` / `bitand(a,b)` / `bit_xor(a,b)`。P1-5 落地后
-  位运算可用但写法仍笨重。
-- **提案**：把位或 / 位与 / 位异或提升为中缀运算符（优先级低于 `+` / `-`、
-  高于比较，与 C 一致），int 语义；`bit_*` 函数保留作等价别名。
-- **验收**：三后端一致；`(3 | 4) == 7`、`(5 & 3) == 1`、`(5 ^ 3) == 6`。
+  只能调用函数式 `bit_or(a,b)` / `bitand(a,b)` / `bit_xor(a,b)`。
+- **实现**：lexer 把单写 `&` 从 `TOK_ERROR` 改为 `TOK_AMP`、新增 `^` →
+  `TOK_CARET`（`||` 逻辑或、`&&` 逻辑与不变；单写 `|` 复用既有 `TOK_PIPE`，
+  其 enum 变体分隔与 trailing-closure 定界用法均在各自语法位置、与表达式
+  位或不冲突）。parser 在 `parse_term`（`+ -`）与 `parse_comparison` 之间插
+  入三层：`parse_bitor → parse_bitxor → parse_bitand → parse_term`——即
+  `&` 最紧、`^` 次之、`|` 最松，整体**低于 `+ -`、高于比较/相等**
+  （`a & b == c` 解析为 `(a & b) == c`）。三后端各加发射：
+  interp int 分支直接 `&`/`|`/`^`；文本 IR `and/or/xor i64`；libLLVM
+  `LLVMBuildAnd/Or/Xor`；两后端 `infer_node_type` 显式答 int（防浮点侧
+  误宽化）。`bitand`/`bit_or`/`bit_xor` 函数保留为等价别名。
+- **验收**：`tests/literals-bitops-consistency.lume` 覆盖基本运算、与函数式
+  别名等价、优先级（`7 & 3 == 3` 为 true、`1 | 2 + 3` 为 5）、左结合链、
+  与 shl/shr、div/mod、负数补码组合；三后端逐字节一致。enum `|` 变体分隔
+  （tests/enum.lume）与 trailing closure（tests/hof-consistency.lume）回归
+  不变。
 
 ## P2-1 受控可变数组（性能）
 
@@ -191,6 +206,8 @@
 | P0-4 | `cannot infer` 附被调函数名与修复建议；list index 非 int 且含 `/` 时附 floor()/div() 提示 | 两条消息实测输出 |
 | P1-5 | `shl/shr/bitand/bit_or/bit_xor` 六个 int 内置：复用 `div/mod` 的 `BUILTINS[i64 风格]` 机制（text/LLVM 表 + rt.c 镜像 + interp.c 注册 + typecheck 白名单/元数）；移位按无符号逻辑移位、移位数掩 `&63` 防 UB | `tests/bitops-consistency.lume` 三后端逐字节一致；`lib/sig.lume` 的 `bitrev` 改用原语重写消除浮点模隐患 |
 | P1-1 | 共享 helper `builtin_infer_ret(name, arg0)`（`src/codegen_call.c`，基于 `Bi` 表）：float-only 恒答 float、int-only 恒答 int、多态 `abs/min/max` 按首参静态类型；文本/LLVM 两后端 `N_CALL` 通用路径改为「先 `sig_find` 本地/导入函数，查不到再 `builtin_infer_ret`」（单一数据源，新增内置自动获得推断） | `tests/p1-1-consistency.lume` 三后端逐字节一致；覆盖 native trig/math 内置、本地函数（标注/无标注/list）、导入函数、嵌套/链式、多态按首参类型；首参未知仍报 `cannot infer`（带提示），无错型崩溃 |
+| P1-6 | scanner 探测 `0x/0X/0b/0B` 前缀按进制收数字，`emit_number` 按 base 16/2 `strtoll`；有符号 i64 溢出报错，无 2^63 负号可化特例 | `tests/literals-bitops-consistency.lume` 三后端逐字节一致；大小写前缀/负号/i64 最大值/混算/函数往返 |
+| P1-7 | 单写 `&`→`TOK_AMP`（原 TOK_ERROR）、新增 `^`→`TOK_CARET`、单写 `|` 复用 `TOK_PIPE`；parser 在 term 与 comparison 间插 `parse_bitor→parse_bitxor→parse_bitand→parse_term` 三层（低于 `+ -`、高于比较）；interp int 分支 + 文本 IR `and/or/xor i64` + libLLVM `LLVMBuildAnd/Or/Xor` + 两 scan 显式答 int | 同上套件；优先级（`(a&b)==c`）、别名等价、enum/trailing-closure 回归不变 |
 
 另：探针修正 P1-4——lume 已有完整 Monte Carlo RNG（`seed/rand/rand_int/...`，
 2026-10-24 落地），该项从"新增"改为"文档化 + 一致性验证"。
@@ -229,5 +246,5 @@ P0-1 落地后把 sci/optim 的参数化变体升级为通用 fn 接口时，探
 | P0 | 保留字上下文化 | 纯误伤，修复成本最低 |
 | P0 | 诊断增强 | 全部后续开发受益 |
 | P1 | 返回类型推断（P1-1 已落地）/ 字面量下推 / 块作用域 | 高频摩擦逐个消除（RNG/P1-4、位运算/P1-5、函数返回值推断/P1-1 已落地） |
-| P1 | 十六进制/二进制字面量 / 位运算中缀运算符 | P1-6/P1-7：位运算落地后暴露的语法糖缺口，零语义风险 |
+| P1 | 十六进制/二进制字面量 / 位运算中缀运算符（P1-6/P1-7 已落地） | 位运算落地后暴露的语法糖缺口，零语义风险 |
 | P2 | 可变数组 / 元组 | 性能与人体工学，等库规模再验证 |
