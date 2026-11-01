@@ -147,6 +147,10 @@ Type *infer_node_type(CG *g, Node *n)
          * type was fixed by the driver's pre-scan. */
         a = gvar_find(&g->gvars, n->as.var.name);
         if (a) return a->ty;
+        /* Built-in numeric constants read back as float (interp.c seeds
+         * them into the globals env; mirrors cg_var's fallback). */
+        if (strcmp(n->as.var.name, "pi") == 0 || strcmp(n->as.var.name, "e") == 0)
+            return type_prim(TY_FLOAT);
         /* The signature pass runs before any slot is allocated, so a name it
          * already typed is the only other source. */
         Type *st = lt_find(&g->scope, n->as.var.name);

@@ -280,7 +280,17 @@ static Val cg_var(CG *g, Node *n)
      * and the semantics are the interpreter's call-time env lookup — the
      * value read is whatever the top level last stored, not a snapshot. */
     if (!a) a = gvar_find(&g->gvars, n->as.var.name);
-    if (!a) ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
+    if (!a) {
+        /* Built-in numeric constants (interp.c seeds the globals env with
+         * them before any user code runs). They are not gvars, so read them
+         * back as IR double constants — same value the interpreter stores,
+         * and user `let pi` still wins because locals/gvars resolve first. */
+        if (strcmp(n->as.var.name, "pi") == 0)
+            return val_make(type_prim(TY_FLOAT), "3.141592653589793");
+        if (strcmp(n->as.var.name, "e") == 0)
+            return val_make(type_prim(TY_FLOAT), "2.718281828459045");
+        ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
+    }
 
     const char *lt = llvm_type_of(a->ty);
     if (!lt) ERRV(g, "line %zu: variable '%s' has no codegen type", n->line, n->as.var.name);

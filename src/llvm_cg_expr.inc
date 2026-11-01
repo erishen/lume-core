@@ -90,7 +90,20 @@ static Val cg_var(CG *g, Node *n)
      * slot value is the global itself — a valid pointer operand for the load,
      * same as an alloca). Mirrors codegen_expr.c's fallback. */
     if (!a) a = gvar_find(&g->gvars, n->as.var.name);
-    if (!a) ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
+    if (!a) {
+        /* Built-in numeric constants (interp.c seeds the globals env with
+         * them before any user code runs). They are not gvars, so read them
+         * back as LLVM double constants — same value the interpreter stores,
+         * and user `let pi` still wins because locals/gvars resolve first.
+         * Mirrors codegen_expr.c's fallback. */
+        if (strcmp(n->as.var.name, "pi") == 0)
+            return val_make(type_prim(TY_FLOAT),
+                            LLVMConstReal(g->dbl, 3.141592653589793));
+        if (strcmp(n->as.var.name, "e") == 0)
+            return val_make(type_prim(TY_FLOAT),
+                            LLVMConstReal(g->dbl, 2.718281828459045));
+        ERRV(g, "line %zu: unknown variable '%s'", n->line, n->as.var.name);
+    }
     if (!ty_of(g, a->ty))
         ERRV(g, "line %zu: variable '%s' has no codegen type", n->line, n->as.var.name);
 

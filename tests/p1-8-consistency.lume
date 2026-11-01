@@ -1,0 +1,28 @@
+// p1-8-consistency.lume — 顶层读内置数值常量 pi/e（P1-8）在三后端一致。
+// 既有缺口：interp.c 把 pi/e 种进 globals env，但编译后端的 gvar 表
+// 不含它们——顶层（及推断路径）读 pi/e 曾报 "unknown variable"。
+// 修复：两后端 cg_var / infer_node_type 在 locals/gvars 均未命中时
+// 回退为内置常量（float）；用户同名 let 仍按先 locals 后 gvars 优先。
+// 覆盖：顶层直接读 / 无标注 let 推断 / 函数内读（回归）/ 函数内局部遮蔽。
+
+let top = pi * 2.0 + e;   // 无标注 let：走 infer_node_type 的 N_VAR 回退
+print(top);               // 9.00147
+print(pi);                // 3.14159
+print(e);                 // 2.71828
+
+func shadow_local(): float {
+  let pi = 42.0;          // 局部遮蔽：先 locals 命中，常量回退不触发
+  return pi;
+}
+print(shadow_local());    // 42
+
+func plain_read(): float {
+  return pi + e;          // 函数内读（回归：修复前已可用）
+}
+print(plain_read());      // 5.85987
+
+func infer_let(): float {
+  let tau = pi * 2.0;     // 函数内无标注 let 也走推断回退
+  return tau;
+}
+print(infer_let());       // 6.28319

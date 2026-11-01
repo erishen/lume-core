@@ -155,6 +155,10 @@ static Type *infer_node_type(CG *g, Node *n)
         /* A top-level binding lifts to a module global (SPEC 8.1 #10). */
         a = gvar_find(&g->gvars, n->as.var.name);
         if (a) return a->ty;
+        /* Built-in numeric constants read back as float (mirrors
+         * codegen_scan.c / cg_var's fallback). */
+        if (strcmp(n->as.var.name, "pi") == 0 || strcmp(n->as.var.name, "e") == 0)
+            return type_prim(TY_FLOAT);
         /* A match arm whose body is being type-inferred: its binds. */
         return lt_find(&g->arm_scope, n->as.var.name);
     }
