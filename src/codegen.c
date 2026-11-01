@@ -115,6 +115,12 @@ void asg_push(Asgs *a, const char *name, Type *ty, const char *slot,
      * the visible binding at a use is the latest one declared before it. */
     a->v[a->n].line = line;
     a->v[a->n].shadow = 0;
+    /* Block scoping (P1-9): 0 = lives to the end of the function. Must be
+     * zeroed here — the slots come from xrealloc, so a fresh entry's other
+     * unset fields would otherwise hold garbage (a random end_line made
+     * asg_find reject live bindings: "'lex1' was not allocated by the
+     * scan pass"). */
+    a->v[a->n].end_line = 0;
     a->n++;
 }
 
@@ -127,8 +133,13 @@ void asg_push_shadow(Asgs *a, const char *name, Type *ty, const char *slot,
 
 Asg *asg_find(Asgs *a, const char *name, size_t use_line)
 {
+    /* Block scoping (P1-9): a binding whose end_line is set stops being
+     * visible after its block's closing brace. Entries are pushed in
+     * source order, so scanning backwards the most recent LIVE binding
+     * wins — a shadow that has expired no longer captures the read. */
     for (int i = a->n - 1; i >= 0; i--)
-        if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line)
+        if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line &&
+            (a->v[i].end_line == 0 || use_line <= a->v[i].end_line))
             return &a->v[i];
     return NULL;
 }

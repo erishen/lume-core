@@ -378,6 +378,22 @@ void env_set(VM *vm, Env *env, const char *name, Value v) {
     vm_pop(vm);
 }
 
+/* Remove the innermost binding of name in THIS env (no parent walk). The
+ * key string is GC-owned (gc_cstr), so dropping the slot is enough — the
+ * collector reclaims the characters once no store references them. */
+void env_del(Env *env, const char *name) {
+    for (int i = 0; i < env->vars.count; i++) {
+        if (strcmp(env->vars.keys[i], name) == 0) {
+            memmove(&env->vars.keys[i], &env->vars.keys[i + 1],
+                    sizeof(char *) * (size_t)(env->vars.count - i - 1));
+            memmove(&env->vars.vals[i], &env->vars.vals[i + 1],
+                    sizeof(Value) * (size_t)(env->vars.count - i - 1));
+            env->vars.count--;
+            return;
+        }
+    }
+}
+
 Value env_get(Env *env, const char *name, int *found) {
     for (Env *e = env; e; e = e->parent) {
         for (int i = 0; i < e->vars.count; i++) {

@@ -74,6 +74,13 @@ char *xstrdup(const char *s);
 /* ------------------------------------------------------------ codegen ctx --- */
 
 typedef struct { char *name; Type *ty; char *slot; size_t line;
+                 /* Block scoping (P1-9): 0 = lives to the end of the
+                  * function (top-level lets, for-init, assignment-defined
+                  * cells); otherwise the closing-brace line of the block
+                  * that owns the let — asg_find stops resolving uses past
+                  * it, so a shadow binding can't capture a later read of
+                  * the outer name. */
+                 size_t end_line;
                  int shadow; } Asg;   /* shadows a @lv_ global: seed from
                                        * it in the entry block */
 typedef struct { Asg *v; int n, cap; } Asgs;

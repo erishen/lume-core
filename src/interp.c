@@ -908,12 +908,65 @@ static void eval_expr_call(VM *vm, Node *n, Env *env) {
 static void exec_statement(VM *vm, Node *n, Env *env) {
     if (vm->error) return;
     switch (n->type) {
-        case N_BLOCK:
+        case N_BLOCK: {
+            /* Block scoping (P1-9): a `let` inside a block is the block's
+             * OWN binding — it shadows an outer same-name binding for the
+             * body and disappears at the closing brace. The checker's
+             * ck_blk has given lets block scope all along; this restores
+             * the same semantics at runtime, where env_set used to
+             * clobber the outer binding for good. Only the block's DIRECT
+             * lets participate (a nested block saves its own), and a
+             * duplicate name in one block keeps the FIRST saved outer
+             * value — the second `let` overwrites the first, exactly as
+             * env_set always did. An `x = e` without `let` is a plain
+             * assignment: it rebinds through to whatever is in scope and
+             * survives the block (matches the native backends, where an
+             * assignment-defined cell has no end line). */
+            typedef struct { const char *name; Value old; int existed; } BSaved;
+            BSaved *saved = NULL;
+            int nsaved = 0, scap = 0;
+            for (int i = 0; i < n->as.block.count; i++) {
+                Node *s = n->as.block.stmts[i];
+                if (!s) continue;
+                int names = 0;
+                if (s->type == N_LET) names = 1;
+                else if (s->type == N_LET_PAT) names = s->as.letpat.count;
+                for (int k = 0; k < names; k++) {
+                    const char *nm = (s->type == N_LET)
+                                         ? s->as.let.name
+                                         : s->as.letpat.names[k];
+                    int dup = 0;
+                    for (int j = 0; j < nsaved; j++)
+                        if (strcmp(saved[j].name, nm) == 0) { dup = 1; break; }
+                    if (dup) continue;
+                    if (nsaved == scap) {
+                        scap = scap ? scap * 2 : 4;
+                        saved = (BSaved *)realloc(saved,
+                                sizeof(BSaved) * (size_t)scap);
+                    }
+                    saved[nsaved].name = nm;
+                    saved[nsaved].old = env_get(env, nm,
+                                                &saved[nsaved].existed);
+                    nsaved++;
+                }
+            }
             for (int i = 0; i < n->as.block.count && !vm->error; i++) {
                 exec_statement(vm, n->as.block.stmts[i], env);
                 if (vm->loop_break || vm->loop_continue) break;
             }
+            /* A `return` inside the block longjmps past this loop — fine:
+             * the whole frame is being torn down, so its bindings die with
+             * it (the small saved[] allocation is leaked on that path; the
+             * block-exit path below is the hot one and stays clean). */
+            for (int j = 0; j < nsaved; j++) {
+                if (saved[j].existed)
+                    env_set(vm, env, saved[j].name, saved[j].old);
+                else
+                    env_del(env, saved[j].name);
+            }
+            free(saved);
             return;
+        }
         case N_LET: {
             eval_expr(vm, n->as.let.init, env);
             if (vm->error) return;

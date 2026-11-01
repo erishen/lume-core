@@ -365,9 +365,32 @@ void ck_stmt(Checker *c, Node *n) {
                 ck_fn(c, n->as.func.names, ft, n->as.func.body);
             return;
         }
-        case N_TYPE_DECL: /* registered in pass A, filled in pass B */
+        case N_TYPE_DECL:
+            /* Pass A registers TOP-LEVEL struct names only, so a type
+             * declared inside a function body registers itself here the
+             * first time the walk meets it (block scoping, P1-9, makes the
+             * spelling natural). The second walk finds it in the table and
+             * skips. Same-name reuse of an outer type is intentional: the
+             * struct table is flat, pass A has already claimed the name. */
+            if (find_struct(c, n->as.type_decl.name)) return;
+            {
+                Type *def = type_anon_struct();
+                def->name = strdup(n->as.type_decl.name);
+                add_struct(c, n->as.type_decl.name, def);
+                for (int j = 0; j < n->as.type_decl.count; j++)
+                    type_add_member(def, n->as.type_decl.field_names[j],
+                                    resolve(c, n->as.type_decl.field_types[j],
+                                            n->line));
+            }
             return;
-        case N_ENUM_DECL: /* registered in pass A2, filled in pass B2 */
+        case N_ENUM_DECL:
+            /* Pass A2 registers top-level enums only. An enum payload's
+             * scalar-only validation and table wiring live in pass B2's
+             * module-level loop; rather than duplicate that machinery
+             * here, a nested enum is a clear, early error. */
+            if (find_enum(c, n->as.enum_decl.name)) return;
+            ck_fail(c, n->line,
+                    "enum declarations are only allowed at the top level");
             return;
         case N_SERVER:
             for (int i = 0; i < n->as.server.count; i++)

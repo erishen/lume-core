@@ -374,6 +374,9 @@ void map_set(VM *vm, Obj *map, const char *key, Value v);
 Obj *map_shallow_copy(VM *vm, Obj *src); /* `{ p with ... }` — see value.c */
 Value env_get(Env *env, const char *name, int *found);
 void env_set(VM *vm, Env *env, const char *name, Value v);
+/* Remove the innermost binding of name in this env only (no parent walk).
+ * Block scoping uses it to undo a `let` that newly bound a name. */
+void env_del(Env *env, const char *name);
 
 /* String helpers on GC string objects. `obj_string` returns `char *`, not
  * `const char *`: a string's bytes live inline behind the Obj and are mutable
@@ -610,7 +613,12 @@ typedef struct Node {
     union {
         struct { struct Node **stmts; int count; } program;
         struct { struct Node **stmts; int count; } block;
-        struct { char *name; Type *annot; struct Node *init; } let;
+        /* Block scoping (P1-9): parse_block stamps every let it DIRECTLY
+         * owns with the closing brace's line; 0 = not block-limited (top
+         * level, for-init). The native backends' asg_find uses it to stop
+         * a shadow binding at its block's end. */
+        struct { char *name; Type *annot; struct Node *init;
+                 size_t end_line; } let;
         struct { char *name; Type *annot; struct Node *init; struct Node *body;
                  Type *ty; } letx;   /* ty: checker-stamped body type (SPEC 4.15) */
         struct { struct Node *cond, *then, *els; } ifs;

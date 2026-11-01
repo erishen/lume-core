@@ -27,7 +27,12 @@ typedef struct { char *name; Type *ty; LLVMValueRef slot; size_t line;
                                   * (an opaque-pointer parameter — anonymous
                                   * struct / list / enum / result / func). No
                                   * stack cell, so cg_var must not load it. */
-                 int shadow; } Asg;  /* shadows a module global: seed at entry */
+                 int shadow;     /* shadows a module global: seed at entry */
+                 size_t end_line; /* block scoping (P1-9): 0 = lives to the
+                                   * end of the function; otherwise the
+                                   * owning block's closing-brace line
+                                   * (mirrors codegen_internal.h's Asg) */
+                 } Asg;
 typedef struct { Asg *v; int n, cap; } Asgs;
 
 /* A name whose type is already known but which has no slot yet — the

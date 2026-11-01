@@ -726,6 +726,9 @@ static void scan_stmt(CG *g, Node *n)
             break;
         }
         asg_push(&g->locals, n->as.let.name, ty, NULL, n->line);
+        /* Block scoping (P1-9): stamp the let's live range (mirrors
+         * codegen_scan.c). */
+        g->locals.v[g->locals.n - 1].end_line = n->as.let.end_line;
         break;
     }
     case N_LET_PAT: {

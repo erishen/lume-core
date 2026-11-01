@@ -1,0 +1,83 @@
+// p1-9-consistency.lume — 完整块作用域（P1-9）在三后端一致。
+// 语义：块内 `let x` 是块自己的绑定——体内遮蔽外层同名，出块即消失
+// （C 风格）。三腿原本各错各的且碰巧一致（都把外层绑定永久覆盖）：
+// interp 的 env_set 覆盖、两编译后端 asg_find 只看「最近声明 ≤ 行号」。
+// 修复：parse_block 给块内直接 let 标注块尾行；interp 块进出保存/恢复；
+// 两后端 Asg.end_line + asg_find 区间条件。typecheck 的 ck_blk 本就开子
+// 作用域。赋值定义（无 let 的 x = e）不参与块作用域，出块存活——两腿一致。
+
+func shadow_basic(): int {
+    let x = 1;
+    if (true) { let x = 2; print(x); }   // 2 —— 块内新绑定
+    print(x);                             // 1 —— 出块恢复
+    return x;                             // 1
+}
+
+// 兄弟块同名异型：两块各自独立绑定，互不可见
+func shadow_siblings(): float {
+    if (true) { let v = 7; print(v); }        // 7 (int)
+    if (true) { let v = 2.5; print(v); }      // 2.5 (float)
+    while (false) { let v = 9; }
+    return 0.5;
+}
+
+// 嵌套两层：内层遮蔽中层，中层出块恢复
+// （注：一行多语句与块尾同行时行号粒度无法区分块内/块后引用——
+// 已知边界；套件按多行风格书写，与项目主流风格一致）
+func shadow_nested(): int {
+    let d = 1;
+    {
+        let d = 20;
+        {
+            let d = 300;
+            print(d);      // 300
+        }
+        print(d);          // 20
+    }
+    print(d);              // 1
+    return d;              // 1
+}
+
+// while 条件读外层、体内遮蔽（native-consistency 的 while_shadow 钉子同型）
+func shadow_while_cond(): int {
+    let b = 10;
+    while (b > 5) { let b = 0; break; }
+    return b;                             // 10 —— 体内 let 出块即亡
+}
+
+// for 体内 let：每迭代重新绑定，出循环外层不变
+func shadow_for_body(): int {
+    let s = 0;
+    for (let i in [1, 2, 3]) {
+        let s = i * 10;                    // 遮蔽外层 s（块级）
+        print(s);                          // 10 20 30
+    }
+    return s;                              // 0 —— 外层 s 未被动过
+}
+
+// 块内赋值（无 let）仍是外层绑定：覆盖出块存活
+func assign_reaches_outer(): int {
+    let a = 1;
+    if (true) { a = 42; }
+    return a;                              // 42 —— 赋值穿透到外层
+}
+
+// 块内 let + lambda：块内调用读到块内绑定
+func lambda_in_block(): int {
+    let r = 0;
+    if (true) {
+        let k = 5;
+        let f = func (x: int): int { return x * k; };
+        r = f(3);                          // 15
+    }
+    return r;                              // 15（r 是外层绑定，赋值穿透）
+}
+
+print(shadow_basic());        // 2 1 1
+print(shadow_siblings());     // 7 2.5 0.5
+print(shadow_nested());       // 300 20 1 1
+print(shadow_while_cond());   // 10
+shadow_for_body();            // 10 20 30
+print(shadow_for_body());     // 0
+print(assign_reaches_outer());// 42
+print(lambda_in_block());     // 15

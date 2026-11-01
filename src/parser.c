@@ -228,6 +228,17 @@ static Node *parse_block_impl(Parser *p) {
         n->as.block.stmts[n->as.block.count++] = s;
     }
     if (!expect(p, TOK_RBRACE)) return NULL;
+    /* Block scoping (P1-9): stamp every let this block DIRECTLY owns with
+     * the closing brace's line. Nested blocks stamp their own lets (the
+     * walker recurses), so a shadow binding's live range ends exactly at
+     * its block — the native backends' asg_find reads end_line to stop
+     * resolving a use past the block that declared it. 0 = not
+     * block-limited (top-level lets, for-init). */
+    size_t end_line = previous_line(p);
+    for (int i = 0; i < n->as.block.count; i++) {
+        Node *s = n->as.block.stmts[i];
+        if (s && s->type == N_LET) s->as.let.end_line = end_line;
+    }
     return n;
 }
 

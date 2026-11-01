@@ -157,6 +157,9 @@ static void asg_push(Asgs *a, const char *name, Type *ty, LLVMValueRef slot,
      * only sees declarations at or above its own line, matching the
      * interpreter's sequential set-or-define rebinding. */
     a->v[a->n].line = line;
+    /* Block scoping (P1-9): zero like every other unset flag — the slot
+     * comes from xrealloc (mirrors codegen.c's asg_push). */
+    a->v[a->n].end_line = 0;
     a->n++;
 }
 
@@ -180,8 +183,11 @@ static void asg_push_shadow(Asgs *a, const char *name, Type *ty, LLVMValueRef sl
 
 static Asg *asg_find(Asgs *a, const char *name, size_t use_line)
 {
+    /* Block scoping (P1-9): a binding whose end_line is set stops being
+     * visible after its block's closing brace (mirrors codegen.c). */
     for (int i = a->n - 1; i >= 0; i--)
-        if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line)
+        if (strcmp(a->v[i].name, name) == 0 && a->v[i].line <= use_line &&
+            (a->v[i].end_line == 0 || use_line <= a->v[i].end_line))
             return &a->v[i];
     return NULL;
 }
