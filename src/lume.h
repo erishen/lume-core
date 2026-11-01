@@ -68,7 +68,8 @@ typedef enum {
     TOK_COMMA, TOK_SEMI, TOK_DOT, TOK_COLON, TOK_QUESTION,
 
     TOK_EQ, TOK_EQEQ, TOK_NEQ, TOK_LT, TOK_LE, TOK_GT, TOK_GE, TOK_ARROW,
-    TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_PERCENT
+    TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_PERCENT,
+    TOK_MAX                 /* sentinel: token.c asserts TOKEN_NAMES length == TOK_MAX */
 } TokenType;
 
 typedef struct {
