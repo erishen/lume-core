@@ -716,7 +716,12 @@ static void scan_stmt(CG *g, Node *n)
         if (ty->kind == TY_FUNC && !ty->func && n->as.let.init &&
             n->as.let.init->type == N_FUNC_LIT)
             ty->func = n->as.let.init;
-        if (g->scanning_top) {
+        /* Block scoping (P1-9): mirrors codegen_scan.c's N_LET — a block-owned
+         * `let` (even at module top level) carries a non-zero end_line and must
+         * stay local-only so it dies with its block instead of leaking through
+         * gvars past the block. Only a genuine module-storage binding
+         * (end_line == 0) takes the global path. */
+        if (g->scanning_top && n->as.let.end_line == 0) {
             /* Module storage, registered twice (mirrors codegen_scan.c):
              * gvars for what function bodies resolve through, L_top's own
              * locals for what the top level's stores hit. */
@@ -748,7 +753,12 @@ static void scan_stmt(CG *g, Node *n)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (the "
                         "destructured map has no known shape)",
                      n->line, nm);
-            if (g->scanning_top) {
+            /* Block scoping (P1-9): mirrors the N_LET note above and
+             * codegen_scan.c's N_LET_PAT — a block-owned destructured binding
+             * (even at module top level) carries a non-zero end_line and must
+             * stay local-only, not become module storage. Only a genuine
+             * module-storage binding (end_line == 0) takes the global path. */
+            if (g->scanning_top && n->as.letpat.end_line == 0) {
                 LLVMValueRef slot = gvar_make(g, nm, ty);
                 if (!slot)
                     ERRX(g, "line %zu: top-level variable '%s' has no "

@@ -784,7 +784,17 @@ static void scan_stmt(CG *g, Node *n)
         if (ty->kind == TY_FUNC && !ty->func && n->as.let.init &&
             n->as.let.init->type == N_FUNC_LIT)
             ty->func = n->as.let.init;
-        if (g->scanning_top) {
+        /* Block scoping (P1-9): a `let` owned by a block — even a block at
+         * the module top level (an `if`/`while`/`{}` in the module body) —
+         * carries a non-zero end_line from parse_block. Such a binding dies
+         * with its block and must NOT become module storage: if it were
+         * pushed into gvars (and aliased onto the same @lv_ slot as the
+         * outer global it shadows), it would leak past the block and the
+         * native backends would disagree with the interpreter. So only a
+         * genuine module-storage binding (end_line == 0) takes the global
+         * path; everything block-scoped falls through to the local-only
+         * branch below, which stamps end_line and lets asg_find scope it. */
+        if (g->scanning_top && n->as.let.end_line == 0) {
             /* A top-level binding is module storage: the same @lv_ global is
              * registered as a gvar (what function bodies resolve through)
              * and as L_top's own local (what the top level's stores hit), so
@@ -820,7 +830,12 @@ static void scan_stmt(CG *g, Node *n)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (the "
                         "destructured map has no known shape)",
                      n->line, nm);
-            if (g->scanning_top) {
+            /* Block scoping (P1-9): a block-owned destructured binding (even
+             * at module top level) carries a non-zero end_line and must stay
+             * local-only, not become module storage — see the N_LET note
+             * above. Only a genuine module-storage binding (end_line == 0)
+             * takes the global path. */
+            if (g->scanning_top && n->as.letpat.end_line == 0) {
                 char slot[128];
                 gvar_slot(slot, sizeof slot, nm);
                 asg_push(&g->gvars, nm, ty, slot, n->line);
