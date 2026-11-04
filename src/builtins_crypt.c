@@ -36,6 +36,9 @@
 
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
 
 #ifndef HAVE_CRYPT
 /* 无 crypt() 的平台：crypt_sha512 恒报错（编译期禁用该内建行为）。 */
@@ -246,7 +249,17 @@ static int read_urandom(uint8_t *buf, size_t n) {
 #if defined(_WIN32)
     (void)buf; (void)n;
     return -1;   /* 见上方说明: 宁可不提供, 也不给可预测密钥 */
+#elif defined(__APPLE__)
+    /* arc4random_buf: macOS guarantees it (10.7+), no /dev dependency. */
+    arc4random_buf(buf, n);
+    return 0;
 #else
+#if defined(__linux__)
+    /* getrandom(2) first: container/seccomp setups may hide or restrict
+     * /dev, but the syscall is available on any modern Linux kernel. */
+    ssize_t r = getrandom(buf, n, 0);
+    if (r == (ssize_t)n) return 0;
+#endif
     FILE *f = fopen("/dev/urandom", "rb");
     if (!f) return -1;
     size_t got = fread(buf, 1, n, f);
