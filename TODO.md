@@ -1620,10 +1620,31 @@ file" buys nothing.
       transport redesign that allows a body larger than one buffer. Do
       not schedule (a) alone; it will be tested with 60 KiB files and
       then fail in production.
-- [ ] (b) is the real project: resumable body-to-tempfile with its own
-      deadline, a configurable cap, and the existing force-close/desync
-      guarantees preserved (the chunked path was already factored into
-      `http_chunk.c` — reuse that shape rather than growing `http.c`).
+- [x] **Done 2026-11-04**: (b) the transport redesign landed: resumable
+      body-to-tempfile in agent-httpd. Content-Length bodies above the
+      64 KiB read buffer (`MAX_REQUEST_SIZE`) but within
+      `MAX_BODY_SPOOL_BYTES` (default 8 MiB; `MAX_BODY_SPOOL_BYTES` /
+      `BODY_SPOOL_DIR` envs) are streamed to a `mkstemp` temp file,
+      `req->body` stays NULL and `req->body_temp_path` names the file; the
+      declared length is fully consumed so keep-alive/pipelining stays
+      exact. Over the cap keeps the historical 413 + forced close; spool
+      failures map to 408 (deadline/select timeout) / 400 (vanished
+      socket) / 500 (I/O), all force-close; the temp file is unlinked at
+      request teardown. CGI and FastCGI consume the spooled body in
+      64 KiB chunks (CGI: polled pipe writes, same discipline as the
+      buffered path). The lume bridge exposes `req.body_temp_path`, so a
+      handler reads the body with `read_file()` — capped at 16 MiB, which
+      still outgrows the old 64 KiB ceiling by 256×. The chunked path
+      deliberately keeps its 64 KiB ceiling: `http_dechunk_feed` returns
+      -2 once the decoded body would exceed cap and cannot resume
+      mid-chunk, so streaming chunked bodies would need a decoder change
+      of its own (tracked separately). Delivered
+      `lume/examples/upload-spool.lume` + `run_all.sh` legs 4h/4i (spool
+      under cap, buffered small body, over-cap 413) and agent-httpd
+      `tests/test_spool_body.c` (real-server: 100 KiB spool + same-connection
+      keep-alive GET in sync, 300 KiB over a 256 KiB cap -> 413, no
+      leftover `body.*` temp files). `lume --check` passes; Linux CI runs
+      `make test-spool` and the run_all legs.
 - [x] **Done 2026-11-04**: Downloads were **not** blocked: Lume strings
       are NUL-safe, so `read_file` + a `{type, headers, body}` envelope
       already serves binary. Delivered `lume/examples/download.lume` (CSV
