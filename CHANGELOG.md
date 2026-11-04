@@ -6,6 +6,51 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-04
+
+### Added
+
+- **Classic `for` scoping (P1-3).** `for (let i = 0; ...)` now lives in its
+  own sub-scope: the init variable is loop-private, sibling loops may reuse
+  the name (with different types), and the binding is invisible after the
+  loop (C99 semantics) — lifting the `ri`/`ci`/`si` naming burden in
+  `optim.linprog`. One change in `typecheck_stmt.c` (`case N_FOR`); backends
+  untouched (the flat pre-scan + line-range-aware `asg_find` already maps
+  disjoint sibling declarations to their lexical ranges precisely). Safety
+  boundary: a for-init may NOT shadow an outer same-name function local — in
+  the two compiling backends a nested same-name loop would mis-route
+  outer-body reads located after the inner declaration line to the inner
+  slot, diverging from the interpreter's `env_set` overwrite (observed 104 vs
+  312). The check walks to `fn_root` only (new `CScope` flag set by `ck_fn`);
+  shadowing module globals/builtins (`pi`) is safe (`asg_find` resolves
+  locals before gvars, the interpreter env-overwrites the global). for-in
+  iteration-variable binding reuse and ordinary block shadowing are unchanged.
+- **Deterministic RNG builtins `rand_next`/`rand_float` (P1-4).** Two pure,
+  stateless builtins complementing the 2026-10-24 global PCG32 stream —
+  index-addressable (parallel/unordered evaluation works by construction):
+  `rand_next(s): int` = splitmix64 finalizer over `s + 0x9E3779B97F4A7C15`;
+  `rand_float(s): float` = top 53 bits × 2^-53 → [0,1). Wired through
+  `builtins_math_basic.inc` / `builtins.h` / `interp.c` / `rt.c` /
+  `codegen_call.c` + both BUILTINS tables (`llvm_codegen_internal.h`) + the
+  typecheck whitelist. First Bi-table row with an int flavour and a double
+  return, which surfaced latent mismatches en route: `builtin_infer_ret` no
+  longer guesses int from the presence of `fn_i` but reads the real `rty`
+  column, and the `cg_builtin`(text)/LLVM emission points take the result
+  Val type from `rty` instead of `want`.
+- **Array literal element type general inference (P1-2).** Both backends'
+  `infer_list_elem` (`codegen_lit.c` / `llvm_cg_scan.inc` mirror) only
+  recognized literal/ctor/tuple/nested-list elements; any other element
+  (variable/index/call/arithmetic/negated variable) returned NULL → the
+  whole literal collapsed to `list<any>`, and passing it to a `float[]`
+  parameter failed signature matching, forcing users to pre-declare
+  `let a: float[] = [big]`. A general fallback now asks `infer_node_type`
+  (slots→globals→scope→arm, `sig_find`→`builtin_infer_ret`) and accepts only
+  statically spellable prim/list/enum; any/struct keep the old collapse
+  (anonymous shape normalization still goes through `ck_list`). Also fixed
+  en route: the `OP_NEG` branch consumed negated non-literal operands and
+  forced a collapse — it now takes over only for literal operands; the rest
+  fall to the general fallback.
+
 ### Changed
 
 - **Block scoping (P1-9): a `let` inside `{ }` is the block's own binding.**
@@ -36,6 +81,31 @@ All notable changes to Lume are documented here. The format follows
   negative tests failed on the mismatch. The table is fixed and a
   `_Static_assert` (table length == `TOK_MAX`) now turns "added a token,
   forgot the table" into a compile error.
+- **Block-scoping save/restore pins saved values against the GC.** The save
+  phase stored outer bindings' previous Values in a malloc'd C array; once
+  the block's own `let` overwrote the env slot, that array was the ONLY
+  remaining reference — but `gc_collect`'s roots are the VM value stack, the
+  globals env and the active env chain, never the C heap. A collection
+  triggered inside the block body therefore freed the saved Obj, and the
+  restore wrote a dangling Value back (observed: a shadowed 36-char string
+  returned as null after a 200k-iteration body). Saved values are now pinned
+  on the VM value stack (`env_set`'s own idiom) and the pins are popped
+  after the restore; the longjmp return path is safe (the call frame resets
+  stack_count to its slot base).
+- **Block-scoped top-level lets no longer become module globals.** A
+  let/let-pat owned by a block at the module top level (an if/while/{}
+  in the module body) carries a non-zero end_line from parse_block, but the
+  scanner's scanning_top branch still pushed it into gvars as module
+  storage — aliased onto the same `@lv_` slot as the outer global it
+  shadows. That made the shadow leak past its block in both native emitters,
+  so interp printed the restored outer value while compile-text/compile-llvm
+  printed the shadowed one (backend-parity gate red). Only a genuine
+  module-storage binding (end_line == 0) takes the global path now; every
+  block-owned binding falls through to the local-only branch.
+- **Cross-build darwin-x64 tarball ships `lib/`.** The native build stages
+  staged `lib/` into the release archive but the darwin-x64 cross-build
+  stage omitted it, so that archive shipped without the lib/*.lume standard
+  library. Aligned with the native stages.
 - **`make pack` now ships `lib/`.** The tarball carried only `bin/lume-core`
   plus docs and gate scripts, so every downstream project that writes
   `import "../lume-core/lib/peer.lume"` had to copy those sources out of a
