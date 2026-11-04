@@ -1648,7 +1648,7 @@ file" buys nothing.
       binary. Worth an example so projects stop reaching for uploads to
       move files around.
 
-### `no_fs` is all-or-nothing — no path sandbox
+### `no_fs` was all-or-nothing — now the LUME_FS_ROOT allowlist is the middle setting
 
 `fs_permitted()` (`builtins_fs.c`) only consults `vm->no_fs`
 (`--no-fs` / `LUME_NO_FS=1`). `read_file` / `write_file` / `files` accept
