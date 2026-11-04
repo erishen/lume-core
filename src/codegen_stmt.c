@@ -737,7 +737,6 @@ static void cg_json_struct(CG *g, Val sv, size_t line)
             char *kc = cg_string_val(g, st->names[i], strlen(st->names[i]));
             EMIT(g, "  call void @lume_srv_json_key(i8** %%p1, i64* %%p2, "
                     "i8* %s)\n", kc);
-            free(kc);
             Type *ft = st->types[i];
             const char *gfn = map_get_fn(ft);
             const char *rty = ft->kind == TY_FLOAT ? "double" :
@@ -750,6 +749,8 @@ static void cg_json_struct(CG *g, Val sv, size_t line)
             char *fv = emit_instrf(g, ft,
                                    "call %s @%s(i8* %s, i8* %s, %s)",
                                    rty, gfn, sv.v, kc, dflt);
+            free(kc);   /* kc is read by emit_instrf's %s above; free after use
+                         * (gcc -Wuse-after-free, ASan heap-use-after-free) */
             cg_json_field_val(g, ft, fv, line);
             free(fv);
         }
