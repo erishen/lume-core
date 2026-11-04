@@ -80,7 +80,7 @@ jobs:
           FUZZ_CI_BUDGET: 60
       - name: Upload crashers
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fuzz-artifacts
           path: out/fuzz-artifacts/
