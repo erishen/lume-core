@@ -379,11 +379,16 @@ void env_set(VM *vm, Env *env, const char *name, Value v) {
 }
 
 /* Remove the innermost binding of name in THIS env (no parent walk). The
- * key string is GC-owned (gc_cstr), so dropping the slot is enough — the
- * collector reclaims the characters once no store references them. */
+ * key is a bare gc_strdup malloc — not GC-tracked, and obj_release only
+ * frees the keys still in vars — so the slot must be freed here before the
+ * memmove drops it. Leaving it stranded leaked 7 bytes per block-exit
+ * delete: native-consistency.lume's for-body `let rgsum2` runs env_del on
+ * each of its 4 iterations, and LSan reported exactly "Direct leak of
+ * 28 byte(s) in 4 object(s)". */
 void env_del(Env *env, const char *name) {
     for (int i = 0; i < env->vars.count; i++) {
         if (strcmp(env->vars.keys[i], name) == 0) {
+            free(env->vars.keys[i]);
             memmove(&env->vars.keys[i], &env->vars.keys[i + 1],
                     sizeof(char *) * (size_t)(env->vars.count - i - 1));
             memmove(&env->vars.vals[i], &env->vars.vals[i + 1],
