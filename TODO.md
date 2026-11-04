@@ -1547,10 +1547,18 @@ first word of the LumeMap header as a pointer and faulted on first key use.
 - [x] Fix the codegen.
 - [x] Add a `native-consistency` case (P12 block: `get` / `keys` on a map
       parameter, plus the default-value arm).
-- [ ] Audit the other container kinds (list, struct) as parameters for the
+- [x] Audit the other container kinds (list, struct) as parameters for the
       same shape. List parameters were exercised while narrowing the fix and
       behave; a dedicated case is still worth adding (`p12_list` was dropped
       because `list` annotations collide with `int[]` at the call site).
+      **Done 2026-11-04 as an audit + close**: the coverage already exists.
+      Map parameters are pinned by the P12 block (`p12_get` / `p12_keys`);
+      list/`int[]` parameters by the `tc_apply` / `tc_apply2` / `tc_applyv`
+      trio (all three native backends); named-struct parameters by the
+      `p.age`-style regression that caught the over-narrowed fix. `int[]`
+      and `list` share the same heap-object slot shape, so a separate
+      `p12_list` case would duplicate the `tc_apply` trio, not add a new
+      shape — closed as a decision, not re-filed.
 
 Impact: any library module whose helpers take a map (very common — request
 maps, config maps) cannot be compiled by the native backends today. The
