@@ -1538,5 +1538,23 @@ print(asinh(1.0));
 print(acosh(1.0));
 print(atanh(0.5));
 
+// ---- 2026-11-04 (P3): crypt_verify / const_time_eq ----
+// Verdicts must agree across the interpreter and both native emitters.
+// Platform-dependent $6$ success (glibc-only) stays in test-crypt.lume;
+// these probes are platform-independent: weak-hash reject, the $2* build
+// limitation (documented: core carries no bcrypt), a wrong-password $6$
+// reject (macOS crypt(3) lacks SHA-512 -> NULL -> false, glibc computes a
+// different digest -> false), and pure const_time_eq semantics.
+print(crypt_verify("plaintext", "pw"));                       // false
+print(crypt_verify("$1$abc$def", "pw"));                      // false
+print(crypt_verify("$apr1$x$y", "pw"));                       // false
+let b2 = try(() => crypt_verify("$2b$10$abcdefghijklmnopqrstuv", "pw"));
+print(get(b2, "err", null) != null);                          // true (documented limitation)
+print(crypt_verify("$6$usesomesillystringforsalt$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "wrong-password")); // false
+print(const_time_eq("abc", "abc"));                           // true
+print(const_time_eq("abc", "abd"));                           // false
+print(const_time_eq("abc", "ab"));                            // false
+print(const_time_eq("", ""));                                 // true
+
 warmup();
 main();

@@ -42,6 +42,11 @@ Value b_ed25519_pubkey(VM *vm, int argc, Value *args);
 Value b_ed25519_sign(VM *vm, int argc, Value *args);
 Value b_ed25519_verify(VM *vm, int argc, Value *args);
 Value b_ed25519_keypair(VM *vm, int argc, Value *args);
+/* crypt_verify / const_time_eq (builtins_crypt.c, P3 2026-11-04): 强哈希
+ * 校验(常量时间)与等长 branchless 比较。$2* 在 core 无 bcrypt → 文档化
+ * 限制报错, host(lume) 经 sync-lang 覆盖。 */
+Value b_crypt_verify(VM *vm, int argc, Value *args);
+Value b_const_time_eq(VM *vm, int argc, Value *args);
 Value b_len(VM *vm, int argc, Value *args);
 Value b_keys(VM *vm, int argc, Value *args);
 Value b_get(VM *vm, int argc, Value *args);

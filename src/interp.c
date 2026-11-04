@@ -1499,6 +1499,8 @@ void bridge_seed_builtins(VM *vm) {
         {"ed25519_sign", b_ed25519_sign},
         {"ed25519_verify", b_ed25519_verify},
         {"ed25519_keypair", b_ed25519_keypair},
+        {"crypt_verify", b_crypt_verify},
+        {"const_time_eq", b_const_time_eq},
         {"len", b_len},
         {"keys", b_keys},
         {"get", b_get},

@@ -24,3 +24,47 @@ check("crypt_sha512 生成或平台报错",
 // 错误路径：非字符串参数 → err
 let bad = try(() => crypt_sha512(42));
 check("crypt_sha512 非字符串参数报错", get(bad, "err", null) != null);
+
+// ---- 2026-11-04 (P3): crypt_verify / const_time_eq ----
+// crypt_verify 跨平台：glibc 能验 $6$（闭环 true）；macOS crypt(3) 无
+// SHA-512 → crypt_sha512 报错 → 该路径整段被 try 捕获，也算 PASS。
+// 弱哈希（明文/$1$/$apr1$）恒 false；$2*（bcrypt）在 core 无 bcrypt →
+// 明确报错（文档化限制，host 经 sync-lang 覆盖）。const_time_eq 纯函数。
+
+// $6$ 闭环：先 crypt_sha512 生成、再 crypt_verify 同密码 → true。
+let hv = try(() => {
+  let h = crypt_sha512("s3cret");
+  if (len(h) < 60) { return "no"; }
+  return crypt_verify(h, "s3cret") ? "yes" : "no";
+});
+check("crypt_verify $6$ 生成+校验闭环",
+      get(hv, "ok", "") == "yes" or get(hv, "err", null) != null);
+
+// $6$ 负例（错误密码）→ false，任何平台（crypt 结果不同或平台不支持）。
+let hv2 = try(() => {
+  let h = crypt_sha512("s3cret");
+  if (len(h) < 60) { return "bad"; }
+  return crypt_verify(h, "wrong-password") ? "leak" : "no";
+});
+check("crypt_verify $6$ 错误密码拒绝",
+      get(hv2, "ok", "") == "no" or get(hv2, "err", null) != null);
+
+// 弱哈希 / 明文一律 false（不报错，失败即拒绝）。
+check("crypt_verify 明文拒绝", crypt_verify("plaintext", "x") == false);
+check("crypt_verify $1$ 拒绝", crypt_verify("$1$abc$def", "x") == false);
+check("crypt_verify $apr1$ 拒绝", crypt_verify("$apr1$x$y", "x") == false);
+check("crypt_verify 短串拒绝", crypt_verify("$6$", "x") == false);
+
+// $2*：core 无 bcrypt → 明确报错（文档化限制，host 覆盖）。
+let bc = try(() => crypt_verify("$2b$10$abcdefghijklmnopqrstuv", "x"));
+check("crypt_verify $2* 报构建限制", get(bc, "err", null) != null);
+
+// const_time_eq：等长 branchless；不等长/内容不同 → false。
+check("const_time_eq 等长相同", const_time_eq("tok-abc", "tok-abc") == true);
+check("const_time_eq 等长不同", const_time_eq("tok-abc", "tok-abd") == false);
+check("const_time_eq 不等长", const_time_eq("abc", "ab") == false);
+check("const_time_eq 空串", const_time_eq("", "") == true);
+
+// 参数错误 → 明确报错。
+let cve = try(() => crypt_verify(1, "x"));
+check("crypt_verify 非字符串参数报错", get(cve, "err", null) != null);

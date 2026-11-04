@@ -1591,21 +1591,38 @@ project has to stay at the framework gate (htpasswd + `htpasswd -B`),
 which means fixed accounts and no self-service registration, no password
 change, no per-user rows.
 
-- [ ] Add `crypt_verify(hash, password)` → bool. Dispatch on the `$N$`
+- [x] Add `crypt_verify(hash, password)` → bool. Dispatch on the `$N$`
       prefix: `$5$`/`$6$` via `crypt(3)`, `$2a$`/`$2b$`/`$2y$` via the
       bundled bcrypt. Reject plaintext/`{SHA}`/DES/`$1$`/`$apr1$` in
       production builds (same policy as agent-httpd's `is_strong_hash`),
       with the existing dev escape hatch if one is needed.
-- [ ] Add `const_time_eq(a, b)` → bool: equal-length branchless compare,
+      **Done 2026-11-04**: `crypt_verify(hash, pw)` in `builtins_crypt.c`,
+      dispatched as specified; weak hashes return `false` (fail-closed, no
+      reason leaked). `$2*` verdicts agree across interpreter and both
+      native emitters — platform-independent probes in
+      `tests/native-consistency.lume`, the glibc-only `$6$` success loop in
+      `tests/test-crypt.lume`.
+- [x] Add `const_time_eq(a, b)` → bool: equal-length branchless compare,
       length itself is not secret. Needed both for the above and for any
       token/CSRF compare written in the DSL.
-- [ ] bcrypt lives only in `agent-httpd/src/security/bcrypt.c` today, and
+      **Done 2026-11-04**: `const_time_eq(a, b)` in `builtins_crypt.c`
+      (NUL-safe via `obj_string_len`); unit cases in `test-crypt.lume`,
+      cross-backend probes in `native-consistency.lume` + `.expected`.
+- [x] bcrypt lives only in `agent-httpd/src/security/bcrypt.c` today, and
       the host links it — decide whether core vendors it (a second copy
       is the thing `make sync-lang` exists to avoid) or whether
       `crypt_verify` is host-only with a documented "this build has no
       `$2*`" limitation. The native-backend (`--compile-text` /
       `--compile-llvm`) and interpreter paths must agree on the verdict
       either way, so this needs a `native-consistency` case.
+      **Done 2026-11-04**: decided **no vendor** — a second bcrypt copy is
+      precisely the drift `make sync-lang` exists to prevent. Core's
+      `crypt_verify` rejects `$2*` with an explicit documented error
+      ("support lives in the host build — lume links agent-httpd's
+      bcrypt"); host gains the strong symbol via `sync-lang`. Both native
+      emitters share the same builtin table, so the `native-consistency`
+      probes (weak-reject, `$2*` error, wrong-password `$6$`) pin the
+      verdict agreement.
 
 ### Request bodies — multipart, and the 64 KiB ceiling behind it
 

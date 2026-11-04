@@ -368,3 +368,85 @@ Value b_ed25519_verify(VM *vm, int argc, Value *args) {
 Value b_ed25519_keypair(VM *vm, int argc, Value *args) {
     return vm_native(vm, argc, args, native_ed25519_keypair);
 }
+
+/* ---- crypt_verify / const_time_eq (2026-11-04, P3) ----
+ *
+ * crypt_verify(hash, password) → bool: 校验强口令哈希, 成功/失败都不泄露原因。
+ *   - $5$/$6$ → crypt(3)(与 crypt_sha512 同平台约束; 无 crypt() 的构建恒 false)。
+ *   - $2a$/$2b$/$2y$ → bcrypt。lume-core 不携带 bcrypt —— 第二份副本正是
+ *     `make sync-lang` 要避免的漂移源; 本构建对 $2* 明确报错(文档化限制),
+ *     host(lume, 链接 agent-httpd 的 bcrypt) 经 sync-lang 后以强符号覆盖
+ *     实现, 见 sync-lang.py 的 builtins_crypt.c 处理。
+ *   - 明文 / {SHA} / DES / $1$ / $apr1$ → 恒 false(与 agent-httpd
+ *     is_strong_hash 同策略: 弱哈希不参与校验, 失败即拒绝)。
+ *
+ * const_time_eq(a, b) → bool: 等长 branchless 比较(长度本身不保密)。
+ * 供 DSL 侧 token / CSRF 比较 —— 普通 == 在首个差异字节即短路, 泄露时序。
+ */
+
+static int ct_eq_bytes(const char *a, const char *b, size_t n) {
+    unsigned char acc = 0;
+    for (size_t i = 0; i < n; i++)
+        acc |= (unsigned char)(a[i] ^ b[i]);
+    return acc == 0;
+}
+
+/* -1 = 构建不支持该哈希族($2*: core 无 bcrypt), 0 = 校验失败, 1 = 通过 */
+static int crypt_verify_impl(const char *hash, const char *pw) {
+    size_t hl = strlen(hash);
+    if (hl < 4) return 0;
+    if (strncmp(hash, "$5$", 3) == 0 || strncmp(hash, "$6$", 3) == 0) {
+#ifdef HAVE_CRYPT
+        /* crypt(3) 第二参可传完整哈希串: 只读其盐段, 生成同格式结果。 */
+        char *got = crypt(pw, hash);
+        if (!got || strlen(got) != hl) return 0;
+        return ct_eq_bytes(got, hash, hl) ? 1 : 0;
+#else
+        (void)pw;
+        return 0;
+#endif
+    }
+    if (strncmp(hash, "$2a$", 4) == 0 || strncmp(hash, "$2b$", 4) == 0 ||
+        strncmp(hash, "$2y$", 4) == 0)
+        return -1;   /* core 无 bcrypt: 文档化限制, host 覆盖 */
+    return 0;
+}
+
+static void native_crypt_verify(VM *vm, int argc, Value *args, Value *out) {
+    const char *hash, *pw;
+    if (argc != 2) {
+        vm_set_error(vm, "crypt_verify(): expects 2 arguments (hash, password)");
+        return;
+    }
+    if (!arg_string(vm, args[0], &hash)) return;
+    if (!arg_string(vm, args[1], &pw)) return;
+    int r = crypt_verify_impl(hash, pw);
+    if (r < 0) {
+        vm_set_error(vm, "crypt_verify(): bcrypt ($2*) support lives in the host "
+                         "build (lume links agent-httpd's bcrypt)");
+        return;
+    }
+    *out = val_bool(r == 1);
+}
+
+Value b_crypt_verify(VM *vm, int argc, Value *args) {
+    return vm_native(vm, argc, args, native_crypt_verify);
+}
+
+static void native_const_time_eq(VM *vm, int argc, Value *args, Value *out) {
+    const char *a, *b;
+    if (argc != 2) {
+        vm_set_error(vm, "const_time_eq(): expects 2 arguments (a, b)");
+        return;
+    }
+    if (!arg_string(vm, args[0], &a)) return;
+    if (!arg_string(vm, args[1], &b)) return;
+    size_t na = obj_string_len(AS_OBJ(args[0]));
+    size_t nb = obj_string_len(AS_OBJ(args[1]));
+    if (na != nb) { *out = val_bool(false); return; }
+    *out = val_bool(ct_eq_bytes(a, b, na) ? true : false);
+}
+
+Value b_const_time_eq(VM *vm, int argc, Value *args) {
+    return vm_native(vm, argc, args, native_const_time_eq);
+}
