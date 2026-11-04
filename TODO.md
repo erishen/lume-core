@@ -1409,6 +1409,11 @@ These are deliberate design decisions; re-proposing them is noise
   (`examples/regex-smoke.lume`).
 - Third-party package managers are not build dependencies: vendor small
   deps instead (musl regex precedent after libgnurx vanished from MSYS2).
+- No unguarded shell primitive: a child process is started only through a
+  gated, rooted `spawn()` builtin (P14), never a language keyword or an
+  implicit capability. `run()` is the agent loop, not shell execution — a
+  process must call `spawn()` explicitly, under a `LUME_SPAWN_ROOT` allowlist
+  with a no-spawn default, exactly like `--no-fs` / `LUME_FS_ROOT`.
 
 ## P11 — 2026-10-22 memory-safety audit (php2shell-class review)
 
@@ -1711,3 +1716,77 @@ migration and rejected as a design trade for the zero-dependency
 property — which is also what removes the whole Python dependency CVE
 surface. `run()` is **not** shell execution (it is `bridge_run`, the
 agent loop); the dangerous primitives are the file/`env` ones above.
+
+## P14 — Sidecar execution layer: what a pure-lume-core executor needs (filed 2026-11-04)
+
+Filed after the resolve-lume / lume-a2a C-A work: `task.delegate` routes a
+job to a host **sidecar** (Node, `spawn('sh'|-c)`, `node:sqlite` job store,
+SSE streaming, MCP client) because **lume-core has no process builtin**. The
+question on the table: "replace the Node sidecar with lume-core?" Answer,
+scoped here so a future review does not re-derive it: **the logic layer can
+move to core today; the execution layer cannot, without these two additions.**
+
+Ground truth (verified in `src/`, not from README memory):
+
+| sidecar uses Node for | Node primitive | in lume-core? |
+|---|---|---|
+| job metadata store | `node:sqlite` | ✅ `builtins_sql.c` links `sqlite3` (P6 closed the tx surface) |
+| HTTP routes / auth | `http.createServer` | ✅ `server{}` DSL + `exec_statement_route`/`_verbs`/`_tool` |
+| 42 tool definitions | `builtin-tools.json` | ✅ `builtins_catalog.c` tool/skill registry |
+| business rules / summaries | JS pure logic | ✅ `.lume` |
+| **`sh -c` / `make` / `uv run python`** | `child_process.spawn` | ❌ no process builtin (searched `src/builtins*.c` + `interp.c`) |
+| **SSE streaming a running job** | long-lived streamed response | ❌ `builtins_http.c` collects the whole body synchronously |
+| **MCP streamableHttp client** | long-lived SSE client | ❌ same |
+| **crash-restart launcher** | `spawn bash` + exit handler | ❌ no process management |
+
+So: migrate routing / SQLite / tool defs / summaries to `.lume` now; keep only
+the three "hands" — **spawn a child, stream its output while it runs, hold a
+long-lived MCP stream** — either in `agent-httpd` or a tiny Node shim. Two core
+builtins close that gap without pulling the whole runtime in.
+
+- [ ] **`spawn()` — gated, rooted, with a no-spawn default (the big one, ~a
+      project).** A `child_process`-shaped builtin: `spawn(args, {input?, env?})`
+      returns `{pid, stdout_fd, stderr_fd}`; siblings `proc_read(pid,
+      "stdout")` (blocking or a timeout-poll), `proc_wait(pid)` → `{exit}`,
+      `proc_kill(pid)` → bool. Five coordinated edits per the P13 rule
+      (`LUME_BUILTIN_NAMES` + arity in `typecheck.c`, dispatch in `interp.c`,
+      `b_*` in `builtins.c`, prototype in `builtins_internal.h`) **plus the
+      native emitters** (a process handle is an opaque slot: both text/LLVM
+      backends must declare the helpers, so this is a P12-shaped "audit the
+      container kinds" job, not an interpreter-only one).
+      **Security is the whole point** (the `no_fs` precedent, P13): spawn is
+      off by default (`--no-spawn` / `LUME_NO_SPAWN=1`), and when enabled runs
+      under a `LUME_SPAWN_ROOT` command allowlist + arg check, not an unguarded
+      `system()`. An unguarded shell primitive is exactly the disclosure this
+      repo has spent P5/P11/P13 avoiding. Land the gate first, the spawn
+      second — an ungated spawn would regress the `check_public` posture.
+- [ ] **Streaming / long-lived reads (a real project, do after `spawn`).**
+      `builtins_http.c`'s `http_get/post` are collect-then-return; a running
+      job needs the body to arrive while it produces it. Either a
+      `http_stream(url, {…})` returning a readable fd/lazy value, or a
+      `read_chunk(handle, timeout)` pair that a loop polls — the second fits
+      the existing sync model and the no-async-runtime constraint better.
+      Same "five edits + two emitters" surface. MCP client streaming rides on
+      this. Without it a pure-core executor can still **run** a job (via
+      `spawn`) but cannot **tail** it, so `task.delegate`'s lazy
+      `observe_delegate` stays polling a status endpoint instead of reading a
+      stream.
+- [ ] **Host integration, then `make sync-lang`.** Both are core builtins
+      with no LLM, so they follow P13's rule: land in core, hand-merge the
+      native-emitter half into the host's `lume/lang/` (interp.c is
+      host-owned), and the host `agent-httpd` build is where the default-on
+      spawn policy actually lives (the pure `lume-core` binary stays
+      no-spawn). Regression: a `tests/spawn-smoke.lume` + a native-consistency
+      case (the `spawn` return map must agree byte-identically on all three
+      legs), and a `make spawn-test` gated on a non-network sandbox.
+
+**Done when:** a resolve-lume sidecar whose logic is `.lume` (routes, SQLite,
+tool defs, summaries) and whose only non-core surface is `spawn` + streaming,
+serves the same `/api/jobs` contract the current Node sidecar does — and the
+pure `lume-core` binary remains no-spawn by default. This is the path to
+"replace the Node sidecar"; it is **not** "add a shell keyword".
+
+Note for sizing: `spawn` + gating is ~1 project (two weeks), streaming is ~1
+project; together they remove the last Node dependency on the executor path.
+Until they land, the C-A design's Node shim (sidecar `sh -c` / `make`) stays.
+
