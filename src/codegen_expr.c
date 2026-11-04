@@ -771,6 +771,21 @@ static Val cg_binary(CG *g, Node *n)
             break;
         }
         case OP_MOD: r = emit_instrf(g, rty, "srem %s %s, %s", i64, a.v, b.v); break;
+        case OP_SHL: {
+            /* 移位数掩 0..63（与解释器/builtin 语义一致；LLVM 对 >=64 是 poison） */
+            char *m = emit_instrf(g, rty, "and %s %s, 63", i64, b.v);
+            if (!m) { ERRV(g, "line %zu: bad shift operands", n->line); }
+            r = emit_instrf(g, rty, "shl %s %s, %s", i64, a.v, m);
+            free(m);
+            break;
+        }
+        case OP_SHR: {
+            char *m = emit_instrf(g, rty, "and %s %s, 63", i64, b.v);
+            if (!m) { ERRV(g, "line %zu: bad shift operands", n->line); }
+            r = emit_instrf(g, rty, "lshr %s %s, %s", i64, a.v, m);
+            free(m);
+            break;
+        }
         case OP_BITAND: r = emit_instrf(g, rty, "and %s %s, %s", i64, a.v, b.v); break;
         case OP_BITOR:  r = emit_instrf(g, rty, "or %s %s, %s", i64, a.v, b.v); break;
         case OP_BITXOR: r = emit_instrf(g, rty, "xor %s %s, %s", i64, a.v, b.v); break;

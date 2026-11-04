@@ -814,6 +814,10 @@ static void eval_expr_binary(VM *vm, Node *n, Env *env) {
             case OP_BITAND: vm_push(vm, val_int(a & b)); return;
             case OP_BITOR:  vm_push(vm, val_int(a | b)); return;
             case OP_BITXOR: vm_push(vm, val_int(a ^ b)); return;
+            /* 移位中缀（2026-11-04 自 lume e75d836 移植）：移位数掩 0..63 防 UB；
+             * `<<` 逻辑左移、`>>` 逻辑右移（无符号），与 shl/shr builtin 语义统一。 */
+            case OP_SHL: vm_push(vm, val_int((long long)((unsigned long long)a << (b & 63)))); return;
+            case OP_SHR: vm_push(vm, val_int((long long)((unsigned long long)a >> (b & 63)))); return;
             case OP_LT:  vm_push(vm, val_bool(a <  b)); return;
             case OP_LE:  vm_push(vm, val_bool(a <= b)); return;
             case OP_GT:  vm_push(vm, val_bool(a >  b)); return;
@@ -1573,6 +1577,7 @@ void bridge_seed_builtins(VM *vm) {
         {"bitand", b_bitand},
         {"bit_or", b_bit_or},
         {"bit_xor", b_bit_xor},
+        {"bitor", b_bit_or},
         {"rand_next", b_rand_next},
         {"rand_float", b_rand_float},
         {"sqrt", b_sqrt},

@@ -1009,15 +1009,42 @@ static Node *parse_equality_impl(Parser *p) {
 /* Bitwise operators — language evolution proposal P1-7 (2026-11-01). They sit
  * below the additive operators (`+ -`) and above the comparison/equality
  * operators (`a & b == c` parses as `(a & b) == c`), so bitwise results can be
- * compared without parens while `+` still binds tighter. Three levels: `&`
- * binds tightest, then `^`, then `|`. The lone `|` token (TOK_PIPE) is shared
+ * compared without parens while `+` still binds tighter. Four levels: `<< >>`
+ * bind tightest (shift — migrated from lume e75d836, 2026-11-04), then `&`,
+ * then `^`, then `|`. The lone `|` token (TOK_PIPE) is shared
  * with enum-variant separation and trailing-closure delimiters, but those are
  * consumed in their own grammar positions (type-decl / postfix), so here it is
  * unambiguously the bitwise OR of two expressions. */
 
+static Node *parse_shift_impl(Parser *p);
 static Node *parse_bitand_impl(Parser *p);
 static Node *parse_bitxor_impl(Parser *p);
 static Node *parse_bitor_impl(Parser *p);
+
+Node *parse_shift(Parser *p) {
+    if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
+                              "expression nests too deeply", NULL); return NULL; }
+    Node *n = parse_shift_impl(p);
+    p->depth--;
+    return n;
+}
+
+static Node *parse_shift_impl(Parser *p) {
+    Node *left = parse_term(p);
+    if (!left) return NULL;
+    while (check(p, TOK_SHL) || check(p, TOK_SHR)) {
+        Token t = peek(p);
+        advance(p);
+        Node *right = parse_term(p);
+        if (!right) return NULL;
+        Node *n = nalloc(N_BINARY, t.line);
+        n->as.binary.op = (t.type == TOK_SHL) ? OP_SHL : OP_SHR;
+        n->as.binary.left = left;
+        n->as.binary.right = right;
+        left = n;
+    }
+    return left;
+}
 
 Node *parse_bitand(Parser *p) {
     if (++p->depth > PARSER_MAX_DEPTH) { p->depth--; perror_at(p, peek(p).line,
@@ -1028,12 +1055,12 @@ Node *parse_bitand(Parser *p) {
 }
 
 static Node *parse_bitand_impl(Parser *p) {
-    Node *left = parse_term(p);
+    Node *left = parse_shift(p);
     if (!left) return NULL;
     while (check(p, TOK_AMP)) {
         Token t = peek(p);
         advance(p);
-        Node *right = parse_term(p);
+        Node *right = parse_shift(p);
         if (!right) return NULL;
         Node *n = nalloc(N_BINARY, t.line);
         n->as.binary.op = OP_BITAND;

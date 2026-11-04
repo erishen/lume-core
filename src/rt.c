@@ -195,6 +195,10 @@ int64_t lume_bi_shr(int64_t a, int64_t b)   { return (int64_t)((uint64_t)a >> (b
 int64_t lume_bi_bitand(int64_t a, int64_t b){ return a & b; }
 int64_t lume_bi_bit_or(int64_t a, int64_t b){ return a | b; }
 int64_t lume_bi_bit_xor(int64_t a, int64_t b){ return a ^ b; }
+/* bitor 别名（2026-11-04 自 lume e75d836 移植）：core 的位或名是 bit_or，
+ * lume 旧代码用 bitor()——独立包装（非别名表项）避免 codegen declare 与
+ * bit_or 重复声明。 */
+int64_t lume_bi_bitor(int64_t a, int64_t b){ return a | b; }
 /* 确定性 RNG（语言演进提案 P1-4, 2026-11-01）：纯函数式 splitmix64。
  * 与 2026-10-24 的全局 PCG32 流互补：无隐藏状态、序无关，rand_next(seed + k)
  * 可并行/乱序取值（ml 权重初始化场景）。rand_next 推进黄金比例常数后过

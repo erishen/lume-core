@@ -453,6 +453,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "div", "mod",
     /* 整数位运算 (语言演进提案 P1-5, 2026-11-01) */
     "shl", "shr", "bitand", "bit_or", "bit_xor",
+    /* bitor 别名 (2026-11-04 自 lume e75d836 移植): 兼容既有 lume 代码 */
+    "bitor",
     /* 确定性 RNG (语言演进提案 P1-4, 2026-11-01)：纯函数式 splitmix64 */
     "rand_next", "rand_float",
     /* trig / hyperbolic / inverse-trig (信息计算科学扩展, 2026-10-31) */
@@ -567,6 +569,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"abs",1,1}, {"sqrt",1,1}, {"exp",1,1}, {"log",1,1}, {"ln",1,1},
     {"div",2,2}, {"mod",2,2},
     {"shl",2,2}, {"shr",2,2}, {"bitand",2,2}, {"bit_or",2,2}, {"bit_xor",2,2},
+    {"bitor",2,2},
     {"rand_next",1,1}, {"rand_float",1,1},
     {"floor",1,1}, {"ceil",1,1}, {"round",1,1},
     {"sin",1,1}, {"cos",1,1}, {"tan",1,1}, {"asin",1,1}, {"acos",1,1},

@@ -39,6 +39,10 @@ static const Bi BUILTINS[] = {
     { "bitand",  "lume_bi_bitand",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "bit_or",  "lume_bi_bit_or",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     { "bit_xor", "lume_bi_bit_xor", "i64", "i64", 2, NULL, NULL, NULL, 0 },
+    /* `bitor` 别名（2026-11-04 自 lume e75d836 移植）：lume 的 `|` 曾保留给
+     * enum variant，位或走内建 bitor；core 已有 bit_or，这里注册等价别名以
+     * 兼容既有 lume 代码。 */
+    { "bitor",    "lume_bi_bitor",  "i64", "i64", 2, NULL, NULL, NULL, 0 },
     /* 确定性 RNG（语言演进提案 P1-4, 2026-11-01）：int 参；rand_next 返 i64、
      * rand_float 返 double——int flavour 行的 rty_i 列独立于 pty_i 列，
      * builtin_infer_ret 按 rty 列作答（勿再按「有 fn_i 就是 int」猜） */

@@ -510,11 +510,13 @@ Type *ck_expr(Checker *c, Node *n, Type *expected) {
                 }
                 return type_prim(TY_BOOL);
             }
-            if (op == OP_BITAND || op == OP_BITOR || op == OP_BITXOR) {
-                /* Bitwise operators — P1-7. Both operands must be int; the
-                 * result is always int. (Float operands are rejected: there is
-                 * no integer→float coercion for bits, matching the `div`/`mod`
-                 * rule that arithmetic on ints stays integral.) */
+            if (op == OP_SHL || op == OP_SHR ||
+                op == OP_BITAND || op == OP_BITOR || op == OP_BITXOR) {
+                /* Bitwise operators — P1-7, shift 中缀 2026-11-04 自 lume
+                 * e75d836 移植。Both operands must be int; the result is always
+                 * int. (Float operands are rejected: there is no integer→float
+                 * coercion for bits, matching the `div`/`mod` rule that
+                 * arithmetic on ints stays integral.) */
                 Type *lt = ck_expr(c, n->as.binary.left, NULL);
                 Type *rt = ck_expr(c, n->as.binary.right, NULL);
                 if (lt && rt && lt->kind != TY_ANY && rt->kind != TY_ANY &&

@@ -533,10 +533,14 @@ Token *lex_all(const char *source, char *errbuf, size_t errbuf_size,
             case '/': t = TOK_SLASH; break;
             case '%': t = TOK_PERCENT; break;
             case '<':
-                t = source[o.lx.pos + 1] == '=' ? (width = 2, TOK_LE) : TOK_LT;
+                t = source[o.lx.pos + 1] == '=' ? (width = 2, TOK_LE)
+                  : source[o.lx.pos + 1] == '<' ? (width = 2, TOK_SHL)
+                  : TOK_LT;
                 break;
             case '>':
-                t = source[o.lx.pos + 1] == '=' ? (width = 2, TOK_GE) : TOK_GT;
+                t = source[o.lx.pos + 1] == '=' ? (width = 2, TOK_GE)
+                  : source[o.lx.pos + 1] == '>' ? (width = 2, TOK_SHR)
+                  : TOK_GT;
                 break;
             case '=':
                 t = source[o.lx.pos + 1] == '=' ? (width = 2, TOK_EQEQ)

@@ -9,7 +9,7 @@ static const char *const TOKEN_NAMES[] = {
     "true", "false", "null", "and", "or", "not",
     "type", "int", "float", "string", "bool", "Result", "fn",
     "get", "head", "post", "put", "patch", "delete", "options", "verbs",
-    "enum", "match", "|", "&", "^",
+    "enum", "match", "|", "&", "^", "<<", ">>",
     "(", ")", "{", "}", "[", "]",
     ",", ";", ".", ":", "?",
     "=", "==", "!=", "<", "<=", ">", ">=", "=>",
