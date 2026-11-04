@@ -1624,10 +1624,13 @@ file" buys nothing.
       deadline, a configurable cap, and the existing force-close/desync
       guarantees preserved (the chunked path was already factored into
       `http_chunk.c` — reuse that shape rather than growing `http.c`).
-- [ ] Downloads are **not** blocked: Lume strings are NUL-safe, so
-      `read_file` + a `{type, headers, body}` envelope already serves
-      binary. Worth an example so projects stop reaching for uploads to
-      move files around.
+- [x] **Done 2026-11-04**: Downloads were **not** blocked: Lume strings
+      are NUL-safe, so `read_file` + a `{type, headers, body}` envelope
+      already serves binary. Delivered `lume/examples/download.lume` (CSV
+      + octet-stream routes, try()/err 404 branch) and a `run_all.sh` leg
+      4g that pins body + Content-Type over real HTTP; `lume --check`
+      passes. Projects that only move files out should use this instead of
+      reaching for uploads.
 
 ### `no_fs` was all-or-nothing — now the LUME_FS_ROOT allowlist is the middle setting
 
