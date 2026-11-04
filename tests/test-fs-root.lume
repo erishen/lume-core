@@ -1,0 +1,70 @@
+// lume —— LUME_FS_ROOT allowlist 单测（tests/test-fs-root.lume）
+//
+// 运行（make fsroot-test，Linux leg）：Makefile 预置 /tmp/lume-fsroot/inside.txt
+// 与 /tmp/lume-fsroot/sub/a.txt 后，以 LUME_FS_ROOT 运行两轮：
+//   LUME_FS_ROOT=/tmp/lume-fsroot ./bin/lume-core tests/test-fs-root.lume /tmp/lume-fsroot
+//   LUME_FS_ROOT=/tmp/lume-fsroot LUME_FS_RO=1 ./bin/lume-core tests/test-fs-root.lume /tmp/lume-fsroot ro
+// 第二参数 "ro" 切换到只读断言。断言行：
+//   root 内读/写/列/建目录 = 允许；逃逸（.. 解析出 root 外）读/写/列 = 运行时
+//   错误（realpath 检查，不是裸前缀比较）；LUME_FS_RO=1 时写/建目录拒绝、读仍允许。
+// Windows 本地验证用真实目录路径（见提交说明），CI 以 Linux leg 为准。
+// 输出 PASS/FAIL，make fsroot-test grep FAIL 判定。
+
+func check(name, cond) {
+  if (cond) {
+    print("PASS " + name);
+  } else {
+    print("FAIL " + name);
+  }
+}
+
+let a = argv();
+let root = a[0];
+let ro = len(a) >= 2 and a[1] == "ro";
+let inside = root + "/inside.txt";
+
+// 1. root 内读取 → Makefile 预置的 "secret\n"
+let r = try(() => read_file(inside));
+check("fsroot 读 root 内", get(r, "ok", "") == "secret\n");
+
+// 2. root 内 files 列出 sub 目录 → 至少一个条目（预置 a.txt）
+let fl = try(() => files(root + "/sub"));
+check("fsroot files root 内",
+      get(fl, "err", null) == null and len(get(fl, "ok", [])) >= 1);
+
+// 3. 逃逸读：root/sub/../../ 解析到 root 外 → 运行时错误。即使目标不存在，
+//    parent 检查（/tmp/lume-fsroot/sub/../.. → /）也会拒绝。
+let er = try(() => read_file(root + "/sub/../../escape-read"));
+check("fsroot 逃逸读拒绝", get(er, "err", null) != null);
+
+// 4. 逃逸写 → 运行时错误（parent 越界）
+let ew = try(() => write_file(root + "/../escape-write.txt", "x"));
+check("fsroot 逃逸写拒绝", get(ew, "err", null) != null);
+
+// 5. 逃逸 files → 运行时错误
+let ef = try(() => files(root + "/../.."));
+check("fsroot 逃逸 files 拒绝", get(ef, "err", null) != null);
+
+// 6. 逃逸 mkdir → 运行时错误
+let emk = try(() => mkdir(root + "/../escape-dir"));
+check("fsroot 逃逸 mkdir 拒绝", get(emk, "err", null) != null);
+
+// 7. 写 root 内：ro 模式拒绝（错误），非 ro 允许（true）
+let w = try(() => write_file(root + "/out.txt", "x"));
+if (ro) {
+  check("fsroot ro 写拒绝", get(w, "err", null) != null);
+} else {
+  check("fsroot 写 root 内", get(w, "ok", false) == true);
+}
+
+// 8. mkdir root 内：ro 模式拒绝，非 ro 允许
+let mk = try(() => mkdir(root + "/newdir"));
+if (ro) {
+  check("fsroot ro mkdir 拒绝", get(mk, "err", null) != null);
+} else {
+  check("fsroot mkdir root 内", get(mk, "ok", false) == true);
+}
+
+// 9. ro 模式读仍允许（与 1 相同断言，非 ro 模式同样 PASS）
+let r2 = try(() => read_file(inside));
+check("fsroot ro 读仍允许", get(r2, "ok", "") == "secret\n");

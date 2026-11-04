@@ -482,9 +482,20 @@ struct VM {
      * LUME_NO_FS=1) and the path-taking builtins fail at runtime instead.
      * Deliberately a runtime flag rather than a root allowlist: locks the
      * language surface without breaking the product tools that legitimately
-     * write .env / report files outside the cwd. */
+     * write .env / report files outside the cwd. The middle setting between
+     * free access and this hard switch is the LUME_FS_ROOT allowlist below
+     * (see fs_root/fs_root_real). */
     bool no_fs;
 
+    /* LUME_FS_ROOT allowlist (P3 2026-11-04): a middle setting between free
+     * access and --no-fs. When set, the path-taking builtins are restricted
+     * to realpath-checked descendants of this directory; LUME_FS_RO=1 adds
+     * read-only (write_file/mkdir/lock_file refuse). fs_root is the env
+     * value as given (for error messages), fs_root_real the cached
+     * realpath(root). --no-fs stays the hard switch above. */
+    const char *fs_root;   /* NULL when the allowlist is off */
+    char *fs_root_real;    /* realpath(fs_root), NULL when off/unresolvable */
+    bool fs_readonly;
     /* Same idea as no_fs, for the outbound side: http_get() is opt-out here
      * too (--no-net, LUME_NO_NET=1). A script that cannot read or write the
      * filesystem should not be able to phone home to an attacker-hosted
@@ -787,6 +798,12 @@ void node_print(Node *n, int indent);   /* debugging dump */
  * type_release_all(). */
 
 /* ===================== interpreter / bridge ===================== */
+
+/* realpath(path, NULL) / Windows _fullpath(NULL, path, 0) — malloc'd
+ * canonical path, NULL on failure. POSIX realpath is hidden under
+ * -std=c11 on mingw, so the fs builtins and main.c share this wrapper
+ * (defined in builtins_fs.c). */
+char *lume_realpath(const char *path);
 
 void vm_init(VM *vm);
 /* Tear the VM down: the GC heap with every Obj it still holds (and the

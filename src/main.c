@@ -534,6 +534,31 @@ int main(int argc, char **argv) {
         no_net = true;
     }
 
+    /* LUME_FS_ROOT allowlist: a middle setting between free access and
+     * --no-fs (the hard switch). fs_root_real is cached so the builtins do
+     * not realpath the root on every call. An unresolvable root is a hard
+     * error: a typo that silently falls back to unfiltered access would be
+     * the opposite of the point. LUME_FS_RO=1 (same "off" spellings as
+     * LUME_NO_FS) makes the allowlist read-only. */
+    const char *fs_root = NULL;
+    char *fs_root_real = NULL;
+    bool fs_readonly = false;
+    const char *fs_root_env = getenv("LUME_FS_ROOT");
+    if (fs_root_env && fs_root_env[0]) {
+        fs_root = fs_root_env;
+        fs_root_real = lume_realpath(fs_root_env);
+        if (!fs_root_real) {
+            fprintf(stderr, "lume: LUME_FS_ROOT=%s does not resolve (realpath failed)\n",
+                    fs_root_env);
+            return 2;
+        }
+    }
+    const char *fs_ro_env = getenv("LUME_FS_RO");
+    if (fs_ro_env && fs_ro_env[0] && strcmp(fs_ro_env, "0") != 0 &&
+        strcmp(fs_ro_env, "off") != 0 && strcmp(fs_ro_env, "false") != 0) {
+        fs_readonly = true;
+    }
+
 #ifndef _WIN32
     if (do_watch) return run_watch(argv[0], script);
 #else
@@ -570,6 +595,9 @@ int main(int argc, char **argv) {
     vm_init(&vm);
     vm.no_fs = no_fs;
     vm.no_net = no_net;
+    vm.fs_root = fs_root;
+    vm.fs_root_real = fs_root_real;
+    vm.fs_readonly = fs_readonly;
     bridge_init(&vm);
 
     /* Seed argv() with the script's trailing CLI arguments (after the script

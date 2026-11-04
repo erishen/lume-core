@@ -365,7 +365,7 @@ $(OBJS): $(LLVM_CONFIG_PATH)
 $(TARGET): $(OBJS) $(AH_LIB) | bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
-check: all crypt-test crypto-test ed25519-test builtins-test vm-reuse-test
+check: all crypt-test crypto-test ed25519-test builtins-test vm-reuse-test fsroot-test
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -1019,6 +1019,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
+         fsroot-test \
          ai-produce
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
@@ -1044,6 +1045,24 @@ ed25519-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ed25519-test.out; then \
 		echo "==> ed25519 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> ed25519 单测全部通过"
+
+# LUME_FS_ROOT allowlist 单测（P3 2026-11-04）。Linux leg: Windows 没有
+# /tmp 的 realpath 语义, 本地验证用真实目录路径手工跑（见提交说明）。预置
+# root 内容后以 LUME_FS_ROOT 跑两轮: 读写全允许; LUME_FS_RO=1 时写拒绝、读
+# 仍允许。逃逸路径（.. 解析出 root 外）断言运行时错误。
+fsroot-test: all
+	@rm -rf /tmp/lume-fsroot; mkdir -p /tmp/lume-fsroot/sub; \
+	printf 'secret\n' > /tmp/lume-fsroot/inside.txt; \
+	touch /tmp/lume-fsroot/sub/a.txt; \
+	LUME_FS_ROOT=/tmp/lume-fsroot ./$(TARGET) tests/test-fs-root.lume /tmp/lume-fsroot > /tmp/lume-fsroot-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-fsroot-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-fsroot-test.out; then \
+		echo "==> fsroot 单测失败 (rc=$$rc)"; exit 1; fi; \
+	LUME_FS_ROOT=/tmp/lume-fsroot LUME_FS_RO=1 ./$(TARGET) tests/test-fs-root.lume /tmp/lume-fsroot ro > /tmp/lume-fsroot-ro.out 2>&1; \
+	rc=$$?; cat /tmp/lume-fsroot-ro.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-fsroot-ro.out; then \
+		echo "==> fsroot ro 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> fsroot 单测全部通过"
 
 # 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
 # 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝

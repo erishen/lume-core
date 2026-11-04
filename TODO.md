@@ -1658,18 +1658,44 @@ handler reads `AUTH_SESSION_FILE` (every live bearer token), the
 htpasswd file, and `.env` (DB credentials). `env()` is likewise
 unfiltered.
 
-- [ ] Add a path allowlist mode: `LUME_FS_ROOT=<dir>` restricts
+- [x] Add a path allowlist mode: `LUME_FS_ROOT=<dir>` restricts
       `read_file`/`write_file`/`files` to realpath-checked descendants
       (reuse the boundary test from `agent-httpd/src/http/static.c`, not
       a bare `strncmp` prefix), and `LUME_FS_RO=1` for read-only.
-- [ ] Keep `--no-fs` as the hard switch; the allowlist is the
+      **Done 2026-11-04**: `fs_check_path()` realpath-checks the target (or,
+      for a not-yet-existing write target, its parent — same reason
+      `resolve_within()` realpaths before joining: .. and symlinks are
+      already resolved, so this is not a prefix allowlist). Applies to
+      `read_file`/`write_file`/`files`, and also `mkdir`/`lock_file` so a
+      read-only/rooted run cannot create or lock anything outside either.
+      Root resolution is a hard error at startup (a typo that silently
+      falls back to unfiltered access would be the opposite of the point).
+- [x] Keep `--no-fs` as the hard switch; the allowlist is the
       middle setting.
-- [ ] Document the deployment-side mitigation that works today and is
+      **Done 2026-11-04**: `--no-fs` / `LUME_NO_FS=1` still refuse every
+      path-taking builtin with the same runtime error; `LUME_FS_ROOT`
+      only engages when `no_fs` is off, so a supervisor can stack
+      `LUME_FS_ROOT` + `LUME_FS_RO=1` for read-only-rooted and still reach
+      for `--no-fs` as the full lock.
+- [x] Document the deployment-side mitigation that works today and is
       not obvious: run the server as its own unprivileged user, keep
       htpasswd / session / `.env` outside the docroot and unreadable by
       the docroot owner, and never let a handler accept an arbitrary path
       parameter (map an ID to a fixed directory instead). This is the
       difference between a bug and a disclosure.
+      **Done 2026-11-04** (this paragraph + the two below): the allowlist
+      is a second line of defense, not a replacement for the three rules
+      above. In order of strength: (1) no arbitrary path parameters — a
+      handler that maps an ID to a fixed directory has no path-injection
+      surface at all; (2) OS-level separation — the server runs as its own
+      unprivileged user, and htpasswd / session / `.env` live outside the
+      docroot, unreadable by the docroot owner, so even a full docroot
+      disclosure stays a content leak instead of a credential disclosure;
+      (3) `LUME_FS_ROOT` + `LUME_FS_RO=1` shrink the blast radius of any
+      remaining string-concatenation bug to the rooted directory, and
+      `--no-fs` is the kill switch. A deployment should use (1) always,
+      (2) always, and (3) whenever the server does not need general filesystem
+      access.
 
 ### Deliberately not filed
 
