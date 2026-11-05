@@ -252,8 +252,17 @@ static Val cg_literal(CG *g, Node *n)
                     e[0] = '.';
                     e[1] = '0';
                 } else {
-                    /* Bounded: buf is char[64] and we only ever append ".0". */
-                    snprintf(buf, sizeof buf, "%s.0", buf);
+                    /* Append ".0" so the backend reads the value as a double.
+                     * Write directly past the current digits (buf holds a
+                     * short, '.'/'e'-free number here) instead of snprintf
+                     * with overlapping src/dst, which trips -Wrestrict /
+                     * -Wformat-truncation under -Werror. */
+                    size_t blen = strlen(buf);
+                    if (blen + 2 < sizeof buf) {
+                        buf[blen] = '.';
+                        buf[blen + 1] = '0';
+                        buf[blen + 2] = '\0';
+                    }
                 }
             }
             return val_make(type_prim(TY_FLOAT), buf);
