@@ -27,6 +27,14 @@ size_t obj_string_len(Obj *o) { return o->as.str.len; }
 /* ---------- GC ---------- */
 
 Obj *gc_alloc(VM *vm, ObjType type, size_t extra) {
+    /* A value-derived `extra` (e.g. a string length from an untrusted source)
+     * must never let `sizeof(Obj) + extra` wrap a size_t and hand calloc a
+     * far-too-small buffer. Reject up front; the caller degrades to an error
+     * value instead of overflowing. `(size_t)-1` is the portable SIZE_MAX. */
+    if (extra > (size_t)-1 - sizeof(Obj)) {
+        vm_set_error(vm, "allocation too large");
+        return NULL;
+    }
     size_t total = sizeof(Obj) + extra;
     vm->bytes_allocated += total;
     if (vm->bytes_allocated > vm->gc_threshold) gc_collect(vm);
@@ -250,7 +258,16 @@ void vm_free(VM *vm) {
 /* ---------- value constructors ---------- */
 
 Value make_string(VM *vm, const char *s, size_t n) {
-    Obj *obj = gc_alloc(vm, OBJ_STRING, n + 1);
+    /* `n + 1` must not wrap a size_t: a length of (size_t)-1 would otherwise
+     * shrink the allocation to `sizeof(Obj)` and turn the memcpy below into an
+     * out-of-bounds write. Reject and return a safe null string instead. */
+    size_t need = n + 1;
+    if (need < n) {
+        vm_set_error(vm, "string too long");
+        return val_null();
+    }
+    Obj *obj = gc_alloc(vm, OBJ_STRING, need);
+    if (!obj) return val_null();
     obj->as.str.len = n;
     if (n) memcpy(obj_string(obj), s, n);
     obj_string(obj)[n] = '\0';

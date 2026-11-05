@@ -252,7 +252,8 @@ static Val cg_literal(CG *g, Node *n)
                     e[0] = '.';
                     e[1] = '0';
                 } else {
-                    strcat(buf, ".0");
+                    /* Bounded: buf is char[64] and we only ever append ".0". */
+                    snprintf(buf, sizeof buf, "%s.0", buf);
                 }
             }
             return val_make(type_prim(TY_FLOAT), buf);
