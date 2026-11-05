@@ -25,6 +25,7 @@
 #endif
 int lume_mkdir(const char *p);
 int lume_flock(int fd, int op);
+int lume_win32_replace(const char *tmp, const char *dst);
 #else
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -214,6 +215,21 @@ static bool fs_write_ok(VM *vm, const char *what, const char *path) {
     return fs_check_path(vm, what, path);
 }
 
+/* Non-reporting allowlist check for the directory walk. fs_check_path()
+ * raises a VM error on refusal, which is right for an explicit read_file() /
+ * write_file() but wrong inside a tree walk: one stray link should not fail
+ * the whole files() call. A directory that cannot be resolved is simply not
+ * descended into, the same degradation as an unreadable directory. */
+static bool fs_walk_within(VM *vm, const char *dir) {
+    if (vm->no_fs) return false;
+    if (!vm->fs_root_real) return true;   /* allowlist off: free mode */
+    char *rp = lume_realpath(dir);
+    if (!rp) return false;
+    bool ok = fs_within(vm->fs_root_real, rp);
+    free(rp);
+    return ok;
+}
+
 /* Sorted directory listing; directories carry a trailing "/". Missing or
  * unreadable dirs yield an empty list (a discovery page should degrade).
  * One argument: single-level listing of `dir` (names only, as before). A
@@ -224,6 +240,12 @@ static bool fs_write_ok(VM *vm, const char *what, const char *path) {
  * the stack or the list. */
 static void files_walk(VM *vm, Obj *list, const char *dir, const char *prefix,
                        int depth, int recurse) {
+    /* stat() below follows symlinks (and Windows junctions), so a link
+     * planted inside LUME_FS_ROOT can point opendir() outside it. The
+     * recursive call used to descend without re-checking the resolved path.
+     * Resolve EVERY directory - the initial one and each recursion - against
+     * the root before opening it. */
+    if (!fs_walk_within(vm, dir)) return;
     DIR *d = opendir(dir);
     if (!d) return;
     char *names[1024];
@@ -323,10 +345,12 @@ void native_read_file(VM *vm, int argc, Value *args, Value *out) {
  * NOTE: string payload lives inline after the Obj (obj_string()), NOT in
  * as.str.data — that pointer field is never set and was a "works until the
  * fopen actually succeeds" latent bug.
- * Atomic: the payload goes to a sibling .tmp.<pid> file which is then
- * rename()d over the target. A crash mid-write can never leave a truncated
- * file behind — product tools overwrite portfolio.json / .env through this
- * and a torn write would otherwise destroy the only copy of the data. */
+ * Atomic: the payload goes to a sibling .tmp.XXXXXX created by mkstemp()
+ * (unpredictable name, O_CREAT|O_EXCL, mode 0600) and is then swapped over
+ * the target with rename() / MoveFileEx(REPLACE_EXISTING). A pre-planted
+ * symlink can no longer redirect the write outside LUME_FS_ROOT, and a
+ * crash mid-write can never leave a truncated file behind — product tools
+ * overwrite portfolio.json / .env through this. */
 void native_write_file(VM *vm, int argc, Value *args, Value *out) {
     if (argc < 2) { vm_set_error(vm, "write_file() needs a path and content"); return; }
     const char *p = NULL;
@@ -343,13 +367,33 @@ void native_write_file(VM *vm, int argc, Value *args, Value *out) {
         *out = val_bool(false);
         return;
     }
-    if (strlen(p) + 32 >= 4096) { *out = val_bool(false); return; }
     char tmp[4096];
-    snprintf(tmp, sizeof tmp, "%s.tmp.%d", p, (int)getpid());
-    FILE *f = fopen(tmp, "wb");
-    if (!f) { *out = val_bool(false); return; }
-    /* 数据文件默认 0600(账本/周报/设置 .env 都经此写;即使用户把
-     * IQUEST_REPORTS_DIR 指到 .data 之外,报告也不会随 umask 落成 0644) */
+    if (strlen(p) + 32 >= sizeof tmp) { *out = val_bool(false); return; }
+    /* The old `%s.tmp.%d` name was fully predictable from getpid(), and
+     * fopen("wb") happily followed a pre-planted symlink. mkstemp() picks
+     * the suffix itself and refuses to reuse an existing path. */
+    snprintf(tmp, sizeof tmp, "%s.tmp.XXXXXX", p);
+    /* Same directory as p today, but check explicitly: if the temp naming
+     * ever moves, LUME_FS_ROOT must still cover it. */
+    if (!fs_write_ok(vm, "write_file", tmp)) {
+        *out = val_bool(false);
+        return;
+    }
+    int fd = mkstemp(tmp);
+    if (fd < 0) { *out = val_bool(false); return; }
+    FILE *f = fdopen(fd, "wb");
+    if (!f) {
+#ifdef _WIN32
+        _close(fd);
+#else
+        close(fd);
+#endif
+        remove(tmp);
+        *out = val_bool(false);
+        return;
+    }
+    /* mkstemp already creates 0600; keep the explicit chmod on POSIX so a
+     * permissive umask can never widen it (ledgers, weekly reports, .env). */
 #ifndef _WIN32
     fchmod(fileno(f), 0600);
 #endif
@@ -357,11 +401,10 @@ void native_write_file(VM *vm, int argc, Value *args, Value *out) {
     int ok = (fclose(f) == 0) && (wrote == len);
     if (ok) {
 #ifdef _WIN32
-        /* MSVCRT rename() refuses to replace an existing file: drop the old
-         * one first (best-effort - it may not exist) so write_file() keeps
-         * its "atomically replace" contract on Windows too. */
-        remove(p);
-        ok = rename(tmp, p) == 0;
+        /* MSVCRT rename() refuses to replace an existing file. The old
+         * remove()+rename() pair lost the original when rename failed;
+         * MoveFileEx swaps atomically and leaves dst intact on failure. */
+        ok = lume_win32_replace(tmp, p) == 0;
 #else
         ok = rename(tmp, p) == 0;
 #endif

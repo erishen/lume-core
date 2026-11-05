@@ -36,6 +36,17 @@
 
 int lume_mkdir(const char *p) { return _mkdir(p); }
 
+/* Atomic replacement for write_file(). MSVCRT rename() refuses to overwrite
+ * an existing file; the old remove()+rename() sequence destroyed the
+ * original whenever the rename failed. MoveFileEx(REPLACE_EXISTING) swaps
+ * the temp file in with one kernel call, so a failure leaves dst untouched
+ * and the caller's data survives. MOVEFILE_WRITE_THROUGH keeps the
+ * "a crash mid-write cannot leave a torn file" promise. */
+int lume_win32_replace(const char *tmp, const char *dst) {
+    return MoveFileExA(tmp, dst,
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+}
+
 int lume_flock(int fd, int op) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) return -1;

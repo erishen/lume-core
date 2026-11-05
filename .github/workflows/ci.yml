@@ -10,6 +10,12 @@ name: ci
 on:
   push:
     branches: [main]
+    # A v* tag is a release candidate. release.yml only builds and stages
+    # tarballs, so without this leg a tag could publish a binary that never
+    # passed the matrix test, LSan emitter gate, fuzz, pack privacy guard,
+    # AI verification or the release-build matrix. Gate tags with the main set.
+    tags:
+      - 'v*'
   pull_request:
 
 # A new push on the same ref supersedes the previous run;
