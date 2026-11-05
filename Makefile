@@ -1034,11 +1034,19 @@ endif
 # directory names: their recipe is just `mkdir -p`, so claiming them phony
 # costs nothing and stops make from ever trying to "rebuild" the directory
 # after a `make clean` removed it.
+# The *-test / lint / parity legs below are command-only targets: without
+# .PHONY, a stray file with the same name silently makes make skip the whole
+# test.  `out` / `build-fuzz` are order-only prerequisites (`| out`), so
+# claiming them phony costs nothing and keeps them in the same list as the
+# other mkdir-only directory targets above.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test \
-         ai-produce
+         fsroot-test check-version \
+         ai-produce \
+         arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
+         http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
+         range-test route-cap-test sci-test sql-test ternary-test trailing-closure-test tuple-test
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
 crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \
@@ -1502,3 +1510,8 @@ route-cap-test: all
 backend-parity:
 	@chmod +x scripts/check-backend-parity.sh
 	@./scripts/check-backend-parity.sh
+
+# release.yml 的 tag 断言只读 Makefile 的版本。CHANGELOG.md 的标题是第二处
+# 手写的版本号, 每次 push/PR 都对齐一次, 免得发版时才发现问题。
+check-version:
+	@python3 scripts/check-release-version.py

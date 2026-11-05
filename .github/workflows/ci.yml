@@ -18,6 +18,11 @@ on:
       - 'v*'
   pull_request:
 
+# Least privilege: every job here only reads the repo.  release.yml keeps
+# contents: write on its build job because that one attaches assets.
+permissions:
+  contents: read
+
 # A new push on the same ref supersedes the previous run;
 # keep the long build/test matrices from queuing up.
 concurrency:
@@ -100,6 +105,7 @@ jobs:
           name: fuzz-artifacts
           path: out/fuzz-artifacts/
           if-no-files-found: ignore
+          retention-days: 7
 
   # The privacy guard lives inside `make pack`; running it here keeps the
   # tarball honest without anyone having to remember `make packcheck`.

@@ -22,6 +22,13 @@
 *.o
 *.a
 
+# scripts/ is the python3 toolchain (check-release-version.py, fuzz/privacy
+# helpers): py_compile and imports drop bytecode caches next to the sources.
+# Ignore them so a local verification run cannot leak machine paths into a
+# `git add -A` (same rule as the host tree's .gitignore).
+__pycache__/
+*.pyc
+
 # C test binaries + their macOS debug symbols (+ .exe on Windows/mingw)
 /tests/smoke-bin
 /tests/smoke-bin.exe

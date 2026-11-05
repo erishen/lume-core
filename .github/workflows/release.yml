@@ -19,8 +19,10 @@ on:
       - 'v*'
   pull_request:
 
+# Only `build` attaches assets, so only `build` gets write.  A top-level
+# contents: write used to grant it to every job on main/PR pushes too.
 permissions:
-  contents: write
+  contents: read
 
 # Never cancel a tagged release mid-upload: a half-attached
 # asset set is worse than a queued build. Still grouped per ref.
@@ -29,7 +31,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ci.yml runs the full suite on v* tags, but two workflows cannot `needs:`
+  # each other: a red CI run never stopped this workflow from uploading
+  # assets.  Duplicating the essential legs here is what actually makes
+  # "tests passed" a publish precondition.  Deps mirror ci.yml's test job so
+  # both native emitters and the sql cross-backend legs are real, not skips.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - name: Install Linux build deps
+        run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev libsqlite3-dev
+      - name: Parser / typechecker over every example
+        run: make check
+      - name: Full regression suite (both emitters, crypto, backend parity)
+        run: make test
+      - name: Privacy guard
+        run: make treecheck
+      - name: "Verify release version literals agree"
+        run: make check-version
+
   build:
+    needs: verify
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -198,6 +226,7 @@ jobs:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}.*
           if-no-files-found: error
+          retention-days: 7
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
@@ -205,6 +234,7 @@ jobs:
           name: lume-core-darwin-x64
           path: dist/lume-core-darwin-x64.*
           if-no-files-found: error
+          retention-days: 7
 
       # softprops/action-gh-release@v2 silently matches no files under the
       # forced Node-24 runtime (its files glob stops resolving relative to the
@@ -227,3 +257,48 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             dist/lume-core-darwin-x64.tar.gz dist/lume-core-darwin-x64.sha256 \
             --repo "$GITHUB_REPOSITORY" --clobber
+
+  # fail-fast: false lets one matrix leg fail while the others still upload.
+  # install.sh fetches a fixed per-platform name from releases/latest, so a
+  # half-set release is a 404 for that platform, not a soft degradation.
+  # This job is the only place that asserts the set is complete; it also
+  # turns a failed build matrix into a red release run instead of a green
+  # one with partial assets.
+  finalize:
+    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: "Verify the complete release asset set"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "build matrix result: ${{ needs.build.result }}"
+            echo "the release may contain only a subset of the assets"
+            exit 1
+          fi
+          assets=$(gh release view "$GITHUB_REF_NAME" \
+                     --repo "$GITHUB_REPOSITORY" \
+                     --json assets --jq '.assets[].name')
+          missing=0
+          for a in lume-core-linux-x64 lume-core-linux-arm64 \
+                   lume-core-darwin-arm64 lume-core-darwin-x64; do
+            for ext in tar.gz sha256; do
+              name="$a.$ext"
+              if ! printf '%s\n' "$assets" | grep -qx "$name"; then
+                echo "MISSING asset: $name"
+                missing=1
+              fi
+            done
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "release $GITHUB_REF_NAME has an incomplete asset set:"
+            printf '%s\n' "$assets"
+            exit 1
+          fi
+          echo "ok  complete release asset set: 4 tarballs + 4 checksums"

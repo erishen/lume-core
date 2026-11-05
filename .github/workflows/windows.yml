@@ -14,6 +14,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# Least privilege: this workflow only compiles and reads tracked fixtures.
+permissions:
+  contents: read
+
 # A new push on the same ref supersedes the previous run;
 # keep the long build/test matrices from queuing up.
 concurrency:
