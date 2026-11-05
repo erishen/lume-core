@@ -12,15 +12,22 @@ on:
     branches: [main]
   pull_request:
 
+# A new push on the same ref supersedes the previous run;
+# keep the long build/test matrices from queuing up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
 
       # Linux deps: libcrypt for -lcrypt, libLLVM for the second emitter,
       # libsqlite3-dev so the sql cross-backend legs in tests/native_backends.sh
@@ -48,8 +55,9 @@ jobs:
   # libLLVM leg runs for real rather than reporting a skip.
   asan:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
       - run: make -j4 asan
       # The for-in inline-temp iterable GC-root regression (tests/for-in-gc.lume)
@@ -70,8 +78,9 @@ jobs:
   # run arrives with its own minimizing input.
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang
       - run: make fuzz-ci
         env:
@@ -80,7 +89,7 @@ jobs:
           FUZZ_CI_BUDGET: 60
       - name: Upload crashers
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5
         with:
           name: fuzz-artifacts
           path: out/fuzz-artifacts/
@@ -90,8 +99,9 @@ jobs:
   # tarball honest without anyone having to remember `make packcheck`.
   pack:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev
       - run: make pack
       # `pack` already runs the same script inline; the standalone target is
@@ -111,8 +121,9 @@ jobs:
   # the core per the TODO scope guard.
   ai-verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev clang libsqlite3-dev
       - run: make fuzz-driver
       - run: make ai-verify
@@ -138,12 +149,13 @@ jobs:
   # before someone cuts a tag.
   release-build:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libcrypt-dev llvm-dev
