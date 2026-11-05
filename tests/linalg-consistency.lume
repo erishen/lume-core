@@ -65,3 +65,22 @@ print(v3);                                // ≈ [0.7071, 0.7071]（符号不定
 let ed = la.mat_eig_decomp(A2, 500);
 print(ed[0]);                             // ≈ [3, 1]（顺序不定）
 print(ed[1]);                             // 两行单位特征向量
+
+// ── SVD 奇异值分解（2026-11-05，补矩阵分解三件套最后一块）──
+// 对角阵：奇异值 = 对角元绝对值（降序）
+print(la.mat_singular_values([[4.0,0.0],[0.0,3.0]]));   // [4, 3]
+// 对称阵 [[3,1],[1,3]]：奇异值 = |特征值| = [4, 2]
+print(la.mat_singular_values([[3.0,1.0],[1.0,3.0]]));   // [4, 2]
+// 非对称阵 [[1,2],[3,4]]：奇异值 ≈ [5.465, 0.366]
+print(la.mat_singular_values([[1.0,2.0],[3.0,4.0]]));   // [~5.465, ~0.366]
+// 分解 + 重建一致性（square）：A ≈ U·diag(s)·Vᵀ，且 U、V 列正交
+let As = [[1.0,2.0],[3.0,4.0]];
+let svdA = la.mat_svd(As);                // packing: [U0,U1, sig, V0,V1]
+let Ua: float[][] = [svdA[0], svdA[1]];
+let sa: float[] = svdA[2];
+let Va: float[][] = [svdA[3], svdA[4]];
+let Sd = la.mat_diag(sa);
+let reconA = la.mat_mul(la.mat_mul(Ua, Sd), la.mat_transpose(Va));
+print(la.mat_eq_approx(reconA, As, 1e-5));              // true
+print(la.mat_eq_approx(la.mat_mul(la.mat_transpose(Ua), Ua), la.mat_identity(2), 1e-5));  // true
+print(la.mat_eq_approx(la.mat_mul(la.mat_transpose(Va), Va), la.mat_identity(2), 1e-5));  // true

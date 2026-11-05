@@ -20,10 +20,11 @@
 //   import "linalg.lume" as la;
 //   let R = la.mat_mul(A, la.mat_inv(B));
 //
-// ── 已知语言限制（重要）─────────────────────────────────────────────
-// lume 当前不支持「用户函数接收函数类型参数」，故迭代法（如共轭梯度）暂
-// 未纳入；本库聚焦直接法（高斯消元 / Gauss–Jordan / Doolittle LU），覆盖
-// 绝大多数中小规模线性代数需求。待 lume 支持函数类型后可补迭代法。
+// ── 设计说明 ───────────────────────────────────────────────────────
+// 本库聚焦直接法（高斯消元 / Gauss–Jordan / Doolittle LU / QR / 特征值 /
+// SVD），覆盖绝大多数中小规模线性代数需求。迭代法（共轭梯度、梯度下降等）
+// 置于 optim.lume（已支持「用户函数接收函数类型形参」）。三后端执行同一
+// 份 AST，浮点运算顺序由 lume 显式控制，故数值天然一致。
 // ───────────────────────────────────────────────────────────────────
 
 export let LINALG_VERSION = "0.1.0";
@@ -452,7 +453,7 @@ export func lu_u(LU: float[][]): float[][] {
 }
 
 // ════════════════════════════════════════════════════════════════
-// QR 分解 + 特征值（2026-11-05，补线性代数库最后一块直接法缺口）
+// QR 分解 + 特征值 + SVD（2026-11-05，补线性代数库直接法缺口）
 //
 // 采用修改 Gram–Schmidt（MGS）正交化：O(n³)、全显式循环，浮点运算顺序
 // 由 lume 显式控制，故三后端天然一致。复数特征值以「实部」返回（对称矩阵
@@ -463,6 +464,8 @@ export func lu_u(LU: float[][]): float[][] {
 //   mat_qr_r      A=QR 的上三角因子 R
 //   mat_eig_power 幂迭代：主特征值 λ 与对应特征向量 v（返回 [[λ], v]）
 //   mat_eigvals   QR 迭代：全特征值（对称矩阵收敛到 diag(λ₁…λₙ)）
+//   mat_svd       A=U·diag(s)·Vᵀ 奇异值分解（Jacobi，返回 packing）
+//   mat_singular_values  仅返回降序奇异值 float[]
 // ───────────────────────────────────────────────────────────────────
 
 // 修改 Gram–Schmidt：返回正交矩阵 Q 使 A ≈ Q·R（R 上三角）。
@@ -634,4 +637,169 @@ export func mat_eig_decomp(A: float[][], iters: int): float[][] {
   out = push(out, evals);
   out = push(out, evecs);
   return out;
+}
+
+// 返回新矩阵：交换第 a、b 列（值语义，避免原地索引赋值）。
+func la_swap_cols(M: float[][], a: int, b: int): float[][] {
+  let m = len(M);
+  let n = len(M[0]);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (j == a) { row = push(row, M[i][b]); }
+      else if (j == b) { row = push(row, M[i][a]); }
+      else { row = push(row, M[i][j]); }
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 返回新矩阵：对第 p、q 列施加正交旋转 [c -s; s c]（列右乘，值语义）。
+func la_rot_cols(M: float[][], p: int, q: int, c: float, s: float): float[][] {
+  let m = len(M);
+  let n = len(M[0]);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (j == p) { row = push(row, c * M[i][p] - s * M[i][q]); }
+      else if (j == q) { row = push(row, s * M[i][p] + c * M[i][q]); }
+      else { row = push(row, M[i][j]); }
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 奇异值分解 SVD（2026-11-05，补矩阵分解三件套最后一块）
+//
+// 两面对角化 Jacobi：反复对列对 (p,q) 施加正交旋转，使 AᵀA 的非对角元
+// 收敛到 0。记 B = A·V，则 B 列长为 ||A v_q|| = σ_q（奇异值），与旋转
+// 方向无关 → 奇异值数值稳健；B 列归一化即左奇异向量 U，V 为累积旋转。
+// 复用 mat_identity / mat_mul / mat_transpose / mat_diag。纯 .lume、三
+// 后端一致。
+//
+// 返回 packing（ragged float[][]）：
+//   packed[0 .. m-1]        U（m×m，列正交）
+//   packed[m]               singular values（降序，长度 n）
+//   packed[m+1 .. m+n-1]    V（n×n，列正交）
+// 满足 A ≈ U · diag(s) · Vᵀ（square 严格成立，tol 内）。
+// ════════════════════════════════════════════════════════════════
+
+export func mat_svd(A: float[][]): float[][] {
+  let m: int = len(A);
+  let n: int = len(A[0]);
+  // B = A 的拷贝（m×n）
+  let B: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let brow: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { brow = push(brow, A[i][j]); }
+    B = push(B, brow);
+  }
+  let V: float[][] = mat_identity(n);
+  // 固定 60 次扫描（小矩阵足够收敛；近收敛后旋转量趋于 0，无害）
+  for (let sw = 0; sw < 60; sw = sw + 1) {
+    for (let p = 0; p < n; p = p + 1) {
+      for (let q = p + 1; q < n; q = q + 1) {
+        let App: float = 0.0;
+        let Aqq: float = 0.0;
+        let Apq: float = 0.0;
+        for (let i = 0; i < m; i = i + 1) {
+          App = App + B[i][p] * B[i][p];
+          Aqq = Aqq + B[i][q] * B[i][q];
+          Apq = Apq + B[i][p] * B[i][q];
+        }
+        // 仅当 off-diagonal 显著时才旋转（避免除零 / 无谓扰动）
+        if (abs(Apq) > 1e-10 * sqrt(App * Aqq) + 1e-300) {
+          let tau: float = (Aqq - App) / (2.0 * Apq);
+          let t: float = 0.0;
+          if (tau >= 0.0) { t = 1.0 / (tau + sqrt(tau * tau + 1.0)); }
+          else { t = -1.0 / (-tau + sqrt(tau * tau + 1.0)); }
+          let c: float = 1.0 / sqrt(t * t + 1.0);
+          let s: float = t * c;
+          B = la_rot_cols(B, p, q, c, s);
+          V = la_rot_cols(V, p, q, c, s);
+        }
+      }
+    }
+  }
+  // 奇异值 = B 各列范数
+  let sig: float[] = [];
+  for (let j = 0; j < n; j = j + 1) {
+    let s2: float = 0.0;
+    for (let i = 0; i < m; i = i + 1) { s2 = s2 + B[i][j] * B[i][j]; }
+    sig = push(sig, sqrt(s2));
+  }
+  // 降序排序，并同步置换 B 列（→U 列）与 V 列
+  for (let a = 0; a < n; a = a + 1) {
+    let bi: int = a;
+    for (let b = a + 1; b < n; b = b + 1) {
+      if (sig[b] > sig[bi]) { bi = b; }
+    }
+      if (bi != a) {
+        let sa_val: float = sig[a];
+        let sb_val: float = sig[bi];
+        let sig_new: float[] = [];
+        for (let j = 0; j < n; j = j + 1) {
+          if (j == a) { sig_new = push(sig_new, sb_val); }
+          else if (j == bi) { sig_new = push(sig_new, sa_val); }
+          else { sig_new = push(sig_new, sig[j]); }
+        }
+        sig = sig_new;
+        B = la_swap_cols(B, a, bi);
+        V = la_swap_cols(V, a, bi);
+      }
+  }
+  // 左奇异向量 U（列主序构造，再转置为行主序）
+  let Ucols: float[][] = [];
+  for (let j = 0; j < n; j = j + 1) {
+    let sv: float = sig[j];
+    if (sv < 1e-14) { sv = 1e-14; }
+    let col: float[] = [];
+    for (let i = 0; i < m; i = i + 1) { col = push(col, B[i][j] / sv); }
+    Ucols = push(Ucols, col);
+  }
+  // 若 m > n，用 Gram–Schmidt 补足剩余标准正交列
+  for (let j = n; j < m; j = j + 1) {
+    let cand: float[] = [];
+    for (let i = 0; i < m; i = i + 1) {
+      if (i == j) { cand = push(cand, 1.0); } else { cand = push(cand, 0.0); }
+    }
+    for (let k = 0; k < j; k = k + 1) {
+      let dot: float = 0.0;
+      for (let i = 0; i < m; i = i + 1) { dot = dot + Ucols[k][i] * cand[i]; }
+      let nc: float[] = [];
+      for (let i = 0; i < m; i = i + 1) { nc = push(nc, cand[i] - dot * Ucols[k][i]); }
+      cand = nc;
+    }
+    let norm: float = 0.0;
+    for (let i = 0; i < m; i = i + 1) { norm = norm + cand[i] * cand[i]; }
+    norm = sqrt(norm);
+    if (norm < 1e-14) { norm = 1.0; }
+    let col: float[] = [];
+    for (let i = 0; i < m; i = i + 1) { col = push(col, cand[i] / norm); }
+    Ucols = push(Ucols, col);
+  }
+  let U: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < m; j = j + 1) { row = push(row, Ucols[j][i]); }
+    U = push(U, row);
+  }
+  // packing（ragged）
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) { out = push(out, U[i]); }
+  out = push(out, sig);
+  for (let i = 0; i < n; i = i + 1) { out = push(out, V[i]); }
+  return out;
+}
+
+// 仅返回降序奇异值（float[]，长度 n）；A = U·diag(s)·Vᵀ 的核心数值结果。
+export func mat_singular_values(A: float[][]): float[] {
+  let packed: float[][] = mat_svd(A);
+  let m: int = len(A);
+  return packed[m];
 }
