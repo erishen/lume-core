@@ -274,7 +274,19 @@ void native_files(VM *vm, int argc, Value *args, Value *out) {
 }
 
 /* Whole file contents as a string, or null when missing/unreadable.
- * 16 MiB cap: this exists for catalog/skill inspection, not memory dumps. */
+ * 16 MiB cap: this exists for catalog/skill inspection, not memory dumps.
+ *
+ * CONTRACT (pinned by tests/smoke.c and lume/tests/smoke.c): a missing or
+ * unreadable file returns null WITHOUT setting a VM error. This is deliberate
+ * -- callers probe optional files (.env, catalogs, audit ledgers) with
+ * `read_file(p) == null`. It also means try() CANNOT catch a missing file:
+ * try() takes its success path and yields { ok: null, err: null }, so a
+ * "404 if missing" handler must test `get(r, "ok", null) == null`, not
+ * `get(r, "err", null) != null` (see lume/examples/download.lume).
+ * Do not "fix" this by calling vm_set_error() on fopen failure: it would
+ * break both interpreter callers and bridge_native.c's native counterpart,
+ * which returns NULL for the same reason. Genuine errors (oversized file,
+ * path outside LUME_FS_ROOT, --no-fs refusal) DO raise. */
 void native_read_file(VM *vm, int argc, Value *args, Value *out) {
     if (argc < 1) { vm_set_error(vm, "read_file() needs a path"); return; }
     const char *p = NULL;

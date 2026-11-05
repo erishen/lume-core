@@ -1016,6 +1016,18 @@ int main(void) {
               "true\ntrue\ntrue\n");
     }
 
+    /* read_file() returns null for a missing file and does NOT set a VM
+     * error (see builtins_fs.c's CONTRACT comment). try() therefore takes
+     * its success path with { ok: null, err: null }: a "missing" branch
+     * must test ok == null, not err != null. Pin the interaction so a
+     * well-meaning "make it raise" change cannot silently break the
+     * interpreter, bridge_native.c and lume's download example at once. */
+    check("read_file: missing file stays null inside try()",
+          "let r = try(() => read_file(\"/tmp/lume-smoke-files/no-such-file.md\"));\n"
+          "print(str(get(r, \"ok\", null) == null));\n"
+          "print(str(get(r, \"err\", null) == null));\n",
+          "true\ntrue\n");
+
     /* Missing sync file is "no MCP servers", which is an empty list, not null.
      * Publishing null here made /discovery return "mcps": null and the hub
      * pages threw on data.mcps.length. Real read failures (OOM, oversized,
