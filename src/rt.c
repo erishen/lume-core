@@ -16,6 +16,7 @@
  *  14. JSON parser (text -> tagged-any tree)                                           (L1768)
  *  15. Builtins: contains / log / parse / bool                                         (L2122)
  *  16. Slot accessors: get / accumulate / length                                       (L2396)
+ *  17. Password verification: crypt_verify / const_time_eq (P3)                        (L4818)
  *
  *  Compiled standalone by backend.c (LUME_RT_SRC) and linted via LINT_SRCS.
  *  No rt.h: this TU is self-contained; native/LLVM emit code links it.
@@ -4813,4 +4814,88 @@ LumeList *lume_bi_obv(const LumeList *c, const LumeList *v)
     }
     free(cx); free(vx);
     return out;
+}
+
+/* ============ 17. Password verification (P3, 2026-11-04) ============
+ *
+ * Native twins of src/builtins_crypt.c's crypt_verify() / const_time_eq().
+ * The VM and this standalone runtime cannot share a symbol: backend.c
+ * compiles rt.c alone and links it into generated binaries without a single
+ * VM object. So the verdict logic below is a verbatim mirror of
+ * builtins_crypt.c's crypt_verify_impl() / ct_eq_bytes() — keep both in
+ * lockstep. tests/native-consistency.lume pins the agreement across the
+ * interpreter and both IR emitters, which is exactly the guard this
+ * duplication needs.
+ *
+ * HAVE_CRYPT is undefined in lume-core (the VM TU is built the same way), so
+ * glibc's $5$/$6$ crypt(3) is not linked in and a strong hash fails closed
+ * here too. bcrypt ($2*) is the documented core limitation: the host links
+ * agent-httpd's bcrypt via sync-lang. The error channel differs
+ * (lume_error_set here, vm_set_error there) but the verdict must not.
+ *
+ * One honest divergence: native strings are C strings (strlen), while the
+ * VM's obj_string_len is NUL-safe. const_time_eq() on strings containing
+ * embedded NUL bytes is therefore interpreter-only; every other native
+ * string builtin has the same C-string contract.
+ */
+#ifdef HAVE_CRYPT
+/* Standalone TU: no <crypt.h> dependency unless a build opts in, and such a
+ * build must also add -lcrypt to the backend link (backend.c / backend_llvm.c)
+ * and define HAVE_CRYPT for the VM TU. lume-core itself does neither. */
+extern char *crypt(const char *key, const char *salt);
+#endif
+
+static int rt_ct_eq_bytes(const char *a, const char *b, size_t n)
+{
+    unsigned char acc = 0;
+    for (size_t i = 0; i < n; i++)
+        acc |= (unsigned char)(a[i] ^ b[i]);
+    return acc == 0;
+}
+
+/* -1 = hash family this build cannot verify ($2*), 0 = reject, 1 = ok */
+static int rt_crypt_verify_impl(const char *hash, const char *pw)
+{
+    size_t hl = strlen(hash);
+    if (hl < 4) return 0;
+    if (strncmp(hash, "$5$", 3) == 0 || strncmp(hash, "$6$", 3) == 0) {
+#ifdef HAVE_CRYPT
+        char *got = crypt(pw, hash);
+        if (!got || strlen(got) != hl) return 0;
+        return rt_ct_eq_bytes(got, hash, hl) ? 1 : 0;
+#else
+        (void)pw;
+        return 0;
+#endif
+    }
+    if (strncmp(hash, "$2a$", 4) == 0 || strncmp(hash, "$2b$", 4) == 0 ||
+        strncmp(hash, "$2y$", 4) == 0)
+        return -1;   /* core has no bcrypt: documented limitation, host covers */
+    return 0;
+}
+
+int64_t lume_bi_crypt_verify(const char *hash, const char *pw)
+{
+    if (!hash || !pw) {
+        lume_error_set("crypt_verify(): expects 2 arguments (hash, password)");
+        return 0;
+    }
+    int r = rt_crypt_verify_impl(hash, pw);
+    if (r < 0) {
+        lume_error_set("crypt_verify(): bcrypt ($2*) support lives in the host "
+                       "build (lume links agent-httpd's bcrypt)");
+        return 0;
+    }
+    return r == 1 ? 1 : 0;
+}
+
+int64_t lume_bi_const_time_eq(const char *a, const char *b)
+{
+    if (!a || !b) {
+        lume_error_set("const_time_eq(): expects 2 arguments (a, b)");
+        return 0;
+    }
+    size_t na = strlen(a), nb = strlen(b);
+    if (na != nb) return 0;
+    return rt_ct_eq_bytes(a, b, na) ? 1 : 0;
 }

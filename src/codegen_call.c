@@ -561,6 +561,10 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_replace(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_substr(i8*, i64, i64)\n");
     EMIT(g, "declare i8* @lume_bi_str_match(i8*, i8*)\n");
+    /* P3 password verification (2026-11-04): both helpers return i64 so the
+     * bool emitters can truncate to i1 the way contains()/sql_tx_* do. */
+    EMIT(g, "declare i64 @lume_bi_crypt_verify(i8*, i8*)\n");
+    EMIT(g, "declare i64 @lume_bi_const_time_eq(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_exp(double)\n");
     /* Monte Carlo RNG (2026-10-24, rt.c): deterministic PCG32 behind the
      * default seed; rand() takes no arguments, so it cannot ride the
@@ -953,7 +957,15 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
     } else {
         if (shape && shape->kind != TY_ANY) {
             const char *sfn; Type *srty;
-            if (!get_flavour(shape, &sfn, &srty))
+            if (shape->kind == TY_NULL) {
+                /* try()'s err member is exactly this shape: a string when
+                 * the lambda failed, a null obj when it did not. The
+                 * tag-strict obj getter would answer NULL for the string,
+                 * so the read goes through the any getter — rt.c keeps
+                 * lume_map_get_any for this slot (map_get_fn routes
+                 * TY_NULL there too). */
+                sfn = "lume_map_get_any"; srty = type_anon_struct();
+            } else if (!get_flavour(shape, &sfn, &srty))
                 ERRV(g, "line %zu: get() cannot read a value of type %s",
                      line, ty_str(shape));
             if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
@@ -978,7 +990,12 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
             rty = type_prim(TY_ANY);
         } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
             const char *dfn; Type *drty;
-            if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+            if (d.ty->kind == TY_NULL) {
+                /* Same try()-err rule as the shape path above: a null
+                 * default reads the slot's string or null-obj payload,
+                 * never the tag-strict obj getter. */
+                fn = "lume_map_get_any"; rty = type_anon_struct();
+            } else if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
         }
     }
 
@@ -2389,9 +2406,21 @@ static Val cg_builtin(CG *g, Node *n)
                     const char *pfn = map_put_fn(ret);
                     if (!pfn) { free(res); free(emsg); free(kok); free(kerr);
                         ERRV(g, "line %zu: try() result has no codegen type", n->line); }
+                    /* A bool payload travels as an i64 (put() does the same
+                     * via coerce): zext the lambda's i1 before lume_map_put_b
+                     * or the call site spells `i64 %t` on an i1 register. */
+                    char *payload = res, *zb = NULL;
+                    if (ret->kind == TY_BOOL) {
+                        zb = emit_instrf(g, type_prim(TY_INT),
+                                         "zext i1 %s to i64", res);
+                        if (!zb) { free(res); free(emsg); free(kok); free(kerr);
+                            ERRV(g, "line %zu: try() failed", n->line); }
+                        payload = zb;
+                    }
                     Val r = rt_call(g, type_prim(TY_INT), pfn, "i8* %s, i8* %s, %s %s",
-                                    m.v, kok, rt_arg_type(ret), res);
+                                    m.v, kok, rt_arg_type(ret), payload);
                     free(r.v);
+                    free(zb);
                 }
             } else {
                 Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj",
@@ -3334,6 +3363,32 @@ static Val cg_builtin(CG *g, Node *n)
         free(a.v);
         if (!r.v) ERRV(g, "line %zu: %s() failed", n->line, bname);
         return r;
+    }
+
+    /* crypt_verify(hash, pw) / const_time_eq(a, b) — P3 password
+     * verification (2026-11-04). The helpers in src/rt.c mirror
+     * builtins_crypt.c's VM twins; crypt_verify() reports an unsupported
+     * hash family ($2*) through lume_error_set, which try() turns into the
+     * same { ok: null, err: ... } map the interpreter produces. */
+    if (strcmp(bname, "crypt_verify") == 0 ||
+        strcmp(bname, "const_time_eq") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes exactly two strings", n->line, bname);
+        Val sa = cg_expr(g, n->as.call.args[0]);
+        Val sb = cg_expr(g, n->as.call.args[1]);
+        if (!sa.v || !sb.v || !sa.ty || !sb.ty ||
+            sa.ty->kind != TY_STRING || sb.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: %s() needs two strings", n->line, bname);
+        const char *fn = strcmp(bname, "crypt_verify") == 0
+                       ? "lume_bi_crypt_verify" : "lume_bi_const_time_eq";
+        char *iv = emit_instrf(g, type_prim(TY_INT),
+                               "call i64 @%s(i8* %s, i8* %s)", fn, sa.v, sb.v);
+        free(sa.v); free(sb.v);
+        if (!iv) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        char *bv = emit_instrf(g, type_prim(TY_BOOL), "trunc i64 %s to i1", iv);
+        free(iv);
+        if (!bv) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return val_take(type_prim(TY_BOOL), bv);
     }
 
     if (strcmp(bname, "contains") == 0) {

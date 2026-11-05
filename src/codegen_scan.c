@@ -371,6 +371,13 @@ Type *infer_node_type(CG *g, Node *n)
                 return type_list(any_type());
             if (strcmp(name, "contains") == 0 && n->as.call.argc == 2)
                 return type_prim(TY_BOOL);
+            /* crypt_verify / const_time_eq answer a bool (2026-11-04, P3):
+             * without this the try(() => crypt_verify(...)) lambda's ret is
+             * never pinned, the define falls back to void and the body's
+             * `ret i1` no longer parses. Kept in step with llvm_cg_scan.inc. */
+            if ((strcmp(name, "crypt_verify") == 0 ||
+                 strcmp(name, "const_time_eq") == 0) && n->as.call.argc == 2)
+                return type_prim(TY_BOOL);
             if ((strcmp(name, "exp") == 0 || strcmp(name, "log") == 0 ||
                  strcmp(name, "ln") == 0))
                 return type_prim(TY_FLOAT);

@@ -366,6 +366,13 @@ static Type *infer_node_type(CG *g, Node *n)
                 return type_list(any_type());
             if (strcmp(name, "contains") == 0 && n->as.call.argc == 2)
                 return type_prim(TY_BOOL);
+            /* crypt_verify / const_time_eq answer a bool (2026-11-04, P3):
+             * same pinning the text emitter needs — an unpinned try() lambda
+             * ret lowers to void while its body returns i1. Kept in step
+             * with codegen_scan.c. */
+            if ((strcmp(name, "crypt_verify") == 0 ||
+                 strcmp(name, "const_time_eq") == 0) && n->as.call.argc == 2)
+                return type_prim(TY_BOOL);
             if ((strcmp(name, "exp") == 0 || strcmp(name, "log") == 0 ||
                  strcmp(name, "ln") == 0))
                 return type_prim(TY_FLOAT);

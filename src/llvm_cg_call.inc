@@ -399,7 +399,15 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
     } else {
         if (shape && shape->kind != TY_ANY) {
             const char *sfn; Type *srty;
-            if (!get_flavour(shape, &sfn, &srty))
+            if (shape->kind == TY_NULL) {
+                /* try()'s err member is exactly this shape: a string when
+                 * the lambda failed, a null obj when it did not. The
+                 * tag-strict obj getter would answer NULL for the string,
+                 * so the read goes through the any getter — rt.c keeps
+                 * lume_map_get_any for this slot (map_get_fn routes
+                 * TY_NULL there too). Mirror of codegen_call.c. */
+                sfn = "lume_map_get_any"; srty = type_anon_struct();
+            } else if (!get_flavour(shape, &sfn, &srty))
                 ERRV(g, "line %zu: get() cannot read a value of type %s",
                      line, ty_str(shape));
             if (d.v && d.ty && d.ty->kind != TY_ANY && d.ty->kind != shape->kind &&
@@ -424,7 +432,12 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
             rty = type_prim(TY_ANY);
         } else if (d.v && d.ty && d.ty->kind != TY_ANY) {
             const char *dfn; Type *drty;
-            if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
+            if (d.ty->kind == TY_NULL) {
+                /* Same try()-err rule as the shape path above: a null
+                 * default reads the slot's string or null-obj payload,
+                 * never the tag-strict obj getter. */
+                fn = "lume_map_get_any"; rty = type_anon_struct();
+            } else if (get_flavour(d.ty, &dfn, &drty)) { fn = dfn; rty = drty; }
         }
     }
     if (d.v && d.ty && d.ty->kind == TY_BOOL)
@@ -1705,6 +1718,30 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_prim(TY_STRING), r);
     }
 
+    /* P3 password verification (2026-11-04) — mirrors the text emitter's
+     * branch and src/rt.c's helpers. rt_decl creates the i64(i8*, i8*)
+     * declaration on demand, so no declare table entry is needed here. */
+    if (strcmp(bname, "crypt_verify") == 0 ||
+        strcmp(bname, "const_time_eq") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: %s() takes exactly two strings", n->line, bname);
+        Val sa = cg_expr(g, n->as.call.args[0]);
+        Val sb = cg_expr(g, n->as.call.args[1]);
+        if (!sa.v || !sb.v || !sa.ty || !sb.ty ||
+            sa.ty->kind != TY_STRING || sb.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: %s() needs two strings", n->line, bname);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        const char *fn = strcmp(bname, "crypt_verify") == 0
+                       ? "lume_bi_crypt_verify" : "lume_bi_const_time_eq";
+        LLVMValueRef iv = LLVMBuildCall2(g->ab,
+                                         LLVMFunctionType(g->i64, p2, 2, 0),
+                                         rt_decl(g, fn, g->i64, p2, 2),
+                                         (LLVMValueRef[]){ sa.v, sb.v }, 2, "cv");
+        if (!iv) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        LLVMValueRef bv = LLVMBuildTrunc(g->ab, iv, g->i1, "cvb");
+        return val_make(type_prim(TY_BOOL), bv);
+    }
+
     if (strcmp(bname, "contains") == 0) {
         if (argc < 2)
             ERRV(g, "line %zu: contains() needs (s, sub)", n->line);
@@ -2002,8 +2039,16 @@ static Val cg_builtin(CG *g, Node *n)
                     const char *pfn = map_put_fn(ret);
                     if (!pfn)
                         ERRV(g, "line %zu: try() result has no codegen type", n->line);
-                    LLVMTypeRef pa[3] = { g->i8ptr, g->i8ptr, ty_of(g, ret) };
-                    LLVMValueRef va2[3] = { m, kok, res };
+                    /* A bool payload travels as an i64 (same convention the
+                     * text emitter and put() use): zext the lambda's i1
+                     * before lume_map_put_b. */
+                    LLVMValueRef payload = res;
+                    if (ret->kind == TY_BOOL)
+                        payload = LLVMBuildZExt(g->ab, res, g->i64, "tok");
+                    LLVMTypeRef pa[3] = { g->i8ptr, g->i8ptr,
+                                          ret->kind == TY_BOOL ? g->i64
+                                                               : ty_of(g, ret) };
+                    LLVMValueRef va2[3] = { m, kok, payload };
                     LLVMBuildCall2(g->ab, LLVMFunctionType(g->i64, pa, 3, 0),
                                    rt_decl(g, pfn, g->i64, pa, 3),
                                    va2, 3, "");

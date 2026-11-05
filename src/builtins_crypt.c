@@ -402,6 +402,7 @@ Value b_ed25519_keypair(VM *vm, int argc, Value *args) {
  * 供 DSL 侧 token / CSRF 比较 —— 普通 == 在首个差异字节即短路, 泄露时序。
  */
 
+/* 同 rt.c:rt_ct_eq_bytes(), 见下方 crypt_verify_impl 的 LOCKSTEP 说明。 */
 static int ct_eq_bytes(const char *a, const char *b, size_t n) {
     unsigned char acc = 0;
     for (size_t i = 0; i < n; i++)
@@ -409,7 +410,13 @@ static int ct_eq_bytes(const char *a, const char *b, size_t n) {
     return acc == 0;
 }
 
-/* -1 = 构建不支持该哈希族($2*: core 无 bcrypt), 0 = 校验失败, 1 = 通过 */
+/* -1 = 构建不支持该哈希族($2*: core 无 bcrypt), 0 = 校验失败, 1 = 通过
+ *
+ * LOCKSTEP: src/rt.c 末尾的 rt_crypt_verify_impl() / rt_ct_eq_bytes() 是这两个
+ * 函数的逐字镜像 —— native emitter 链接的是单独编译的 rt.o, 拿不到本 TU 的
+ * 符号。改这里的判定规则必须同步改 rt.c, 否则解释器与 --compile-text /
+ * --compile-llvm 会对同一个口令给出不同结论; tests/native-consistency.lume
+ * 就是这条约束的看守。 */
 static int crypt_verify_impl(const char *hash, const char *pw) {
     size_t hl = strlen(hash);
     if (hl < 4) return 0;
