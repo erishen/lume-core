@@ -38,6 +38,11 @@
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/random.h>
+#elif defined(_WIN32)
+/* Windows 随机源由 os_win32.c 提供。<windows.h> 经 winnt.h 定义的
+ * TokenType 枚举成员会与 lume.h 的 TokenType 类型名在同一 TU 冲突,
+ * 所以这里只做前向声明, 不 include 任何 Windows 头(见 os_win32.c 文件头)。 */
+int lume_win32_random(unsigned char *buf, size_t n);
 #endif
 
 #ifndef HAVE_CRYPT
@@ -240,15 +245,15 @@ Value b_base64_decode(VM *vm, int argc, Value *args) {
  * 是对称的 —— 持 root 者能派生任何节点密钥, 等于能冒充任何节点。非对称之后,
  * 一台机器泄露私钥只影响它自己。
  *
- * 随机源: /dev/urandom（Windows 用 BCryptGenRandom 不在此处处理, 该平台
- * 走 vendored 路径之外的实现会 vm_set_error 明确报错, 而不是静默降级成
- * 可预测的密钥 —— 后者会让整套信任模型形同虚设）。
+ * 随机源: Linux 先 getrandom(2) 再退回 /dev/urandom, macOS 用
+ * arc4random_buf, Windows 用 BCryptGenRandom(bcrypt.dll, Vista+ 随系统提供)。
+ * 三者的共同底线: 拿不到 CSPRNG 就 vm_set_error 明确报错, 绝不静默降级成
+ * rand()/时间种子 —— 可预测的私钥会让整套 peer 信任模型形同虚设。
  */
 
 static int read_urandom(uint8_t *buf, size_t n) {
 #if defined(_WIN32)
-    (void)buf; (void)n;
-    return -1;   /* 见上方说明: 宁可不提供, 也不给可预测密钥 */
+    return lume_win32_random(buf, n);
 #elif defined(__APPLE__)
     /* arc4random_buf: macOS guarantees it (10.7+), no /dev dependency. */
     arc4random_buf(buf, n);

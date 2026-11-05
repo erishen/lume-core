@@ -101,14 +101,20 @@ endif
 # 口径 HAVE_LLVM=1, 接着编 src/llvm_codegen.c 就是一记
 # "fatal error: 'llvm-c/Core.h' file not found" —— 看着像缺依赖, 其实是探测
 # 写活了。真的能问出版本号才算探测到, 否则老老实实走纯文本后端。
-HAVE_LLVM := $(if $(strip $(shell $(LLVM_CONFIG) --version 2>/dev/null)),1,0)
+# 还有第三种情况: LLVM_CONFIG 整个为空(没装 llvm-dev 的 CI 腿 / 开发机)。
+# 原来无条件执行 $(shell $(LLVM_CONFIG) --version ...) 会退化成
+# `/bin/sh --version 2>/dev/null`, 每次 make 都在解析期打一行
+# "/bin/sh: --: invalid option" + GNU long options 用法, 看着像构建失败。
+# $(if) 只展开命中的分支, 所以空路径时这里根本不会起 shell。
+HAVE_LLVM := $(if $(strip $(LLVM_CONFIG)),$(if $(strip $(shell $(LLVM_CONFIG) --version 2>/dev/null)),1,0),0)
 # LLVM_CONFIG 要进依赖图: HAVE_LIBLLVM 是编译期宏、烧在 main.o 里, 探测结果
 # 一变(比如容器里刚装完 llvm-dev)必须整批重编, 否则链接出的是「半新」二进制:
 # llvm_codegen.o 是新编的, main.o 还是没那个宏的, --compile-llvm 照样拒绝。
 # 但直接把 $(LLVM_CONFIG) 当目标名不行 —— 传裸名(在 PATH 上、当前目录里没这
 # 个文件)或者路径还没装好时, make 报 "No rule to make target 'llvm-config-16'"
 # 直接挂, 比不重编还糟。先归一成一个落地路径(存在的优先, 其次 PATH 解析)。
-LLVM_CONFIG_PATH := $(or $(wildcard $(LLVM_CONFIG)),$(shell command -v $(LLVM_CONFIG) 2>/dev/null))
+# 同上: 空路径时别白起一次 `command -v` 的 shell, 也让依赖图保持为空。
+LLVM_CONFIG_PATH := $(if $(strip $(LLVM_CONFIG)),$(or $(wildcard $(LLVM_CONFIG)),$(shell command -v $(LLVM_CONFIG) 2>/dev/null)),)
 
 # 产物名刻意不叫 lume: 宿主 lume 编出来的也叫 bin/lume, 两棵树摆
 # 在同一台机器上时能撞成「分不清哪个是哪个」(旧事故: PATH 上那个 lume 是旧产物、
@@ -247,6 +253,10 @@ ifeq ($(IS_WINDOWS),1)
     LUME_HAS_HTTP := 0
     # bridge_serve.c / bridge_native.c link against winsock (winsock2.h).
     LDFLAGS_EXTRA += -lws2_32
+    # builtins_crypt.c 的 ed25519_keypair() 在 Windows 走 BCryptGenRandom。
+    # -lbcrypt 只是 bcrypt.dll 的 import lib, 系统自带, 不引入新运行时依赖。
+    # 注意 LDFLAGS 是递归展开($(LDFLAGS_EXTRA)), 在这里追加仍会进链接命令。
+    LDFLAGS_EXTRA += -lbcrypt
     # POSIX regex for str_match/regex, vendored (see the IS_WINDOWS CFLAGS
     # branch above): compiled into the binary instead of linking -lregex.
     SRCS += src/compat/regex/regcomp.c src/compat/regex/regexec.c \
@@ -365,7 +375,15 @@ $(OBJS): $(LLVM_CONFIG_PATH)
 $(TARGET): $(OBJS) $(AH_LIB) | bin
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(AH_LIB) $(LDFLAGS) -lm
 
-check: all crypt-test crypto-test ed25519-test builtins-test vm-reuse-test fsroot-test
+# fsroot-test 依赖 POSIX /tmp 的 realpath 语义, Windows 上不适用(见该目标
+# 注释)。windows.yml 同样跑 `make check`, 以前 crypto-test 先红把它挡住了;
+# crypto 修好后它就成了下一个红灯。按平台摘掉, Linux/macOS 仍真跑。
+ifeq ($(IS_WINDOWS),1)
+CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-test
+else
+CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-test fsroot-test
+endif
+check: all $(CHECK_UNIT_TESTS)
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
