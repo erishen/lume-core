@@ -450,3 +450,188 @@ export func lu_u(LU: float[][]): float[][] {
   }
   return out;
 }
+
+// ════════════════════════════════════════════════════════════════
+// QR 分解 + 特征值（2026-11-05，补线性代数库最后一块直接法缺口）
+//
+// 采用修改 Gram–Schmidt（MGS）正交化：O(n³)、全显式循环，浮点运算顺序
+// 由 lume 显式控制，故三后端天然一致。复数特征值以「实部」返回（对称矩阵
+// 必为实数，非对称可能含复根，本库只取实部；需完整复特征对请外接 sci.sig）。
+//
+// 覆盖：
+//   mat_qr_q      A=QR 的正交因子 Q（列正交）
+//   mat_qr_r      A=QR 的上三角因子 R
+//   mat_eig_power 幂迭代：主特征值 λ 与对应特征向量 v（返回 [[λ], v]）
+//   mat_eigvals   QR 迭代：全特征值（对称矩阵收敛到 diag(λ₁…λₙ)）
+// ───────────────────────────────────────────────────────────────────
+
+// 修改 Gram–Schmidt：返回正交矩阵 Q 使 A ≈ Q·R（R 上三角）。
+// 列 j 依次为 A 各列对前 j-1 个正交列的残差归一化。
+export func mat_qr_q(A: float[][]): float[][] {
+  let m: int = len(A);
+  let n: int = len(A[0]);
+  let Qcols: float[][] = [];          // 列主序暂存（Qcols[j] 为第 j 列）
+  for (let j = 0; j < n; j = j + 1) {
+    let v: float[] = [];
+    for (let i = 0; i < m; i = i + 1) { v = push(v, A[i][j]); }
+    for (let i = 0; i < j; i = i + 1) {
+      let dot: float = 0.0;
+      for (let k = 0; k < m; k = k + 1) { dot = dot + Qcols[i][k] * v[k]; }
+      let w: float[] = [];            // v = v - dot · Qcols[i]
+      for (let k = 0; k < m; k = k + 1) { w = push(w, v[k] - dot * Qcols[i][k]); }
+      v = w;
+    }
+    let norm: float = 0.0;
+    for (let k = 0; k < m; k = k + 1) { norm = norm + v[k] * v[k]; }
+    norm = sqrt(norm);
+    if (norm < 1e-14) { norm = 1e-14; }
+    let qcol: float[] = [];
+    for (let k = 0; k < m; k = k + 1) { qcol = push(qcol, v[k] / norm); }
+    Qcols = push(Qcols, qcol);
+  }
+  // 列主序 → 行主序
+  let Q: float[][] = [];
+  for (let k = 0; k < m; k = k + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, Qcols[j][k]); }
+    Q = push(Q, row);
+  }
+  return Q;
+}
+
+// 修改 Gram–Schmidt：返回上三角矩阵 R（与 mat_qr_q 共用同一分解，独立重算）。
+export func mat_qr_r(A: float[][]): float[][] {
+  let m: int = len(A);
+  let n: int = len(A[0]);
+  let Qcols: float[][] = [];
+  let Rcols: float[][] = [];          // Rcols[j] 为第 j 列（长度 j+1，存 R[0..j][j]）
+  for (let j = 0; j < n; j = j + 1) {
+    let v: float[] = [];
+    for (let i = 0; i < m; i = i + 1) { v = push(v, A[i][j]); }
+    let rcol: float[] = [];
+    for (let i = 0; i < j; i = i + 1) {
+      let dot: float = 0.0;
+      for (let k = 0; k < m; k = k + 1) { dot = dot + Qcols[i][k] * v[k]; }
+      rcol = push(rcol, dot);
+      let w: float[] = [];
+      for (let k = 0; k < m; k = k + 1) { w = push(w, v[k] - dot * Qcols[i][k]); }
+      v = w;
+    }
+    let norm: float = 0.0;
+    for (let k = 0; k < m; k = k + 1) { norm = norm + v[k] * v[k]; }
+    norm = sqrt(norm);
+    if (norm < 1e-14) { norm = 1e-14; }
+    rcol = push(rcol, norm);
+    let qcol: float[] = [];
+    for (let k = 0; k < m; k = k + 1) { qcol = push(qcol, v[k] / norm); }
+    Qcols = push(Qcols, qcol);
+    Rcols = push(Rcols, rcol);
+  }
+  // 列主序（上三角）→ 行主序
+  let R: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (j < i) { row = push(row, 0.0); }
+      else { row = push(row, Rcols[j][i]); }
+    }
+    R = push(R, row);
+  }
+  return R;
+}
+
+// 幂迭代：求（模最大）主特征值 λ 与对应单位特征向量 v。
+// 返回 [[λ], v]（float[][]，首行为单元素 [λ]，次行为特征向量）。
+// 适用于主特征值占优的矩阵（含对称矩阵）；迭代 iters 次取 Rayleigh 商。
+export func mat_eig_power(A: float[][], iters: int): float[][] {
+  let n: int = len(A);
+  let v: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { v = push(v, 1.0 / sqrt(float(n))); }
+  let lambda: float = 0.0;
+  for (let it = 0; it < iters; it = it + 1) {
+    let w: float[] = [];              // w = A·v
+    for (let i = 0; i < n; i = i + 1) {
+      let s: float = 0.0;
+      for (let j = 0; j < n; j = j + 1) { s = s + A[i][j] * v[j]; }
+      w = push(w, s);
+    }
+    let ray: float = 0.0;             // Rayleigh 商 λ = vᵀAv（v 已单位化）
+    for (let i = 0; i < n; i = i + 1) { ray = ray + v[i] * w[i]; }
+    lambda = ray;
+    let nv: float = 0.0;
+    for (let i = 0; i < n; i = i + 1) { nv = nv + w[i] * w[i]; }
+    nv = sqrt(nv);
+    if (nv < 1e-14) { nv = 1.0; }
+    let vn: float[] = [];
+    for (let i = 0; i < n; i = i + 1) { vn = push(vn, w[i] / nv); }
+    v = vn;
+  }
+  let out: float[][] = [];
+  out = push(out, [lambda]);
+  out = push(out, v);
+  return out;
+}
+
+// QR 迭代求全特征值：反复 A_{k+1} = R_k·Q_k，对角元素收敛到特征值。
+// 对称矩阵收敛到对角阵（特征值全实）；返回对角线 float[]（顺序不定）。
+export func mat_eigvals(A: float[][], iters: int): float[] {
+  let n: int = len(A);
+  let Ak: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) { Ak = push(Ak, la_copy_row(A, i)); }
+  for (let it = 0; it < iters; it = it + 1) {
+    let Q: float[][] = mat_qr_q(Ak);
+    let R: float[][] = mat_qr_r(Ak);
+    Ak = mat_mul(R, Q);
+  }
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, Ak[i][i]); }
+  return out;
+}
+
+// 反幂迭代：求最接近 μ（且不恰好等于）的特征值对应的单位特征向量。
+// 迭代 v_{k+1} = (A − μI)^{-1} v_k 并归一化；收敛到离 μ 最近的特征值特征向量。
+// 复用 mat_solve 解线性方程组。注意：μ 应接近目标特征值但不与之相等，
+// 否则 (A − μI) 奇异导致 mat_solve 退化（用微小偏移即可，如 λ + 1e-3）。
+export func mat_eigvec(A: float[][], mu: float, iters: int): float[] {
+  let n: int = len(A);
+  let v: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { v = push(v, 1.0 / sqrt(float(n))); }
+  // 构造 M = A − μI
+  let M: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      if (i == j) { row = push(row, A[i][j] - mu); }
+      else { row = push(row, A[i][j]); }
+    }
+    M = push(M, row);
+  }
+  for (let it = 0; it < iters; it = it + 1) {
+    let w: float[] = mat_solve(M, v);      // 解 (A − μI) x = v
+    let nv: float = 0.0;
+    for (let i = 0; i < n; i = i + 1) { nv = nv + w[i] * w[i]; }
+    nv = sqrt(nv);
+    if (nv < 1e-14) { nv = 1.0; }
+    let vn: float[] = [];
+    for (let i = 0; i < n; i = i + 1) { vn = push(vn, w[i] / nv); }
+    v = vn;
+  }
+  return v;
+}
+
+// 完整特征分解：QR 迭代求特征值，再对每个特征值用反幂迭代求对应特征向量。
+// 返回 [eigenvalues, eigenvectors]：eigenvalues 为 float[]（对角），
+// eigenvectors 为 float[][]（第 i 行为对应特征向量，已单位化）。
+export func mat_eig_decomp(A: float[][], iters: int): float[][] {
+  let n: int = len(A);
+  let evals: float[] = mat_eigvals(A, iters);
+  let evecs: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let mu: float = evals[i] + 1e-3;       // 微小偏移避免 (A − μI) 奇异
+    evecs = push(evecs, mat_eigvec(A, mu, iters));
+  }
+  let out: float[][] = [];
+  out = push(out, evals);
+  out = push(out, evecs);
+  return out;
+}
