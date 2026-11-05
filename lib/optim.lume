@@ -311,3 +311,65 @@ export func golden_min(f: fn(float) => float, a: float, b: float, tol: float): f
 export func golden_poly_min(coeffs: float[], a: float, b: float, tol: float): float {
   return golden_min((x: float) => sci.poly_val(coeffs, x), a, b, tol);
 }
+
+// ════════════════════════════════════════════════════════════════
+// 非线性最小二乘（Gauss–Newton + Levenberg 阻尼，2026-11-05）
+//
+// 拟合 y ≈ f(p, x)，p 为参数向量（float[]），x 为自变量。中心差分数值
+// Jacobian，解正规方程 (JᵀJ + λI)Δ = Jᵀr（λ=1e-6 防 (JᵀJ) 奇异）。
+// 复用 linalg 的 mat_transpose / mat_mul / mat_solve。纯 .lume、三后端一致。
+//
+// 对线性模型，GN 退化为普通最小二乘；对非线性模型（指数/幂律/任意可微 f）
+// 迭代收敛到最小二乘解。fn 参数（f: fn(float[], float) => float）捕获不逃逸，
+// 三后端均可执行。
+// ════════════════════════════════════════════════════════════════
+
+export func nonlinear_ls(xs: float[], ys: float[], p0: float[], f: fn(float[], float) => float, iters: int): float[] {
+  let m: int = len(p0);                 // 参数维
+  let n: int = len(xs);                 // 样本数
+  let p: float[] = [];
+  for (let i = 0; i < m; i = i + 1) { p = push(p, p0[i]); }
+  let h: float = 1e-6;                  // 中心差分步长
+  for (let it = 0; it < iters; it = it + 1) {
+    // 残差 r_i = y_i − f(p, x_i)
+    let r: float[] = [];
+    for (let i = 0; i < n; i = i + 1) { r = push(r, ys[i] - f(p, xs[i])); }
+    // Jacobian J（n × m），逐元素数值微分
+    let J: float[][] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let row: float[] = [];
+      for (let j = 0; j < m; j = j + 1) {
+        let ppos: float[] = [];
+        for (let k = 0; k < m; k = k + 1) { if (k == j) { ppos = push(ppos, p[k] + h); } else { ppos = push(ppos, p[k]); } }
+        let fp: float = f(ppos, xs[i]);
+        let pneg: float[] = [];
+        for (let k = 0; k < m; k = k + 1) { if (k == j) { pneg = push(pneg, p[k] - h); } else { pneg = push(pneg, p[k]); } }
+        let fm: float = f(pneg, xs[i]);
+        row = push(row, (fp - fm) / (2.0 * h));
+      }
+      J = push(J, row);
+    }
+    // 正规方程右端 Jᵀr 与左端 JᵀJ（加阻尼 λI）
+    let Jt: float[][] = la.mat_transpose(J);
+    let A: float[][] = la.mat_mul(Jt, J);
+    let Jtr: float[] = [];
+    for (let j = 0; j < m; j = j + 1) {
+      let s: float = 0.0;
+      for (let i = 0; i < n; i = i + 1) { s = s + Jt[j][i] * r[i]; }
+      Jtr = push(Jtr, s);
+    }
+    let Ad: float[][] = [];
+    for (let i = 0; i < m; i = i + 1) {
+      let arow: float[] = [];
+      for (let j = 0; j < m; j = j + 1) {
+        if (i == j) { arow = push(arow, A[i][j] + 1e-6); } else { arow = push(arow, A[i][j]); }
+      }
+      Ad = push(Ad, arow);
+    }
+    let delta: float[] = la.mat_solve(Ad, Jtr);
+    let pnew: float[] = [];
+    for (let j = 0; j < m; j = j + 1) { pnew = push(pnew, p[j] + delta[j]); }
+    p = pnew;
+  }
+  return p;
+}
