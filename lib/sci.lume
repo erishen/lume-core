@@ -16,6 +16,8 @@
 //   辛积分    verlet（Velocity Verlet，保 Hamilton 结构 / 长期能量有界）
 //   多步法    adams_bashforth / ab2 / ab3 / ab4（显式，稳态每步仅 1 次 f 求值）/
 //               bdf2（隐式二阶 BDF，A-稳定，刚性方程）
+//   事件/稠密  ode_event / ode_event_all（变号检测 + 局部 RK4 二分定位）/
+//               rk4_dense（三次 Hermite 稠密输出，任意 t 求值，O(h⁴)）
 //
 // 使用：
 //   import "sci.lume" as sci;
@@ -35,7 +37,8 @@
 // v0.4.0: ode_theta / ode_imp_euler / ode_trapezoid（隐式刚性求解器，A-稳定）
 // v0.5.0: verlet（辛积分，长期能量有界）
 // v0.6.0: adams_bashforth / ab2 / ab3 / ab4 + bdf2（线性多步法族）
-export let SCI_VERSION = "0.6.0";
+// v0.7.0: ode_event / ode_event_all / rk4_dense（事件检测 + 稠密输出）
+export let SCI_VERSION = "0.7.0";
 
 // 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
 let LN2 = log(2.0);
@@ -649,4 +652,126 @@ export func bdf2(f: fn(float, float) => float, y0: float, t0: float,
     out = push(out, y);
   }
   return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 事件检测（event location）+ 稠密输出（dense output）
+//   ode_event(f, y0, t0, t1, n, target)     首个 y(t)=target 时刻
+//   ode_event_all(...)                      区间内全部穿越事件
+//   rk4_dense(f, y0, t0, t1, n, tq)        任意 tq∈[t0,t1] 处的解
+//
+// 事件的常见用途：首次到达时间、Poincaré 截面、分段/切换系统的触发点。
+// 做法：先用 rk4 在 n 个等距网格点上扫描 g_k = y_k − target 的变号区间，
+// 再从区间左端 (ta, ya) 出发，用「单步 RK4 从 ta 直接积到 ta+mid」做二分。
+// 这样 g(t) 的求值精度是 O(mid⁵) 而非线性插值的 O(h²)；每轮只需 1 次
+// rk4（4 次 f），与网格数 n 无关，60 次二分把**数值解**的穿越点定位到机器
+// 精度（y_event 与 target 差 ~1e-16）。但网格轨迹本身由 rk4 生成，故
+// t_event 相对真解仍只有 O(h⁴) 精度：实测 n 加倍时事件时刻误差 ÷16。
+// 契约：只检测**变号穿越**（含恰好落在网格点上的 g=0），不检测相切事件
+//       （g=0 但不变号）；无事件返回空数组 float[]，调用方用 len() 判断。
+//       ode_event 返回 [t_event, y_event]；ode_event_all 返回其数组。
+//
+// 稠密输出：等距轨迹只在 t0+k·h 有值，rk4_dense 用三次 Hermite 插值在
+// 单元 [t, t+h] 内补出连续解，端点值取 rk4 步结果、端点导数取 f：
+//   y(t+θh) = (2θ³−3θ²+1)·y + (θ³−2θ²+θ)·h·f₀
+//           + (−2θ³+3θ²)·y₁ + (θ³−θ²)·h·f₁
+// 插值误差 O(h⁴)，与 RK4 的四阶精度匹配（线性插值仅 O(h²)）。实测固定
+// 单元内相对位置 θ 时 n 加倍误差比 →16；θ 随 n 漂移时比值会偏离 16，
+// 因为误差常数依赖 θ，这是插值本身的性质而非实现缺陷。
+// ════════════════════════════════════════════════════════════════
+
+// 在单元 [ta, ta+h] 内二分定位 y=target 的时刻；每轮从 (ta, ya) 单步 RK4。
+func ode_event_refine(f: fn(float, float) => float, ya: float, ta: float,
+                      h: float, target: float): float {
+  let lo: float = 0.0;
+  let hi: float = h;
+  let glo: float = ya - target;
+  for (let it = 0; it < 60; it = it + 1) {
+    let mid: float = 0.5 * (lo + hi);
+    let ym: float[] = rk4(f, ya, ta, ta + mid, 1);
+    let gm: float = ym[1] - target;
+    if (glo * gm <= 0.0) { hi = mid; } else { lo = mid; glo = gm; }
+  }
+  return ta + 0.5 * (lo + hi);
+}
+
+// 首个穿越事件。返回 [t_event, y_event]；无事件返回 []。
+export func ode_event(f: fn(float, float) => float, y0: float, t0: float,
+                      t1: float, n: int, target: float): float[] {
+  let none: float[] = [];
+  if (n < 1) { return none; }
+  let traj: float[] = rk4(f, y0, t0, t1, n);
+  let h: float = (t1 - t0) / (n * 1.0);
+  for (let k = 0; k < n + 1; k = k + 1) {
+    let g: float = traj[k] - target;
+    if (g == 0.0) { return [t0 + h * (k * 1.0), traj[k]]; }
+    if (k < n) {
+      let gn: float = traj[k + 1] - target;
+      if (g * gn < 0.0) {
+        let ta: float = t0 + h * (k * 1.0);
+        let te: float = ode_event_refine(f, traj[k], ta, h, target);
+        let ye: float[] = rk4(f, traj[k], ta, te, 1);
+        return [te, ye[1]];
+      }
+    }
+  }
+  return none;
+}
+
+// 全部穿越事件，按时间升序；返回 float[][]，每行 [t_event, y_event]。
+export func ode_event_all(f: fn(float, float) => float, y0: float, t0: float,
+                          t1: float, n: int, target: float): float[][] {
+  let out: float[][] = [];
+  if (n < 1) { return out; }
+  let traj: float[] = rk4(f, y0, t0, t1, n);
+  let h: float = (t1 - t0) / (n * 1.0);
+  for (let k = 0; k < n + 1; k = k + 1) {
+    let g: float = traj[k] - target;
+    let te: float = -1.0;
+    let ya: float = traj[k];
+    if (g == 0.0) { te = t0 + h * (k * 1.0); }
+    if (k < n) {
+      let gn: float = traj[k + 1] - target;
+      if (g * gn < 0.0) {
+        let ta: float = t0 + h * (k * 1.0);
+        te = ode_event_refine(f, traj[k], ta, h, target);
+      }
+    }
+    if (te >= 0.0) {
+      let ye: float[] = rk4(f, ya, t0 + h * (k * 1.0), te, 1);
+      let row: float[] = [];
+      row = push(row, te);
+      row = push(row, ye[1]);
+      out = push(out, row);
+    }
+  }
+  return out;
+}
+
+// 三次 Hermite 稠密输出：返回 y(tq)，tq 钳制到 [t0, t1]。
+export func rk4_dense(f: fn(float, float) => float, y0: float, t0: float,
+                      t1: float, n: int, tq: float): float {
+  if (n < 1) { return y0; }
+  if (tq <= t0) { return y0; }
+  let tmax: float = tq;
+  if (tmax > t1) { tmax = t1; }
+  let h: float = (t1 - t0) / (n * 1.0);
+  let y: float = y0;
+  let t: float = t0;
+  for (let i = 0; i < n; i = i + 1) {
+    if (t + h >= tmax) { break; }
+    let step: float[] = rk4(f, y, t, t + h, 1);
+    y = step[1];
+    t = t + h;
+  }
+  let y1: float[] = rk4(f, y, t, t + h, 1);
+  let f0: float = f(t, y);
+  let f1: float = f(t + h, y1[1]);
+  let th: float = (tmax - t) / h;
+  let th2: float = th * th;
+  let th3: float = th2 * th;
+  return (2.0 * th3 - 3.0 * th2 + 1.0) * y
+       + (th3 - 2.0 * th2 + th) * h * f0
+       + (-2.0 * th3 + 3.0 * th2) * y1[1]
+       + (th3 - th2) * h * f1;
 }

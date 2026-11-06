@@ -1,5 +1,6 @@
 // ode-consistency.lume — sci.lume ODE（向量系统 / 自适应步长 / 隐式刚性方法 /
-// 辛积分 / 线性多步法）三后端一致性测试。由 tests/ode_backends.sh 驱动：
+// 辛积分 / 线性多步法 / 事件检测 / 稠密输出）三后端一致性测试。
+// 由 tests/ode_backends.sh 驱动：
 // 解释器 / 文本 IR / LLVM 输出须逐字节一致。
 import "../lib/sci.lume" as sci;
 
@@ -119,7 +120,7 @@ print(sym_pe1000 - sym_pe0);             // O(h²) 有界，159 个周期后不�
 // 线性多步法：Adams–Bashforth 显式族 AB1..AB4 + 隐式 BDF2
 // y' = −y，y0=1，t∈[0,1]，解析 y(1) = e⁻¹。n 加倍时 p 阶方法误差应 ÷2^p。
 // ════════════════════════════════════════════════════════════════
-print(sci.SCI_VERSION);                  // 0.6.0
+print(sci.SCI_VERSION);                  // 0.7.0
 let ms_ex = exp(-1.0);
 
 let ms_a1_20 = sci.adams_bashforth((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20, 1)[20] - ms_ex;
@@ -200,3 +201,76 @@ print(ms_d[1]);                          // 启动步：梯形法产生反号瞬
 print(ms_d[2]);                          // BDF2 第 2 步已衰减约 40 倍
 print(ms_d[10]);                         // t=1：≈0
 print(ms_dt[10]);                        // 梯形法残留振荡
+
+// ════════════════════════════════════════════════════════════════
+// 事件检测（ode_event / ode_event_all）+ 稠密输出（rk4_dense）
+// ════════════════════════════════════════════════════════════════
+
+// ── 首次穿越：y'=−y，y(0)=1，y=0.5 于 t=ln2 ──
+// 二分把数值解的穿越点定到机器精度（y_event−target ~1e−16），但网格轨迹
+// 由 rk4 生成，故 t_event 相对真解仍为 O(h⁴)：n 加倍误差 ÷16。
+let ev_l2 = log(2.0);
+let ev_e = sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 0.5);
+print(len(ev_e));
+print(ev_e[0]);
+print(ev_e[0] - ev_l2);                  // n=10：O(h⁴) 量级
+print(ev_e[1] - 0.5);                   // ≈0（事件值本身精确到机器精度）
+let ev_4 = sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 4, 0.5)[0] - ev_l2;
+let ev_8 = sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 8, 0.5)[0] - ev_l2;
+let ev_16 = sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 16, 0.5)[0] - ev_l2;
+let ev_32 = sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 32, 0.5)[0] - ev_l2;
+print(ev_4); print(ev_8); print(ev_16); print(ev_32);
+print(ev_4 / ev_8);                      // ≈16（四阶）
+print(ev_8 / ev_16);                     // ≈16
+print(ev_16 / ev_32);                    // ≈16
+
+// ── 全部穿越：y'=cos t → y=sin t，[0,2π] 内 sin t=0.5 有 π/6、5π/6 两点 ──
+let ev_pi = 3.141592653589793;
+let ev_all = sci.ode_event_all((t: float, y: float) => cos(t), 0.0, 0.0,
+                               2.0 * ev_pi, 32, 0.5);
+print(len(ev_all));                      // 2
+print(ev_all[0][0] - ev_pi / 6.0);
+print(ev_all[1][0] - 5.0 * ev_pi / 6.0);
+print(ev_all[0][1] - 0.5);
+print(ev_all[1][1] - 0.5);
+let ev_first = sci.ode_event((t: float, y: float) => cos(t), 0.0, 0.0,
+                             2.0 * ev_pi, 32, 0.5);
+print(ev_first[0] - ev_all[0][0]);       // 首个事件 = all 的第一行
+
+// ── 恰好落在网格点 / 无事件 / 边界 n=0 ──
+let ev_grid = sci.ode_event((t: float, y: float) => 1.0, 0.0, 0.0, 1.0, 4, 0.5);
+print(ev_grid[0]); print(ev_grid[1]);    // 0.5 / 0.5
+print(len(sci.ode_event_all((t: float, y: float) => 1.0, 0.0, 0.0, 1.0, 4, 0.5)));
+print(len(sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 2.0)));
+print(len(sci.ode_event_all((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 2.0)));
+print(len(sci.ode_event((t: float, y: float) => -y, 1.0, 0.0, 1.0, 0, 0.5)));
+
+// ── 稠密输出：固定 θ=0.5（单元左端恒为 t=0.5），n 加倍误差 ÷16 ──
+let ev_d4 = sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 4, 0.625)
+            - exp(-0.625);
+let ev_d8 = sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 8, 0.5625)
+            - exp(-0.5625);
+let ev_d16 = sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 16, 0.53125)
+             - exp(-0.53125);
+let ev_d32 = sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 32, 0.515625)
+             - exp(-0.515625);
+print(ev_d4); print(ev_d8); print(ev_d16); print(ev_d32);
+print(ev_d4 / ev_d8);                    // →16（低阶项使首比偏大）
+print(ev_d8 / ev_d16);
+print(ev_d16 / ev_d32);
+
+// 与线性插值对照：n=8，tq=ln2，稠密输出误差小约 3 个数量级。
+let ev_tr = sci.rk4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 8);
+let ev_th = (ev_l2 - 0.625) / 0.125;
+let ev_lin = ev_tr[5] + ev_th * (ev_tr[6] - ev_tr[5]) - 0.5;
+let ev_dl2 = sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 8, ev_l2) - 0.5;
+print(ev_lin); print(ev_dl2);
+print(abs(ev_lin) / abs(ev_dl2));
+
+// 端点钳制：tq≤t0 返回 y0；tq≥t1 与网格末值严格一致。
+print(sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, -1.0) - 1.0);
+let ev_tr10 = sci.rk4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10);
+print(sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 1.0) - ev_tr10[10]);
+print(sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 2.0) - ev_tr10[10]);
+// 事件时刻处的稠密输出与 target 之差为插值误差 O(h⁴)，非机器精度。
+print(sci.rk4_dense((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, ev_e[0]) - 0.5);
