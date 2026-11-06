@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.5.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.6.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
 //        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
 //               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
 //        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
@@ -10,6 +10,9 @@
 //               独立 Dirichlet（bcl / bcr）。
 //        v0.5.0 增补 Robin（混合）边界：pde_robin_1d 解 −u'' = f，
 //               左右独立 u ∓ βu' = g，ghost-cell 二阶离散 + pde_tridiag。
+//        v0.6.0 增补椭圆型迭代加速：pde_poisson_sor（字典序 Gauss–Seidel
+//               + 超松弛，迭代量 O(n)）、pde_sor_optimal_omega（最优 ω）、
+//               pde_poisson_residual（∞ 范数残差诊断）。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
@@ -20,6 +23,7 @@
 //           pde_burgers_inviscid（非线性守恒律，Rusanov 通量，可捕激波）
 //           pde_burgers_viscous（粘性 Burgers，守恒型对流 + 中心扩散）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
+//           pde_poisson_sor（SOR 超松弛加速，迭代量 O(n) vs Jacobi O(n²)）
 //           pde_robin_1d（1D 两点边值 −u''=f，Robin 边界，三对角直接解）
 // 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、
 //               周期（1D）、Robin / 混合（u ∓ β·∂u/∂n = g，左右独立）
@@ -29,8 +33,11 @@
 //       fn 形参跨函数转发已实测安全，此处并非规避闭包限制）。
 // 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
 //       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
-//       pde_h2d_val / pde_bc_val（邻居取值 + 边界条件）。
-//       所有网格更新均为值语义（用 push 整体重建）。
+//       pde_h2d_val / pde_bc_val（邻居取值 + 边界条件）、
+//       pde_poisson_residual（残差诊断）、pde_sor_optimal_omega（最优 ω）。
+//       所有网格更新均为值语义（用 push 整体重建）；SOR 另用 prevrow（上一行
+//       已更新）+ leftv（本行左邻已更新）两个滚动量携带「本次扫描新值」，
+//       全程不读取尚未构建完的数组。
 // ───────────────────────────────────────────────────────────────────
 
 // 均匀坐标数组 [a, ..., b]，共 n 个点
@@ -558,4 +565,72 @@ export func pde_poisson_jacobi(f: float[][], h: float, iters: int): float[][] {
     u = unew;
   }
   return u;
+}
+
+// ── 椭圆型：二维泊松方程 SOR 超松弛迭代 ∇²u = f ──────────────
+// 与 pde_poisson_jacobi 同一 5 点离散、同样零 Dirichlet 边界，但改用字典序
+// Gauss–Seidel（本轮扫描中已更新的上邻 / 左邻立即参与）+ 松弛因子 ω：
+//   u_ij^GS = ¼(u_{i−1,j}^new + u_{i+1,j}^old + u_{i,j−1}^new + u_{i,j+1}^old − h²f_ij)
+//   u_ij^new = (1−ω)·u_ij^old + ω·u_ij^GS
+// ω=1 即 Gauss–Seidel；0<ω<2 收敛；ω_opt = 2/(1+sin(π/(n−1))) 时谱半径
+// ω_opt−1，达到同一精度所需迭代量 O(n)（Jacobi 为 O(n²)）；ω≥2 发散。
+//
+// 值语义实现：lume 不能原地索引赋值，也不宜读取「尚未 push 完」的数组，故用
+// prevrow（上一行已完整构建的新值）+ leftv（本行左邻刚算出的新值）两个滚动量
+// 携带「本次扫描已更新」的分量；旧值一律从上一轮网格 u 读取。初始猜测为 0。
+export func pde_poisson_sor(f: float[][], h: float, iters: int,
+                            omega: float): float[][] {
+  let n: int = len(f);
+  let u: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, 0.0); }
+    u = push(u, row);
+  }
+  for (let it = 0; it < iters; it = it + 1) {
+    let unew: float[][] = [];
+    let prevrow: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let row: float[] = [];
+      let leftv: float = 0.0;
+      for (let j = 0; j < n; j = j + 1) {
+        let v: float = 0.0;
+        if (i > 0 && i < n - 1 && j > 0 && j < n - 1) {
+          let nb: float = prevrow[j] + u[i + 1][j] + leftv + u[i][j + 1]
+                          - h * h * f[i][j];
+          let gs: float = 0.25 * nb;
+          v = (1.0 - omega) * u[i][j] + omega * gs;
+        }
+        row = push(row, v);
+        leftv = v;
+      }
+      unew = push(unew, row);
+      prevrow = row;
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// n×n 网格（h = 1/(n−1)）、零 Dirichlet 边界下的最优 SOR 松弛因子。
+// ρ_Jacobi = cos(π/(n−1))，ω_opt = 2/(1+sqrt(1−ρ_J²)) = 2/(1+sin(π/(n−1)))。
+// 要求 n ≥ 3：n=2 时 ω=2 已在发散边界，n=1 则无内部点、分母为 0。
+export func pde_sor_optimal_omega(n: int): float {
+  return 2.0 / (1.0 + sin(3.141592653589793 / (n - 1.0)));
+}
+
+// 5 点离散方程 (Σ邻居 − 4u)/h² = f 的内部点最大绝对残差（∞ 范数）。
+// 与具体迭代格式无关，可同时用于 Jacobi / Gauss–Seidel / SOR 的收敛诊断。
+export func pde_poisson_residual(u: float[][], f: float[][], h: float): float {
+  let n: int = len(u);
+  let rmax: float = 0.0;
+  for (let i = 1; i < n - 1; i = i + 1) {
+    for (let j = 1; j < n - 1; j = j + 1) {
+      let r: float = (u[i - 1][j] + u[i + 1][j] + u[i][j - 1]
+                      + u[i][j + 1] - 4.0 * u[i][j]) / (h * h) - f[i][j];
+      if (r < 0.0) { r = -r; }
+      if (r > rmax) { rmax = r; }
+    }
+  }
+  return rmax;
 }

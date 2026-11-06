@@ -5,10 +5,11 @@
 // 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_heat_2d_adi /
 //       pde_wave_leapfrog / pde_advect_upwind / pde_advect_lw /
 //       pde_burgers_inviscid / pde_burgers_viscous / pde_poisson_jacobi /
+//       pde_poisson_sor / pde_sor_optimal_omega / pde_poisson_residual /
 //       pde_robin_1d
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
 // 泊松 sin(πx)sin(πy)、Burgers 稳态行波 −tanh(5x)、Riemann 激波速度 0.5、
-// Robin 边值 1+x² 与 sin(2x)+cos(x) 的二阶收敛），
+// Robin 边值 1+x² 与 sin(2x)+cos(x) 的二阶收敛、SOR 最优 ω 与残差量级），
 // 打印 [数值, 解析, 误差] 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
 // 由 lume 显式控制）必然逐字节一致，与具体精度无关。
@@ -369,3 +370,78 @@ for (let rb_i9 = 0; rb_i9 < rb_n81; rb_i9 = rb_i9 + 1) {
 }
 print(rb_e81);
 print(rb_e41 / rb_e81);                 // ≈4
+
+// ── 二维泊松 SOR 超松弛：与 400 次 Jacobi 同一离散解，迭代量差一个量级 ──
+// 沿用上面 np=9 / hp / f（−2π²sin(πx)sin(πy)，零 Dirichlet 边界）。
+// 理论：ρ_J = cos(π/8)=0.92388 → 400 次衰减 ≈1.7e-14；
+//       ω_opt = 2/(1+sin(π/8))=1.44646，ρ_SOR = ω_opt−1≈0.44646，
+//       渐近估计约 40 次；实测 50 次降到舍入下限（前渐近阶段略慢）。
+let sor_w = pde.pde_sor_optimal_omega(np);
+let sor_we = 2.0 / (1.0 + sin(PI / (np - 1.0)));
+print(sor_w);
+print(sor_we);
+print(sor_w - sor_we);                  // ≈0
+
+// 50 次 SOR(ω_opt) 应收敛到与 400 次 Jacobi 完全相同的离散解
+let sor_u50 = pde.pde_poisson_sor(f, hp, 50, sor_w);
+print(sor_u50[ci][ci]);
+print(up[ci][ci]);
+print(sor_u50[ci][ci] - up[ci][ci]);   // ≈1.8e-14（同一离散方程的唯一解）
+print(sor_u50[ci][ci] - exact_poisson);// ≈0.01295，与 Jacobi 相同的 O(h²) 空间误差
+
+// 残差诊断：同样 50 次迭代，SOR 比 Jacobi 低约 13 个数量级
+let sor_uj = pde.pde_poisson_jacobi(f, hp, 50);
+let sor_rj: float = pde.pde_poisson_residual(sor_uj, f, hp);
+let sor_rs: float = pde.pde_poisson_residual(sor_u50, f, hp);
+let sor_rj400: float = pde.pde_poisson_residual(up, f, hp);
+print(sor_rj);
+print(sor_rs);
+print(sor_rs / sor_rj);                 // ≪1
+print(sor_rj400);                       // 400 次 Jacobi 才降到舍入下限
+// 50 次 SOR 残差 6.75e-14 已优于 400 次 Jacobi 的 3.62e-13：
+// 同等精度迭代量差 8 倍（差距随网格加密按 O(n) vs O(n²) 继续拉大）
+
+// ω 参数生效且最优点最优：ω=1 退化为 Gauss–Seidel（ρ=ρ_J²≈0.854，
+// 比 Jacobi 快）；ω=0.5 欠松弛反而更慢；ω_opt 最快。
+let sor_ug = pde.pde_poisson_sor(f, hp, 50, 1.0);
+let sor_uu = pde.pde_poisson_sor(f, hp, 50, 0.5);
+let sor_rg: float = pde.pde_poisson_residual(sor_ug, f, hp);
+let sor_ru: float = pde.pde_poisson_residual(sor_uu, f, hp);
+print(sor_rg);
+print(sor_ru);
+print(sor_rg / sor_rj);                 // <1，GS 快于 Jacobi
+print(sor_rs / sor_rg);                 // ≪1，最优 SOR 快于 GS
+print(sor_ru / sor_rj);                 // >1，欠松弛慢于 Jacobi
+
+// 残差随迭代单调下降：10 / 25 / 50 次，50 次才降到浮点舍入下限
+let sor_u10 = pde.pde_poisson_sor(f, hp, 10, sor_w);
+let sor_u25 = pde.pde_poisson_sor(f, hp, 25, sor_w);
+let sor_r10: float = pde.pde_poisson_residual(sor_u10, f, hp);
+let sor_r25: float = pde.pde_poisson_residual(sor_u25, f, hp);
+print(sor_r10);
+print(sor_r25);
+print(sor_rs);
+
+// 网格加密到 17×17：ρ_J=cos(π/16)=0.9808 更接近 1（Jacobi 更慢），
+// ρ_SOR=ω_opt(17)−1≈0.6735 仍快速收敛，展示 O(n) vs O(n²) 的差距。
+let sq_n = 17;
+let sq_h = 1.0 / (sq_n - 1.0);
+let sq_f: float[][] = [];
+for (let sor_i0 = 0; sor_i0 < sq_n; sor_i0 = sor_i0 + 1) {
+  let sq_row: float[] = [];
+  for (let sor_i1 = 0; sor_i1 < sq_n; sor_i1 = sor_i1 + 1) {
+    sq_row = push(sq_row, -2.0 * PI * PI * sin(PI * sq_h * sor_i0)
+                          * sin(PI * sq_h * sor_i1));
+  }
+  sq_f = push(sq_f, sq_row);
+}
+let sq_w = pde.pde_sor_optimal_omega(sq_n);
+let sq_uj = pde.pde_poisson_jacobi(sq_f, sq_h, 100);
+let sq_us = pde.pde_poisson_sor(sq_f, sq_h, 100, sq_w);
+let sq_rj: float = pde.pde_poisson_residual(sq_uj, sq_f, sq_h);
+let sq_rs: float = pde.pde_poisson_residual(sq_us, sq_f, sq_h);
+print(sq_w);
+print(sq_rj);
+print(sq_rs);
+print(sq_rs / sq_rj);                   // ≪1；Jacobi 100 次仍有 O(1) 残差，
+// 而 SOR 已到机器精度，网格加密后 Jacobi 的 O(n²) 劣势进一步暴露
