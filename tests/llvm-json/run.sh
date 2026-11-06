@@ -12,7 +12,7 @@ set -u
 cd "$(dirname "$0")"
 BIN=${BIN:-../../bin/lume-core}
 OUT=$(mktemp -d)
-trap 'rm -rf "$OUT"' EXIT
+trap 'rm -rf "$OUT" 2>/dev/null || true' EXIT
 fail=0
 
 for l in *.lume; do

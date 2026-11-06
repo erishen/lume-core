@@ -9,8 +9,9 @@ All notable changes to Lume are documented here. The format follows
 This section covers every commit since 0.13.0 (`825bc1d`): the 42 through
 `feb2866` (20 touching `lib/` — the pure-`.lume` scientific-computing
 libraries — and 22 covering the language core, builtins, security, CI and
-roadmap bookkeeping), plus the subsequent 2-D PDE solvers and the P1-3
-classic-for scoping fix. Entries are
+roadmap bookkeeping), plus the subsequent 2-D PDE solvers, the P1-3
+classic-for scoping fix and the cross-backend harness cleanup portability
+fix. Entries are
 grouped by theme rather than commit-by-commit. Every algorithm library
 below ships a `tests/*-consistency.lume` numerical regression and a
 `tests/*_backends.sh` harness asserting byte-identical output across the
@@ -133,6 +134,18 @@ without libLLVM), so parity is verified as `interp/text identical`.
 
 ### Fixed
 
+- **Cross-backend harnesses returned failure on success when temp cleanup
+  failed.** All 20 `tests/*_backends.sh` use `set -e` together with
+  `trap 'rm -rf "$TMP"' EXIT`. Under `errexit` a failing command inside an
+  EXIT trap overrides an explicit `exit 0`, so on hosts where `rm` is
+  wrapped or the temp directory cannot be removed a script printed
+  `ok ...` yet exited 1 (minimal reproduction:
+  `bash -c 'set -e; trap "false" EXIT; exit 0'` → 1). Cleanup is now
+  best-effort (`2>/dev/null || true`) in those harnesses, in
+  `native_backends.sh`, `tests/llvm-json/run.sh`, both `scripts/*.sh`
+  harnesses and `install.sh`; only the test result decides the exit code.
+  Verified: 20/20 harnesses print `ok` with rc=0, `make check` rc=0,
+  `make native-consistency` rc=0, no cleanup diagnostics on stderr.
 - **Top-level `for`-init names colliding with builtins (P1-3).** The
   typechecker seeded builtins into the same scope as top-level `let`s, so at
   top level (which has no `fn_root` boundary) `for (let ic = ...)` was

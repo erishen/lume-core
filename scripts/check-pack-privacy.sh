@@ -36,7 +36,7 @@ pkg=$1
 PATTERN='/(Users|home)/[A-Za-z0-9._-]+'
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp" 2>/dev/null || true' EXIT
 
 mkdir -p "$tmp/x" || fail "cannot create temp dir"
 tar -xzf "$pkg" -C "$tmp/x" 2>/dev/null || fail "cannot extract $pkg"

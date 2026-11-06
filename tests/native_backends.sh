@@ -27,7 +27,7 @@ TARGET="${LUME_BIN:-bin/lume-core}"
 SCRIPT=tests/native-consistency.lume
 EXPECTED=tests/native-consistency.expected
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" 2>/dev/null || true' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok   $*"; }

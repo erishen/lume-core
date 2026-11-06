@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin/lume-core"
 SRC="$ROOT/tests/p1-3-consistency.lume"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
 
 # 负例：顶层 let 与 for-init 同名仍必须被 P1-3 拒绝。内置 scope 分层修复
 # 只豁免「内置名」，不得放宽用户局部绑定约束（否则三后端会重新分歧）。

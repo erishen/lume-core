@@ -49,7 +49,10 @@ fi
 # --- download ---------------------------------------------------------------
 mkdir -p "$BINDIR"
 tmp="$BINDIR/.lume-core.tmp.$$"
-trap 'rm -f "$tmp"; rm -rf "$BINDIR/.lume-core.stage.$$"' EXIT INT TERM
+# Best-effort cleanup: under `set -e` a failing command in an EXIT trap
+# overrides the script's exit status, so a successful install must not be
+# reported as failed just because the temp dir could not be removed.
+trap 'rm -f "$tmp" 2>/dev/null || true; rm -rf "$BINDIR/.lume-core.stage.$$" 2>/dev/null || true' EXIT INT TERM
 
 echo "==> lume-core-install: downloading $asset"
 if command -v curl >/dev/null 2>&1; then

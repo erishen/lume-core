@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin/lume-core"
 SRC="$ROOT/tests/literals-bitops-consistency.lume"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
 
 echo "literals-bitops: interpreter"
 "$BIN" "$SRC" 2>/dev/null | tr -d '\r' > "$TMP/interp.out"

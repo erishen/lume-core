@@ -40,7 +40,7 @@ if [ -z "$TARGET" ]; then
 fi
 SEMANTICS="${AI_SEMANTICS_SH:-$HERE/verify-ai-semantics.sh}"
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK" 2>/dev/null || true' EXIT
 
 [ $# -ge 1 ] || { echo "usage: $0 <file.lume> ..." >&2; exit 2; }
 [ -x "$TARGET" ] || { echo "FAIL: $TARGET missing — run make first" >&2; exit 2; }
