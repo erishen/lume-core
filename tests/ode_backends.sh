@@ -1,6 +1,6 @@
 #!/bin/bash
-# ode_backends.sh — 验证 sci.lume 向量 ODE 系统（rk4_sys / rk4_sys_linear / vadd /
-# vsub / vscale / matvec）在三后端（解释器 / 文本 IR / LLVM）输出逐字节一致。
+# ode_backends.sh — 验证 sci.lume ODE（rk4_sys / rk4_sys_linear / vadd / vsub /
+# vscale / matvec / rk4_adaptive）在三后端（解释器 / 文本 IR / LLVM）输出逐字节一致。
 # 属于 lume-core 三后端等价纪律的一部分。
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

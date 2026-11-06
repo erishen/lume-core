@@ -9,7 +9,8 @@
 //   插值        interp_linear / interp_lagrange
 //   多项式      poly_val / poly_deriv
 //   求根        bisect（通用 f）/ newton（通用 f, f'）+ 多项式薄包装
-//   ODE         rk4（标量 dy/dt=f(t,y)）+ rk4_sys（向量系统 dy/dt=f(t,y)）+ 线性/仿射/多项式薄包装
+//   ODE         rk4（标量固定步长）/ rk4_adaptive（自适应步长+误差控制）/
+//               rk4_sys（向量系统 dy/dt=f(t,y)）+ 线性/仿射/多项式薄包装
 //
 // 使用：
 //   import "sci.lume" as sci;
@@ -25,7 +26,7 @@
 // 编译后端会明确报错；函数内直接传给算法内核则三后端全部可用。
 // ───────────────────────────────────────────────────────────────────
 
-export let SCI_VERSION = "0.2.0";
+export let SCI_VERSION = "0.3.0";   // v0.3.0: rk4_sys（向量 ODE 系统）+ rk4_adaptive（自适应步长）
 
 // 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
 let LN2 = log(2.0);
@@ -263,11 +264,13 @@ export func newton_poly(coeffs: float[], x0: float, tol: float): float {
 
 // ════════════════════════════════════════════════════════════════
 // 常微分方程（RK4：通用 f(t,y) 内核 + 数据驱动薄包装）
-//   rk4        : dy/dt = f(t, y)        —— 任意 RHS
-//   rk4_linear : dy/dt = a·y            （指数增长/衰减）
-//   rk4_affine : dy/dt = a·y + b        （带漂移项）
-//   rk4_poly   : dy/dt = poly(t)        （RHS 仅为 t 的多项式）
-// 返回包含初值的轨迹 list（长度 n+1），便于与解析解或欧拉法对比。
+//   rk4          : dy/dt = f(t, y)      —— 任意 RHS，固定步长
+//   rk4_adaptive : dy/dt = f(t, y)      —— 自适应步长（步长加倍误差控制）
+//   rk4_sys      : dy/dt = f(t, y)      —— 向量系统（y 为 float[]）
+//   rk4_linear   : dy/dt = a·y          （指数增长/衰减）
+//   rk4_affine   : dy/dt = a·y + b      （带漂移项）
+//   rk4_poly     : dy/dt = poly(t)      （RHS 仅为 t 的多项式）
+// rk4 系返回等距轨迹（长度 n+1）；rk4_adaptive 返回变步长 [[t,y], ...]。
 // ════════════════════════════════════════════════════════════════
 
 // 经典四阶 Runge-Kutta：dy/dt = f(t, y)。步数 n，起点 (t0, y0)。
@@ -299,6 +302,54 @@ export func rk4_affine(a: float, b: float, y0: float, t0: float, t1: float, n: i
 
 export func rk4_poly(coeffs: float[], y0: float, t0: float, t1: float, n: int): float[] {
   return rk4((t: float, y: float) => poly_val(coeffs, t), y0, t0, t1, n);
+}
+
+// ════════════════════════════════════════════════════════════════
+// 自适应步长 RK4（步长加倍 / Richardson 外推误差控制）
+// 返回变长轨迹 [[t0,y0], [t1,y1], ...]，步长随局部误差自动伸缩。
+// 每步对比「一步 h」与「两步 h/2」的结果：差 d 估计局部误差（RK4 为 O(h⁵)），
+// 接受时用 y₂ + d/15 外推把精度提升一阶；h 按 (tol/err)^{1/5} 调节并限幅
+// [0.2, 5.0]，拒绝步只缩小 h、不推进 t。tol 为 rel+abs 混合容差
+// tol_eff = tol·(1+|y|)。复用 rk4 作单步内核，零重复实现。
+// 100000 次迭代为死循环保护；h ≤ 1e-12 时强制接受，避免步长塌缩停滞。
+// 契约：若上限耗尽（tol 苛刻到浮点精度以下、或 RHS 有奇点），末点 t 可能
+//       < t1；调用方可用 traj[len(traj)-1][0] 检查是否积到终点，不会挂死。
+// ════════════════════════════════════════════════════════════════
+export func rk4_adaptive(f: fn(float, float) => float, y0: float, t0: float,
+                         t1: float, tol: float, h0: float): float[][] {
+  let t: float = t0;
+  let y: float = y0;
+  let h: float = h0;
+  let out: float[][] = [];
+  let row0: float[] = [];
+  row0 = push(row0, t);
+  row0 = push(row0, y);
+  out = push(out, row0);
+  for (let it = 0; it < 100000; it = it + 1) {
+    if (t >= t1) { break; }
+    if (t + h > t1) { h = t1 - t; }          // 截断到终点
+    let ybig: float[] = rk4(f, y, t, t + h, 1);
+    let ya: float[]   = rk4(f, y, t, t + h / 2.0, 1);
+    let ysm: float[]  = rk4(f, ya[1], t + h / 2.0, t + h, 1);
+    let d: float = ysm[1] - ybig[1];
+    let err: float = abs(d);
+    let scale: float = tol * (1.0 + abs(ysm[1]));
+    // RK4 局部误差 O(h⁵) → 步长因子指数 1/5
+    let ratio: float = scale / (err + 1e-30);
+    let fac: float = 0.9 * pow(ratio, 0.2);
+    if (fac < 0.2) { fac = 0.2; }
+    if (fac > 5.0) { fac = 5.0; }
+    if (err <= scale || h <= 1e-12) {         // 接受
+      t = t + h;
+      y = ysm[1] + d / 15.0;                 // Richardson 外推
+      let row: float[] = [];
+      row = push(row, t);
+      row = push(row, y);
+      out = push(out, row);
+    }
+    h = h * fac;                             // 拒绝时 fac<1，自动缩小重试
+  }
+  return out;
 }
 
 // ════════════════════════════════════════════════════════════════

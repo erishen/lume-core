@@ -1,4 +1,4 @@
-// ode-consistency.lume — sci.lume 向量 ODE 系统三后端一致性测试
+// ode-consistency.lume — sci.lume ODE（向量系统 + 自适应步长）三后端一致性测试
 // 由 tests/ode_backends.sh 驱动：解释器 / 文本 IR / LLVM 输出须逐字节一致。
 import "../lib/sci.lume" as sci;
 
@@ -18,3 +18,22 @@ let s1 = sci.rk4((t: float, y: float) => -2.0 * y, 1.0, 0.0, 1.0, 50)[50];
 let s2t = sci.rk4_sys((t: float, y: float[]) => [-2.0 * y[0]], [1.0], 0.0, 1.0, 50);
 let s2 = s2t[len(s2t) - 1][0];
 print(s1 - s2);
+
+// ── 自适应步长 RK4：误差控制（tol 越紧 → 步数越多、误差越小）──
+// y' = -2y，y0=1，t∈[0,1]，解析 y(1) = e^{-2}
+let ex2 = exp(-2.0);
+let ra = sci.rk4_adaptive((t: float, y: float) => -2.0 * y, 1.0, 0.0, 1.0, 1e-4, 0.1);
+let rb = sci.rk4_adaptive((t: float, y: float) => -2.0 * y, 1.0, 0.0, 1.0, 1e-8, 0.1);
+print(len(ra));                       // 宽松 tol → 步数少
+print(len(rb));                       // 严格 tol → 步数多
+print(ra[len(ra) - 1][1] - ex2);     // 误差（较大）
+print(rb[len(rb) - 1][1] - ex2);     // 误差（远小于上一行）
+print(ra[len(ra) - 1][0]);           // 终点 t 应精确 = 1
+
+// ── 自适应步长 RK4：陡峭解 y' = -20y 的步长自动调节 ──
+// 初期变化剧烈需小步长，后期平缓可放大步长。
+let rc = sci.rk4_adaptive((t: float, y: float) => -20.0 * y, 1.0, 0.0, 1.0, 1e-6, 0.1);
+print(rc[len(rc) - 1][1] - exp(-20.0));                    // 终点误差
+print(rc[1][0] - rc[0][0]);                                // 首步长（小）
+print(rc[len(rc) - 1][0] - rc[len(rc) - 2][0]);            // 末步长（显著变大）
+print(len(rc));
