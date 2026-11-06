@@ -9,8 +9,9 @@
 // 覆盖分布：uniform / normal / exponential / gamma / beta / chi-square /
 //           student-t / lognormal。
 //
-// PPF（分位数 / 逆 CDF）：正态用内置 norminv 直接给出高精度结果；
-//       其余用 bisection 在 [lo,hi] 上对各自 CDF 反解（dist_inv_cdf）。
+// PPF（分位数 / 逆 CDF）：uniform / exponential 用解析式，正态用内置
+//       norminv；gamma / beta / chi-square / student-t / lognormal 各自
+//       内联 120–160 次 bisection 就地调用自身 CDF 反解（不抽通用内核）。
 //
 // 约定：所有 CDF 单调递增；PPF 对 q∈(0,1) 定义，边界处做安全 clamp，
 //       避免 q=0/1 映射到 ±∞。igamma/ibeta 为「正则化」不完全

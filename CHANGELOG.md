@@ -6,6 +6,74 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
+This section covers the 20 post-0.13.0 commits touching `lib/` — the
+pure-`.lume` scientific-computing libraries. Other post-0.13.0 work (CI,
+security, language core and TODO bookkeeping) is not yet summarised here.
+Every library below ships a `tests/*-consistency.lume` numerical regression
+and a `tests/*_backends.sh` harness asserting byte-identical output across
+the interpreter / text-IR / LLVM backends; locally LLVM is skipped (built
+without libLLVM), so parity is verified as `interp/text identical`.
+
+### Added
+
+- **Continuous probability distributions — `lib/dist.lume`.** PDF, CDF and
+  PPF for uniform / normal / exponential / gamma / beta / chi-square /
+  student-t / lognormal, built on the `erf` / `lgamma` / `igamma` / `ibeta` /
+  `normcdf` / `norminv` / `tdist_cdf` / `chisq_cdf` builtins. Normal PPF
+  calls `norminv` directly; the other seven invert their own CDF by
+  bisection, with `q` clamped away from 0 and 1 to avoid infinite tails.
+- **Complex arithmetic — `lib/complex.lume`.** One complex number is a
+  length-2 `float[]` `[Re, Im]`. Covers `cadd` / `csub` / `cmul` / `cdiv` /
+  `cneg` / `cconj` / `cscalar_mul` / `cscalar_div`, `cabs` / `cabs2` /
+  `carg`, and `cexp` / `clog` / `csqrt` / `cpow` / `csin` / `ccos` / `ctan`.
+- **Finite-difference PDE solvers — `lib/pde.lume` (v0.7.0).** Parabolic:
+  1D explicit FTCS and Crank–Nicolson, 2D explicit FTCS with Dirichlet /
+  Neumann zero-flux boundaries, and unconditionally-stable 2D ADI.
+  Hyperbolic: leapfrog wave, 1D linear advection (upwind and Lax–Wendroff
+  with periodic boundaries), and inviscid/viscous Burgers in conservative
+  form with a Rusanov flux that captures the correct shock speed. Elliptic:
+  2D Poisson Jacobi and a 1D two-point BVP with Robin / mixed boundaries
+  (`u ∓ βu' = g`, ghost-cell discretisation + `pde_tridiag`).
+- **Elliptic solver acceleration chain — `lib/pde.lume`.** `pde_poisson_sor`
+  (lexicographic Gauss–Seidel + over-relaxation, O(n) sweeps vs Jacobi's
+  O(n²)), `pde_sor_optimal_omega` (`2/(1+sin(π/(n−1)))`), and
+  `pde_poisson_residual` for ∞-norm diagnostics; then `pde_poisson_mg`, a
+  recursive geometric multigrid V-cycle with full-weighting restriction,
+  bilinear prolongation and GS smoothing, whose convergence factor is
+  independent of mesh size. The existing four-argument `pde_poisson_sor`
+  API is kept as a thin wrapper over `pde_poisson_sor_from`.
+- **ODE single-step family — `lib/sci.lume` (`SCI_VERSION` 0.7.0).**
+  `rk4_sys` / `rk4_sys_linear` for vector systems (with `vadd` / `vsub` /
+  `vscale`), `rk4_adaptive` (step-doubling Richardson error control),
+  `ode_theta` / `ode_imp_euler` / `ode_trapezoid` (A-stable implicit
+  family with a Newton solve and central-difference Jacobian for stiff
+  equations), and symplectic `verlet` (bounded long-term energy error).
+- **ODE multistep methods — `lib/sci.lume`.** `adams_bashforth` (orders
+  1–4, one RHS evaluation per steady-state step, rolling `f` history,
+  RK4 startup) with `ab2` / `ab3` / `ab4` wrappers, and implicit `bdf2`
+  (second order, A-stable, strong stiff decay, trapezoid startup).
+  Convergence tests confirm error ratios ≈2/4/8/16 and ≈4 respectively.
+- **ODE event location and dense output — `lib/sci.lume`.** `ode_event` /
+  `ode_event_all` detect sign changes of `y−target` on the RK4 grid and
+  bisect inside the crossing cell with a single variable-length RK4 step;
+  `rk4_dense` evaluates the solution at arbitrary `t` via cubic Hermite
+  interpolation using RK4 endpoint values and `f` endpoint derivatives
+  (O(h⁴), ~2000× more accurate than linear interpolation at h=1/8).
+  Only sign-changing crossings are detected; tangent events are not.
+- **Matrix factorisations — `lib/linalg.lume`.** QR (`mat_qr_q` /
+  `mat_qr_r`), symmetric eigen-decomposition (`mat_eig_power` /
+  `mat_eigvals` / `mat_eigvec` / `mat_eig_decomp`) and SVD (`mat_svd`,
+  two-sided Jacobi diagonalisation), completing the decomposition trio.
+- **Nonlinear least squares — `lib/optim.lume`.** `nonlinear_ls` fits a
+  user-supplied model `fn(float[], float) => float` by Gauss–Newton with
+  Levenberg damping.
+
+### Changed
+
+- **`lib/sig.lume` now reuses `lib/complex.lume`.** `dft` / `idft` delegate
+  their complex multiply to `c.cmul` instead of hand-rolling it row by
+  row; `fft_radix2` keeps its parallel `re[]` / `im[]` arrays for speed.
+
 ## [0.13.0] - 2026-11-04
 
 ### Added
