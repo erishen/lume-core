@@ -11,6 +11,8 @@
 //   求根        bisect（通用 f）/ newton（通用 f, f'）+ 多项式薄包装
 //   ODE         rk4（标量固定步长）/ rk4_adaptive（自适应步长+误差控制）/
 //               rk4_sys（向量系统 dy/dt=f(t,y)）+ 线性/仿射/多项式薄包装
+//               ode_theta（θ-方法族）/ ode_imp_euler（后向 Euler，L-稳定）/
+//               ode_trapezoid（梯形 / Crank–Nicolson，A-稳定）——刚性方程
 //
 // 使用：
 //   import "sci.lume" as sci;
@@ -26,7 +28,9 @@
 // 编译后端会明确报错；函数内直接传给算法内核则三后端全部可用。
 // ───────────────────────────────────────────────────────────────────
 
-export let SCI_VERSION = "0.3.0";   // v0.3.0: rk4_sys（向量 ODE 系统）+ rk4_adaptive（自适应步长）
+// v0.3.0: rk4_sys（向量 ODE 系统）+ rk4_adaptive（自适应步长）
+// v0.4.0: ode_theta / ode_imp_euler / ode_trapezoid（隐式刚性求解器，A-稳定）
+export let SCI_VERSION = "0.4.0";
 
 // 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
 let LN2 = log(2.0);
@@ -350,6 +354,59 @@ export func rk4_adaptive(f: fn(float, float) => float, y0: float, t0: float,
     h = h * fac;                             // 拒绝时 fac<1，自动缩小重试
   }
   return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 刚性 ODE：θ-方法族（隐式单步法）
+//   y_{n+1} = y_n + h·[(1−θ)·f(t_n, y_n) + θ·f(t_{n+1}, y_{n+1})]
+//   θ = 1    后向 Euler：L-稳定、一阶，刚性瞬变被迅速阻尼
+//   θ = 0.5  梯形法则（= ODE 版 Crank–Nicolson）：A-稳定、二阶
+//   θ = 0    显式 Euler（仅作参数族端点对照，非 A-稳定）
+// 显式 RK4 对 y'=λy 的稳定域约 |λh| ≲ 2.8；λ=−1000 时步长须 h ≲ 0.0028，
+// 而 A-稳定隐式法用 h=0.1 仍可稳定推进（精度另有取舍）。
+// 隐式方程由 Newton 迭代求解，f 对 y 的偏导用中心差分近似（无需用户提供 f'）：
+//   g(z)  = z − y_n − h·[(1−θ)f_n + θ·f(t_{n+1},z)]
+//   g'(z) = 1 − hθ·[f(z+ε) − f(z−ε)]/(2ε),  ε = 1e-7·(1+|z|)
+// Newton 初值取上一步的 y（刚性下比显式 Euler 预测更稳），固定 20 次上限，
+// |Δz| < 1e-12 提前退出。返回含初值的轨迹 float[]（长度 n+1）。
+// ════════════════════════════════════════════════════════════════
+export func ode_theta(f: fn(float, float) => float, y0: float, t0: float,
+                      t1: float, n: int, theta: float): float[] {
+  let h: float = (t1 - t0) / (n * 1.0);
+  let y: float = y0;
+  let out: float[] = [];
+  out = push(out, y);
+  for (let step = 0; step < n; step = step + 1) {
+    let tn: float = t0 + h * (step * 1.0);
+    let fold: float = f(tn, y);
+    let z: float = y;
+    for (let it = 0; it < 20; it = it + 1) {
+      let fz: float = f(tn + h, z);
+      let g: float = z - y - h * ((1.0 - theta) * fold + theta * fz);
+      let eps: float = 1e-7 * (1.0 + abs(z));
+      let fp: float = f(tn + h, z + eps);
+      let fm: float = f(tn + h, z - eps);
+      let dg: float = 1.0 - h * theta * (fp - fm) / (2.0 * eps);
+      let dz: float = g / dg;
+      z = z - dz;
+      if (abs(dz) < 1e-12) { break; }
+    }
+    y = z;
+    out = push(out, y);
+  }
+  return out;
+}
+
+// 后向 Euler（θ=1）：一阶、L-稳定，强阻尼刚性瞬变。
+export func ode_imp_euler(f: fn(float, float) => float, y0: float, t0: float,
+                          t1: float, n: int): float[] {
+  return ode_theta(f, y0, t0, t1, n, 1.0);
+}
+
+// 梯形法则 / Crank–Nicolson（θ=0.5）：二阶、A-稳定（不 L-稳定）。
+export func ode_trapezoid(f: fn(float, float) => float, y0: float, t0: float,
+                          t1: float, n: int): float[] {
+  return ode_theta(f, y0, t0, t1, n, 0.5);
 }
 
 // ════════════════════════════════════════════════════════════════

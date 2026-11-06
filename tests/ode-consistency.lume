@@ -1,5 +1,6 @@
-// ode-consistency.lume — sci.lume ODE（向量系统 + 自适应步长）三后端一致性测试
-// 由 tests/ode_backends.sh 驱动：解释器 / 文本 IR / LLVM 输出须逐字节一致。
+// ode-consistency.lume — sci.lume ODE（向量系统 / 自适应步长 / 隐式刚性方法）
+// 三后端一致性测试。由 tests/ode_backends.sh 驱动：
+// 解释器 / 文本 IR / LLVM 输出须逐字节一致。
 import "../lib/sci.lume" as sci;
 
 // ── 谐波振荡器：y' = [y1, -y0]，y0=[1,0] → y(t)=[cos t, -sin t] ──
@@ -37,3 +38,42 @@ print(rc[len(rc) - 1][1] - exp(-20.0));                    // 终点误差
 print(rc[1][0] - rc[0][0]);                                // 首步长（小）
 print(rc[len(rc) - 1][0] - rc[len(rc) - 2][0]);            // 末步长（显著变大）
 print(len(rc));
+
+// ── 隐式 θ-方法：非刚性 y' = −y 的收敛阶 ──
+// 后向 Euler 精确解 (1+h)^{-n}（一阶）；梯形精确解 ((1−h/2)/(1+h/2))^n（二阶）。
+// 步长减半（n: 10 → 20）时误差应分别 ≈1/2、≈1/4。解析 y(1) = e⁻¹。
+let imp_ex1 = exp(-1.0);
+let imp_ie10 = sci.ode_imp_euler((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10)[10];
+let imp_ie20 = sci.ode_imp_euler((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20];
+let imp_tr10 = sci.ode_trapezoid((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10)[10];
+let imp_tr20 = sci.ode_trapezoid((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20];
+print(imp_ie10 - imp_ex1);                     // 后向 Euler 一阶误差
+print(imp_ie20 - imp_ex1);                     // ≈上一行 /2
+print((imp_ie10 - imp_ex1) / (imp_ie20 - imp_ex1));   // ≈2（一阶收敛）
+print(imp_tr10 - imp_ex1);                     // 梯形二阶误差（小得多）
+print(imp_tr20 - imp_ex1);                     // ≈上一行 /4
+print((imp_tr10 - imp_ex1) / (imp_tr20 - imp_ex1));   // ≈4（二阶收敛）
+
+// θ=0 端点退化为显式 Euler：(1−h)^n = 0.9^10
+let imp_ee = sci.ode_theta((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 0.0)[10];
+print(imp_ee - pow(0.9, 10.0));               // ≈0
+
+// ── 刚性方程：y' = −1000(y − cos t) − sin t，解析 y(t) = cos t ──
+// 显式 RK4 稳定要求 h ≲ 2.8/1000 = 0.0028（n ≳ 357）；这里 h = 0.1（n=10）
+// 远超显式稳定域，A-稳定隐式法仍应稳定推进。
+let imp_sie = sci.ode_imp_euler((t: float, y: float) => -1000.0 * (y - cos(t)) - sin(t),
+                                1.0, 0.0, 1.0, 10);
+let imp_str = sci.ode_trapezoid((t: float, y: float) => -1000.0 * (y - cos(t)) - sin(t),
+                                1.0, 0.0, 1.0, 10);
+print(imp_sie[10]);
+print(imp_str[10]);
+print(cos(1.0));
+print(imp_sie[10] - cos(1.0));                 // 后向 Euler 误差
+print(imp_str[10] - cos(1.0));                 // 梯形误差（应更小）
+
+// 显式 RK4 同一步长失效；把 |y(1)| 截断到 1e6，避免超大数在三后端格式漂移
+let imp_srk = sci.rk4((t: float, y: float) => -1000.0 * (y - cos(t)) - sin(t),
+                      1.0, 0.0, 1.0, 10);
+let imp_srkm: float = abs(imp_srk[10]);
+if (imp_srkm > 1e6) { imp_srkm = 1e6; }
+print(imp_srkm);                               // 1e6（显式发散被截断）
