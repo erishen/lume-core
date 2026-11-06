@@ -187,14 +187,18 @@ print(sci.SCI_VERSION);                   // 0.7.0
 > `approval.lume` / `domains.lume` / `identity.lume` / `peer.lume` 是宿主
 > 业务侧库，不属于科学计算算法层，故不列。
 >
-> 本机未装 `libLLVM`，`*_backends.sh` 会打印
+> 本机工具链只带运行期 `libLLVM-23.dll`，缺 `llvm-config`、`llvm-c` 头文件
+> 与导入库，故 `HAVE_LIBLLVM=0`，`*_backends.sh` 会打印
 > `ok <name>: interp/text identical (llvm skipped)`——即只验证了解释器与
-> 文本 IR 两腿，不表示 LLVM 腿已验证。
+> 文本 IR 两腿，不表示 LLVM 腿已验证。装好完整 LLVM 开发包后以
+> `make LLVM_CONFIG=<llvm-config 路径>` 重建即可启用第三腿。
 
 实现时反复踩到的 lume 语义边界（写新库前建议先读）：
 
 - `let` 是函数作用域：同一函数内各循环变量必须唯一；`for-init` 不可遮蔽
-  外层局部绑定，也不能用内置函数名（如 `ic`）作循环变量。
+  外层局部绑定。内置名（如 `ic` / `pi`）**现在可以**作循环变量（P1-3 修复：
+  内置符号独立成最外层 scope，经典 for 的 init 绑定三后端都是循环私有），
+  但为避免与后续读内置值混淆，给循环变量加前缀仍是好习惯。
 - 数组/矩阵**不能原地索引赋值**，值语义下要用 `push` 整体重建。
 - 从 `[]` 循环 `push` 构造的数组、以及绑定本地函数返回值的 `let`，在文本
   后端常被推成 `?[]` 或推不出类型，需显式标注 `let out: float[] = [];`。
