@@ -6,6 +6,7 @@
 //       pde_wave_leapfrog / pde_advect_upwind / pde_advect_lw /
 //       pde_burgers_inviscid / pde_burgers_viscous / pde_poisson_jacobi /
 //       pde_poisson_sor / pde_sor_optimal_omega / pde_poisson_residual /
+//       pde_poisson_mg / pde_poisson_residual_grid / pde_zeros_2d /
 //       pde_robin_1d
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
 // 泊松 sin(πx)sin(πy)、Burgers 稳态行波 −tanh(5x)、Riemann 激波速度 0.5、
@@ -445,3 +446,72 @@ print(sq_rj);
 print(sq_rs);
 print(sq_rs / sq_rj);                   // ≪1；Jacobi 100 次仍有 O(1) 残差，
 // 而 SOR 已到机器精度，网格加密后 Jacobi 的 O(n²) 劣势进一步暴露
+
+// ── 几何多重网格 V-cycle：收敛因子与网格规模无关 ──────────────
+// 沿用同一零 Dirichlet 泊松源项。n 必须 = 2^k+1，粗网格链 9→5→3、
+// 17→9→5→3；前/后各 2 次 GS 平滑 + full-weighting 限制 + 双线性延拓，
+// 一个 V-cycle 代价 O(N)。关键判据：两个网格的「每轮残差下降因子」应
+// 几乎相同（约 0.06–0.10），即迭代次数不随 n 增长。
+let mg_u1 = pde.pde_poisson_mg(f, hp, 1, 1.0);
+let mg_u2 = pde.pde_poisson_mg(f, hp, 2, 1.0);
+let mg_u3 = pde.pde_poisson_mg(f, hp, 3, 1.0);
+let mg_u4 = pde.pde_poisson_mg(f, hp, 4, 1.0);
+let mg_u5 = pde.pde_poisson_mg(f, hp, 5, 1.0);
+let mg_r1: float = pde.pde_poisson_residual(mg_u1, f, hp);
+let mg_r2: float = pde.pde_poisson_residual(mg_u2, f, hp);
+let mg_r3: float = pde.pde_poisson_residual(mg_u3, f, hp);
+let mg_r4: float = pde.pde_poisson_residual(mg_u4, f, hp);
+let mg_r5: float = pde.pde_poisson_residual(mg_u5, f, hp);
+print(mg_r1); print(mg_r2); print(mg_r3); print(mg_r4); print(mg_r5);
+print(mg_r2 / mg_r1); print(mg_r3 / mg_r2);
+print(mg_r4 / mg_r3); print(mg_r5 / mg_r4);
+
+// 17×17：同样的因子即证明「与网格规模无关」
+let mg_v1 = pde.pde_poisson_mg(sq_f, sq_h, 1, 1.0);
+let mg_v2 = pde.pde_poisson_mg(sq_f, sq_h, 2, 1.0);
+let mg_v3 = pde.pde_poisson_mg(sq_f, sq_h, 3, 1.0);
+let mg_v4 = pde.pde_poisson_mg(sq_f, sq_h, 4, 1.0);
+let mg_v5 = pde.pde_poisson_mg(sq_f, sq_h, 5, 1.0);
+let mg_s1: float = pde.pde_poisson_residual(mg_v1, sq_f, sq_h);
+let mg_s2: float = pde.pde_poisson_residual(mg_v2, sq_f, sq_h);
+let mg_s3: float = pde.pde_poisson_residual(mg_v3, sq_f, sq_h);
+let mg_s4: float = pde.pde_poisson_residual(mg_v4, sq_f, sq_h);
+let mg_s5: float = pde.pde_poisson_residual(mg_v5, sq_f, sq_h);
+print(mg_s1); print(mg_s2); print(mg_s3); print(mg_s4); print(mg_s5);
+print(mg_s2 / mg_s1); print(mg_s3 / mg_s2);
+print(mg_s4 / mg_s3); print(mg_s5 / mg_s4);
+
+// 10 个 V-cycle 后收敛到与 400 次 Jacobi 相同的离散解，且边界仍严格为 0
+let mg_u10 = pde.pde_poisson_mg(f, hp, 10, 1.0);
+print(mg_u10[ci][ci]);
+print(up[ci][ci]);
+print(mg_u10[ci][ci] - up[ci][ci]);    // ≈−3.4e-13
+print(mg_u10[0][ci]);                   // 0
+print(mg_u10[ci][0]);                   // 0
+
+// 33×33：网格继续加密时，MG 迭代次数不变，SOR / Jacobi 明显变慢。
+// 注：小网格（9 / 17）上 SOR 单次扫描成本更低、反而更划算；MG 的价值
+// 恰恰在「收敛因子不随 n 退化」，只有网格够大才转化为实际工作量优势。
+let mg_n33 = 33;
+let mg_h33 = 1.0 / (mg_n33 - 1.0);
+let mg_f33: float[][] = [];
+for (let mg_i0 = 0; mg_i0 < mg_n33; mg_i0 = mg_i0 + 1) {
+  let mg_row: float[] = [];
+  for (let mg_i1 = 0; mg_i1 < mg_n33; mg_i1 = mg_i1 + 1) {
+    mg_row = push(mg_row, -2.0 * PI * PI * sin(PI * mg_h33 * mg_i0)
+                          * sin(PI * mg_h33 * mg_i1));
+  }
+  mg_f33 = push(mg_f33, mg_row);
+}
+let mg_w33 = pde.pde_sor_optimal_omega(mg_n33);
+let mg_33m = pde.pde_poisson_mg(mg_f33, mg_h33, 10, 1.0);
+let mg_33s = pde.pde_poisson_sor(mg_f33, mg_h33, 100, mg_w33);
+let mg_33j = pde.pde_poisson_jacobi(mg_f33, mg_h33, 100);
+let mg_33rm: float = pde.pde_poisson_residual(mg_33m, mg_f33, mg_h33);
+let mg_33rs: float = pde.pde_poisson_residual(mg_33s, mg_f33, mg_h33);
+let mg_33rj: float = pde.pde_poisson_residual(mg_33j, mg_f33, mg_h33);
+print(mg_w33);                          // 1.82147
+print(mg_33rm);                         // ≈1.8e-09，MG 10 cycles
+print(mg_33rs);                         // ≈1.0e-05，SOR 100 次
+print(mg_33rj);                         // ≈12.2，Jacobi 100 次
+print(mg_33rm / mg_33rs);               // ≪1

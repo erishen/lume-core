@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.6.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.7.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
 //        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
 //               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
 //        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
@@ -13,6 +13,8 @@
 //        v0.6.0 增补椭圆型迭代加速：pde_poisson_sor（字典序 Gauss–Seidel
 //               + 超松弛，迭代量 O(n)）、pde_sor_optimal_omega（最优 ω）、
 //               pde_poisson_residual（∞ 范数残差诊断）。
+//        v0.7.0 增补几何多重网格：pde_poisson_mg（递归 V-cycle，full-weighting
+//               限制 / 双线性延拓 / GS 平滑），收敛因子与网格规模无关。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
@@ -24,6 +26,7 @@
 //           pde_burgers_viscous（粘性 Burgers，守恒型对流 + 中心扩散）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
 //           pde_poisson_sor（SOR 超松弛加速，迭代量 O(n) vs Jacobi O(n²)）
+//           pde_poisson_mg（多重网格 V-cycle，迭代量与 n 无关，O(N) 总代价）
 //           pde_robin_1d（1D 两点边值 −u''=f，Robin 边界，三对角直接解）
 // 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、
 //               周期（1D）、Robin / 混合（u ∓ β·∂u/∂n = g，左右独立）
@@ -34,10 +37,12 @@
 // 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
 //       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
 //       pde_h2d_val / pde_bc_val（邻居取值 + 边界条件）、
-//       pde_poisson_residual（残差诊断）、pde_sor_optimal_omega（最优 ω）。
+//       pde_poisson_residual / pde_poisson_residual_grid（残差诊断）、
+//       pde_sor_optimal_omega（最优 ω）、pde_zeros_2d（零网格）、
+//       pde_mg_restrict / pde_mg_prolong（多重网格限制 / 延拓）。
 //       所有网格更新均为值语义（用 push 整体重建）；SOR 另用 prevrow（上一行
 //       已更新）+ leftv（本行左邻已更新）两个滚动量携带「本次扫描新值」，
-//       全程不读取尚未构建完的数组。
+//       全程不读取尚未构建完的数组。多重网格要求 n = 2^k + 1。
 // ───────────────────────────────────────────────────────────────────
 
 // 均匀坐标数组 [a, ..., b]，共 n 个点
@@ -567,6 +572,17 @@ export func pde_poisson_jacobi(f: float[][], h: float, iters: int): float[][] {
   return u;
 }
 
+// ── 工具：n×n 零网格 ──────────────────────────────────────────
+export func pde_zeros_2d(n: int): float[][] {
+  let z: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, 0.0); }
+    z = push(z, row);
+  }
+  return z;
+}
+
 // ── 椭圆型：二维泊松方程 SOR 超松弛迭代 ∇²u = f ──────────────
 // 与 pde_poisson_jacobi 同一 5 点离散、同样零 Dirichlet 边界，但改用字典序
 // Gauss–Seidel（本轮扫描中已更新的上邻 / 左邻立即参与）+ 松弛因子 ω：
@@ -577,16 +593,13 @@ export func pde_poisson_jacobi(f: float[][], h: float, iters: int): float[][] {
 //
 // 值语义实现：lume 不能原地索引赋值，也不宜读取「尚未 push 完」的数组，故用
 // prevrow（上一行已完整构建的新值）+ leftv（本行左邻刚算出的新值）两个滚动量
-// 携带「本次扫描已更新」的分量；旧值一律从上一轮网格 u 读取。初始猜测为 0。
-export func pde_poisson_sor(f: float[][], h: float, iters: int,
-                            omega: float): float[][] {
+// 携带「本次扫描已更新」的分量；旧值一律从上一轮网格 u 读取。
+// _from 版接受任意初值，可充当多重网格的 smoother / 续算；pde_poisson_sor
+// 保持四参数原 API，只是以零初值调用 _from。
+export func pde_poisson_sor_from(u0: float[][], f: float[][], h: float,
+                                 iters: int, omega: float): float[][] {
   let n: int = len(f);
-  let u: float[][] = [];
-  for (let i = 0; i < n; i = i + 1) {
-    let row: float[] = [];
-    for (let j = 0; j < n; j = j + 1) { row = push(row, 0.0); }
-    u = push(u, row);
-  }
+  let u: float[][] = u0;
   for (let it = 0; it < iters; it = it + 1) {
     let unew: float[][] = [];
     let prevrow: float[] = [];
@@ -612,6 +625,14 @@ export func pde_poisson_sor(f: float[][], h: float, iters: int,
   return u;
 }
 
+// 零初值的便捷入口（原 API，签名不变）。
+export func pde_poisson_sor(f: float[][], h: float, iters: int,
+                            omega: float): float[][] {
+  let u0: float[][] = pde_zeros_2d(len(f));
+  let u: float[][] = pde_poisson_sor_from(u0, f, h, iters, omega);
+  return u;
+}
+
 // n×n 网格（h = 1/(n−1)）、零 Dirichlet 边界下的最优 SOR 松弛因子。
 // ρ_Jacobi = cos(π/(n−1))，ω_opt = 2/(1+sqrt(1−ρ_J²)) = 2/(1+sin(π/(n−1)))。
 // 要求 n ≥ 3：n=2 时 ω=2 已在发散边界，n=1 则无内部点、分母为 0。
@@ -633,4 +654,145 @@ export func pde_poisson_residual(u: float[][], f: float[][], h: float): float {
     }
   }
   return rmax;
+}
+
+// ── 椭圆型：几何多重网格 V-cycle（零 Dirichlet 边界）──────────
+// 要求 n = 2^k + 1（9 / 17 / 33 …），粗网格链 n → (n−1)/2+1 → … → 3。
+// 离散方程 A_h u = f，A_h u := (Σ邻居 − 4u)/h²。
+//   correction scheme：r   = f − A_h u      （细网格残差场）
+//                      r_c = I_h^{2h} r     （full-weighting 限制）
+//                      A_{2h} e_c = r_c     （粗网格上解误差方程）
+//                      u  ← u + I_{2h}^h e_c（双线性延拓校正）
+// 前后各 2 次 GS 平滑压高频误差、粗网格校正压低频误差，二者互补 →
+// 收敛因子约 0.1 且与网格规模无关（SOR 的迭代量仍随 n 线性增长）。
+// Galerkin 缩放：2D 中 I_h^{2h} = ¼·P^T（P 为双线性延拓），正是 9 点
+// full-weighting 模板 [1 2 1; 2 4 2; 1 2 1]/16（权重和 1）；配合
+// A_{2h} = (Σ−4·)/(2h)²，粗网格右端项无需再乘额外因子。
+
+// 残差场 r = f − A_h u（内部点），边界置 0；供限制算子使用。
+export func pde_poisson_residual_grid(u: float[][], f: float[][],
+                                      h: float): float[][] {
+  let n: int = len(u);
+  let r: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      let v: float = 0.0;
+      if (i > 0 && i < n - 1 && j > 0 && j < n - 1) {
+        let lap: float = (u[i - 1][j] + u[i + 1][j]
+                         + u[i][j - 1] + u[i][j + 1]
+                         - 4.0 * u[i][j]) / (h * h);
+        v = f[i][j] - lap;
+      }
+      row = push(row, v);
+    }
+    r = push(r, row);
+  }
+  return r;
+}
+
+// full-weighting 限制 I_h^{2h}：粗点 (I,J) 对应细点 (2I,2J)。
+// 粗网格尺寸用 for 计数得出，避开 lume 的浮点整数除法（17/2 = 8.5）。
+func pde_mg_restrict(rf: float[][]): float[][] {
+  let nf: int = len(rf);
+  let nc: int = 1;
+  for (let k = 1; k < nf; k = k + 2) { nc = nc + 1; }
+  let rc: float[][] = [];
+  for (let I = 0; I < nc; I = I + 1) {
+    let row: float[] = [];
+    for (let J = 0; J < nc; J = J + 1) {
+      let v: float = 0.0;
+      if (I > 0 && I < nc - 1 && J > 0 && J < nc - 1) {
+        let i: int = 2 * I;
+        let j: int = 2 * J;
+        v = 0.0625 * (4.0 * rf[i][j]
+             + 2.0 * (rf[i - 1][j] + rf[i + 1][j]
+                    + rf[i][j - 1] + rf[i][j + 1])
+             + rf[i - 1][j - 1] + rf[i - 1][j + 1]
+             + rf[i + 1][j - 1] + rf[i + 1][j + 1]);
+      }
+      row = push(row, v);
+    }
+    rc = push(rc, row);
+  }
+  return rc;
+}
+
+// 双线性延拓 I_{2h}^h：细网格尺寸由 nc 推出，nf = 2·nc − 1。
+// 按粗网格单元逐块生成两行，完全避开整数除法 / 取模与索引赋值。
+func pde_mg_prolong(ec: float[][]): float[][] {
+  let nc: int = len(ec);
+  let ef: float[][] = [];
+  for (let I = 0; I < nc - 1; I = I + 1) {
+    let even: float[] = [];
+    let odd: float[] = [];
+    for (let J = 0; J < nc - 1; J = J + 1) {
+      let a: float = ec[I][J];
+      let b: float = ec[I][J + 1];
+      let c: float = ec[I + 1][J];
+      let d: float = ec[I + 1][J + 1];
+      even = push(even, a);
+      even = push(even, 0.5 * (a + b));
+      odd = push(odd, 0.5 * (a + c));
+      odd = push(odd, 0.25 * (a + b + c + d));
+    }
+    even = push(even, ec[I][nc - 1]);
+    odd = push(odd, 0.5 * (ec[I][nc - 1] + ec[I + 1][nc - 1]));
+    ef = push(ef, even);
+    ef = push(ef, odd);
+  }
+  let last: float[] = [];
+  for (let J = 0; J < nc - 1; J = J + 1) {
+    last = push(last, ec[nc - 1][J]);
+    last = push(last, 0.5 * (ec[nc - 1][J] + ec[nc - 1][J + 1]));
+  }
+  last = push(last, ec[nc - 1][nc - 1]);
+  ef = push(ef, last);
+  return ef;
+}
+
+// 逐点相加 u + e（值语义）
+func pde_mg_add(u: float[][], e: float[][]): float[][] {
+  let n: int = len(u);
+  let w: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      row = push(row, u[i][j] + e[i][j]);
+    }
+    w = push(w, row);
+  }
+  return w;
+}
+
+// 单个 V-cycle（递归）：前平滑 → 残差限制 → 粗网格解误差 → 延拓校正 → 后平滑。
+// 最粗层 n≤3 时内部仅 1 个未知点，4 次 GS 即精确求解。
+func pde_mg_vcycle(u: float[][], f: float[][], h: float,
+                   omega: float): float[][] {
+  let n: int = len(u);
+  if (n <= 3) {
+    let ucoarse: float[][] = pde_poisson_sor_from(u, f, h, 4, 1.0);
+    return ucoarse;
+  }
+  let us: float[][] = pde_poisson_sor_from(u, f, h, 2, omega);
+  let r: float[][] = pde_poisson_residual_grid(us, f, h);
+  let rc: float[][] = pde_mg_restrict(r);
+  let nc: int = len(rc);
+  let ec0: float[][] = pde_zeros_2d(nc);
+  let ec: float[][] = pde_mg_vcycle(ec0, rc, 2.0 * h, omega);
+  let ef: float[][] = pde_mg_prolong(ec);
+  let uc: float[][] = pde_mg_add(us, ef);
+  let uu: float[][] = pde_poisson_sor_from(uc, f, h, 2, omega);
+  return uu;
+}
+
+// 顶层入口：零初值 + cycles 个 V-cycle。smoother 用 GS（omega=1）最稳；
+// 总代价 O(N)（N 为未知点数），且收敛因子与 n 无关。
+export func pde_poisson_mg(f: float[][], h: float, cycles: int,
+                           omega: float): float[][] {
+  let u: float[][] = pde_zeros_2d(len(f));
+  for (let k = 0; k < cycles; k = k + 1) {
+    u = pde_mg_vcycle(u, f, h, omega);
+  }
+  return u;
 }
