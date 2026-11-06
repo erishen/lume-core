@@ -4,9 +4,11 @@
 //
 // 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_heat_2d_adi /
 //       pde_wave_leapfrog / pde_advect_upwind / pde_advect_lw /
-//       pde_burgers_inviscid / pde_burgers_viscous / pde_poisson_jacobi
+//       pde_burgers_inviscid / pde_burgers_viscous / pde_poisson_jacobi /
+//       pde_robin_1d
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
-// 泊松 sin(πx)sin(πy)、Burgers 稳态行波 −tanh(5x)、Riemann 激波速度 0.5），
+// 泊松 sin(πx)sin(πy)、Burgers 稳态行波 −tanh(5x)、Riemann 激波速度 0.5、
+// Robin 边值 1+x² 与 sin(2x)+cos(x) 的二阶收敛），
 // 打印 [数值, 解析, 误差] 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
 // 由 lume 显式控制）必然逐字节一致，与具体精度无关。
@@ -264,3 +266,106 @@ let uc0: float[] = [];
 for (let bg_i7 = 0; bg_i7 < na; bg_i7 = bg_i7 + 1) { uc0 = push(uc0, 0.5); }
 let ucv = pde.pde_burgers_viscous(uc0, dxa, 0.1, 0.001, 10, true, 0.0, 0.0);
 print(ucv[17] - 0.5);                   // ≈0
+
+// ── Robin / 混合边界：1D 两点边值 −u'' = f，左右独立 u ∓ β·u' = g ────
+// 精确解 u = 1 + x²，f = −2；u(0)=1,u'(0)=0，u(1)=2,u'(1)=2。
+// 取 β_L=0.25、β_R=0.5 → g_L=1、g_R=2+0.5·2=3。
+// ghost-cell 二阶离散对二次多项式精确，误差应达机器精度。
+let rb_n = 21;
+let rb_h = 1.0 / (rb_n - 1.0);
+let rb_x: float[] = pde.pde_linspace(0.0, 1.0, rb_n);
+let rb_f: float[] = [];
+for (let rb_i0 = 0; rb_i0 < rb_n; rb_i0 = rb_i0 + 1) {
+  rb_f = push(rb_f, -2.0);
+}
+let rb_u = pde.pde_robin_1d(rb_f, rb_h, 0.25, 0.5, 1.0, 3.0);
+let rb_emax = 0.0;
+for (let rb_i1 = 0; rb_i1 < rb_n; rb_i1 = rb_i1 + 1) {
+  let rb_d: float = rb_u[rb_i1] - (1.0 + rb_x[rb_i1] * rb_x[rb_i1]);
+  if (rb_d < 0.0) { rb_d = -rb_d; }
+  if (rb_d > rb_emax) { rb_emax = rb_d; }
+}
+print(rb_u[10]);                        // 1.25
+print(1.25);
+print(rb_u[10] - 1.25);                 // ≈0
+print(rb_emax);                         // ≈6.4e-15，二次解机器精度精确
+
+// β_L=β_R=0 退化为 Dirichlet：g_L=u(0)=1、g_R=u(1)=2
+let rb_ud = pde.pde_robin_1d(rb_f, rb_h, 0.0, 0.0, 1.0, 2.0);
+let rb_edmax = 0.0;
+for (let rb_i2 = 0; rb_i2 < rb_n; rb_i2 = rb_i2 + 1) {
+  let rb_d: float = rb_ud[rb_i2] - (1.0 + rb_x[rb_i2] * rb_x[rb_i2]);
+  if (rb_d < 0.0) { rb_d = -rb_d; }
+  if (rb_d > rb_edmax) { rb_edmax = rb_d; }
+}
+print(rb_edmax);                        // ≈4.4e-16
+
+// 左右分支独立：仅右端 Robin（β_L=0 左 Dirichlet，β_R=0.5 右 Robin）
+let rb_um = pde.pde_robin_1d(rb_f, rb_h, 0.0, 0.5, 1.0, 3.0);
+let rb_emmax = 0.0;
+for (let rb_i3 = 0; rb_i3 < rb_n; rb_i3 = rb_i3 + 1) {
+  let rb_d: float = rb_um[rb_i3] - (1.0 + rb_x[rb_i3] * rb_x[rb_i3]);
+  if (rb_d < 0.0) { rb_d = -rb_d; }
+  if (rb_d > rb_emmax) { rb_emmax = rb_d; }
+}
+print(rb_um[rb_n - 1]);                 // 右端是 Robin 解，值应为 u(1)=2
+print(2.0);
+print(rb_um[rb_n - 1] - 2.0);           // ≈0（而非被强加成 g_R=3）
+print(rb_emmax);                        // ≈0
+
+// ── 二阶收敛：非多项式解 u = sin(2x)+cos(x)，f = 4sin(2x)+cos(x)
+// u(0)=1,u'(0)=2 → β_L=0.25 时 g_L = 1−0.25·2 = 0.5
+// u(1)=sin2+cos1, u'(1)=2cos2−sin1 → g_R = u(1)+0.5u'(1)
+// h 减半误差应降 4 倍，验证 ghost-cell Robin 离散确为二阶、非多项式巧合。
+let rb_gl = 1.0 - 0.25 * 2.0;
+let rb_gr = sin(2.0) + cos(1.0) + 0.5 * (2.0 * cos(2.0) - sin(1.0));
+
+let rb_n21 = 21;
+let rb_h21 = 1.0 / (rb_n21 - 1.0);
+let rb_x21: float[] = pde.pde_linspace(0.0, 1.0, rb_n21);
+let rb_f21: float[] = [];
+for (let rb_i4 = 0; rb_i4 < rb_n21; rb_i4 = rb_i4 + 1) {
+  rb_f21 = push(rb_f21, 4.0 * sin(2.0 * rb_x21[rb_i4]) + cos(rb_x21[rb_i4]));
+}
+let rb_u21 = pde.pde_robin_1d(rb_f21, rb_h21, 0.25, 0.5, rb_gl, rb_gr);
+let rb_e21 = 0.0;
+for (let rb_i5 = 0; rb_i5 < rb_n21; rb_i5 = rb_i5 + 1) {
+  let rb_d: float = rb_u21[rb_i5] - (sin(2.0 * rb_x21[rb_i5]) + cos(rb_x21[rb_i5]));
+  if (rb_d < 0.0) { rb_d = -rb_d; }
+  if (rb_d > rb_e21) { rb_e21 = rb_d; }
+}
+print(rb_e21);
+
+let rb_n41 = 41;
+let rb_h41 = 1.0 / (rb_n41 - 1.0);
+let rb_x41: float[] = pde.pde_linspace(0.0, 1.0, rb_n41);
+let rb_f41: float[] = [];
+for (let rb_i6 = 0; rb_i6 < rb_n41; rb_i6 = rb_i6 + 1) {
+  rb_f41 = push(rb_f41, 4.0 * sin(2.0 * rb_x41[rb_i6]) + cos(rb_x41[rb_i6]));
+}
+let rb_u41 = pde.pde_robin_1d(rb_f41, rb_h41, 0.25, 0.5, rb_gl, rb_gr);
+let rb_e41 = 0.0;
+for (let rb_i7 = 0; rb_i7 < rb_n41; rb_i7 = rb_i7 + 1) {
+  let rb_d: float = rb_u41[rb_i7] - (sin(2.0 * rb_x41[rb_i7]) + cos(rb_x41[rb_i7]));
+  if (rb_d < 0.0) { rb_d = -rb_d; }
+  if (rb_d > rb_e41) { rb_e41 = rb_d; }
+}
+print(rb_e41);
+print(rb_e21 / rb_e41);                 // ≈4
+
+let rb_n81 = 81;
+let rb_h81 = 1.0 / (rb_n81 - 1.0);
+let rb_x81: float[] = pde.pde_linspace(0.0, 1.0, rb_n81);
+let rb_f81: float[] = [];
+for (let rb_i8 = 0; rb_i8 < rb_n81; rb_i8 = rb_i8 + 1) {
+  rb_f81 = push(rb_f81, 4.0 * sin(2.0 * rb_x81[rb_i8]) + cos(rb_x81[rb_i8]));
+}
+let rb_u81 = pde.pde_robin_1d(rb_f81, rb_h81, 0.25, 0.5, rb_gl, rb_gr);
+let rb_e81 = 0.0;
+for (let rb_i9 = 0; rb_i9 < rb_n81; rb_i9 = rb_i9 + 1) {
+  let rb_d: float = rb_u81[rb_i9] - (sin(2.0 * rb_x81[rb_i9]) + cos(rb_x81[rb_i9]));
+  if (rb_d < 0.0) { rb_d = -rb_d; }
+  if (rb_d > rb_e81) { rb_e81 = rb_d; }
+}
+print(rb_e81);
+print(rb_e41 / rb_e81);                 // ≈4

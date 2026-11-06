@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.4.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.5.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
 //        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
 //               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
 //        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
@@ -8,6 +8,8 @@
 //        v0.4.0 增补非线性 Burgers：pde_burgers_inviscid（守恒律 / Rusanov
 //               数值通量）/ pde_burgers_viscous（粘性）；边界泛化为左右
 //               独立 Dirichlet（bcl / bcr）。
+//        v0.5.0 增补 Robin（混合）边界：pde_robin_1d 解 −u'' = f，
+//               左右独立 u ∓ βu' = g，ghost-cell 二阶离散 + pde_tridiag。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
@@ -18,10 +20,13 @@
 //           pde_burgers_inviscid（非线性守恒律，Rusanov 通量，可捕激波）
 //           pde_burgers_viscous（粘性 Burgers，守恒型对流 + 中心扩散）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
-// 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、周期
+//           pde_robin_1d（1D 两点边值 −u''=f，Robin 边界，三对角直接解）
+// 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、
+//               周期（1D）、Robin / 混合（u ∓ β·∂u/∂n = g，左右独立）
 //
-// 设计：纯 .lume、三后端一致；不接收 fn 形参（规避 lume 闭包跨函数捕获
-//       局部变量的限制），初值/源项一律以预计算数组传入，边界条件以标量传入。
+// 设计：纯 .lume、三后端一致；不接收 fn 形参，初值/源项一律以预计算数组
+//       传入，边界条件以标量传入（网格状态可显式检查、便于逐点复用；
+//       fn 形参跨函数转发已实测安全，此处并非规避闭包限制）。
 // 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
 //       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
 //       pde_h2d_val / pde_bc_val（邻居取值 + 边界条件）。
@@ -466,6 +471,60 @@ export func pde_burgers_viscous(u0: float[], dx: float, nu: float, dt: float,
     }
     u = unew;
   }
+  return u;
+}
+
+// ── 椭圆型：1D 两点边值 −u'' = f，Robin（混合）边界 ────────────
+// 边界条件（左右独立）：u(0) − β_L·u'(0) = g_L，u(1) + β_R·u'(1) = g_R。
+// β=0 退化为 Dirichlet u=g；β>0 为真正的混合边界（β→∞ 近似 Neumann）。
+// 离散（ghost cell + 中心差分，二阶精度，绝不越界索引，要求 n ≥ 3）：
+//   左端 u_{−1} = u_1 − (2h/β_L)(u_0 − g_L)，代入 (2u_0−u_{−1}−u_1)/h² = f_0
+//     → (2 + 2h/β_L)u_0 − 2u_1 = h²f_0 + (2h/β_L)g_L
+//   右端 u_n = u_{n−2} + (2h/β_R)(g_R − u_{n−1})，代入同理
+//     → (2 + 2h/β_R)u_{n−1} − 2u_{n−2} = h²f_{n−1} + (2h/β_R)g_R
+//   内部 2u_i − u_{i−1} − u_{i+1} = h²f_i
+// 直接解三对角系统（复用 pde_tridiag），无迭代、O(n)。
+// 约定：pde_tridiag 的第 i 行下对角取 a[i−1]、上对角取 c[i]，故 a[n−2]
+//       存右边界行的 −2、c[0] 存左边界行的 −2；a[n−1]/c[n−1] 为占位 0。
+export func pde_robin_1d(f: float[], h: float, bl: float, br: float,
+                          gl: float, gr: float): float[] {
+  let n: int = len(f);
+  let a: float[] = [];
+  let b: float[] = [];
+  let c: float[] = [];
+  let d: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let ai: float = -1.0;               // a[i] = 第 i+1 行的下对角
+    let bi: float = 2.0;
+    let ci: float = -1.0;               // c[i] = 第 i 行的上对角
+    let di: float = h * h * f[i];
+    if (i == 0) {
+      if (bl == 0.0) { bi = 1.0; ci = 0.0; di = gl; }
+      else {
+        bi = 2.0 + 2.0 * h / bl;
+        ci = -2.0;
+        di = h * h * f[i] + 2.0 * h / bl * gl;
+      }
+    }
+    if (i == n - 2) {
+      ai = -2.0;                        // 右边界行的下对角
+      if (br == 0.0) { ai = 0.0; }
+    }
+    if (i == n - 1) {
+      ai = 0.0;                         // 占位（a[n−1] 不被读取）
+      ci = 0.0;                         // 占位（c[n−1] 不参与回代）
+      if (br == 0.0) { bi = 1.0; di = gr; }
+      else {
+        bi = 2.0 + 2.0 * h / br;
+        di = h * h * f[i] + 2.0 * h / br * gr;
+      }
+    }
+    a = push(a, ai);
+    b = push(b, bi);
+    c = push(c, ci);
+    d = push(d, di);
+  }
+  let u: float[] = pde_tridiag(a, b, c, d);   // 本地函数返回值须显式标注
   return u;
 }
 
