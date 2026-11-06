@@ -1,11 +1,13 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
 // 版本：v0.2.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
-//        v0.2.0 增补 pde_heat_2d（2D 显式热方程，Dirichlet / Neumann 零通量边界）。
+//        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
+//        零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
 //           pde_heat_2d（2D FTCS 显式，Dirichlet / Neumann 零通量边界）
+//           pde_heat_2d_adi（2D ADI 隐式，复用 pde_tridiag，无条件稳定）
 //   双曲型：pde_wave_leapfrog（蛙跳格式）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
 //
@@ -172,6 +174,113 @@ export func pde_heat_2d(u0: float[][], dx: float, dy: float, alpha: float,
       unew = push(unew, row);
     }
     u = unew;
+  }
+  return u;
+}
+
+// ── 抛物型：二维热方程 ADI 交替方向隐式（Peaceman–Rachford）──────
+// u_t = α(u_xx + u_yy)，无条件稳定，可突破显式 FTCS 的 CFL 限制。
+// 每步拆两个半步，各方向解一串三对角系统（复用 pde_tridiag）：
+//   半步1（x 隐式 / y 显式）：(1+rx)u*_ij − (rx/2)(u*_{i−1,j}+u*_{i+1,j})
+//                            = u^n_ij + (ry/2)(u^n_{i,j−1} − 2u^n_ij + u^n_{i,j+1})
+//   半步2（y 隐式 / x 显式）：(1+ry)u^{n+1}_ij − (ry/2)(u^{n+1}_{i,j−1}+u^{n+1}_{i,j+1})
+//                            = u*_ij + (rx/2)(u*_{i−1,j} − 2u*_ij + u*_{i+1,j})
+// 其中 rx = αdt/dx²，ry = αdt/dy²。边界为**常数 Dirichlet 值 bc**（四边统一），
+// 此时中间层 u* 的边界取 bc 精确成立。稳定性对任意 dt 成立（精度仍随 dt 下降）。
+
+// 转置 n×p 矩阵 → p×n（支持非方阵，值语义整体重建）
+func pde_transpose(m: float[][]): float[][] {
+  let nr = len(m);
+  let nc = len(m[0]);
+  let out: float[][] = [];
+  for (let c = 0; c < nc; c = c + 1) {
+    let row: float[] = [];
+    for (let r = 0; r < nr; r = r + 1) { row = push(row, m[r][c]); }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// 半步1：转置为 [j][i]，对每条固定 j 的行沿 i 解三对角，再转置回 [i][j]。
+func pde_adi_x(u: float[][], nx: int, ny: int, rx: float, ry: float, bc: float): float[][] {
+  let mx: int = nx - 2;                 // 沿 i 的内部未知量个数
+  let ut: float[][] = pde_transpose(u);
+  let ust: float[][] = [];
+  for (let j = 0; j < ny; j = j + 1) {
+    let row: float[] = [];
+    if (j == 0 || j == ny - 1) {
+      for (let q = 0; q < nx; q = q + 1) { row = push(row, bc); }   // y 边界行
+    } else {
+      let Aa: float[] = [];
+      let Ab: float[] = [];
+      let Ac: float[] = [];
+      let rhs: float[] = [];
+      for (let k = 0; k < mx; k = k + 1) {
+        Ab = push(Ab, 1.0 + rx);
+        Ac = push(Ac, -rx / 2.0);
+        Aa = push(Aa, -rx / 2.0);
+        let i: int = k + 1;
+        let e: float = ut[j][i]
+                     + (ry / 2.0) * (ut[j - 1][i] - 2.0 * ut[j][i] + ut[j + 1][i]);
+        if (k == 0)      { e = e + (rx / 2.0) * bc; }               // i=1 左边界
+        if (k == mx - 1) { e = e + (rx / 2.0) * bc; }               // i=nx−2 右边界
+        rhs = push(rhs, e);
+      }
+      let sol: float[] = pde_tridiag(Aa, Ab, Ac, rhs);
+      row = push(row, bc);
+      for (let k2 = 0; k2 < mx; k2 = k2 + 1) { row = push(row, sol[k2]); }
+      row = push(row, bc);
+    }
+    ust = push(ust, row);
+  }
+  return pde_transpose(ust);
+}
+
+// 半步2：在 [i][j] 视图下，对每条固定 i 的行沿 j 解三对角。
+func pde_adi_y(us: float[][], nx: int, ny: int, rx: float, ry: float, bc: float): float[][] {
+  let my: int = ny - 2;                 // 沿 j 的内部未知量个数
+  let unew: float[][] = [];
+  for (let i = 0; i < nx; i = i + 1) {
+    let row: float[] = [];
+    if (i == 0 || i == nx - 1) {
+      for (let q = 0; q < ny; q = q + 1) { row = push(row, bc); }   // x 边界行
+    } else {
+      let Ba: float[] = [];
+      let Bb: float[] = [];
+      let Bc: float[] = [];
+      let rhs: float[] = [];
+      for (let k = 0; k < my; k = k + 1) {
+        Bb = push(Bb, 1.0 + ry);
+        Bc = push(Bc, -ry / 2.0);
+        Ba = push(Ba, -ry / 2.0);
+        let j: int = k + 1;
+        let e: float = us[i][j]
+                     + (rx / 2.0) * (us[i - 1][j] - 2.0 * us[i][j] + us[i + 1][j]);
+        if (k == 0)      { e = e + (ry / 2.0) * bc; }               // j=1 下边界
+        if (k == my - 1) { e = e + (ry / 2.0) * bc; }               // j=ny−2 上边界
+        rhs = push(rhs, e);
+      }
+      let sol: float[] = pde_tridiag(Ba, Bb, Bc, rhs);
+      row = push(row, bc);
+      for (let k2 = 0; k2 < my; k2 = k2 + 1) { row = push(row, sol[k2]); }
+      row = push(row, bc);
+    }
+    unew = push(unew, row);
+  }
+  return unew;
+}
+
+// ADI 主循环：每步 = 半步1 + 半步2。nt 步后到 t = t0 + nt·dt。
+export func pde_heat_2d_adi(u0: float[][], dx: float, dy: float, alpha: float,
+                            dt: float, nt: int, bc: float): float[][] {
+  let nx: int = len(u0);
+  let ny: int = len(u0[0]);
+  let rx: float = alpha * dt / (dx * dx);
+  let ry: float = alpha * dt / (dy * dy);
+  let u: float[][] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let us: float[][] = pde_adi_x(u, nx, ny, rx, ry, bc);
+    u = pde_adi_y(us, nx, ny, rx, ry, bc);
   }
   return u;
 }

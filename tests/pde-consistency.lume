@@ -2,7 +2,8 @@
 // （解释器 / 文本 IR / LLVM）输出逐字节一致。
 // 运行：tests/pde_backends.sh
 //
-// 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_wave_leapfrog / pde_poisson_jacobi
+// 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_heat_2d_adi /
+//       pde_wave_leapfrog / pde_poisson_jacobi
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
 // 泊松 sin(πx)sin(πy)），打印 [数值, 解析, 误差] 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
@@ -102,3 +103,24 @@ let exact_d = sin(PI * 0.5) * sin(PI * 0.5) * exp(-2.0 * PI * PI * t2);
 print(ud[5][5]);
 print(exact_d);
 print(ud[5][5] - exact_d);
+
+// ── 二维热方程 ADI 隐式：与显式 FTCS 的大步长对照 ──
+// 显式 FTCS 稳定域 r_x+r_y ≤ 0.5（r_x = αdt/dx²）。dt=0.01 时 r_x+r_y=2，
+// 远超稳定域：对本例光滑初值 sin(πx)sin(πy) 放大因子仍 |g|≈0.804<1，不会
+// 数值爆炸，而是**严重失真**（衰减过快）；高频模态才会真正发散。
+let ubig = pde.pde_heat_2d(u0d, 0.1, 0.1, 1.0, 0.01, 10, false);      // 显式，t=0.1
+print(ubig[5][5]);                       // ≈0.113，相对解析偏差 ≈ −18.5%
+
+// ADI 无条件稳定，同参数仍收敛。
+// 注：ADI 与解析的误差 ~2e-3 主要来自 11×11 网格的二阶空间离散（使衰减偏慢、
+//     数值偏大），非时间项。ADI 二阶时间精度、显式 FTCS 一阶，二者不宜直接
+//     相减判等；此处统一以解析解 exact_d 作基准。
+let uadi = pde.pde_heat_2d_adi(u0d, 0.1, 0.1, 1.0, 0.01, 10, 0.0);    // t=0.1
+print(uadi[5][5]);                       // ≈0.141
+print(exact_d);                          // ≈0.139
+print(uadi[5][5] - exact_d);             // ≈2e-3
+
+// 同一物理时刻 t=0.1 把 dt 缩小 5 倍（nt ×5）再算一次：两者之差仅反映
+// 时间离散误差；差值很小即说明大步长 ADI 未引入明显时间误差。
+let uadi2 = pde.pde_heat_2d_adi(u0d, 0.1, 0.1, 1.0, 0.002, 50, 0.0);  // t=0.1
+print(uadi2[5][5] - uadi[5][5]);        // ≈2.1e-4
