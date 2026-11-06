@@ -168,6 +168,7 @@ sudo cp bin/lume-core /usr/local/bin/lume-core  # 可选
 | `examples/` | 纯语言脚本：`hello`、`lang-basics`、`modules/app`、`native-fact`、`native-bench`、`http-get`、`regex-smoke` |
 | `tests/` | C 单测（`smoke.c`，134 项）+ `test-crypt.lume` + `native_backends.sh`（解释/文本/libLLVM 三路比对）+ 一致性期望文件 |
 | `scripts/` | `check-backend-parity.sh` —— 两条发射器的 AST 标签覆盖 parity 检查 |
+| `lib/` | 纯 `.lume` 算法库：`sci` / `linalg` / `optim` / `pde` / `dist` / `complex` / `sig` / `graph` / `ml` 等，零 C 改动、三后端一致，清单见 [用户指南](docs/LUME.md#纯-lume-算法库) |
 | `docs/` | 完整文档，见下 |
 
 > 宿主树另有 `frontend/`（React 客户端）、`www/`（docroot）、`docker/`

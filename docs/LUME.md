@@ -154,6 +154,54 @@ let r = http_patch(url,  ... 同 post,带 body);
 
 ---
 
+## 纯 .lume 算法库
+
+`lib/` 下的算法库**全部用 lume 自身写成**，没有为它们加一行 C 内建
+（只复用已有的 `erf` / `igamma` / `norminv` / `sin` / `exp` …）。同一份
+AST 由解释器、手写 IR 文本后端、libLLVM 后端执行，浮点运算顺序由 lume
+显式控制，所以三后端天然一致；每个库都配一份
+`tests/<名>-consistency.lume` 数值回归和 `tests/<名>_backends.sh`
+逐字节比对脚本。
+
+`import` 路径相对于**引用文件所在目录**；例如 `examples/` 下的脚本这样用：
+
+```lume
+import "../lib/sci.lume" as sci;
+let y = sci.rk4((t: float, v: float) => -v, 1.0, 0.0, 1.0, 100);
+print(y[100]);                            // 0.367879
+print(sci.SCI_VERSION);                   // 0.7.0
+```
+
+| 库 | 版本 | 覆盖 | 回归脚本 |
+| --- | --- | --- | --- |
+| `sci.lume` | 0.7.0 | 信息论、数值积分/插值、多项式、求根；ODE 单步（RK4 / 自适应 / 向量系统 / 隐式 θ / 辛 Verlet）、线性多步（AB1–4 / BDF2）、事件检测、稠密输出 | `sci_backends.sh`、`ode_backends.sh` |
+| `linalg.lume` | 0.1.0 | 矩阵运算、LU / QR / 特征值 / SVD 分解、线性方程组 | `linalg_backends.sh` |
+| `optim.lume` | 0.2.0 | 梯度下降 / 共轭梯度 / 线性规划单纯形 / 黄金分割 / 非线性最小二乘 | `optim_backends.sh` |
+| `pde.lume` | v0.7.0 | 抛物型（1D/2D 热方程、CN、ADI）、双曲型（波动、线性对流、Burgers）、椭圆型（Poisson 的 Jacobi → SOR → 几何多重网格）；Dirichlet / Neumann / 周期 / Robin 四类边界 | `pde_backends.sh` |
+| `dist.lume` | v0.1.0 | 8 种连续分布的 PDF / CDF / PPF | `dist_backends.sh` |
+| `complex.lume` | v0.1.0 | 复数四则、模/辐角、指数/对数/幂/三角（`[Re, Im]` 表示） | `complex_backends.sh` |
+| `sig.lume` | 0.1.0 | 卷积、FIR、滑动平均、DFT / IDFT、基 2 FFT（`dft`/`idft` 复用 `complex.cmul`） | `sig_backends.sh` |
+| `graph.lume` | 0.1.0 | BFS / DFS、最短路、最小生成树 | `graph_backends.sh` |
+| `ml.lume` | — | 回归 / 分类 / 聚类等，复用 `linalg` | `ml_backends.sh` |
+
+> `approval.lume` / `domains.lume` / `identity.lume` / `peer.lume` 是宿主
+> 业务侧库，不属于科学计算算法层，故不列。
+>
+> 本机未装 `libLLVM`，`*_backends.sh` 会打印
+> `ok <name>: interp/text identical (llvm skipped)`——即只验证了解释器与
+> 文本 IR 两腿，不表示 LLVM 腿已验证。
+
+实现时反复踩到的 lume 语义边界（写新库前建议先读）：
+
+- `let` 是函数作用域：同一函数内各循环变量必须唯一；`for-init` 不可遮蔽
+  外层局部绑定，也不能用内置函数名（如 `ic`）作循环变量。
+- 数组/矩阵**不能原地索引赋值**，值语义下要用 `push` 整体重建。
+- 从 `[]` 循环 `push` 构造的数组、以及绑定本地函数返回值的 `let`，在文本
+  后端常被推成 `?[]` 或推不出类型，需显式标注 `let out: float[] = [];`。
+- `/` 恒为浮点除法（`17/2 = 8.5`），整数尺寸链要用 `* 1.0` 或循环计数。
+
+---
+
 ## 命令行开关
 
 ```
