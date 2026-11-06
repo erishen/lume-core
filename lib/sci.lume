@@ -13,6 +13,7 @@
 //               rk4_sys（向量系统 dy/dt=f(t,y)）+ 线性/仿射/多项式薄包装
 //               ode_theta（θ-方法族）/ ode_imp_euler（后向 Euler，L-稳定）/
 //               ode_trapezoid（梯形 / Crank–Nicolson，A-稳定）——刚性方程
+//   辛积分    verlet（Velocity Verlet，保 Hamilton 结构 / 长期能量有界）
 //
 // 使用：
 //   import "sci.lume" as sci;
@@ -30,7 +31,8 @@
 
 // v0.3.0: rk4_sys（向量 ODE 系统）+ rk4_adaptive（自适应步长）
 // v0.4.0: ode_theta / ode_imp_euler / ode_trapezoid（隐式刚性求解器，A-稳定）
-export let SCI_VERSION = "0.4.0";
+// v0.5.0: verlet（辛积分，长期能量有界）
+export let SCI_VERSION = "0.5.0";
 
 // 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
 let LN2 = log(2.0);
@@ -484,4 +486,38 @@ export func integrate(f: fn(float) => float, a: float, b: float, n: int): float 
     s = s + f(xm);
   }
   return s * h;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 辛积分（几何数值积分）：Velocity Verlet / Störmer–Verlet
+// 适用可分离 Hamiltonian H(q,p) = p²/(2m) + V(q)，力 F(q) = −V'(q)：
+//   p_{n+1/2} = p_n + (h/2)·F(q_n)
+//   q_{n+1}   = q_n + h·p_{n+1/2}/m
+//   p_{n+1}   = p_{n+1/2} + (h/2)·F(q_{n+1})
+// 二阶、时间可逆、辛（保相空间体积）。由后向误差分析，它精确守恒一个
+// 修正 Hamiltonian H̃ = H + O(h²)，故真实能量误差**有界振荡**、不随时间漂移；
+// 而 RK4 虽四阶精度更高，能量却会单调耗散（误差 ∝ t），长期积分失真。
+// 适合天体力学 / 分子动力学等需要长时间定性正确的场景。
+// 返回轨迹 float[][]：每行 [q, p]，长度 n+1（含初值）。
+// 注：辛性依赖固定步长，切勿与自适应步长混用。
+// ════════════════════════════════════════════════════════════════
+export func verlet(force: fn(float) => float, q0: float, p0: float,
+                   m: float, dt: float, n: int): float[][] {
+  let q: float = q0;
+  let p: float = p0;
+  let out: float[][] = [];
+  let row0: float[] = [];
+  row0 = push(row0, q);
+  row0 = push(row0, p);
+  out = push(out, row0);
+  for (let step = 0; step < n; step = step + 1) {
+    let ph: float = p + 0.5 * dt * force(q);
+    q = q + dt * ph / m;
+    p = ph + 0.5 * dt * force(q);
+    let row: float[] = [];
+    row = push(row, q);
+    row = push(row, p);
+    out = push(out, row);
+  }
+  return out;
 }
