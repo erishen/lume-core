@@ -1,0 +1,6 @@
+// 故意编译失败的负例（不作为正常 .lume 脚本运行）。
+// P1-3：for-init 不得遮蔽外层同名用户局部绑定。内置 scope 分层修复只豁免
+// 「内置名」，不能放宽顶层 let 同名约束；p1-3_backends.sh 会断言本文件
+// 以 "shadows an outer local" 被拒绝。
+let marker = 7;
+for (let marker = 0; marker < 3; marker = marker + 1) { print(marker); }

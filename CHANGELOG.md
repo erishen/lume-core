@@ -6,9 +6,11 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
-This section covers all 43 commits since 0.13.0 (`825bc1d`): 21 touching
-`lib/` (the pure-`.lume` scientific-computing libraries) and 22 covering the
-language core, builtins, security, CI and roadmap bookkeeping. Entries are
+This section covers every commit since 0.13.0 (`825bc1d`): the 42 through
+`feb2866` (20 touching `lib/` — the pure-`.lume` scientific-computing
+libraries — and 22 covering the language core, builtins, security, CI and
+roadmap bookkeeping), plus the subsequent 2-D PDE solvers and the P1-3
+classic-for scoping fix. Entries are
 grouped by theme rather than commit-by-commit. Every algorithm library
 below ships a `tests/*-consistency.lume` numerical regression and a
 `tests/*_backends.sh` harness asserting byte-identical output across the
@@ -131,6 +133,20 @@ without libLLVM), so parity is verified as `interp/text identical`.
 
 ### Fixed
 
+- **Top-level `for`-init names colliding with builtins (P1-3).** The
+  typechecker seeded builtins into the same scope as top-level `let`s, so at
+  top level (which has no `fn_root` boundary) `for (let ic = ...)` was
+  rejected as `shadows an outer local` even though function bodies allowed
+  it. Builtins now live in their own outermost scope and the check stops
+  before them. Simply allowing the construct exposed a real interpreter /
+  text-IR drift: the interpreter left the init binding in `vm->globals`
+  (overwriting e.g. builtin `pi` for the rest of the script), while the
+  emitters kept it loop-private — and those emitters gave the init slot no
+  `end_line`, so a read after the loop still resolved to the loop local.
+  Classic `for` now saves and restores the init binding on every exit (the
+  P1-9 block-scoping shape), and the parser stamps the loop's closing line
+  on the init `let` for both emitter scan passes. A negative test pins that
+  shadowing a genuine top-level `let` is still rejected.
 - **Float literal codegen emitted `.0` instead of `0.0`.** `LIT_NUM`
   appended `".0"` with `snprintf(buf, sizeof buf, "%s.0", buf)`, whose
   source and destination overlap — undefined behaviour that glibc turned

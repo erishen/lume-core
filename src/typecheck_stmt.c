@@ -304,14 +304,21 @@ void ck_stmt(Checker *c, Node *n) {
              * （cond/incr 在 for 行、早于内层声明，反而安全），与解释器的
              * env_set 覆盖语义分歧。遮蔽模块全局/内置（如 pi）则安全：
              * asg_find 先查 locals 再查 gvars，解释器调用 env 覆写全局
-             * ——故检查只走到 fn_root。兄弟循环行号区间不相交，位置查找
-             * 精确对应词法区间，安全。for-in 不在此列：迭代变量是
-             * 「绑定复用」（上方注释），语义保持。 */
+             * ——函数体内故检查只走到 fn_root。顶层脚本没有 fn_root，
+             * 所以检查走到「内置层」为止：内置名由 type_check_module
+             * seeding 在最外层 scope（parent == NULL），不是用户局部，
+             * 遮蔽它在三后端一致安全（scope_decl 也允许用户声明覆盖
+             * 内置名）；顶层 let 落在内置层的子层，仍会被本检查拦住。
+             * 兄弟循环行号区间不相交，位置查找精确对应词法区间，安全。
+             * for-in 不在此列：迭代变量是「绑定复用」（上方注释），语义保持。 */
             CScope *loop_scope = c->scope;
             if (n->as.fors.init && n->as.fors.init->type == N_LET) {
                 const char *vname = n->as.fors.init->as.let.name;
                 bool shadows_local = false;
-                for (CScope *sc = loop_scope; sc; sc = sc->parent) {
+                /* sc->parent == NULL is the builtin-only outer scope; its
+                 * syms are not user locals, so stop before examining them.
+                 * In a function body fn_root breaks the walk even earlier. */
+                for (CScope *sc = loop_scope; sc && sc->parent; sc = sc->parent) {
                     for (CSym *it = sc->syms; it; it = it->next)
                         if (strcmp(it->name, vname) == 0) { shadows_local = true; break; }
                     if (shadows_local || sc->fn_root) break;

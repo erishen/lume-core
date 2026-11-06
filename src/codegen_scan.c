@@ -892,8 +892,12 @@ static void scan_stmt(CG *g, Node *n)
             }
             /* A C-style for's init `let` stays a plain local even at the top
              * level: the interpreter binds it for the loop, not for the
-             * program, and no function can name it. */
+             * program, and no function can name it. P1-3: the parser stamped
+             * the loop's closing line on the init let, so carry it over —
+             * asg_find must stop resolving that name past the loop. */
             asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
+            if (init->as.let.end_line)
+                g->locals.v[g->locals.n - 1].end_line = init->as.let.end_line;
         } else if (init) {
             /* `for (i = 0; ...)` assigns rather than declares — the target
              * needs its local registered all the same. */

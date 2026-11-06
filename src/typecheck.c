@@ -970,6 +970,16 @@ bool type_check_module(struct Module *self, struct Module **mods, int mod_count,
         }
     }
 
+    /* P1-3: builtins stay in their own outermost scope; top-level `let`s and
+     * everything derived from them live one level in. The old layout seeded
+     * builtins straight into the top-level scope, so the for-init shadow
+     * check in ck_stmt (which has no fn_root boundary at top level) could not
+     * tell a seeded builtin such as `ic` from a user local and rejected
+     * `for (let ic = ...)` in a top-level script. scope_get() walks the
+     * parent chain, so name resolution is unchanged everywhere; the check
+     * simply stops before the builtin scope. */
+    c.scope = scope_new(c.scope);
+
     /* Pass A: register every struct name before resolving any body, so
      * forward references between structs work. The def Type keeps the name:
      * named-struct strict checking keys off `TY_STRUCT.name`. */

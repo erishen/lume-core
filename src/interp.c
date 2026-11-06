@@ -1198,6 +1198,11 @@ static void exec_statement(VM *vm, Node *n, Env *env) {
 static void exec_statement_for(VM *vm, Node *n, Env *env) {
     bool saved_brk = vm->loop_break, saved_cont = vm->loop_continue;
     vm->loop_break = vm->loop_continue = false;
+    /* P1-3: the classic for's init binding is loop-private (C99 scope).
+     * Restored at `done:` so every exit path — including errors — undoes it. */
+    const char *init_name = NULL;
+    Value init_old = val_null();
+    int init_existed = 0;
     if (n->as.fors.is_in) {
         /* for (x in xs) — iterate a list's items or a map's keys.
          * The iterable value stays ON the VM stack for the whole loop:
@@ -1245,6 +1250,21 @@ static void exec_statement_for(VM *vm, Node *n, Env *env) {
         vm_pop(vm);   /* drop the rooted iterable */
     } else {
         /* for (init; cond; incr) — C-style, all three optional */
+        /* P1-3: the typechecker puts the whole for in a child scope and the
+         * native backends resolve the init name to a line-bounded slot, so
+         * the interpreter must not leave that binding behind either. At top
+         * level `env` is vm->globals: without save/restore, a
+         * `for (let pi = ...)` overwrote the builtin pi for the rest of the
+         * script while the native backends kept the loop variable private —
+         * an observable interpreter/text drift. Same save/restore shape as
+         * P1-9 block scoping in exec_statement (N_BLOCK). */
+        if (n->as.fors.init && n->as.fors.init->type == N_LET) {
+            init_name = n->as.fors.init->as.let.name;
+            init_old = env_get(env, init_name, &init_existed);
+            /* GC root: once init shadows the slot, this is the only
+             * reference to the old value until we restore it. */
+            vm_push(vm, init_old);
+        }
         if (n->as.fors.init) {
             exec_statement(vm, n->as.fors.init, env);
             if (vm->error) goto done;
@@ -1266,6 +1286,13 @@ static void exec_statement_for(VM *vm, Node *n, Env *env) {
         }
     }
 done:
+    if (init_name) {
+        if (init_existed)
+            env_set(vm, env, init_name, init_old);
+        else
+            env_del(env, init_name);
+        vm_pop(vm);   /* drop the GC root pinned before the loop */
+    }
     vm->loop_break = saved_brk;
     vm->loop_continue = saved_cont;
 }

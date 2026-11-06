@@ -97,3 +97,24 @@ func while_unaffected(): int {
   return n;
 }
 print(while_unaffected());                // 0+10+20 = 30
+
+// ── 顶层 for-init 遮蔽内置名（内置 scope 分层修复，2026-11-06）─────
+// 顶层脚本没有 fn_root 边界。过去内置名（ic 信息系数 / rank 秩 / pi 常量）
+// 与顶层 let 同处一个 scope，被误判成「外层局部」而拒绝；内置不是函数
+// 局部绑定，遮蔽它三后端一致安全，故应放行。顶层 let 同名仍必须拒绝，
+// 由 p1-3_backends.sh 的负例 tests/p1-3-shadow-reject.lume 锚定。
+for (let ic = 0; ic < 3; ic = ic + 1) { print(ic); }          // 0 1 2
+for (let rank = 0; rank < 2; rank = rank + 1) { print(rank * 10); }  // 0 10
+for (let pi = 0; pi < 2; pi = pi + 1) { print(pi + 100); }    // 100 101
+// 循环之后定义并调用的函数读 pi，源码行号晚于循环，正是 asg_find 的
+// end_line 边界要拦住的读：解释器旧实现把 globals 里的 pi 覆盖成循环
+// 变量终值 2，文本后端保持 3.14159。现两者都必须是内置值。
+func read_global_pi_after(): float { return pi; }
+print(read_global_pi_after());            // 3.14159（未被污染）
+// 函数体内的同名仍走 fn_root 边界，行为不变
+func builtin_name_in_fn(): int {
+  let s = 0;
+  for (let ic = 0; ic < 4; ic = ic + 1) { s = s + ic; }
+  return s;
+}
+print(builtin_name_in_fn());              // 6

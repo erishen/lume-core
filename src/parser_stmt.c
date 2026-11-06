@@ -304,6 +304,13 @@ Node *parse_statement(Parser *p) {
             if (!expect(p, TOK_RPAREN)) return NULL;
             n->as.fors.body = parse_statement(p);
             if (!n->as.fors.body) return NULL;
+            /* P1-3: a classic for owns its init binding (C99 scope). Stamp
+             * the init let with the loop's closing line so the native
+             * backends' asg_find expires that name after the loop. Without
+             * it, `for (let pi = ...)` inside a function kept capturing a
+             * later read of the global pi. Same end_line mechanism
+             * parse_block uses for P1-9 block scoping. */
+            init->as.let.end_line = previous_line(p);
             return n;
         }
         if (check(p, TOK_IDENT) && peek2(p).type == TOK_IN) {

@@ -140,9 +140,10 @@ let na = 40;
 let dxa = 1.0 / (na * 1.0);
 let dta = 0.5 * dxa;                    // C = 0.5
 let nta = 80;                           // t = dta·nta = 1.0
-// 循环变量统一带 adv_ 前缀：lume 顶层脚本的 for-init 不得遮蔽内置名，
-// 例如 ic 是内置的「信息系数」函数（src/typecheck.c 内置表），用它作
-// for-init 变量会报 "shadows an outer local"（函数体内有 fn_root 才安全）。
+// 循环变量统一带 adv_ 前缀（既有命名习惯，避免与内置名 / 后续绑定撞名）。
+// P1-3 的「顶层内置名误判」已修：内置符号独立成最外层 scope，且经典 for
+// 的 init 绑定在解释器与两原生后端都是循环私有，因此顶层现在也能直接用
+// ic / rank / pi 作 for-init 变量；回归见 tests/p1-3-consistency.lume。
 let ua: float[] = [];
 for (let adv_i0 = 0; adv_i0 < na; adv_i0 = adv_i0 + 1) {
   ua = push(ua, sin(2.0 * PI * (adv_i0 / (na * 1.0))));

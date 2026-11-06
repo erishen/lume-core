@@ -812,8 +812,12 @@ static void scan_stmt(CG *g, Node *n)
                 ERRX(g, "line %zu: cannot infer a type for '%s' (add an explicit annotation)",
                      init->line, init->as.let.name);
             /* A C-style for's init `let` stays a plain local (mirrors
-             * codegen_scan.c: the interpreter binds it for the loop). */
+             * codegen_scan.c: the interpreter binds it for the loop).
+             * P1-3: carry the loop's closing line stamped by the parser so
+             * asg_find expires the binding after the loop. */
             asg_push(&g->locals, init->as.let.name, ty, NULL, init->line);
+            if (init->as.let.end_line)
+                g->locals.v[g->locals.n - 1].end_line = init->as.let.end_line;
         } else if (init) {
             scan_stmt(g, init);
         }
