@@ -1,0 +1,20 @@
+// ode-consistency.lume — sci.lume 向量 ODE 系统三后端一致性测试
+// 由 tests/ode_backends.sh 驱动：解释器 / 文本 IR / LLVM 输出须逐字节一致。
+import "../lib/sci.lume" as sci;
+
+// ── 谐波振荡器：y' = [y1, -y0]，y0=[1,0] → y(t)=[cos t, -sin t] ──
+// t = π/2 处端点应 ≈ [0, -1]
+let traj = sci.rk4_sys((t: float, y: float[]) => [y[1], -y[0]], [1.0, 0.0], 0.0, 1.57079632679, 200);
+print(traj[len(traj) - 1]);
+
+// ── 线性系统 y' = A·y，A=[[-1,0],[0,-2]]，y0=[1,1] → [e^{-t}, e^{-2t}] ──
+// t=1 处端点应 ≈ [0.367879, 0.135335]
+let A: float[][] = [[-1.0, 0.0], [0.0, -2.0]];
+let traj2 = sci.rk4_sys_linear(A, [1.0, 1.0], 0.0, 1.0, 200);
+print(traj2[len(traj2) - 1]);
+
+// ── 一致性：1D 标量情形 rk4_sys 应退化为 rk4 ──
+let s1 = sci.rk4((t: float, y: float) => -2.0 * y, 1.0, 0.0, 1.0, 50)[50];
+let s2t = sci.rk4_sys((t: float, y: float[]) => [-2.0 * y[0]], [1.0], 0.0, 1.0, 50);
+let s2 = s2t[len(s2t) - 1][0];
+print(s1 - s2);

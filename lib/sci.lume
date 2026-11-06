@@ -9,7 +9,7 @@
 //   插值        interp_linear / interp_lagrange
 //   多项式      poly_val / poly_deriv
 //   求根        bisect（通用 f）/ newton（通用 f, f'）+ 多项式薄包装
-//   ODE         rk4（通用 dy/dt = f(t,y)）+ 线性/仿射/多项式薄包装
+//   ODE         rk4（标量 dy/dt=f(t,y)）+ rk4_sys（向量系统 dy/dt=f(t,y)）+ 线性/仿射/多项式薄包装
 //
 // 使用：
 //   import "sci.lume" as sci;
@@ -299,6 +299,68 @@ export func rk4_affine(a: float, b: float, y0: float, t0: float, t1: float, n: i
 
 export func rk4_poly(coeffs: float[], y0: float, t0: float, t1: float, n: int): float[] {
   return rk4((t: float, y: float) => poly_val(coeffs, t), y0, t0, t1, n);
+}
+
+// ════════════════════════════════════════════════════════════════
+// 向量 ODE 系统（一阶方程组）：dy/dt = f(t, y)，y 为状态向量 float[]。
+// 与 rk4 同阶四阶 Runge–Kutta；返回轨迹（长度 n+1 的 float[][]，每行一时刻状态）。
+// 配套向量工具 vadd / vsub / vscale（值语义，返回新数组，不原地修改）。
+// ════════════════════════════════════════════════════════════════
+
+// 向量加减与数乘（值语义，返回新数组，不原地修改）
+export func vadd(a: float[], b: float[]): float[] {
+  let n = len(a);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, a[i] + b[i]); }
+  return out;
+}
+export func vsub(a: float[], b: float[]): float[] {
+  let n = len(a);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, a[i] - b[i]); }
+  return out;
+}
+export func vscale(s: float, a: float[]): float[] {
+  let n = len(a);
+  let out: float[] = [];
+  for (let i = 0; i < n; i = i + 1) { out = push(out, s * a[i]); }
+  return out;
+}
+
+// 矩阵-向量乘 matvec(A, x)：A 为 m×n，x 为长度 n，返回长度 m。
+func matvec(A: float[][], x: float[]): float[] {
+  let m = len(A);
+  let out: float[] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let s = 0.0;
+    for (let j = 0; j < len(x); j = j + 1) { s = s + A[i][j] * x[j]; }
+    out = push(out, s);
+  }
+  return out;
+}
+
+// 经典四阶 RK：向量系统 dy/dt = f(t, y)。返回含初值的轨迹（float[][]）。
+export func rk4_sys(f: fn(float, float[]) => float[], y0: float[], t0: float, t1: float, n: int): float[][] {
+  let h = (t1 - t0) / float(n);
+  let y: float[] = y0;
+  let out: float[][] = [y0];
+  let t = t0;
+  for (let i = 0; i < n; i = i + 1) {
+    let k1: float[] = f(t, y);
+    let k2: float[] = f(t + h / 2.0, vadd(y, vscale(h / 2.0, k1)));
+    let k3: float[] = f(t + h / 2.0, vadd(y, vscale(h / 2.0, k2)));
+    let k4: float[] = f(t + h, vadd(y, vscale(h, k3)));
+    let sum: float[] = vadd(k1, vadd(vscale(2.0, k2), vadd(vscale(2.0, k3), k4)));
+    y = vadd(y, vscale(h / 6.0, sum));
+    t = t + h;
+    out = push(out, y);
+  }
+  return out;
+}
+
+// 线性系统薄包装：dy/dt = A·y（A 为方阵）。与 rk4_sys 同精度。
+export func rk4_sys_linear(A: float[][], y0: float[], t0: float, t1: float, n: int): float[][] {
+  return rk4_sys((t: float, y: float[]) => matvec(A, y), y0, t0, t1, n);
 }
 
 // ════════════════════════════════════════════════════════════════
