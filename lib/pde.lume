@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.7.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.8.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
 //        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
 //               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
 //        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
@@ -15,28 +15,32 @@
 //               pde_poisson_residual（∞ 范数残差诊断）。
 //        v0.7.0 增补几何多重网格：pde_poisson_mg（递归 V-cycle，full-weighting
 //               限制 / 双线性延拓 / GS 平滑），收敛因子与网格规模无关。
+//        v0.8.0 增补 2D 波动 leapfrog：pde_wave_2d（含初始速度启动，四边
+//               Dirichlet）+ 2D 对流扩散：pde_advect_diffuse_2d（一阶迎风
+//               对流 + 中心扩散，支持周期 / Dirichlet 边界）。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
 //           pde_heat_2d（2D FTCS 显式，Dirichlet / Neumann 零通量边界）
 //           pde_heat_2d_adi（2D ADI 隐式，复用 pde_tridiag，无条件稳定）
-//   双曲型：pde_wave_leapfrog（蛙跳格式）
+//   双曲型：pde_wave_leapfrog（1D 蛙跳格式）/ pde_wave_2d（2D 蛙跳，含初速启动）
 //           pde_advect_upwind（1D 线性对流，一阶迎风）/ pde_advect_lw（二阶 Lax–Wendroff）
 //           pde_burgers_inviscid（非线性守恒律，Rusanov 通量，可捕激波）
 //           pde_burgers_viscous（粘性 Burgers，守恒型对流 + 中心扩散）
+//   对流扩散：pde_advect_diffuse_2d（2D 迎风对流 + 中心扩散，周期 / Dirichlet）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
 //           pde_poisson_sor（SOR 超松弛加速，迭代量 O(n) vs Jacobi O(n²)）
 //           pde_poisson_mg（多重网格 V-cycle，迭代量与 n 无关，O(N) 总代价）
 //           pde_robin_1d（1D 两点边值 −u''=f，Robin 边界，三对角直接解）
 // 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、
-//               周期（1D）、Robin / 混合（u ∓ β·∂u/∂n = g，左右独立）
+//               周期（1D 与 2D）、Robin / 混合（u ∓ β·∂u/∂n = g，左右独立）
 //
 // 设计：纯 .lume、三后端一致；不接收 fn 形参，初值/源项一律以预计算数组
 //       传入，边界条件以标量传入（网格状态可显式检查、便于逐点复用；
 //       fn 形参跨函数转发已实测安全，此处并非规避闭包限制）。
 // 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
 //       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
-//       pde_h2d_val / pde_bc_val（邻居取值 + 边界条件）、
+//       pde_h2d_val / pde_bc_val / pde_2d_val（邻居取值 + 边界条件）、
 //       pde_poisson_residual / pde_poisson_residual_grid（残差诊断）、
 //       pde_sor_optimal_omega（最优 ω）、pde_zeros_2d（零网格）、
 //       pde_mg_restrict / pde_mg_prolong（多重网格限制 / 延拓）。
@@ -793,6 +797,146 @@ export func pde_poisson_mg(f: float[][], h: float, cycles: int,
   let u: float[][] = pde_zeros_2d(len(f));
   for (let k = 0; k < cycles; k = k + 1) {
     u = pde_mg_vcycle(u, f, h, omega);
+  }
+  return u;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 二维波动方程（leapfrog）与二维对流扩散方程
+//
+// pde_wave_2d：u_tt = c²(u_xx + u_yy)，二阶中心差分 + 蛙跳时间推进。
+//   记 Cx²=(c·dt/dx)²、Cy²=(c·dt/dy)²，内部点
+//     u^{n+1} = 2u^n − u^{n−1}
+//             + Cx²(u^n_{i+1,j} − 2u^n_{ij} + u^n_{i−1,j})
+//             + Cy²(u^n_{i,j+1} − 2u^n_{ij} + u^n_{i,j−1})
+//   首步由初始速度 v0 启动（Taylor 展开到二阶）：
+//     u¹ = u⁰ + dt·v⁰ + ½(Cx²δxx + Cy²δyy)u⁰
+//   四边 Dirichlet 常值 bc；CFL 要求 Cx² + Cy² ≤ 1（方网格即 c·dt/dx ≤ 1/√2），
+//   由调用方保证。蛙跳无数值耗散，能量在稳定域内长期保持，适合波动传播。
+//
+// pde_advect_diffuse_2d：u_t + a·u_x + b·u_y = ν(u_xx + u_yy)。
+//   对流项按 a/b 符号取一阶迎风，扩散项二阶中心：
+//     cx=a·dt/dx, cy=b·dt/dy, rx=νdt/dx², ry=νdt/dy²
+//     u^{n+1} = u − cx·Δ_upwind − cy·Δ_upwind
+//               + rx·(u_{i+1,j}−2u+u_{i−1,j}) + ry·(u_{i,j+1}−2u+u_{i,j−1})
+//   periodic=true → 双方向环绕（纯对流时质量严格守恒，无边界反射）；
+//   false → 四边 Dirichlet 常值 bc。稳定条件
+//   |cx| + |cy| + 2rx + 2ry ≤ 1，由调用方保证。
+//   一阶迎风带来数值耗散但单调不振荡；网格 Peclet 数大时可能出现过度抹平。
+//   两者均为值语义（push 整体重建），边界由 pde_2d_val 统一取值。
+// ════════════════════════════════════════════════════════════════
+
+// 2D 邻居取值：周期环绕，或四边 Dirichlet 常值 bc。di/dj 只取 −1/0/1，
+// 故一次加/减 nx、ny 即落回合法范围，绝不越界索引。
+func pde_2d_val(u: float[][], i: int, j: int, di: int, dj: int,
+                nx: int, ny: int, periodic: bool, bc: float): float {
+  let ii: int = i + di;
+  let jj: int = j + dj;
+  if (periodic) {
+    if (ii < 0)   { ii = ii + nx; }
+    if (ii >= nx) { ii = ii - nx; }
+    if (jj < 0)   { jj = jj + ny; }
+    if (jj >= ny) { jj = jj - ny; }
+    return u[ii][jj];
+  }
+  if (ii >= 0 && ii < nx && jj >= 0 && jj < ny) { return u[ii][jj]; }
+  return bc;
+}
+
+// 二维波动方程 leapfrog。返回 nt 步后的位移网格（不含时间历史）。
+export func pde_wave_2d(u0: float[][], v0: float[][], dx: float, dy: float,
+                        c: float, dt: float, nt: int, bc: float): float[][] {
+  if (nt < 1) { return u0; }
+  let nx: int = len(u0);
+  let ny: int = len(u0[0]);
+  let cx2: float = (c * dt / dx) * (c * dt / dx);
+  let cy2: float = (c * dt / dy) * (c * dt / dy);
+  // 首步：Taylor 启动，含初始速度 v0
+  let u1: float[][] = [];
+  for (let i = 0; i < nx; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < ny; j = j + 1) {
+      if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
+        row = push(row, bc);
+      } else {
+        let uij: float = u0[i][j];
+        let uim1: float = pde_2d_val(u0, i, j, -1, 0, nx, ny, false, bc);
+        let uip1: float = pde_2d_val(u0, i, j,  1, 0, nx, ny, false, bc);
+        let ujm1: float = pde_2d_val(u0, i, j, 0, -1, nx, ny, false, bc);
+        let ujp1: float = pde_2d_val(u0, i, j, 0,  1, nx, ny, false, bc);
+        let d2: float = cx2 * (uip1 - 2.0 * uij + uim1)
+                      + cy2 * (ujp1 - 2.0 * uij + ujm1);
+        row = push(row, uij + dt * v0[i][j] + 0.5 * d2);
+      }
+    }
+    u1 = push(u1, row);
+  }
+  let uprev: float[][] = u0;
+  let ucur: float[][] = u1;
+  for (let step = 1; step < nt; step = step + 1) {
+    let unext: float[][] = [];
+    for (let i = 0; i < nx; i = i + 1) {
+      let row2: float[] = [];
+      for (let j = 0; j < ny; j = j + 1) {
+        if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
+          row2 = push(row2, bc);
+        } else {
+          let uc: float = ucur[i][j];
+          let uim1: float = pde_2d_val(ucur, i, j, -1, 0, nx, ny, false, bc);
+          let uip1: float = pde_2d_val(ucur, i, j,  1, 0, nx, ny, false, bc);
+          let ujm1: float = pde_2d_val(ucur, i, j, 0, -1, nx, ny, false, bc);
+          let ujp1: float = pde_2d_val(ucur, i, j, 0,  1, nx, ny, false, bc);
+          let d2: float = cx2 * (uip1 - 2.0 * uc + uim1)
+                        + cy2 * (ujp1 - 2.0 * uc + ujm1);
+          row2 = push(row2, 2.0 * uc - uprev[i][j] + d2);
+        }
+      }
+      unext = push(unext, row2);
+    }
+    uprev = ucur;
+    ucur = unext;
+  }
+  return ucur;
+}
+
+// 二维线性对流扩散：一阶迎风对流 + 二阶中心扩散。
+export func pde_advect_diffuse_2d(u0: float[][], dx: float, dy: float,
+                                  a: float, b: float, nu: float,
+                                  dt: float, nt: int, bc: float,
+                                  periodic: bool): float[][] {
+  let nx: int = len(u0);
+  let ny: int = len(u0[0]);
+  let cx: float = a * dt / dx;
+  let cy: float = b * dt / dy;
+  let rx: float = nu * dt / (dx * dx);
+  let ry: float = nu * dt / (dy * dy);
+  let u: float[][] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[][] = [];
+    for (let i = 0; i < nx; i = i + 1) {
+      let row: float[] = [];
+      for (let j = 0; j < ny; j = j + 1) {
+        if (periodic == false && (i == 0 || i == nx - 1 || j == 0 || j == ny - 1)) {
+          row = push(row, bc);
+        } else {
+          let uij: float = u[i][j];
+          let ul: float = pde_2d_val(u, i, j, -1, 0, nx, ny, periodic, bc);
+          let ur: float = pde_2d_val(u, i, j,  1, 0, nx, ny, periodic, bc);
+          let ud: float = pde_2d_val(u, i, j, 0, -1, nx, ny, periodic, bc);
+          let up: float = pde_2d_val(u, i, j, 0,  1, nx, ny, periodic, bc);
+          let conv: float = 0.0;
+          if (a >= 0.0) { conv = conv + cx * (uij - ul); }
+          else          { conv = conv + cx * (ur - uij); }
+          if (b >= 0.0) { conv = conv + cy * (uij - ud); }
+          else          { conv = conv + cy * (up - uij); }
+          let diff: float = rx * (ur - 2.0 * uij + ul)
+                          + ry * (up - 2.0 * uij + ud);
+          row = push(row, uij - conv + diff);
+        }
+      }
+      unew = push(unew, row);
+    }
+    u = unew;
   }
   return u;
 }

@@ -7,11 +7,13 @@
 //       pde_burgers_inviscid / pde_burgers_viscous / pde_poisson_jacobi /
 //       pde_poisson_sor / pde_sor_optimal_omega / pde_poisson_residual /
 //       pde_poisson_mg / pde_poisson_residual_grid / pde_zeros_2d /
-//       pde_robin_1d
+//       pde_robin_1d / pde_wave_2d / pde_advect_diffuse_2d
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
 // 泊松 sin(πx)sin(πy)、Burgers 稳态行波 −tanh(5x)、Riemann 激波速度 0.5、
 // Robin 边值 1+x² 与 sin(2x)+cos(x) 的二阶收敛、SOR 最优 ω 与残差量级），
-// 打印 [数值, 解析, 误差] 三行便于肉眼核验。
+// 2D 波动对照单模态标量 leapfrog 递推、2D 纯扩散对照离散放大因子 g^N 与
+// 离散精确指数 exp(λ_h t)（Euler 时间误差一阶收敛），打印 [数值, 解析, 误差]
+// 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
 // 由 lume 显式控制）必然逐字节一致，与具体精度无关。
 
@@ -515,3 +517,151 @@ print(mg_33rm);                         // ≈1.8e-09，MG 10 cycles
 print(mg_33rs);                         // ≈1.0e-05，SOR 100 次
 print(mg_33rj);                         // ≈12.2，Jacobi 100 次
 print(mg_33rm / mg_33rs);               // ≪1
+
+// ════════════════════════════════════════════════════════════════
+// v0.8.0：二维波动 leapfrog 与二维线性对流扩散
+//
+// 2D 波动：单模态 sin(πx)sin(πy) 下 5 点拉普拉斯是标量乘子，故蛙跳
+//   递推退化为 a^{n+1}=2a^n−a^{n−1}+q·a^n（q=c²dt²λ_h），可与代码逐点
+//   精确对照到机器精度；另检 Taylor 首步（含初速度）、Dirichlet 四边、
+//   nt=0/1 边界、200 步能量有界。
+// 2D 对流扩散：周期纯扩散单模态是离散精确解 g^N（g=1+λ_h dt，
+//   λ_h=−8ν sin²(πk/n)/h²）；再以 exp(λ_h t) 隔离 Euler 时间误差，
+//   dt 减半误差应 ÷2（一阶）。注意不能拿连续 e^{−ν|k|²t} 做收敛比：
+//   空间离散误差与 dt 无关且占主导，会把比值压到 ≈1。
+//   纯对流（ν=0）周期质量严格守恒，正/负速度分别覆盖迎风两分支；
+//   Dirichlet 分支四边恒为 bc。
+// ════════════════════════════════════════════════════════════════
+
+// ── 2D 波动：11×11 单模态，v0=0 ─────────────────────────────────
+let w2_n = 11;
+let w2_h = 0.1;
+let w2_c = 1.0;
+let w2_dt = 0.02;                        // Cx²+Cy² = 0.08 ≤ 1，稳定
+let w2_u0: float[][] = [];
+let w2_z0: float[][] = [];
+let w2_z1: float[][] = [];
+for (let w2_i0 = 0; w2_i0 < w2_n; w2_i0 = w2_i0 + 1) {
+  let w2_r0: float[] = [];
+  let w2_rv0: float[] = [];
+  let w2_rz0: float[] = [];
+  let w2_rz1: float[] = [];
+  for (let w2_j0 = 0; w2_j0 < w2_n; w2_j0 = w2_j0 + 1) {
+    w2_r0 = push(w2_r0, sin(PI * (w2_i0 * 1.0) / 10.0)
+                      * sin(PI * (w2_j0 * 1.0) / 10.0));
+    w2_rv0 = push(w2_rv0, 0.0);
+    w2_rz0 = push(w2_rz0, 0.0);
+    w2_rz1 = push(w2_rz1, 1.0);
+  }
+  w2_u0 = push(w2_u0, w2_r0);
+  w2_z0 = push(w2_z0, w2_rz0);
+  w2_z1 = push(w2_z1, w2_rz1);
+}
+let w2_v0: float[][] = pde.pde_zeros_2d(w2_n);
+// 离散拉普拉斯特征值：Dirichlet sin 模态同样满足 sin²(π/2n) 公式
+let w2_s2 = sin(PI / 20.0) * sin(PI / 20.0);
+let w2_lam = -4.0 / (w2_h * w2_h) * w2_s2
+             - 4.0 / (w2_h * w2_h) * w2_s2;
+let w2_q = w2_c * w2_c * w2_dt * w2_dt * w2_lam;
+print(w2_lam);
+print(w2_q);
+// 标量 leapfrog 递推 50 步
+let w2_a1 = 1.0 + 0.5 * w2_q;
+let w2_ap = 1.0;
+let w2_ac = w2_a1;
+for (let w2_k0 = 1; w2_k0 < 50; w2_k0 = w2_k0 + 1) {
+  let w2_an = 2.0 * w2_ac - w2_ap + w2_q * w2_ac;
+  w2_ap = w2_ac;
+  w2_ac = w2_an;
+}
+let w2_50: float[][] = pde.pde_wave_2d(w2_u0, w2_v0, w2_h, w2_h,
+                                        w2_c, w2_dt, 50, 0.0);
+print(w2_50[5][5]);
+print(w2_ac);
+print(w2_50[5][5] - w2_ac);             // ≈−2e-15，单模态精确解
+// Dirichlet 四边恒为 bc
+print(w2_50[0][0]); print(w2_50[0][5]); print(w2_50[10][5]);
+print(w2_50[10][10]);
+// nt=0 返回初值；nt=1 为 Taylor 首步
+let w2_t0: float[][] = pde.pde_wave_2d(w2_u0, w2_v0, w2_h, w2_h,
+                                        w2_c, w2_dt, 0, 0.0);
+let w2_t1: float[][] = pde.pde_wave_2d(w2_u0, w2_v0, w2_h, w2_h,
+                                        w2_c, w2_dt, 1, 0.0);
+print(w2_t0[5][5] - w2_u0[5][5]);
+print(w2_t1[5][5] - w2_a1);
+// 初速度启动：u0=0 / v0=1 → 首步中心 ≈ dt
+let w2_tv: float[][] = pde.pde_wave_2d(w2_z0, w2_z1, w2_h, w2_h,
+                                        w2_c, w2_dt, 1, 0.0);
+print(w2_tv[5][5]);
+print(w2_tv[5][5] - w2_dt);
+// 长期能量有界：200 步后仍落在 [−1, 1]
+let w2_200: float[][] = pde.pde_wave_2d(w2_u0, w2_v0, w2_h, w2_h,
+                                         w2_c, w2_dt, 200, 0.0);
+print(w2_200[5][5]);
+
+// ── 2D 对流扩散：16×16 周期单模态 ───────────────────────────────
+let ad_n = 16;
+let ad_h = 1.0 / 16.0;
+let ad_s0: float[][] = [];
+for (let ad_i0 = 0; ad_i0 < ad_n; ad_i0 = ad_i0 + 1) {
+  let ad_r0: float[] = [];
+  for (let ad_j0 = 0; ad_j0 < ad_n; ad_j0 = ad_j0 + 1) {
+    ad_r0 = push(ad_r0, sin(2.0 * PI * (ad_i0 * 1.0) / 16.0)
+                      * sin(2.0 * PI * (ad_j0 * 1.0) / 16.0));
+  }
+  ad_s0 = push(ad_s0, ad_r0);
+}
+let ad_nu = 0.01;
+let ad_dt = 0.001;
+let ad_ss = sin(PI / 16.0) * sin(PI / 16.0);
+let ad_lam = -8.0 * ad_nu * ad_ss / (ad_h * ad_h);  // 与 dt 无关
+let ad_g = 1.0 + ad_lam * ad_dt;
+let ad_t = 50.0 * ad_dt;
+let ad_exact = exp(ad_lam * ad_t);       // 离散算子的精确指数
+// 50 步 vs 离散放大因子 g^50（机器精度）
+let ad_50: float[][] = pde.pde_advect_diffuse_2d(ad_s0, ad_h, ad_h,
+                          0.0, 0.0, ad_nu, ad_dt, 50, 0.0, true);
+print(ad_50[4][4]);
+print(pow(ad_g, 50.0) * ad_s0[4][4]);
+print(ad_50[4][4] - pow(ad_g, 50.0) * ad_s0[4][4]);   // ≈−6e-16
+// Euler 时间误差一阶收敛：dt / dt/2 / dt/4，总时间固定
+let ad_e1 = ad_50[4][4] / ad_s0[4][4] - ad_exact;
+let ad_100: float[][] = pde.pde_advect_diffuse_2d(ad_s0, ad_h, ad_h,
+                          0.0, 0.0, ad_nu, ad_dt / 2.0, 100, 0.0, true);
+let ad_e2 = ad_100[4][4] / ad_s0[4][4] - ad_exact;
+let ad_200: float[][] = pde.pde_advect_diffuse_2d(ad_s0, ad_h, ad_h,
+                          0.0, 0.0, ad_nu, ad_dt / 4.0, 200, 0.0, true);
+let ad_e3 = ad_200[4][4] / ad_s0[4][4] - ad_exact;
+print(ad_exact);
+print(ad_e1); print(ad_e2); print(ad_e3);
+print(ad_e1 / ad_e2);                    // ≈2.0005
+print(ad_e2 / ad_e3);                    // ≈2.0003
+print(ad_100[4][4] - pow(1.0 + ad_lam * ad_dt / 2.0, 100.0) * ad_s0[4][4]);
+print(ad_200[4][4] - pow(1.0 + ad_lam * ad_dt / 4.0, 200.0) * ad_s0[4][4]);
+// 纯对流（ν=0）周期质量守恒：正速度 / 负速度两个迎风分支
+let ad_sum0 = 0.0;
+for (let ad_i1 = 0; ad_i1 < ad_n; ad_i1 = ad_i1 + 1) {
+  for (let ad_j1 = 0; ad_j1 < ad_n; ad_j1 = ad_j1 + 1) {
+    ad_sum0 = ad_sum0 + ad_s0[ad_i1][ad_j1];
+  }
+}
+let ad_pos: float[][] = pde.pde_advect_diffuse_2d(ad_s0, ad_h, ad_h,
+                          0.5, 0.25, 0.0, 0.01, 30, 0.0, true);
+let ad_neg: float[][] = pde.pde_advect_diffuse_2d(ad_s0, ad_h, ad_h,
+                          -0.5, -0.25, 0.0, 0.01, 30, 0.0, true);
+let ad_sum1 = 0.0;
+let ad_sum2 = 0.0;
+for (let ad_i2 = 0; ad_i2 < ad_n; ad_i2 = ad_i2 + 1) {
+  for (let ad_j2 = 0; ad_j2 < ad_n; ad_j2 = ad_j2 + 1) {
+    ad_sum1 = ad_sum1 + ad_pos[ad_i2][ad_j2];
+    ad_sum2 = ad_sum2 + ad_neg[ad_i2][ad_j2];
+  }
+}
+print(ad_sum0);
+print(ad_sum1 - ad_sum0);                // ≈1e-15
+print(ad_sum2 - ad_sum0);                // ≈1e-15
+// Dirichlet 分支：四边恒为 bc=2.0
+let ad_bc: float[][] = pde.pde_advect_diffuse_2d(ad_s0, ad_h, ad_h,
+                          0.5, 0.5, 0.01, 0.001, 10, 2.0, false);
+print(ad_bc[0][0]); print(ad_bc[0][8]); print(ad_bc[8][0]);
+print(ad_bc[15][15]);

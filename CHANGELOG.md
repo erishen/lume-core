@@ -6,7 +6,7 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
-This section covers all 42 commits since 0.13.0 (`825bc1d`): 20 touching
+This section covers all 43 commits since 0.13.0 (`825bc1d`): 21 touching
 `lib/` (the pure-`.lume` scientific-computing libraries) and 22 covering the
 language core, builtins, security, CI and roadmap bookkeeping. Entries are
 grouped by theme rather than commit-by-commit. Every algorithm library
@@ -43,6 +43,19 @@ without libLLVM), so parity is verified as `interp/text identical`.
   bilinear prolongation and GS smoothing, whose convergence factor is
   independent of mesh size. The existing four-argument `pde_poisson_sor`
   API is kept as a thin wrapper over `pde_poisson_sor_from`.
+- **2D wave and advection–diffusion solvers — `lib/pde.lume` (v0.8.0).**
+  `pde_wave_2d` integrates `u_tt = c²(u_xx + u_yy)` with a second-order
+  leapfrog stencil, a Taylor startup step that takes an initial velocity
+  field `v0`, and constant Dirichlet data on all four edges (stable for
+  `Cx² + Cy² ≤ 1`). `pde_advect_diffuse_2d` integrates
+  `u_t + a·u_x + b·u_y = ν(u_xx + u_yy)` with first-order upwind advection
+  (sign-split in both directions) and centred diffusion, supporting
+  periodic wrapping (exact mass conservation for pure advection) or
+  Dirichlet edges; stable for `|cx| + |cy| + 2rx + 2ry ≤ 1`. A shared
+  `pde_2d_val` neighbour helper handles both boundary modes. Regression
+  cases match the single-mode leapfrog recurrence and the discrete
+  amplification factor `g^N` to machine precision, and confirm first-order
+  Euler time convergence against `exp(λ_h t)` (ratios ≈2.0005 / 2.0003).
 - **ODE single-step family — `lib/sci.lume` (`SCI_VERSION` 0.7.0).**
   `rk4_sys` / `rk4_sys_linear` for vector systems (with `vadd` / `vsub` /
   `vscale`), `rk4_adaptive` (step-doubling Richardson error control),

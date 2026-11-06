@@ -177,7 +177,7 @@ print(sci.SCI_VERSION);                   // 0.7.0
 | `sci.lume` | 0.7.0 | 信息论、数值积分/插值、多项式、求根；ODE 单步（RK4 / 自适应 / 向量系统 / 隐式 θ / 辛 Verlet）、线性多步（AB1–4 / BDF2）、事件检测、稠密输出 | `sci_backends.sh`、`ode_backends.sh` |
 | `linalg.lume` | 0.1.0 | 矩阵运算、LU / QR / 特征值 / SVD 分解、线性方程组 | `linalg_backends.sh` |
 | `optim.lume` | 0.2.0 | 梯度下降 / 共轭梯度 / 线性规划单纯形 / 黄金分割 / 非线性最小二乘 | `optim_backends.sh` |
-| `pde.lume` | v0.7.0 | 抛物型（1D/2D 热方程、CN、ADI）、双曲型（波动、线性对流、Burgers）、椭圆型（Poisson 的 Jacobi → SOR → 几何多重网格）；Dirichlet / Neumann / 周期 / Robin 四类边界 | `pde_backends.sh` |
+| `pde.lume` | v0.8.0 | 抛物型（1D/2D 热方程、CN、ADI）、双曲型（1D/2D 波动、线性对流、Burgers）、对流扩散（2D 迎风 + 中心扩散）、椭圆型（Poisson 的 Jacobi → SOR → 几何多重网格、Robin 两点边值）；Dirichlet / Neumann / 周期 / Robin 四类边界 | `pde_backends.sh` |
 | `dist.lume` | v0.1.0 | 8 种连续分布的 PDF / CDF / PPF | `dist_backends.sh` |
 | `complex.lume` | v0.1.0 | 复数四则、模/辐角、指数/对数/幂/三角（`[Re, Im]` 表示） | `complex_backends.sh` |
 | `sig.lume` | 0.1.0 | 卷积、FIR、滑动平均、DFT / IDFT、基 2 FFT（`dft`/`idft` 复用 `complex.cmul`） | `sig_backends.sh` |
