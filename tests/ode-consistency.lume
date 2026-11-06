@@ -1,5 +1,5 @@
 // ode-consistency.lume — sci.lume ODE（向量系统 / 自适应步长 / 隐式刚性方法 /
-// 辛积分）三后端一致性测试。由 tests/ode_backends.sh 驱动：
+// 辛积分 / 线性多步法）三后端一致性测试。由 tests/ode_backends.sh 驱动：
 // 解释器 / 文本 IR / LLVM 输出须逐字节一致。
 import "../lib/sci.lume" as sci;
 
@@ -114,3 +114,89 @@ let sym_ptraj = sci.verlet((q: float) => -sin(q), 1.0, 0.0, 1.0, sym_h, sym_n);
 let sym_pe0 = 0.5 * sym_ptraj[0][1] * sym_ptraj[0][1] + 1.0 - cos(sym_ptraj[0][0]);
 let sym_pe1000 = 0.5 * sym_ptraj[5000][1] * sym_ptraj[5000][1] + 1.0 - cos(sym_ptraj[5000][0]);
 print(sym_pe1000 - sym_pe0);             // O(h²) 有界，159 个周期后不漂移
+
+// ════════════════════════════════════════════════════════════════
+// 线性多步法：Adams–Bashforth 显式族 AB1..AB4 + 隐式 BDF2
+// y' = −y，y0=1，t∈[0,1]，解析 y(1) = e⁻¹。n 加倍时 p 阶方法误差应 ÷2^p。
+// ════════════════════════════════════════════════════════════════
+print(sci.SCI_VERSION);                  // 0.6.0
+let ms_ex = exp(-1.0);
+
+let ms_a1_20 = sci.adams_bashforth((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20, 1)[20] - ms_ex;
+let ms_a1_40 = sci.adams_bashforth((t: float, y: float) => -y, 1.0, 0.0, 1.0, 40, 1)[40] - ms_ex;
+let ms_a1_80 = sci.adams_bashforth((t: float, y: float) => -y, 1.0, 0.0, 1.0, 80, 1)[80] - ms_ex;
+print(ms_a1_20); print(ms_a1_40);
+print(ms_a1_20 / ms_a1_40);              // ≈2（AB1 一阶）
+print(ms_a1_40 / ms_a1_80);              // ≈2
+
+let ms_a2_20 = sci.ab2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20] - ms_ex;
+let ms_a2_40 = sci.ab2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 40)[40] - ms_ex;
+let ms_a2_80 = sci.ab2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 80)[80] - ms_ex;
+print(ms_a2_20); print(ms_a2_40);
+print(ms_a2_20 / ms_a2_40);              // ≈4（AB2 二阶）
+print(ms_a2_40 / ms_a2_80);              // ≈4
+
+let ms_a3_20 = sci.ab3((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20] - ms_ex;
+let ms_a3_40 = sci.ab3((t: float, y: float) => -y, 1.0, 0.0, 1.0, 40)[40] - ms_ex;
+let ms_a3_80 = sci.ab3((t: float, y: float) => -y, 1.0, 0.0, 1.0, 80)[80] - ms_ex;
+print(ms_a3_20); print(ms_a3_40);
+print(ms_a3_20 / ms_a3_40);              // ≈8（AB3 三阶）
+print(ms_a3_40 / ms_a3_80);              // ≈8
+
+let ms_a4_20 = sci.ab4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20] - ms_ex;
+let ms_a4_40 = sci.ab4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 40)[40] - ms_ex;
+let ms_a4_80 = sci.ab4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 80)[80] - ms_ex;
+print(ms_a4_20); print(ms_a4_40);
+print(ms_a4_20 / ms_a4_40);              // ≈16（AB4 四阶，启动段误差使其略小）
+print(ms_a4_40 / ms_a4_80);              // ≈16
+
+// 同阶不同精度：AB4 稳态每步 1 次 f、RK4 每步 4 次 f。
+// 同一 h 下 RK4 误差更小（此处约 37 倍），故 AB 族的优势是右端项昂贵时
+// 用更多步数换精度，而非同等步数下更准。
+let ms_rk_20 = sci.rk4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20] - ms_ex;
+print(ms_rk_20);
+print(ms_a4_20 / ms_rk_20);
+
+// 端点契约：AB1 应严格退化为显式 Euler (1−h)^n；order 越界钳制到 [1,4]；
+// n 小于启动步数时全部由 rk4 启动值覆盖；n=0 返回单点（不除零）。
+let ms_euler = sci.adams_bashforth((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 1)[10];
+print(ms_euler - pow(0.9, 10.0));        // ≈0
+print(sci.adams_bashforth((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10, 9)[10]
+      - sci.ab4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 10)[10]);   // 钳制到 AB4
+print(sci.ab4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 2)[2]);       // 全是启动值
+print(len(sci.ab4((t: float, y: float) => -y, 1.0, 0.0, 1.0, 0)));     // 1
+
+// ── BDF2：非刚性方程二阶收敛 ──
+let ms_b_20 = sci.bdf2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 20)[20] - ms_ex;
+let ms_b_40 = sci.bdf2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 40)[40] - ms_ex;
+let ms_b_80 = sci.bdf2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 80)[80] - ms_ex;
+print(ms_b_20); print(ms_b_40);
+print(ms_b_20 / ms_b_40);                // ≈4（BDF2 二阶）
+print(ms_b_40 / ms_b_80);                // ≈4
+print(sci.bdf2((t: float, y: float) => -y, 1.0, 0.0, 1.0, 0)[0]);
+
+// ── 刚性方程 y' = −1000(y − cos t) − sin t，解析 y(t) = cos t ──
+// 初值恰在慢流形上，h=0.1 远超显式稳定域；A-稳定 BDF2 仍稳定且二阶收敛。
+let ms_s10 = sci.bdf2((t: float, y: float) => -1000.0 * (y - cos(t)) - sin(t),
+                      1.0, 0.0, 1.0, 10);
+let ms_s20 = sci.bdf2((t: float, y: float) => -1000.0 * (y - cos(t)) - sin(t),
+                      1.0, 0.0, 1.0, 20);
+print(ms_s10[10]);
+print(ms_s10[10] - cos(1.0));            // h=0.1 误差 O(h²)
+print(ms_s20[20] - cos(1.0));            // h=0.05 误差约为上一行 /4
+print((ms_s10[10] - cos(1.0)) / (ms_s20[20] - cos(1.0)));
+let ms_sa = sci.ab4((t: float, y: float) => -1000.0 * (y - cos(t)) - sin(t),
+                    1.0, 0.0, 1.0, 10);
+let ms_sam: float = abs(ms_sa[10]);
+if (ms_sam > 1e6) { ms_sam = 1e6; }
+print(ms_sam);                           // 显式 AB4 发散，截断到 1e6
+
+// ── 刚性瞬变衰减：y' = −1000y，y0=1，解析 y(t) = e^{−1000t} ──
+// 初值偏离慢流形。A-稳定但不 L-稳定的梯形法留下 (−1)^n 振荡（t=1 仍 ≈0.67），
+// BDF2 的强阻尼把瞬变迅速压到 0。
+let ms_d = sci.bdf2((t: float, y: float) => -1000.0 * y, 1.0, 0.0, 1.0, 10);
+let ms_dt = sci.ode_trapezoid((t: float, y: float) => -1000.0 * y, 1.0, 0.0, 1.0, 10);
+print(ms_d[1]);                          // 启动步：梯形法产生反号瞬变
+print(ms_d[2]);                          // BDF2 第 2 步已衰减约 40 倍
+print(ms_d[10]);                         // t=1：≈0
+print(ms_dt[10]);                        // 梯形法残留振荡

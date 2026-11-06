@@ -14,6 +14,8 @@
 //               ode_theta（θ-方法族）/ ode_imp_euler（后向 Euler，L-稳定）/
 //               ode_trapezoid（梯形 / Crank–Nicolson，A-稳定）——刚性方程
 //   辛积分    verlet（Velocity Verlet，保 Hamilton 结构 / 长期能量有界）
+//   多步法    adams_bashforth / ab2 / ab3 / ab4（显式，稳态每步仅 1 次 f 求值）/
+//               bdf2（隐式二阶 BDF，A-稳定，刚性方程）
 //
 // 使用：
 //   import "sci.lume" as sci;
@@ -32,7 +34,8 @@
 // v0.3.0: rk4_sys（向量 ODE 系统）+ rk4_adaptive（自适应步长）
 // v0.4.0: ode_theta / ode_imp_euler / ode_trapezoid（隐式刚性求解器，A-稳定）
 // v0.5.0: verlet（辛积分，长期能量有界）
-export let SCI_VERSION = "0.5.0";
+// v0.6.0: adams_bashforth / ab2 / ab3 / ab4 + bdf2（线性多步法族）
+export let SCI_VERSION = "0.6.0";
 
 // 自然对数底，信息论统一用 log2（log(x)/LN2 即 log2(x)）
 let LN2 = log(2.0);
@@ -518,6 +521,132 @@ export func verlet(force: fn(float) => float, q0: float, p0: float,
     row = push(row, q);
     row = push(row, p);
     out = push(out, row);
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 线性多步法（Adams–Bashforth 显式族 / BDF2 隐式）
+//   adams_bashforth(f, y0, t0, t1, n, order)，order = 1..4
+//     y_{n+1} = y_n + h·Σ_{j=0}^{p−1} b_j f_{n−j}
+//     AB1 = 显式 Euler；AB2/3/4 分别为 2/3/4 阶。
+//   稳态每步只需 **1 次** f 求值（RK4 需 4 次），历史右端项存在滚动窗口里；
+//   代价是需要 p−1 个启动值（本库用 rk4 生成，启动段每步 4 次 + 1 次历史 f）
+//   且稳定域随阶数变窄：y'=λy 时 AB2 要求 |λh| ≲ 1、AB4 仅 ≲ 0.3，
+//   刚性问题不适用。
+//   bdf2(f, y0, t0, t1, n)：
+//     3y_{n+1} − 4y_n + y_{n−1} = 2h·f(t_{n+1}, y_{n+1})
+//   二阶、A-稳定，且 λh→−∞ 时特征方程 (3−2λh)r²−4r+1=0 的两根均 →0，
+//   即刚性模态被强阻尼（stiff decay）；梯形法虽 A-稳定却会留下 (−1)^n 振荡。
+//   隐式方程同样用 Newton + 中心差分 Jacobian，风格与 ode_theta 一致；
+//   首步用 A-稳定梯形法启动（局部 O(h³)，不破坏整体二阶；会留下 O(1)
+//   反号瞬变，由后续 BDF2 步迅速阻尼）。
+//   所有函数返回含初值的等距轨迹 float[]（长度 n+1）。
+// ════════════════════════════════════════════════════════════════
+
+// Adams–Bashforth 系数，按「最旧 → 最新」的历史 f 顺序排列（与滚动窗口 fh 对齐）：
+//   AB1 [1]
+//   AB2 [−1/2, 3/2]
+//   AB3 [5/12, −16/12, 23/12]
+//   AB4 [−9/24, 37/24, −59/24, 55/24]
+// 教科书通常写成 (f_n, f_{n−1}, …) 顺序，此处统一反序。每组系数之和 = 1。
+func ab_coeffs(p: int): float[] {
+  if (p == 1) { return [1.0]; }
+  if (p == 2) { return [-0.5, 1.5]; }
+  if (p == 3) { return [5.0 / 12.0, -16.0 / 12.0, 23.0 / 12.0]; }
+  return [-9.0 / 24.0, 37.0 / 24.0, -59.0 / 24.0, 55.0 / 24.0];
+}
+
+// 显式 Adams–Bashforth 族通用内核。order 越界时钳制到 [1,4]；
+// n < order−1 时全部步都由 rk4 启动值覆盖（不进入多步循环）。
+export func adams_bashforth(f: fn(float, float) => float, y0: float, t0: float,
+                            t1: float, n: int, order: int): float[] {
+  if (n < 1) { return [y0]; }              // 避免 h 除零
+  let h: float = (t1 - t0) / (n * 1.0);
+  let p: int = order;
+  if (p < 1) { p = 1; }
+  if (p > 4) { p = 4; }
+  let start: int = p - 1;
+  if (start > n) { start = n; }
+  let out: float[] = [y0];
+  let fh: float[] = [];
+  fh = push(fh, f(t0, y0));
+  if (start > 0) {
+    let seed: float[] = rk4(f, y0, t0, t0 + h * (start * 1.0), start);
+    for (let k = 1; k < start + 1; k = k + 1) {
+      let tk: float = t0 + h * (k * 1.0);
+      let yk: float = seed[k];
+      out = push(out, yk);
+      fh = push(fh, f(tk, yk));
+    }
+  }
+  let c: float[] = ab_coeffs(p);
+  for (let k = start; k < n; k = k + 1) {
+    let inc: float = 0.0;
+    for (let j = 0; j < p; j = j + 1) {
+      inc = inc + c[j] * fh[j];
+    }
+    let tnext: float = t0 + h * ((k + 1) * 1.0);
+    let yn: float = out[k] + h * inc;
+    out = push(out, yn);
+    // 滚动窗口：丢弃最旧的 f，追加刚算出的 f(t_{k+1}, y_{k+1})
+    let nf: float[] = [];
+    for (let j = 1; j < p; j = j + 1) {
+      nf = push(nf, fh[j]);
+    }
+    nf = push(nf, f(tnext, yn));
+    fh = nf;
+  }
+  return out;
+}
+
+// AB2 / AB3 / AB4 便捷包装。
+export func ab2(f: fn(float, float) => float, y0: float, t0: float,
+                t1: float, n: int): float[] {
+  return adams_bashforth(f, y0, t0, t1, n, 2);
+}
+
+export func ab3(f: fn(float, float) => float, y0: float, t0: float,
+                t1: float, n: int): float[] {
+  return adams_bashforth(f, y0, t0, t1, n, 3);
+}
+
+export func ab4(f: fn(float, float) => float, y0: float, t0: float,
+                t1: float, n: int): float[] {
+  return adams_bashforth(f, y0, t0, t1, n, 4);
+}
+
+// 二阶后向差分公式（BDF2）。隐式方程
+//   g(z)  = 3z − 4y_n + y_{n−1} − 2h·f(t_{n+1}, z)
+//   g'(z) = 3 − 2h·[f(z+ε) − f(z−ε)]/(2ε),  ε = 1e-7·(1+|z|)
+// Newton 初值取 y_n，固定 20 次上限，|Δz| < 1e-12 提前退出。
+export func bdf2(f: fn(float, float) => float, y0: float, t0: float,
+                 t1: float, n: int): float[] {
+  let out: float[] = [y0];
+  if (n < 1) { return out; }
+  let h: float = (t1 - t0) / (n * 1.0);
+  // 首步用 A-稳定梯形法启动（局部 O(h³)）；瞬变不放大但会反号，后续阻尼。
+  let seed: float[] = ode_trapezoid(f, y0, t0, t0 + h, 1);
+  let y: float = seed[1];
+  let ym: float = y0;
+  out = push(out, y);
+  for (let k = 1; k < n; k = k + 1) {
+    let tn1: float = t0 + h * ((k + 1) * 1.0);
+    let z: float = y;
+    for (let it = 0; it < 20; it = it + 1) {
+      let fz: float = f(tn1, z);
+      let g: float = 3.0 * z - 4.0 * y + ym - 2.0 * h * fz;
+      let eps: float = 1e-7 * (1.0 + abs(z));
+      let fp: float = f(tn1, z + eps);
+      let fm: float = f(tn1, z - eps);
+      let dg: float = 3.0 - 2.0 * h * (fp - fm) / (2.0 * eps);
+      let dz: float = g / dg;
+      z = z - dz;
+      if (abs(dz) < 1e-12) { break; }
+    }
+    ym = y;
+    y = z;
+    out = push(out, y);
   }
   return out;
 }
