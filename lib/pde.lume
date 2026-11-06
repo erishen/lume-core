@@ -1,20 +1,26 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.2.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.3.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
 //        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
-//        零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
+//               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
+//        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
+//               周期边界（第三种边界条件类型）。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
 //           pde_heat_2d（2D FTCS 显式，Dirichlet / Neumann 零通量边界）
 //           pde_heat_2d_adi（2D ADI 隐式，复用 pde_tridiag，无条件稳定）
 //   双曲型：pde_wave_leapfrog（蛙跳格式）
+//           pde_advect_upwind（1D 线性对流，一阶迎风）/ pde_advect_lw（二阶 Lax–Wendroff）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
+// 边界条件覆盖：Dirichlet（常数 / 零）、Neumann（2D 零通量）、周期（1D 对流）
 //
 // 设计：纯 .lume、三后端一致；不接收 fn 形参（规避 lume 闭包跨函数捕获
 //       局部变量的限制），初值/源项一律以预计算数组传入，边界条件以标量传入。
 // 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
-//       pde_reverse（1D 反转）。所有网格更新均为值语义（用 push 整体重建）。
+//       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
+//       pde_h2d_val / pde_adv_val（邻居取值 + 边界条件）。
+//       所有网格更新均为值语义（用 push 整体重建）。
 // ───────────────────────────────────────────────────────────────────
 
 // 均匀坐标数组 [a, ..., b]，共 n 个点
@@ -314,6 +320,69 @@ export func pde_wave_leapfrog(u0: float[], a: float, b: float, c: float,
     ucur = unext;
   }
   return ucur;
+}
+
+// ── 双曲型：一维线性对流（输运）方程 u_t + c·u_x = 0 ───────────
+// 显式差分，Courant 数 C = c·dt/dx，稳定要求 |C| ≤ 1（由调用方保证）。
+// 约定 c > 0（信息自左向右传播），故迎风取后向差分。
+// periodic=true → 周期边界（邻居索引环绕，守恒、无边界反射）；
+// false → Dirichlet，越界邻居取常数 bc。每步整体重建（值语义）。
+// 两者特性对比（经典教学结论，本库测试可复现）：
+//   upwind 一阶精度、强数值耗散（振幅衰减），但单调不振荡；
+//   Lax–Wendroff 二阶精度、振幅保持好，但有色散（相位误差）、间断处振荡。
+
+// 取邻居值并施加边界：周期环绕或 Dirichlet 常数 bc。
+// idx 只会是 −1 或 n，故一次加/减 n 即落回 [0,n)。绝不越界索引。
+func pde_adv_val(u: float[], idx: int, n: int, periodic: bool, bc: float): float {
+  let v: float = bc;
+  if (idx >= 0 && idx < n) {
+    v = u[idx];
+  } else {
+    if (periodic) {
+      let k = idx;
+      if (k < 0)  { k = k + n; }
+      if (k >= n) { k = k - n; }
+      v = u[k];
+    }
+  }
+  return v;
+}
+
+// 一阶迎风：u_i^{n+1} = u_i − C·(u_i − u_{i−1})
+export func pde_advect_upwind(u0: float[], dx: float, c: float, dt: float,
+                              nt: int, periodic: bool, bc: float): float[] {
+  let n = len(u0);
+  let C: float = c * dt / dx;
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let uim1: float = pde_adv_val(u, i - 1, n, periodic, bc);
+      unew = push(unew, u[i] - C * (u[i] - uim1));
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// 二阶 Lax–Wendroff：
+// u_i^{n+1} = u_i − (C/2)(u_{i+1} − u_{i−1}) + (C²/2)(u_{i+1} − 2u_i + u_{i−1})
+export func pde_advect_lw(u0: float[], dx: float, c: float, dt: float,
+                          nt: int, periodic: bool, bc: float): float[] {
+  let n = len(u0);
+  let C: float = c * dt / dx;
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let uim1: float = pde_adv_val(u, i - 1, n, periodic, bc);
+      let uip1: float = pde_adv_val(u, i + 1, n, periodic, bc);
+      unew = push(unew, u[i] - (C / 2.0) * (uip1 - uim1)
+                        + (C * C / 2.0) * (uip1 - 2.0 * u[i] + uim1));
+    }
+    u = unew;
+  }
+  return u;
 }
 
 // ── 椭圆型：二维泊松方程 Jacobi 迭代 ∇²u = f ──────────────────

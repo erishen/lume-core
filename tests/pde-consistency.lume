@@ -3,7 +3,7 @@
 // 运行：tests/pde_backends.sh
 //
 // 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_heat_2d_adi /
-//       pde_wave_leapfrog / pde_poisson_jacobi
+//       pde_wave_leapfrog / pde_advect_upwind / pde_advect_lw / pde_poisson_jacobi
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
 // 泊松 sin(πx)sin(πy)），打印 [数值, 解析, 误差] 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
@@ -124,3 +124,51 @@ print(uadi[5][5] - exact_d);             // ≈2e-3
 // 时间离散误差；差值很小即说明大步长 ADI 未引入明显时间误差。
 let uadi2 = pde.pde_heat_2d_adi(u0d, 0.1, 0.1, 1.0, 0.002, 50, 0.0);  // t=0.1
 print(uadi2[5][5] - uadi[5][5]);        // ≈2.1e-4
+
+// ── 一维线性对流 u_t + c·u_x = 0：周期边界 + 格式耗散对比 ──
+// 周期网格 x_i = i/n（不含右端点），u0 = sin(2πx)，c=1。
+// C = c·dt/dx = 0.5，t = 1 恰好平移一个整周期 → 解析解 = 初值（振幅 1）。
+let na = 40;
+let dxa = 1.0 / (na * 1.0);
+let dta = 0.5 * dxa;                    // C = 0.5
+let nta = 80;                           // t = dta·nta = 1.0
+// 循环变量统一带 adv_ 前缀：lume 顶层脚本的 for-init 不得遮蔽内置名，
+// 例如 ic 是内置的「信息系数」函数（src/typecheck.c 内置表），用它作
+// for-init 变量会报 "shadows an outer local"（函数体内有 fn_root 才安全）。
+let ua: float[] = [];
+for (let adv_i0 = 0; adv_i0 < na; adv_i0 = adv_i0 + 1) {
+  ua = push(ua, sin(2.0 * PI * (adv_i0 / (na * 1.0))));
+}
+let sum0 = 0.0;
+for (let adv_i1 = 0; adv_i1 < na; adv_i1 = adv_i1 + 1) { sum0 = sum0 + ua[adv_i1]; }
+let uu = pde.pde_advect_upwind(ua, dxa, 1.0, dta, nta, true, 0.0);
+let ul = pde.pde_advect_lw(ua, dxa, 1.0, dta, nta, true, 0.0);
+
+// 周期环绕正确性：两格式均为守恒型，Σu 应严格不变（无边界泄漏）
+let sumu = 0.0;
+for (let adv_i2 = 0; adv_i2 < na; adv_i2 = adv_i2 + 1) { sumu = sumu + uu[adv_i2]; }
+let suml = 0.0;
+for (let adv_i3 = 0; adv_i3 < na; adv_i3 = adv_i3 + 1) { suml = suml + ul[adv_i3]; }
+print(sumu - sum0);                     // ≈0（迎风）
+print(suml - sum0);                     // ≈0（Lax–Wendroff）
+
+// 解析解：平移整周期后 u(x,1) = u0(x)。逐点误差 ≈0 说明周期边界+相位正确
+print(ul[10] - ua[10]);                 // LW：≈0（二阶，相位误差小）
+print(uu[10] - ua[10]);                 // 迎风：明显非 0（耗散+相位误差）
+
+// 振幅 max|u|：数值解仍近似正弦，振幅反映耗散且不受相位误差影响
+let amp0 = 0.0;
+for (let adv_i4 = 0; adv_i4 < na; adv_i4 = adv_i4 + 1) { if (abs(ua[adv_i4]) > amp0) { amp0 = abs(ua[adv_i4]); } }
+let ampu = 0.0;
+for (let adv_i5 = 0; adv_i5 < na; adv_i5 = adv_i5 + 1) { if (abs(uu[adv_i5]) > ampu) { ampu = abs(uu[adv_i5]); } }
+let ampl = 0.0;
+for (let adv_i6 = 0; adv_i6 < na; adv_i6 = adv_i6 + 1) { if (abs(ul[adv_i6]) > ampl) { ampl = abs(ul[adv_i6]); } }
+print(amp0);                            // = 1（解析振幅）
+print(ampu);                            // 迎风：明显 < 1（一阶耗散）
+print(ampl);                            // LW：≈1（二阶，振幅保持好）
+print(amp0 - ampu);                     // 迎风耗散量
+print(amp0 - ampl);                     // LW 耗散量（应远小于上一行）
+
+// Dirichlet 非周期分支冒烟：bc=0，验证边界分支不越界、结果有限
+let udd = pde.pde_advect_lw(ua, dxa, 1.0, dta, nta, false, 0.0);
+print(udd[na - 1]);
