@@ -5,7 +5,7 @@
 // 背景：lume 无原生复数类型（此前 sig.lume 以「[Re,Im] 两列矩阵」临时规避）。
 // 本库以「单个复数 = 长度为 2 的 float[] [Re, Im]」提供可复用、经过验证的
 // 复数算术，纯 .lume、三后端一致。sig.lume 的复数序列矩阵每行即一个 [Re,Im]，
-// 可逐行调用本库（重构 sig.lume 留作后续，不在本库范围）。
+// 现已在 dft/idft 中逐行复用本库（cmul），FFT 蝶形为性能保持并行数组不套用。
 //
 // 工具内建：sqrt / exp / log / pow / sin / cos / atan2 / sinh / cosh 等均已在
 // LUME_BUILTIN_NAMES/SIG 注册，三后端可用。

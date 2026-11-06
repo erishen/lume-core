@@ -2,8 +2,11 @@
 //
 // 设计约束（同 sci/optim/linalg）：lume 当前不支持「用户函数接收函数类型
 // 参数」，且 list 为值语义（不可原地索引赋值），故：
-//   · 复数用「[Re, Im] 两列矩阵」表示（行 k = [Re X[k], Im X[k]]），不引入
-//     自定义复数类型；三角函数 sin/cos 由 C 内核提供，三后端一致。
+//   · 复数算术已下沉到独立库 complex.lume（单复数 = 长度 2 的 float[] [Re,Im]，
+//     cmul/cconj/cexp 等），本库在 dft/idft 中复用之；三角函数 sin/cos 由 C
+//     内核提供，三后端一致。
+//   · FFT 蝶形运算为性能刻意采用「re[]/im[] 两个并行数组」而非 [Re,Im] 矩阵，
+//     不强行套用 complex.lume（避免逐元素分配、保持其分治效率）。
 //   · 所有「修改」经返回新数组/新矩阵的帮助函数实现（set_flt）。
 //
 // 三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，浮点运算顺序由 lume
@@ -29,6 +32,9 @@
 //    不定义模块级浮点常量。
 
 export let SIG_VERSION = "0.1.0";
+
+// 复用复数算术库（同目录，相对路径解析到引用本文件所在的 lib/）。
+import "complex.lume" as c;
 
 // ════════════════════════════════════════════════════════════════
 // 内部帮助函数
@@ -123,8 +129,10 @@ export func dft(x: float[]): float[][] {
     let im = 0.0;
     for (let n = 0; n < N; n = n + 1) {
       let ang: float = two_pi * (k * n) / Nf;
-      re = re + x[n] * cos(ang);
-      im = im - x[n] * sin(ang);
+      // 复用 complex.lume：x[n] 视为实数 [x[n],0]，乘旋转因子 [cos,−sin]
+      let term: float[] = c.cmul([x[n], 0.0], [cos(ang), -sin(ang)]);
+      re = re + term[0];
+      im = im + term[1];
     }
     let row: float[] = [];
     row = push(row, re);
@@ -147,8 +155,9 @@ export func idft(X: float[][]): float[] {
       let ang: float = two_pi * (k * n) / Nf;
       let re = X[k][0];
       let im = X[k][1];
-      // (re + i·im)·(cosθ + i·sinθ) 的实部 = re·cosθ − im·sinθ
-      s = s + re * cos(ang) - im * sin(ang);
+      // 复用 complex.lume：(re + i·im)·(cosθ + i·sinθ) 的实部
+      let term: float[] = c.cmul([re, im], [cos(ang), sin(ang)]);
+      s = s + term[0];
     }
     out = push(out, s / Nf);
   }
