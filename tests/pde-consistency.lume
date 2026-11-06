@@ -1,0 +1,65 @@
+// pde-consistency.lume — 偏微分方程数值解库三后端一致性套件
+// （解释器 / 文本 IR / LLVM）输出逐字节一致。
+// 运行：tests/pde_backends.sh
+//
+// 覆盖：pde_heat_explicit / pde_heat_cn / pde_wave_leapfrog / pde_poisson_jacobi
+// 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
+// 泊松 sin(πx)sin(πy)），打印 [数值, 解析, 误差] 三行便于肉眼核验。
+// 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
+// 由 lume 显式控制）必然逐字节一致，与具体精度无关。
+
+import "../lib/pde.lume" as pde;
+
+let PI = 3.141592653589793;
+
+// ── 热方程：u0 = sin(πx)，零边界，α=1 → 解析 u = sin(πx)·e^{-π²t}
+let nx = 21;
+let xs: float[] = pde.pde_linspace(0.0, 1.0, nx);
+let u0: float[] = [];
+for (let i = 0; i < nx; i = i + 1) { u0 = push(u0, sin(PI * xs[i])); }
+let dte = 0.0005;
+let nte = 200;                       // t = 0.1
+let te = dte * nte;
+let xmid = 0.5;
+let exact_heat = sin(PI * xmid) * exp(-PI * PI * te);
+
+// 显式 FTCS（r = 1·0.0005/0.05² = 0.2，稳定）
+let ue = pde.pde_heat_explicit(u0, 0.0, 1.0, 1.0, dte, nte, 0.0, 0.0);
+print(ue[10]);                       // x=0.5
+print(exact_heat);
+print(ue[10] - exact_heat);          // 显式离散误差（应很小）
+
+// 隐式 Crank–Nicolson（大步长 r=4，显式会发散，CN 仍稳定）
+let uc = pde.pde_heat_cn(u0, 0.0, 1.0, 1.0, 0.01, 10, 0.0, 0.0);   // t = 0.1
+print(uc[10]);
+print(exact_heat);
+print(uc[10] - exact_heat);          // CN 误差（更小）
+
+// ── 波动方程：u0 = sin(πx)，零初速零边界，c=1 → u = sin(πx)·cos(πt)
+let dtw = 0.02;
+let ntw = 25;                        // t = 0.5，cos(π·0.5) = 0
+let tw = dtw * ntw;
+let uw = pde.pde_wave_leapfrog(u0, 0.0, 1.0, 1.0, dtw, ntw, 0.0, 0.0);
+print(uw[10]);
+print(sin(PI * xmid) * cos(PI * tw));
+print(uw[10] - sin(PI * xmid) * cos(PI * tw));
+
+// ── 泊松方程：u = sin(πx)sin(πy)，∇²u = -2π²u → f = -2π² sin(πx)sin(πy)
+let np = 9;
+let hp = 1.0 / (np - 1.0);
+let f: float[][] = [];
+for (let i = 0; i < np; i = i + 1) {
+  let row: float[] = [];
+  for (let j = 0; j < np; j = j + 1) {
+    let xx = hp * i;
+    let yy = hp * j;
+    row = push(row, -2.0 * PI * PI * sin(PI * xx) * sin(PI * yy));
+  }
+  f = push(f, row);
+}
+let up = pde.pde_poisson_jacobi(f, hp, 400);
+let ci = 4;                          // 中心（9×9 的索引 4）
+let exact_poisson = sin(PI * hp * ci) * sin(PI * hp * ci);
+print(up[ci][ci]);
+print(exact_poisson);
+print(up[ci][ci] - exact_poisson);

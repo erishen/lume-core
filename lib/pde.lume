@@ -1,0 +1,175 @@
+// ════════════════════════════════════════════════════════════════
+// pde.lume — 偏微分方程数值解库（有限差分）
+// 版本：v0.1.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+//
+// 覆盖三类经典 PDE 的有限差分法：
+//   抛物型：pde_heat_explicit（FTCS 显式）/ pde_heat_cn（Crank–Nicolson 隐式）
+//   双曲型：pde_wave_leapfrog（蛙跳格式）
+//   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
+//
+// 设计：纯 .lume、三后端一致；不接收 fn 形参（规避 lume 闭包跨函数捕获
+//       局部变量的限制），初值/源项一律以预计算数组传入，边界条件以标量传入。
+// 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
+//       pde_reverse（1D 反转）。所有网格更新均为值语义（用 push 整体重建）。
+// ───────────────────────────────────────────────────────────────────
+
+// 均匀坐标数组 [a, ..., b]，共 n 个点
+export func pde_linspace(a: float, b: float, n: int): float[] {
+  let dx: float = (b - a) / (n - 1.0);
+  let xs: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    xs = push(xs, a + dx * i);
+  }
+  return xs;
+}
+
+// 反转子数组（1D，值语义）
+func pde_reverse(a: float[]): float[] {
+  let r: float[] = [];
+  let n: int = len(a);
+  for (let i = n - 1; i >= 0; i = i - 1) {
+    r = push(r, a[i]);
+  }
+  return r;
+}
+
+// Thomas 算法：解三对角方程组 A x = d
+//   A 的下/主/上对角线分别为 a[1..] / b[0..] / c[0..]（长度均为 n）
+// 返回 x（float[]）。O(n)，值语义（用 push 重建，不索引赋值）。
+export func pde_tridiag(a: float[], b: float[], c: float[], d: float[]): float[] {
+  let n: int = len(b);
+  let cp: float[] = [];
+  let dp: float[] = [];
+  cp = push(cp, c[0] / b[0]);
+  dp = push(dp, d[0] / b[0]);
+  for (let i = 1; i < n; i = i + 1) {
+    let m: float = b[i] - a[i - 1] * cp[i - 1];
+    cp = push(cp, c[i] / m);
+    dp = push(dp, (d[i] - a[i - 1] * dp[i - 1]) / m);
+  }
+  // 回代：从右往左 push（xr[0]=x[n-1]，末尾为刚算出的 x[i+1]），再反转
+  let xr: float[] = [];
+  xr = push(xr, dp[n - 1]);
+  for (let i = n - 2; i >= 0; i = i - 1) {
+    xr = push(xr, dp[i] - cp[i] * xr[len(xr) - 1]);
+  }
+  return pde_reverse(xr);
+}
+
+// ── 抛物型：一维热方程 显式 FTCS ─────────────────────────────
+// u_t = α u_xx，Dirichlet 边界 left_bc / right_bc。返回最终时刻 u（float[]）。
+// 稳定性要求 r = α dt / dx² ≤ 0.5（由调用方保证）。
+export func pde_heat_explicit(u0: float[], a: float, b: float, alpha: float,
+                              dt: float, nt: int, left_bc: float, right_bc: float): float[] {
+  let n: int = len(u0);
+  let dx: float = (b - a) / (n - 1.0);
+  let r: float = alpha * dt / (dx * dx);
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    unew = push(unew, left_bc);
+    for (let i = 1; i < n - 1; i = i + 1) {
+      unew = push(unew, u[i] + r * (u[i - 1] - 2.0 * u[i] + u[i + 1]));
+    }
+    unew = push(unew, right_bc);
+    u = unew;
+  }
+  return u;
+}
+
+// ── 抛物型：一维热方程 隐式 Crank–Nicolson（无条件稳定）──────────
+// 同左，但每步解三对角系统，故对大 dt 也稳定。
+export func pde_heat_cn(u0: float[], a: float, b: float, alpha: float,
+                        dt: float, nt: int, left_bc: float, right_bc: float): float[] {
+  let n: int = len(u0);
+  let dx: float = (b - a) / (n - 1.0);
+  let r: float = alpha * dt / (dx * dx);
+  let u: float[] = u0;
+  let m: int = n - 2;                 // 内部未知量个数
+  for (let step = 0; step < nt; step = step + 1) {
+    let Aa: float[] = [];             // 次对角线（Aa[0] 不被读取）
+    let Ab: float[] = [];             // 主对角线
+    let Ac: float[] = [];             // 上对角线（Ac[m-1] 不被读取）
+    let rhs: float[] = [];
+    for (let k = 0; k < m; k = k + 1) {
+      Ab = push(Ab, 1.0 + r);
+      Ac = push(Ac, -r / 2.0);
+      Aa = push(Aa, -r / 2.0);
+      let idx: int = k + 1;           // u 的全局下标
+      let ex: float = (r / 2.0) * u[idx - 1] + (1.0 - r) * u[idx] + (r / 2.0) * u[idx + 1];
+      if (k == 0)        { ex = ex + (r / 2.0) * left_bc; }
+      if (k == m - 1)    { ex = ex + (r / 2.0) * right_bc; }
+      rhs = push(rhs, ex);
+    }
+    let uin: float[] = pde_tridiag(Aa, Ab, Ac, rhs);
+    let unew: float[] = [];
+    unew = push(unew, left_bc);
+    for (let k = 0; k < m; k = k + 1) { unew = push(unew, uin[k]); }
+    unew = push(unew, right_bc);
+    u = unew;
+  }
+  return u;
+}
+
+// ── 双曲型：一维波动方程 蛙跳格式 ─────────────────────────────
+// u_tt = c² u_xx，零初速度（u_t(x,0)=0），Dirichlet 边界。返回最终时刻 u。
+// 稳定性要求 Courant 数 C = c dt / dx ≤ 1（由调用方保证）。
+export func pde_wave_leapfrog(u0: float[], a: float, b: float, c: float,
+                              dt: float, nt: int, left_bc: float, right_bc: float): float[] {
+  let n: int = len(u0);
+  let dx: float = (b - a) / (n - 1.0);
+  let C2: float = (c * dt / dx) * (c * dt / dx);
+  // 第一步（由 u_t=0 推出）
+  let u1: float[] = [];
+  u1 = push(u1, left_bc);
+  for (let i = 1; i < n - 1; i = i + 1) {
+    u1 = push(u1, u0[i] + 0.5 * C2 * (u0[i - 1] - 2.0 * u0[i] + u0[i + 1]));
+  }
+  u1 = push(u1, right_bc);
+  let uprev: float[] = u0;
+  let ucur: float[] = u1;
+  for (let step = 1; step < nt; step = step + 1) {
+    let unext: float[] = [];
+    unext = push(unext, left_bc);
+    for (let i = 1; i < n - 1; i = i + 1) {
+      unext = push(unext, 2.0 * ucur[i] - uprev[i]
+                          + C2 * (ucur[i - 1] - 2.0 * ucur[i] + ucur[i + 1]));
+    }
+    unext = push(unext, right_bc);
+    uprev = ucur;
+    ucur = unext;
+  }
+  return ucur;
+}
+
+// ── 椭圆型：二维泊松方程 Jacobi 迭代 ∇²u = f ──────────────────
+// f 为 n×n 网格源项；Dirichlet 边界固定为 0（零边界）。返回数值解 u（n×n）。
+// 注：Jacobi 天然值语义——每步由旧网格整体重建新网格，无索引赋值。
+export func pde_poisson_jacobi(f: float[][], h: float, iters: int): float[][] {
+  let n: int = len(f);
+  let u: float[][] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) { row = push(row, 0.0); }
+    u = push(u, row);
+  }
+  for (let it = 0; it < iters; it = it + 1) {
+    let unew: float[][] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let row: float[] = [];
+      for (let j = 0; j < n; j = j + 1) {
+        if (i == 0 || i == n - 1 || j == 0 || j == n - 1) {
+          row = push(row, 0.0);                       // 边界固定
+        } else {
+          let v: float = 0.25 * (u[i - 1][j] + u[i + 1][j]
+                               + u[i][j - 1] + u[i][j + 1]
+                               - h * h * f[i][j]);
+          row = push(row, v);
+        }
+      }
+      unew = push(unew, row);
+    }
+    u = unew;
+  }
+  return u;
+}
