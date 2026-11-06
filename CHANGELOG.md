@@ -6,12 +6,13 @@ All notable changes to Lume are documented here. The format follows
 
 ## [Unreleased]
 
-This section covers the 20 post-0.13.0 commits touching `lib/` — the
-pure-`.lume` scientific-computing libraries. Other post-0.13.0 work (CI,
-security, language core and TODO bookkeeping) is not yet summarised here.
-Every library below ships a `tests/*-consistency.lume` numerical regression
-and a `tests/*_backends.sh` harness asserting byte-identical output across
-the interpreter / text-IR / LLVM backends; locally LLVM is skipped (built
+This section covers all 42 commits since 0.13.0 (`825bc1d`): 20 touching
+`lib/` (the pure-`.lume` scientific-computing libraries) and 22 covering the
+language core, builtins, security, CI and roadmap bookkeeping. Entries are
+grouped by theme rather than commit-by-commit. Every algorithm library
+below ships a `tests/*-consistency.lume` numerical regression and a
+`tests/*_backends.sh` harness asserting byte-identical output across the
+interpreter / text-IR / LLVM backends; locally LLVM is skipped (built
 without libLLVM), so parity is verified as `interp/text identical`.
 
 ### Added
@@ -67,12 +68,89 @@ without libLLVM), so parity is verified as `interp/text identical`.
 - **Nonlinear least squares — `lib/optim.lume`.** `nonlinear_ls` fits a
   user-supplied model `fn(float[], float) => float` by Gauss–Newton with
   Levenberg damping.
+- **Infix bit shifts and the `bitor()` alias.** `<<` / `>>` are now parsed
+  as infix operators at the tightest bitwise precedence level (above `&`,
+  `^`, `|`), left-associative, with the shift count masked to 0..63 to
+  avoid LLVM poison. Semantics match the `shl` / `shr` builtins — logical
+  (zero-fill) right shift, not arithmetic. `bitor()` is registered as an
+  alias of `bit_or` for compatibility with existing lume code.
+- **Password-verification builtins.** `crypt_verify(hash, pw)` dispatches
+  on the `$N$` prefix (`$5$` / `$6$` via `crypt(3)`, `$2*` via bcrypt in
+  the host tree); weak hashes (plaintext / `{SHA}` / DES / `$1$` / `$apr1$`)
+  fail closed with no reason leaked. `const_time_eq(a, b)` is a
+  branchless equal-length, NUL-safe compare for DSL-side token checks.
+  Core deliberately carries no bcrypt copy to avoid sync-lang drift.
+- **Filesystem path allowlist.** `LUME_FS_ROOT` confines `read_file` /
+  `write_file` / `files` / `mkdir` / `lock_file` to `realpath`-checked
+  descendants of a root (resolving `..` and symlinks before the boundary
+  check; a not-yet-existing write target is checked through its parent).
+  `LUME_FS_RO=1` adds a read-only mode. `--no-fs` remains the hard switch;
+  root resolution failure is a startup error. `lume_realpath()` wraps
+  POSIX `realpath` and CRT `_fullpath` on Windows.
 
 ### Changed
 
 - **`lib/sig.lume` now reuses `lib/complex.lume`.** `dft` / `idft` delegate
   their complex multiply to `c.cmul` instead of hand-rolling it row by
   row; `fft_radix2` keeps its parallel `re[]` / `im[]` arrays for speed.
+- **Release and CI hardening.** All `actions/*` references pinned to
+  40-character commit SHAs; per-job `timeout-minutes` and
+  `concurrency cancel-in-progress` (off for release uploads so a tagged
+  run cannot leave a partial asset set). `release.yml` gains a `verify`
+  job gating the build on `make check`/`test`/`treecheck`/`check-version`,
+  plus a `finalize` job asserting all four tarballs and checksums; tag
+  pushes now run the full test matrix and assert `LUME_CORE_VERSION`
+  matches the tag. Top-level permissions drop to `contents: read`, with
+  `write` only on the asset-uploading job. `upload-artifact` moves to v5
+  (node24 runtime). Staged tarballs are verified on every event via
+  sha256, unpack, layout and `--help` smoke checks, with negative cases.
+- **`read_file` missing-file contract pinned.** Missing or unreadable
+  files return `null` without setting a VM error, so `try()` takes the
+  success path `{ok:null, err:null}`; callers needing a 404 must check
+  `ok == null`. Documented in `builtins_fs.c` and asserted in
+  `tests/smoke.c` so the semantics cannot be "fixed" into an error.
+- **Roadmap bookkeeping.** `TODO.md` updates only, no runtime behaviour:
+  multipart body-spool and Downloads items closed, React SSR / nsbp-lume
+  and P14/P15 blocks dropped as out-of-repo, P12 container-param audit
+  closed as already covered, `no_fs` retitled after the allowlist landed,
+  and the P14 sidecar execution layer scoped to `spawn()` /
+  streaming-read builtins.
+
+### Fixed
+
+- **Float literal codegen emitted `.0` instead of `0.0`.** `LIT_NUM`
+  appended `".0"` with `snprintf(buf, sizeof buf, "%s.0", buf)`, whose
+  source and destination overlap — undefined behaviour that glibc turned
+  into a malformed literal (e.g. `fsub double .0, %t7`), breaking the
+  LLVM asm parser on Linux/asan while macOS clang happened to work.
+  The bounded rewrite removed the overflow but not the aliasing; the
+  follow-up now emits `0.0` directly.
+- **Size-t wrap before allocation.** `gc_alloc` / `make_string` now reject
+  `sizeof(Obj)+extra` and `n+1` overflow before `calloc`/`memcpy`, so a
+  value-derived length cannot shrink the allocation into an
+  out-of-bounds write; `gc_alloc` returns NULL and `make_string` a safe
+  null string on overflow.
+- **Use-after-free in anonymous-struct JSON serialisation.** `kc` was
+  freed after emitting the key but still passed as a format argument to
+  the following `emit_instrf`; the free now happens after all uses.
+  Named-struct and map-literal paths were audited and are unaffected.
+- **Leak on block-scope exit.** `env_del` memmoves deleted `let` keys out
+  of the vars array without freeing them; the keys are raw `gc_strdup`
+  allocations invisible to the GC. N_BLOCK restoration leaked 7 bytes per
+  block exit (the CI asan leg reported 4×7 bytes).
+- **Crypto randomness and native-emitter parity.** `ed25519_keypair()`
+  now tries `getrandom(2)` on Linux and `arc4random_buf` on macOS before
+  `/dev/urandom`, so seccomp/container environments without `/dev` can
+  still generate keys; Windows gets a `BCryptGenRandom` CSPRNG and still
+  fails closed rather than falling back to `rand()`.
+  `crypt_verify` / `const_time_eq` were interpreter-only and broke both
+  native emitters — runtime implementations and codegen entries added.
+  Also fixes `build_core.bat` (missing `arena.c`, sha512/ed25519 objects,
+  `-DLUME_HAS_SQLITE=0`) and the `native_sql_tx_query` SQL stub.
+- **Windows `make check` noise.** An empty `LLVM_CONFIG` made
+  `$(shell $(LLVM_CONFIG) --version ...)` degrade to `/bin/sh --version`,
+  printing a screen of GNU long-option usage on every parse; guarded
+  with `$(if)` so no shell runs when the path is empty.
 
 ## [0.13.0] - 2026-11-04
 
