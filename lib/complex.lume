@@ -1,0 +1,108 @@
+// ════════════════════════════════════════════════════════════════
+// complex.lume — 复数运算库（pair 表示 [Re, Im]）
+// 版本：v0.1.0（2026-11-06，补「信息与计算科学」复数算术缺口）
+//
+// 背景：lume 无原生复数类型（此前 sig.lume 以「[Re,Im] 两列矩阵」临时规避）。
+// 本库以「单个复数 = 长度为 2 的 float[] [Re, Im]」提供可复用、经过验证的
+// 复数算术，纯 .lume、三后端一致。sig.lume 的复数序列矩阵每行即一个 [Re,Im]，
+// 可逐行调用本库（重构 sig.lume 留作后续，不在本库范围）。
+//
+// 工具内建：sqrt / exp / log / pow / sin / cos / atan2 / sinh / cosh 等均已在
+// LUME_BUILTIN_NAMES/SIG 注册，三后端可用。
+// 约定：所有复数一律以 float[]（长度 2）入参/返回；不接收 fn 形参。
+// ───────────────────────────────────────────────────────────────────
+
+// ── 构造与存取 ─────────────────────────────────────────────────
+export func cmplx(re: float, im: float): float[] {
+  let z: float[] = [re, im];
+  return z;
+}
+export func cre(z: float[]): float { return z[0]; }
+export func cim(z: float[]): float { return z[1]; }
+
+// ── 基础算术 ───────────────────────────────────────────────────
+export func cadd(z: float[], w: float[]): float[] {
+  return [z[0] + w[0], z[1] + w[1]];
+}
+export func csub(z: float[], w: float[]): float[] {
+  return [z[0] - w[0], z[1] - w[1]];
+}
+export func cmul(z: float[], w: float[]): float[] {
+  // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+  return [z[0] * w[0] - z[1] * w[1], z[0] * w[1] + z[1] * w[0]];
+}
+export func cdiv(z: float[], w: float[]): float[] {
+  // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
+  let d: float = w[0] * w[0] + w[1] * w[1];
+  return [(z[0] * w[0] + z[1] * w[1]) / d, (z[1] * w[0] - z[0] * w[1]) / d];
+}
+export func cneg(z: float[]): float[] {
+  return [-z[0], -z[1]];
+}
+export func cconj(z: float[]): float[] {
+  return [z[0], -z[1]];
+}
+export func cscalar_mul(z: float[], s: float): float[] {
+  return [z[0] * s, z[1] * s];
+}
+export func cscalar_div(z: float[], s: float): float[] {
+  return [z[0] / s, z[1] / s];
+}
+
+// ── 模、辐角、模方 ─────────────────────────────────────────────
+export func cabs(z: float[]): float {
+  return sqrt(z[0] * z[0] + z[1] * z[1]);
+}
+export func cabs2(z: float[]): float {
+  return z[0] * z[0] + z[1] * z[1];
+}
+export func carg(z: float[]): float {
+  return atan2(z[1], z[0]);
+}
+
+// ── 初等函数 ───────────────────────────────────────────────────
+export func cexp(z: float[]): float[] {
+  // e^{a+bi} = e^a (cos b + i sin b)
+  let ea: float = exp(z[0]);
+  return [ea * cos(z[1]), ea * sin(z[1])];
+}
+export func clog(z: float[]): float[] {
+  // ln|z| + i·arg(z)
+  return [log(cabs(z)), atan2(z[1], z[0])];
+}
+export func csqrt(z: float[]): float[] {
+  // 主值分支：r=|z|，实部=√((r+a)/2)，虚部=sign(b)·√((r-a)/2)
+  let a: float = z[0];
+  let b: float = z[1];
+  let r: float = sqrt(a * a + b * b);
+  let re: float = sqrt((r + a) / 2.0);
+  let im: float = 0.0;
+  if (b >= 0.0) { im = sqrt((r - a) / 2.0); }
+  else           { im = -sqrt((r - a) / 2.0); }
+  let out: float[] = [re, im];
+  return out;
+}
+export func cpow(z: float[], w: float[]): float[] {
+  // z^w = exp(w · log z)
+  return cexp(cmul(clog(z), w));
+}
+
+// ── 三角函数 ───────────────────────────────────────────────────
+export func csin(z: float[]): float[] {
+  // sin(a+bi) = sin a·cosh b + i·cos a·sinh b
+  let b: float = z[1];
+  let cb: float = cosh(b);
+  let sb: float = sinh(b);
+  return [sin(z[0]) * cb, cos(z[0]) * sb];
+}
+export func ccos(z: float[]): float[] {
+  // cos(a+bi) = cos a·cosh b − i·sin a·sinh b
+  let b: float = z[1];
+  let cb: float = cosh(b);
+  let sb: float = sinh(b);
+  return [cos(z[0]) * cb, -sin(z[0]) * sb];
+}
+export func ctan(z: float[]): float[] {
+  // tan z = sin z / cos z
+  return cdiv(csin(z), ccos(z));
+}

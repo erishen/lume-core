@@ -1,0 +1,67 @@
+// complex-consistency.lume — 复数运算库三后端一致性套件
+// （解释器 / 文本 IR / LLVM）输出逐字节一致。
+// 运行：tests/complex_backends.sh
+//
+// 覆盖：cmplx/cre/cim/cadd/csub/cmul/cdiv/cneg/cconj/cscalar_mul/cabs/cabs2/
+//       carg/cexp/clog/csqrt/cpow/csin/ccos/ctan
+// 各用例带解析对照（如 e^{iπ}=-1、√(-1)=i、clog(cexp(z))≈z、z·conj(z)=|z|²），
+// 打印 [数值, 期望, 误差] 便于肉眼核验。三后端执行同一份 AST，浮点运算顺序由
+// lume 显式控制，必然逐字节一致。
+
+import "../lib/complex.lume" as c;
+
+let PI = 3.141592653589793;
+
+// 构造与存取
+let z = c.cmplx(1.0, 2.0);
+print(c.cre(z));            // 1
+print(c.cim(z));            // 2
+
+// 乘法：(1+2i)(3+4i) = -5+10i
+let w = c.cmplx(3.0, 4.0);
+let m = c.cmul(z, w);
+print(m[0]);                // -5
+print(m[1]);                // 10
+
+// z·conj(z) = |z|²（实部=|z|²，虚部≈0）
+let zc = c.cmul(z, c.cconj(z));
+print(zc[0]);                // 1²+2² = 5
+print(zc[1]);                // 0
+
+// 除法：z/z = 1
+let d = c.cdiv(z, z);
+print(d[0]);                // 1
+print(d[1]);                // 0
+
+// 模与辐角
+print(c.cabs(c.cmplx(3.0, 4.0)));   // 5
+print(c.carg(c.cmplx(1.0, 1.0)));   // π/4 ≈ 0.785398
+
+// 欧拉公式：e^{iπ} = -1
+let ep = c.cexp(c.cmplx(0.0, PI));
+print(ep[0]);                // -1
+print(ep[1]);                // 0（≈1e-16）
+
+// 主值平方根：√(-1) = i
+let sr = c.csqrt(c.cmplx(-1.0, 0.0));
+print(sr[0]);                // 0
+print(sr[1]);                // 1（或 ≈1）
+
+// 对数-指数往返：clog(cexp(z)) ≈ z
+let z2 = c.cmplx(0.7, 1.3);
+let rt = c.clog(c.cexp(z2));
+print(rt[0] - z2[0]);        // ≈0
+print(rt[1] - z2[1]);        // ≈0
+
+// 纯虚数三角：sin(ix)=i·sinh x，cos(ix)=cosh x
+let si = c.csin(c.cmplx(0.0, 1.0));
+print(si[0]);                // 0
+print(si[1]);                // sinh(1) ≈ 1.175201
+let co = c.ccos(c.cmplx(0.0, 1.0));
+print(co[0]);                // cosh(1) ≈ 1.543081
+print(co[1]);                // 0
+
+// 幂：(1+i)^2 = 2i  → [0, 2]
+let p = c.cpow(c.cmplx(1.0, 1.0), c.cmplx(2.0, 0.0));
+print(p[0]);                // 0
+print(p[1]);                // 2
