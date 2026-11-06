@@ -2,7 +2,7 @@
 // （解释器 / 文本 IR / LLVM）输出逐字节一致。
 // 运行：tests/pde_backends.sh
 //
-// 覆盖：pde_heat_explicit / pde_heat_cn / pde_wave_leapfrog / pde_poisson_jacobi
+// 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_wave_leapfrog / pde_poisson_jacobi
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
 // 泊松 sin(πx)sin(πy)），打印 [数值, 解析, 误差] 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
@@ -63,3 +63,42 @@ let exact_poisson = sin(PI * hp * ci) * sin(PI * hp * ci);
 print(up[ci][ci]);
 print(exact_poisson);
 print(up[ci][ci] - exact_poisson);
+
+// ── 二维热方程：2D FTCS，Dirichlet / Neumann 边界 ──
+let n2 = 11;
+let x2: float[] = pde.pde_linspace(0.0, 1.0, n2);
+let dt2 = 0.0005;
+let nt2 = 200;                        // t = 0.1
+let t2 = dt2 * nt2;
+
+// Neumann 零通量：u0 = cos(πx)cos(πy)（自动满足 ∂u/∂n=0）
+// 解析 u = cos(πx)cos(πy)·e^{-2π²αt}。检查点 (0.2, 0.2)
+let u0n: float[][] = [];
+for (let i = 0; i < n2; i = i + 1) {
+  let row: float[] = [];
+  for (let j = 0; j < n2; j = j + 1) {
+    row = push(row, cos(PI * x2[i]) * cos(PI * x2[j]));
+  }
+  u0n = push(u0n, row);
+}
+let un = pde.pde_heat_2d(u0n, 0.1, 0.1, 1.0, dt2, nt2, true);
+let exact_n = cos(PI * 0.2) * cos(PI * 0.2) * exp(-2.0 * PI * PI * t2);
+print(un[2][2]);
+print(exact_n);
+print(un[2][2] - exact_n);
+
+// Dirichlet 零边界：u0 = sin(πx)sin(πy)（边界自动=0）
+// 解析 u = sin(πx)sin(πy)·e^{-2π²αt}。检查点中心 (0.5, 0.5)
+let u0d: float[][] = [];
+for (let i = 0; i < n2; i = i + 1) {
+  let row: float[] = [];
+  for (let j = 0; j < n2; j = j + 1) {
+    row = push(row, sin(PI * x2[i]) * sin(PI * x2[j]));
+  }
+  u0d = push(u0d, row);
+}
+let ud = pde.pde_heat_2d(u0d, 0.1, 0.1, 1.0, dt2, nt2, false);
+let exact_d = sin(PI * 0.5) * sin(PI * 0.5) * exp(-2.0 * PI * PI * t2);
+print(ud[5][5]);
+print(exact_d);
+print(ud[5][5] - exact_d);

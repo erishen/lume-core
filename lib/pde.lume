@@ -1,9 +1,11 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.1.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.2.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+//        v0.2.0 增补 pde_heat_2d（2D 显式热方程，Dirichlet / Neumann 零通量边界）。
 //
 // 覆盖三类经典 PDE 的有限差分法：
-//   抛物型：pde_heat_explicit（FTCS 显式）/ pde_heat_cn（Crank–Nicolson 隐式）
+//   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
+//           pde_heat_2d（2D FTCS 显式，Dirichlet / Neumann 零通量边界）
 //   双曲型：pde_wave_leapfrog（蛙跳格式）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
 //
@@ -106,6 +108,69 @@ export func pde_heat_cn(u0: float[], a: float, b: float, alpha: float,
     unew = push(unew, left_bc);
     for (let k = 0; k < m; k = k + 1) { unew = push(unew, uin[k]); }
     unew = push(unew, right_bc);
+    u = unew;
+  }
+  return u;
+}
+
+// ── 抛物型：二维热方程 显式 FTCS（Dirichlet / Neumann 零通量）────
+// u_t = α (u_xx + u_yy)，网格由 u0 (nx×ny) 给定，dx/dy 为步长。返回最终 u。
+// neumann=true：四边界零通量（∂u/∂n=0，ghost-cell 镜像）；false：Dirichlet
+//   边界固定为 0。稳定性要求 α dt (1/dx² + 1/dy²) ≤ 0.5（由调用方保证）。
+// 值语义：每步由旧网格整体重建新网格（同 pde_poisson_jacobi）。
+
+// 取邻居值并施加边界条件（越界即 ghost cell）：Neumann 镜像内部邻居，
+// Dirichlet ghost 取 0。所有访问均在函数内做边界判断，绝不越界索引。
+func pde_h2d_val(u: float[][], i: int, j: int, di: int, dj: int,
+                 nx: int, ny: int, neumann: bool): float {
+  let ii = i + di;
+  let jj = j + dj;
+  let v: float = 0.0;
+  if (ii >= 0 && ii < nx && jj >= 0 && jj < ny) {
+    v = u[ii][jj];
+  } else {
+    if (neumann) {
+      let mi = ii;
+      let mj = jj;
+      if (ii < 0)    { mi = i + 1; }
+      if (ii >= nx)  { mi = i - 1; }
+      if (jj < 0)    { mj = j + 1; }
+      if (jj >= ny)  { mj = j - 1; }
+      v = u[mi][mj];
+    } else {
+      v = 0.0;
+    }
+  }
+  return v;
+}
+
+export func pde_heat_2d(u0: float[][], dx: float, dy: float, alpha: float,
+                        dt: float, nt: int, neumann: bool): float[][] {
+  let nx = len(u0);
+  let ny = len(u0[0]);
+  let u: float[][] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[][] = [];
+    for (let i = 0; i < nx; i = i + 1) {
+      let row: float[] = [];
+      for (let j = 0; j < ny; j = j + 1) {
+        let on_boundary = (i == 0 || i == nx - 1 || j == 0 || j == ny - 1);
+        if (on_boundary && neumann == false) {
+          row = push(row, 0.0);                 // Dirichlet 边界固定为 0
+        } else {
+          let uij: float  = u[i][j];
+          // 本地函数返回值须显式标注（文本后端无法推断）
+          let uim1: float = pde_h2d_val(u, i, j, -1, 0, nx, ny, neumann);
+          let uip1: float = pde_h2d_val(u, i, j,  1, 0, nx, ny, neumann);
+          let ujm1: float = pde_h2d_val(u, i, j, 0, -1, nx, ny, neumann);
+          let ujp1: float = pde_h2d_val(u, i, j, 0,  1, nx, ny, neumann);
+          let lap = (uip1 - 2.0 * uij + uim1) / (dx * dx)
+                  + (ujp1 - 2.0 * uij + ujm1) / (dy * dy);
+          row = push(row, uij + alpha * dt * lap);
+        }
+      }
+      unew = push(unew, row);
+    }
     u = unew;
   }
   return u;
