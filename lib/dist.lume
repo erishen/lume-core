@@ -1,0 +1,202 @@
+// ════════════════════════════════════════════════════════════════
+// dist.lume — 连续概率分布库（PDF / CDF / PPF）
+// 版本：v0.1.0（2026-11-06，补「信息与计算科学」统计分布缺口）
+//
+// 设计：纯 .lume 实现，复用 C 内建 erf / lgamma / igamma / ibeta /
+//       normcdf / norminv / tdist_cdf / chisq_cdf；三后端天然一致
+//       （浮点运算顺序由 lume 显式控制，同份 AST 三后端等价）。
+//
+// 覆盖分布：uniform / normal / exponential / gamma / beta / chi-square /
+//           student-t / lognormal。
+//
+// PPF（分位数 / 逆 CDF）：正态用内置 norminv 直接给出高精度结果；
+//       其余用 bisection 在 [lo,hi] 上对各自 CDF 反解（dist_inv_cdf）。
+//
+// 约定：所有 CDF 单调递增；PPF 对 q∈(0,1) 定义，边界处做安全 clamp，
+//       避免 q=0/1 映射到 ±∞。igamma/ibeta 为「正则化」不完全
+//       gamma/beta（见 src/rt.c），故 gamma/beta/chi-square/t 的 CDF
+//       可直接套用。
+// ───────────────────────────────────────────────────────────────────
+
+let PI = 3.141592653589793;
+
+// ── 一维二分反解（内联，非闭包）─────────────────────────────
+// 重要：lume 闭包在「跨函数调用」时无法可靠捕获「函数局部变量」（仅能捕获
+// 模块级变量），故 PPF 不把 lambda 传给 fn 形参，而是在各 *_ppf 内直接内联
+// 二分循环、就地调用对应 CDF（同一函数作用域，无需闭包捕获）。
+// 约定：cdf 必须单调不减，且 cdf(lo) <= q <= cdf(hi)。
+
+// ── PDF ───────────────────────────────────────────────────────
+export func dist_uniform_pdf(x: float, a: float, b: float): float {
+  if (x < a || x > b) { return 0.0; }
+  return 1.0 / (b - a);
+}
+
+export func dist_normal_pdf(x: float, mu: float, sigma: float): float {
+  let z: float = (x - mu) / sigma;
+  return exp(-0.5 * z * z) / (sigma * sqrt(2.0 * PI));
+}
+
+export func dist_exponential_pdf(x: float, lam: float): float {
+  if (x < 0.0) { return 0.0; }
+  return lam * exp(-lam * x);
+}
+
+export func dist_gamma_pdf(x: float, k: float, theta: float): float {
+  if (x <= 0.0 || k <= 0.0 || theta <= 0.0) { return 0.0; }
+  let logp: float = (k - 1.0) * log(x) - x / theta - k * log(theta) - lgamma(k);
+  return exp(logp);
+}
+
+export func dist_beta_pdf(x: float, a: float, b: float): float {
+  if (x <= 0.0 || x >= 1.0 || a <= 0.0 || b <= 0.0) { return 0.0; }
+  let logp: float = (a - 1.0) * log(x) + (b - 1.0) * log(1.0 - x)
+                    - (lgamma(a) + lgamma(b) - lgamma(a + b));
+  return exp(logp);
+}
+
+export func dist_chisq_pdf(x: float, df: float): float {
+  // 即 shape = df/2, scale = 2 的 gamma 分布
+  return dist_gamma_pdf(x, df / 2.0, 2.0);
+}
+
+export func dist_student_t_pdf(x: float, df: float): float {
+  if (df <= 0.0) { return 0.0; }
+  let logp: float = lgamma((df + 1.0) / 2.0) - lgamma(df / 2.0)
+                    - 0.5 * log(df * PI)
+                    - ((df + 1.0) / 2.0) * log(1.0 + x * x / df);
+  return exp(logp);
+}
+
+export func dist_lognormal_pdf(x: float, mu: float, sigma: float): float {
+  if (x <= 0.0) { return 0.0; }
+  let z: float = (log(x) - mu) / sigma;
+  return exp(-0.5 * z * z) / (x * sigma * sqrt(2.0 * PI));
+}
+
+// ── CDF ───────────────────────────────────────────────────────
+export func dist_uniform_cdf(x: float, a: float, b: float): float {
+  if (x <= a) { return 0.0; }
+  if (x >= b) { return 1.0; }
+  return (x - a) / (b - a);
+}
+
+export func dist_normal_cdf(x: float, mu: float, sigma: float): float {
+  return normcdf((x - mu) / sigma);
+}
+
+export func dist_exponential_cdf(x: float, lam: float): float {
+  if (x <= 0.0) { return 0.0; }
+  return 1.0 - exp(-lam * x);
+}
+
+export func dist_gamma_cdf(x: float, k: float, theta: float): float {
+  if (x <= 0.0) { return 0.0; }
+  return igamma(k, x / theta);
+}
+
+export func dist_beta_cdf(x: float, a: float, b: float): float {
+  if (x <= 0.0) { return 0.0; }
+  if (x >= 1.0) { return 1.0; }
+  return ibeta(a, b, x);
+}
+
+export func dist_chisq_cdf(x: float, df: float): float {
+  return chisq_cdf(x, df);
+}
+
+export func dist_student_t_cdf(x: float, df: float): float {
+  return tdist_cdf(x, df);
+}
+
+export func dist_lognormal_cdf(x: float, mu: float, sigma: float): float {
+  if (x <= 0.0) { return 0.0; }
+  return normcdf((log(x) - mu) / sigma);
+}
+
+// ── PPF（分位数 / 逆 CDF）─────────────────────────────────────
+export func dist_uniform_ppf(q: float, a: float, b: float): float {
+  if (q <= 0.0) { return a; }
+  if (q >= 1.0) { return b; }
+  return a + q * (b - a);
+}
+
+export func dist_normal_ppf(q: float, mu: float, sigma: float): float {
+  // 直接调用内置标准正态逆 CDF，高精度
+  let qq: float = q;
+  if (qq < 1e-12) { qq = 1e-12; }
+  if (qq > 1.0 - 1e-12) { qq = 1.0 - 1e-12; }
+  return mu + sigma * norminv(qq);
+}
+
+export func dist_exponential_ppf(q: float, lam: float): float {
+  if (q <= 0.0) { return 0.0; }
+  if (q >= 1.0) { return 1e308; }
+  return -log(1.0 - q) / lam;
+}
+
+export func dist_gamma_ppf(q: float, k: float, theta: float): float {
+  let qq: float = q;
+  if (qq < 1e-12) { qq = 1e-12; }
+  if (qq > 1.0 - 1e-12) { qq = 1.0 - 1e-12; }
+  let lo: float = 0.0;
+  let hi: float = 1e6 * theta * (k + 1.0);
+  for (let i = 0; i < 120; i = i + 1) {
+    let m: float = 0.5 * (lo + hi);
+    if (dist_gamma_cdf(m, k, theta) < qq) { lo = m; } else { hi = m; }
+  }
+  return 0.5 * (lo + hi);
+}
+
+export func dist_beta_ppf(q: float, a: float, b: float): float {
+  let qq: float = q;
+  if (qq < 1e-12) { qq = 1e-12; }
+  if (qq > 1.0 - 1e-12) { qq = 1.0 - 1e-12; }
+  let lo: float = 0.0;
+  let hi: float = 1.0;
+  for (let i = 0; i < 120; i = i + 1) {
+    let m: float = 0.5 * (lo + hi);
+    if (dist_beta_cdf(m, a, b) < qq) { lo = m; } else { hi = m; }
+  }
+  return 0.5 * (lo + hi);
+}
+
+export func dist_chisq_ppf(q: float, df: float): float {
+  let qq: float = q;
+  if (qq < 1e-12) { qq = 1e-12; }
+  if (qq > 1.0 - 1e-12) { qq = 1.0 - 1e-12; }
+  let lo: float = 0.0;
+  let hi: float = 1e6 * (df + 1.0);
+  for (let i = 0; i < 120; i = i + 1) {
+    let m: float = 0.5 * (lo + hi);
+    if (dist_chisq_cdf(m, df) < qq) { lo = m; } else { hi = m; }
+  }
+  return 0.5 * (lo + hi);
+}
+
+export func dist_student_t_ppf(q: float, df: float): float {
+  let qq: float = q;
+  if (qq < 1e-12) { qq = 1e-12; }
+  if (qq > 1.0 - 1e-12) { qq = 1.0 - 1e-12; }
+  let hi: float = 1000.0;
+  if (df < 1.0) { hi = 1e4; }
+  let lo: float = -hi;
+  for (let i = 0; i < 140; i = i + 1) {
+    let m: float = 0.5 * (lo + hi);
+    if (dist_student_t_cdf(m, df) < qq) { lo = m; } else { hi = m; }
+  }
+  return 0.5 * (lo + hi);
+}
+
+export func dist_lognormal_ppf(q: float, mu: float, sigma: float): float {
+  let qq: float = q;
+  if (qq < 1e-12) { qq = 1e-12; }
+  if (qq > 1.0 - 1e-12) { qq = 1.0 - 1e-12; }
+  let lo: float = 1e-12;
+  let hi: float = 1e12;
+  for (let i = 0; i < 160; i = i + 1) {
+    let m: float = 0.5 * (lo + hi);
+    if (dist_lognormal_cdf(m, mu, sigma) < qq) { lo = m; } else { hi = m; }
+  }
+  return 0.5 * (lo + hi);
+}
