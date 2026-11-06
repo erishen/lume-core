@@ -3,9 +3,11 @@
 // 运行：tests/pde_backends.sh
 //
 // 覆盖：pde_heat_explicit / pde_heat_cn / pde_heat_2d / pde_heat_2d_adi /
-//       pde_wave_leapfrog / pde_advect_upwind / pde_advect_lw / pde_poisson_jacobi
+//       pde_wave_leapfrog / pde_advect_upwind / pde_advect_lw /
+//       pde_burgers_inviscid / pde_burgers_viscous / pde_poisson_jacobi
 // 各用例均带解析解对照（热方程 sin(πx)e^{-π²t}、波动 sin(πx)cos(πt)、
-// 泊松 sin(πx)sin(πy)），打印 [数值, 解析, 误差] 三行便于肉眼核验。
+// 泊松 sin(πx)sin(πy)、Burgers 稳态行波 −tanh(5x)、Riemann 激波速度 0.5），
+// 打印 [数值, 解析, 误差] 三行便于肉眼核验。
 // 注：有限差分法输出为收敛到的浮点值；三后端因执行同一份 AST（浮点运算顺序
 // 由 lume 显式控制）必然逐字节一致，与具体精度无关。
 
@@ -172,3 +174,93 @@ print(amp0 - ampl);                     // LW 耗散量（应远小于上一行�
 // Dirichlet 非周期分支冒烟：bc=0，验证边界分支不越界、结果有限
 let udd = pde.pde_advect_lw(ua, dxa, 1.0, dta, nta, false, 0.0);
 print(udd[na - 1]);
+
+// ── 非线性 Burgers：粘性稳态行波（精确解析解）──────────────────
+// u_t + u·u_x = ν·u_xx 有稳态行波 u(x) = −a·tanh(a·x/(2ν)) + c。
+// 取 a=1、c=0、ν=0.1 → u(x) = −tanh(5x)，代入得 u·u_x = ν·u_xx，
+// 即 u_t = 0：该剖面是**精确稳态解**。域 [−1,1]、n=41 → dx=0.05，
+// 网格 Peclet 数 |u|dx/ν = 0.5 < 2（中心差分不振荡）。
+// 以解析解为初值演化到 t=0.2，数值解应保持不变（离散稳态误差 O(dx²)）。
+let nb = 41;
+let dxb = 2.0 / (nb - 1.0);
+let bclb = tanh(5.0);
+let bcrb = -bclb;
+let ub0: float[] = [];
+for (let bg_i0 = 0; bg_i0 < nb; bg_i0 = bg_i0 + 1) {
+  let xb = -1.0 + dxb * bg_i0;
+  ub0 = push(ub0, -tanh(5.0 * xb));
+}
+let ubv = pde.pde_burgers_viscous(ub0, dxb, 0.1, 0.002, 100, false, bclb, bcrb);
+print(ubv[10]);                          // x = −0.5 处的数值解
+print(tanh(2.5));                        // 解析：−tanh(5·(−0.5)) = tanh(2.5)
+print(ubv[10] - tanh(2.5));              // 稳态误差（应 ≈1e-4）
+print(ubv[20]);                          // x = 0，解析 0（反对称）
+
+// ── 非线性 Burgers：无粘 Riemann 激波（解析激波速度）───────────
+// u_L=1、u_R=0，跳跃位于网格界面 x=0.495（i=49/50 之间）。
+// Rankine–Hugoniot: s = (f(1)−f(0))/(1−0) = 0.5，故 t=0.1 时
+// u=0.5 的插值位置应为 0.495 + 0.5·0.1 = 0.545。
+// 常值入/出流 bcl=1、bcr=0 → 净通量 0.5，∫u dx 增量 = 0.5·t = 0.05。
+let nr = 100;
+let dxr = 1.0 / (nr * 1.0);
+let dtr = 0.004;                         // max|u|·dt/dx = 0.4（稳定）
+let ur0: float[] = [];
+for (let bg_i1 = 0; bg_i1 < nr; bg_i1 = bg_i1 + 1) {
+  let vv: float = 0.0;
+  if (bg_i1 < 50) { vv = 1.0; }
+  ur0 = push(ur0, vv);
+}
+let ubr = pde.pde_burgers_inviscid(ur0, dxr, dtr, 25, false, 1.0, 0.0);
+
+// 以 u=0.5 线性插值定位激波：Rusanov 把跳跃抹宽数格，中点仍精确
+let xshock = 0.0;
+for (let bg_i2 = 0; bg_i2 < nr - 1; bg_i2 = bg_i2 + 1) {
+  if (ubr[bg_i2] >= 0.5 && ubr[bg_i2 + 1] < 0.5) {
+    xshock = (bg_i2 + (ubr[bg_i2] - 0.5) / (ubr[bg_i2] - ubr[bg_i2 + 1])) * dxr;
+  }
+}
+print(xshock);
+print(0.545);
+print(xshock - 0.545);                   // 激波位置误差
+
+// 质量平衡：守恒型格式下 Δ∫u = (f(bcl) − f(bcr))·t
+let sr0 = 0.0;
+let srt = 0.0;
+for (let bg_i3 = 0; bg_i3 < nr; bg_i3 = bg_i3 + 1) {
+  sr0 = sr0 + ur0[bg_i3];
+  srt = srt + ubr[bg_i3];
+}
+print(dxr * (srt - sr0));
+print(0.05);
+print(dxr * (srt - sr0) - 0.05);
+
+// 一阶单调格式应满足最大值原理：解不越出 [u_R, u_L]
+let bg_umax = 0.0;
+let bg_umin = 1.0;
+for (let bg_i4 = 0; bg_i4 < nr; bg_i4 = bg_i4 + 1) {
+  if (ubr[bg_i4] > bg_umax) { bg_umax = ubr[bg_i4]; }
+  if (ubr[bg_i4] < bg_umin) { bg_umin = ubr[bg_i4]; }
+}
+print(bg_umax);                          // ≈1
+print(bg_umin);                          // ≈0（无负过冲）
+
+// 周期分支：守恒型格式 + 周期环绕 → Σu 严格不变（无边界通量泄漏）
+let up0: float[] = [];
+for (let bg_i5 = 0; bg_i5 < na; bg_i5 = bg_i5 + 1) {
+  up0 = push(up0, sin(2.0 * PI * (bg_i5 / (na * 1.0))));
+}
+let ubp = pde.pde_burgers_inviscid(up0, dxa, 0.2 * dxa, 20, true, 0.0, 0.0);
+let sbp0 = 0.0;
+let sbpt = 0.0;
+for (let bg_i6 = 0; bg_i6 < na; bg_i6 = bg_i6 + 1) {
+  sbp0 = sbp0 + up0[bg_i6];
+  sbpt = sbpt + ubp[bg_i6];
+}
+print(sbpt - sbp0);                      // ≈0
+
+// 粘性求解器的周期分支：常数态 u≡0.5 是精确稳态（对流、扩散项均为 0），
+// 且不会触发首尾点 Dirichlet 强加分支。
+let uc0: float[] = [];
+for (let bg_i7 = 0; bg_i7 < na; bg_i7 = bg_i7 + 1) { uc0 = push(uc0, 0.5); }
+let ucv = pde.pde_burgers_viscous(uc0, dxa, 0.1, 0.001, 10, true, 0.0, 0.0);
+print(ucv[17] - 0.5);                   // ≈0

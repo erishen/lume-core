@@ -1,10 +1,13 @@
 // ════════════════════════════════════════════════════════════════
 // pde.lume — 偏微分方程数值解库（有限差分）
-// 版本：v0.3.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
+// 版本：v0.4.0（2026-11-06，补「信息与计算科学」PDE 缺口；此前仅有 ODE rk4）
 //        v0.2.0 增补 2D 热方程：pde_heat_2d（显式 FTCS，Dirichlet / Neumann
 //               零通量边界）+ pde_heat_2d_adi（ADI 交替方向隐式，无条件稳定）。
 //        v0.3.0 增补 1D 线性对流：pde_advect_upwind / pde_advect_lw，支持
 //               周期边界（第三种边界条件类型）。
+//        v0.4.0 增补非线性 Burgers：pde_burgers_inviscid（守恒律 / Rusanov
+//               数值通量）/ pde_burgers_viscous（粘性）；边界泛化为左右
+//               独立 Dirichlet（bcl / bcr）。
 //
 // 覆盖三类经典 PDE 的有限差分法：
 //   抛物型：pde_heat_explicit（1D FTCS 显式）/ pde_heat_cn（1D Crank–Nicolson 隐式）
@@ -12,14 +15,16 @@
 //           pde_heat_2d_adi（2D ADI 隐式，复用 pde_tridiag，无条件稳定）
 //   双曲型：pde_wave_leapfrog（蛙跳格式）
 //           pde_advect_upwind（1D 线性对流，一阶迎风）/ pde_advect_lw（二阶 Lax–Wendroff）
+//           pde_burgers_inviscid（非线性守恒律，Rusanov 通量，可捕激波）
+//           pde_burgers_viscous（粘性 Burgers，守恒型对流 + 中心扩散）
 //   椭圆型：pde_poisson_jacobi（Jacobi 迭代解 ∇²u = f）
-// 边界条件覆盖：Dirichlet（常数 / 零）、Neumann（2D 零通量）、周期（1D 对流）
+// 边界条件覆盖：Dirichlet（常数 / 零 / 左右独立）、Neumann（2D 零通量）、周期
 //
 // 设计：纯 .lume、三后端一致；不接收 fn 形参（规避 lume 闭包跨函数捕获
 //       局部变量的限制），初值/源项一律以预计算数组传入，边界条件以标量传入。
 // 工具：pde_linspace（坐标数组）、pde_tridiag（Thomas 算法解三对角）、
 //       pde_reverse（1D 反转）、pde_transpose（2D 转置）、
-//       pde_h2d_val / pde_adv_val（邻居取值 + 边界条件）。
+//       pde_h2d_val / pde_bc_val（邻居取值 + 边界条件）。
 //       所有网格更新均为值语义（用 push 整体重建）。
 // ───────────────────────────────────────────────────────────────────
 
@@ -331,10 +336,12 @@ export func pde_wave_leapfrog(u0: float[], a: float, b: float, c: float,
 //   upwind 一阶精度、强数值耗散（振幅衰减），但单调不振荡；
 //   Lax–Wendroff 二阶精度、振幅保持好，但有色散（相位误差）、间断处振荡。
 
-// 取邻居值并施加边界：周期环绕或 Dirichlet 常数 bc。
+// 取邻居值并施加边界：周期环绕，或左右独立 Dirichlet 常值 bcl / bcr。
+// 线性对流两边界同值时传 bcl=bcr=bc（外部 API 仍只需一个 bc 标量）。
 // idx 只会是 −1 或 n，故一次加/减 n 即落回 [0,n)。绝不越界索引。
-func pde_adv_val(u: float[], idx: int, n: int, periodic: bool, bc: float): float {
-  let v: float = bc;
+func pde_bc_val(u: float[], idx: int, n: int, periodic: bool,
+                bcl: float, bcr: float): float {
+  let v: float = bcl;                  // idx < 0 → 左边界
   if (idx >= 0 && idx < n) {
     v = u[idx];
   } else {
@@ -343,6 +350,8 @@ func pde_adv_val(u: float[], idx: int, n: int, periodic: bool, bc: float): float
       if (k < 0)  { k = k + n; }
       if (k >= n) { k = k - n; }
       v = u[k];
+    } else {
+      if (idx >= n) { v = bcr; }       // 右边界
     }
   }
   return v;
@@ -357,7 +366,7 @@ export func pde_advect_upwind(u0: float[], dx: float, c: float, dt: float,
   for (let step = 0; step < nt; step = step + 1) {
     let unew: float[] = [];
     for (let i = 0; i < n; i = i + 1) {
-      let uim1: float = pde_adv_val(u, i - 1, n, periodic, bc);
+      let uim1: float = pde_bc_val(u, i - 1, n, periodic, bc, bc);
       unew = push(unew, u[i] - C * (u[i] - uim1));
     }
     u = unew;
@@ -375,10 +384,85 @@ export func pde_advect_lw(u0: float[], dx: float, c: float, dt: float,
   for (let step = 0; step < nt; step = step + 1) {
     let unew: float[] = [];
     for (let i = 0; i < n; i = i + 1) {
-      let uim1: float = pde_adv_val(u, i - 1, n, periodic, bc);
-      let uip1: float = pde_adv_val(u, i + 1, n, periodic, bc);
+      let uim1: float = pde_bc_val(u, i - 1, n, periodic, bc, bc);
+      let uip1: float = pde_bc_val(u, i + 1, n, periodic, bc, bc);
       unew = push(unew, u[i] - (C / 2.0) * (uip1 - uim1)
                         + (C * C / 2.0) * (uip1 - 2.0 * u[i] + uim1));
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// ── 双曲型（非线性）：Burgers 方程 ────────────────────────────
+// 通量 f(u) = u²/2，特征速度 f'(u) = u（非线性：波形自陡化，压缩区形成激波）。
+// 与上面的线性对流不同，这里必须用**守恒型**格式才能给出正确的激波速度
+// （Rankine–Hugoniot: s = [f]/[u]）；非守恒形式会算出错误的跳跃位置。
+// 边界沿用 pde_bc_val：周期，或左右独立 Dirichlet bcl / bcr。
+
+// 无粘 Burgers：u_t + (u²/2)_x = 0，局部 Lax–Friedrichs（Rusanov）数值通量
+//   F_{i+1/2} = ½(f(u_i)+f(u_{i+1})) − ½·a·(u_{i+1}−u_i)
+//   a = max(|u_i|, |u_{i+1}|) 为该界面最大特征速度
+//   u_i^{n+1} = u_i − (dt/dx)·(F_{i+1/2} − F_{i−1/2})
+// 一阶、单调、无振荡，收敛到熵解；代价是激波被抹宽数格。
+// 稳定条件 max|u|·dt/dx ≤ 1（由调用方保证）。
+export func pde_burgers_inviscid(u0: float[], dx: float, dt: float, nt: int,
+                                 periodic: bool, bcl: float, bcr: float): float[] {
+  let n = len(u0);
+  let lam: float = dt / dx;
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      let uim1: float = pde_bc_val(u, i - 1, n, periodic, bcl, bcr);
+      let uip1: float = pde_bc_val(u, i + 1, n, periodic, bcl, bcr);
+      let fi: float   = 0.5 * u[i] * u[i];
+      let fim1: float = 0.5 * uim1 * uim1;
+      let fip1: float = 0.5 * uip1 * uip1;
+      let aL: float = abs(uim1);
+      if (abs(u[i]) > aL) { aL = abs(u[i]); }
+      let aR: float = abs(u[i]);
+      if (abs(uip1) > aR) { aR = abs(uip1); }
+      let FL: float = 0.5 * (fim1 + fi) - 0.5 * aL * (u[i] - uim1);
+      let FR: float = 0.5 * (fi + fip1) - 0.5 * aR * (uip1 - u[i]);
+      unew = push(unew, u[i] - lam * (FR - FL));
+    }
+    u = unew;
+  }
+  return u;
+}
+
+// 粘性 Burgers：u_t + (u²/2)_x = ν·u_xx，显式守恒型（中心差分，无数值粘性）
+//   u_i^{n+1} = u_i − (dt/2dx)(f(u_{i+1}) − f(u_{i−1}))
+//               + (ν dt/dx²)(u_{i+1} − 2u_i + u_{i−1})
+// 非周期时首末点**强加** Dirichlet（bcl / bcr），内部点邻居均在域内，
+// 无需 ghost cell 近似；周期时所有点环绕取值。
+// 稳定：ν dt/dx² ≤ 0.5、|u|dt/dx ≤ 1（调用方保证）；中心差分还要求网格
+// Peclet 数 |u|dx/ν ≲ 2，否则出现非物理振荡（此时应改用上面的迎风通量）。
+export func pde_burgers_viscous(u0: float[], dx: float, nu: float, dt: float,
+                                nt: int, periodic: bool,
+                                bcl: float, bcr: float): float[] {
+  let n = len(u0);
+  let lam: float = dt / (2.0 * dx);
+  let dif: float = nu * dt / (dx * dx);
+  let u: float[] = u0;
+  for (let step = 0; step < nt; step = step + 1) {
+    let unew: float[] = [];
+    for (let i = 0; i < n; i = i + 1) {
+      if (periodic == false && i == 0) {
+        unew = push(unew, bcl);
+      } else {
+        if (periodic == false && i == n - 1) {
+          unew = push(unew, bcr);
+        } else {
+          let uim1: float = pde_bc_val(u, i - 1, n, periodic, bcl, bcr);
+          let uip1: float = pde_bc_val(u, i + 1, n, periodic, bcl, bcr);
+          let fim1: float = 0.5 * uim1 * uim1;
+          let fip1: float = 0.5 * uip1 * uip1;
+          unew = push(unew, u[i] - lam * (fip1 - fim1)
+                            + dif * (uip1 - 2.0 * u[i] + uim1));
+        }
+      }
     }
     u = unew;
   }
