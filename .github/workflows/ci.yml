@@ -30,6 +30,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Byte-level privacy gate, independent so it turns around in seconds:
+  # paths, private workspace tokens, credential shapes and sensitive
+  # filenames over every HEAD blob, binaries included. The shell
+  # treecheck stays for the build-machine-path + remote-GC-probe workflow;
+  # this one covers the pattern classes that let a compiled CGI stay green
+  # through a 2026 history scrub. Scope is HEAD only, never history.
+  privacy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - name: privacycheck (extended byte-level patterns over HEAD blobs)
+        run: make privacycheck
+
   test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

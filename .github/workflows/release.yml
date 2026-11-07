@@ -49,8 +49,10 @@ jobs:
         run: make check
       - name: Full regression suite (both emitters, crypto, backend parity)
         run: make test
-      - name: Privacy guard
+      - name: Privacy guard (build-machine paths + remote GC probe)
         run: make treecheck
+      - name: Privacy guard (extended byte-level patterns over HEAD)
+        run: make privacycheck
       - name: "Verify release version literals agree"
         run: make check-version
 

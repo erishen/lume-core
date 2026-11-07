@@ -870,6 +870,15 @@ treecheck:
 	@./scripts/check-tree-privacy.sh
 	@echo "==> treecheck passed: no build-machine path tracked in HEAD"
 
+# --- 扩展隐私闸门 (make privacycheck) --------------------------------------
+# treecheck 只认 /Users|/home/<name>; 2026-11-07 审计发现公开历史里还有私有
+# 工作区名混在编译过的 CGI 二进制中, 凭据形态与敏感文件名同样无人拦。
+# check-repo-privacy.py 按字节扫 HEAD 全部 blob(含二进制)覆盖四类判据, 并
+# 在每次运行前自检正则仍生效(防「绿但什么都没查」)。只扫 HEAD; --all 是
+# 手动审计, 不挂 CI(已公开历史需重写才能清, 挂上只会永远红)。
+privacycheck:
+	@python3 scripts/check-repo-privacy.py
+
 clean:
 	rm -rf build build-pack bin build-asan
 
@@ -1041,7 +1050,7 @@ endif
 # other mkdir-only directory targets above.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
-         treecheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
+         treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
          fsroot-test check-version \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
