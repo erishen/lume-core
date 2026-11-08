@@ -7,19 +7,26 @@
  *     allowlist. Enabling spawn without an allowlist permits nothing
  *     (fail closed) — an ungated shell primitive is exactly the disclosure
  *     the no_fs / no_net / LUME_FS_ROOT work exists to prevent.
- *  2. No shell. argv is a list of strings handed to execvp(); there is no
- *     system(), no "sh -c", no command line assembled from script text.
+ *  2. No shell, and no PATH search. argv is a list of strings; the executable
+ *     is resolved to an absolute realpath and handed to execv()/execve().
+ *     There is no system(), no "sh -c", no execvp(), no command line built
+ *     from script text. Bare command names only resolve inside the
+ *     LUME_SPAWN_ROOT directory set; without it they are refused.
  *  3. The script never receives a raw fd. spawn() returns a 1-based opaque
  *     handle into a fixed process table and every sibling takes that handle.
  *     A deterministic slot index (not the OS pid / fd numbers) is also the
  *     only shape in which the two native emitters could ever agree
  *     byte-identically in tests/native-consistency.lume.
- *  4. POSIX only. The Windows build filters this file out and compiles the
+ *  4. An explicit env map is filtered: LD_ and DYLD_ loader variables and
+ *     PATH overrides are refused, and only a small baseline is inherited.
+ *  5. POSIX only. The Windows build filters this file out and compiles the
  *     stubs in builtins.c (LUME_HAS_SPAWN=0), same shape as builtins_http.c.
  *
- * Slots are never reused: once a handle is handed out it keeps denoting the
- * same child for the life of the VM, so a stale handle can never accidentally
- * operate on a different process after a slot was recycled.
+ * A slot is reclaimed only after its child has been waited for, and every
+ * (re)use bumps a generation counter embedded in the handle. A stale handle
+ * therefore never addresses a different child, while a long-lived VM is no
+ * longer capped at 31 spawns — the original fixed-table design would have
+ * made a sidecar executor fail with "process table is full" after 31 jobs.
  */
 #include "builtins_internal.h"
 
@@ -36,21 +43,31 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+/* POSIX leaves environ undeclared unless a feature macro is set. */
+extern char **environ;
+
 #define LUME_SPAWN_SLOTS   32
 #define LUME_SPAWN_ARGC_MAX 64
 #define LUME_SPAWN_ARG_LEN  4096
 #define LUME_SPAWN_INPUT_MAX 4096   /* <= PIPE_BUF: one atomic, non-blocking write */
 #define LUME_SPAWN_READ_MAX  65536
 #define LUME_SPAWN_DEFAULT_TIMEOUT_MS 500
+#define LUME_SPAWN_PATH_MAX  8192
+#define LUME_SPAWN_ENV_MAX   64      /* max explicit env entries */
+#define LUME_SPAWN_ENV_KEY_MAX 64
+#define LUME_SPAWN_ENV_VAL_MAX 4096
 
 typedef struct {
     pid_t pid;
     int in_fd, out_fd, err_fd;
     bool waited;
+    bool active;              /* slot denotes a child until reclaimed */
+    unsigned long long gen;   /* generation tag embedded in the handle */
     int exit_code;
 } ProcSlot;
 
 static ProcSlot g_slots[LUME_SPAWN_SLOTS];
+static unsigned long long g_next_gen;
 static bool g_cleanup_registered;
 
 /* ------------------------------------------------------------------ *
@@ -151,12 +168,18 @@ static bool handle_ok(VM *vm, const char *what, Value arg, ProcSlot **slot,
         return false;
     }
     long long h = AS_INT(arg);
-    if (h < 1 || h >= LUME_SPAWN_SLOTS || g_slots[h].pid <= 0) {
+    /* handle = generation * SLOT_COUNT + slot. Both halves are checked:
+     * a recycled slot carries a new generation, so an old handle cannot
+     * silently start addressing a different child. */
+    long long gen = h / LUME_SPAWN_SLOTS;
+    int idx = (int)(h % LUME_SPAWN_SLOTS);
+    if (gen < 1 || idx < 1 || !g_slots[idx].active ||
+        g_slots[idx].gen != (unsigned long long)gen) {
         *out = result(vm, false, "unknown or closed process handle");
         (void)what;
         return false;
     }
-    *slot = &g_slots[h];
+    *slot = &g_slots[idx];
     return true;
 }
 
@@ -164,6 +187,224 @@ static const char *string_of(Value v) {
     if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_STRING)
         return obj_string(AS_OBJ(v));
     return NULL;
+}
+
+/* ------------------------------------------------------------------ *
+ * Executable resolution (P14 step 2, TODO item "env + LUME_SPAWN_ROOT").
+ * execvp()'s PATH search was the last way to execute a binary the
+ * allowlist did not actually name: a writable directory earlier in PATH
+ * could shadow an allowlisted "echo". Nothing here consults PATH.
+ *
+ *  - bare names (no slash) are looked up only in the LUME_SPAWN_ROOT set;
+ *    without a root they are refused;
+ *  - explicit paths are realpath()'ed and, when a root is configured,
+ *    must resolve inside one of the roots;
+ *  - every candidate is realpath()'ed again and checked with X_OK, so a
+ *    symlink inside a root cannot point at an executable outside it.
+ *
+ * main.c already validated the root set at startup; we re-resolve per
+ * spawn so a symlink swapped after startup is still seen. Errors are
+ * constant strings: script-controlled argv[0] is never echoed back.
+ * ------------------------------------------------------------------ */
+static bool path_within(const char *root_real, const char *rp) {
+    size_t bl = strlen(root_real);
+    if (strncmp(rp, root_real, bl) != 0) return false;
+    char c = rp[bl];
+    /* "/opt/bin" must not match "/opt/bin-evil" */
+    return c == '\0' || c == '/';
+}
+
+/* Copy one colon-separated root segment into buf. Returns false for an
+ * over-long or empty segment (refused rather than silently truncated). */
+static bool root_segment(const char **cursor, char *buf, size_t cap) {
+    const char *p = *cursor;
+    const char *s = p;
+    while (*p && *p != ':') p++;
+    size_t n = (size_t)(p - s);
+    if (*p == ':') p++;
+    *cursor = p;
+    if (n == 0 || n >= cap) return false;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    return true;
+}
+
+static bool root_contains(const char *roots, const char *rp) {
+    const char *p = roots;
+    char seg[LUME_SPAWN_PATH_MAX];
+    while (*p) {
+        if (root_segment(&p, seg, sizeof seg)) {
+            char *rr = lume_realpath(seg);
+            if (rr) {
+                bool hit = path_within(rr, rp);
+                free(rr);
+                if (hit) return true;
+            }
+        }
+    }
+    return false;
+}
+
+static char *resolve_exec(VM *vm, const char *cmd, const char **why) {
+    *why = NULL;
+    const char *roots = vm->spawn_root;
+    bool rooted = roots && roots[0];
+    bool bare = strchr(cmd, '/') == NULL;
+    if (bare && !rooted) {
+        *why = "bare command names require LUME_SPAWN_ROOT or an absolute path (PATH is never searched)";
+        return NULL;
+    }
+
+    char cand[LUME_SPAWN_PATH_MAX];
+    char *resolved = NULL;
+    if (bare) {
+        const char *p = roots;
+        char seg[LUME_SPAWN_PATH_MAX];
+        while (*p && !resolved) {
+            if (!root_segment(&p, seg, sizeof seg)) continue;
+            char *rr = lume_realpath(seg);
+            if (!rr) continue;
+            size_t rl = strlen(rr), cl = strlen(cmd);
+            if (rl + 1 + cl + 1 <= sizeof cand) {
+                memcpy(cand, rr, rl);
+                cand[rl] = '/';
+                memcpy(cand + rl + 1, cmd, cl + 1);
+                char *rp = lume_realpath(cand);
+                if (rp) {
+                    if (path_within(rr, rp) && access(rp, X_OK) == 0)
+                        resolved = rp;
+                    else
+                        free(rp);
+                }
+            }
+            free(rr);
+        }
+    } else {
+        char *rp = lume_realpath(cmd);
+        if (rp) {
+            bool ok = access(rp, X_OK) == 0;
+            if (ok && rooted) ok = root_contains(roots, rp);
+            if (ok) resolved = rp; else free(rp);
+        }
+    }
+    if (!resolved)
+        *why = rooted
+             ? "executable not found in LUME_SPAWN_ROOT, outside it, or not executable"
+             : "executable not found or not executable";
+    return resolved;
+}
+
+/* ------------------------------------------------------------------ *
+ * Optional env map (P14 step 2). An explicit env does NOT inherit the
+ * whole parent environment: only a small baseline (PATH/HOME/locale/
+ * TERM/...) plus the script's entries. LD_ and DYLD_ loader variables
+ * and PATH / IFS / SHELL overrides are refused — otherwise `env` would
+ * simply re-open the injection surface the executable root just closed.
+ * Absent env means inherit the parent environment (execv, old behaviour).
+ * ------------------------------------------------------------------ */
+static bool env_key_valid(const char *k) {
+    if (!k || !k[0] || strlen(k) > LUME_SPAWN_ENV_KEY_MAX) return false;
+    unsigned char c = (unsigned char)k[0];
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')) return false;
+    for (const char *p = k + 1; *p; p++) {
+        c = (unsigned char)*p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_')) return false;
+    }
+    return true;
+}
+
+static bool env_key_denied(const char *k) {
+    static const char *blocked[] = {
+        "PATH", "IFS", "ENV", "BASH_ENV", "SHELL", "LD_PRELOAD",
+        "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
+        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH", NULL
+    };
+    for (int i = 0; blocked[i]; i++)
+        if (strcmp(k, blocked[i]) == 0) return true;
+    return strncmp(k, "LD_", 3) == 0 || strncmp(k, "DYLD_", 5) == 0;
+}
+
+static bool env_baseline(const char *k, size_t n) {
+    static const char *base[] = {
+        "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+        "TERM", "TZ", "USER", "LOGNAME", NULL
+    };
+    for (int i = 0; base[i]; i++)
+        if (n == strlen(base[i]) && strncmp(k, base[i], n) == 0) return true;
+    return n >= 3 && strncmp(k, "LC_", 3) == 0;
+}
+
+static void free_envp(char **p) {
+    if (!p) return;
+    for (char **e = p; *e; e++) free(*e);
+    free(p);
+}
+
+/* NULL + *why == NULL: no env option (inherit). NULL + *why set: refusal.
+ * Otherwise a malloc'd, NULL-terminated envp the caller must free_envp(). */
+static char **build_env(VM *vm, Obj *opts, const char **why) {
+    *why = NULL;
+    if (!opts) return NULL;
+    int found = 0;
+    Value ev = map_get(vm, opts, "env", &found);
+    if (!found || IS_NULL(ev)) return NULL;
+    if (!IS_OBJ(ev) || AS_OBJ(ev)->type != OBJ_MAP) {
+        *why = "spawn(): env must be a map of strings";
+        return NULL;
+    }
+    Obj *m = AS_OBJ(ev);
+    if (m->as.map.count > LUME_SPAWN_ENV_MAX) {
+        *why = "spawn(): env has too many entries";
+        return NULL;
+    }
+    for (int i = 0; i < m->as.map.count; i++) {
+        const char *k = m->as.map.keys[i];
+        const char *v = string_of(m->as.map.vals[i]);
+        if (!env_key_valid(k) || env_key_denied(k)) {
+            *why = "spawn(): env contains an invalid or restricted key";
+            return NULL;
+        }
+        if (!v || strlen(v) > LUME_SPAWN_ENV_VAL_MAX) {
+            *why = "spawn(): env values must be strings <= 4096 bytes";
+            return NULL;
+        }
+    }
+
+    size_t inherited = 0;
+    for (char **e = environ; e && *e; e++) inherited++;
+    char **out = calloc(inherited + (size_t)m->as.map.count + 1, sizeof(char *));
+    if (!out) { *why = "spawn(): out of memory"; return NULL; }
+    size_t n = 0;
+    for (char **e = environ; e && *e; e++) {
+        const char *eq = strchr(*e, '=');
+        if (!eq) continue;
+        size_t kl = (size_t)(eq - *e);
+        if (!env_baseline(*e, kl)) continue;
+        bool overridden = false;
+        for (int i = 0; i < m->as.map.count; i++) {
+            const char *k = m->as.map.keys[i];
+            if (strlen(k) == kl && strncmp(*e, k, kl) == 0) { overridden = true; break; }
+        }
+        if (overridden) continue;
+        out[n] = strdup(*e);
+        if (!out[n]) { free_envp(out); *why = "spawn(): out of memory"; return NULL; }
+        n++;
+    }
+    for (int i = 0; i < m->as.map.count; i++) {
+        const char *k = m->as.map.keys[i];
+        const char *v = string_of(m->as.map.vals[i]);
+        size_t kl = strlen(k), vl = strlen(v);
+        char *entry = malloc(kl + 1 + vl + 1);
+        if (!entry) { free_envp(out); *why = "spawn(): out of memory"; return NULL; }
+        memcpy(entry, k, kl);
+        entry[kl] = '=';
+        memcpy(entry + kl + 1, v, vl + 1);
+        out[n++] = entry;
+    }
+    /* calloc already zero-terminated at out[n] */
+    return out;
 }
 
 static long long timeout_of(Value *args, int argc, int idx) {
@@ -184,7 +425,7 @@ static long long now_ms(void) {
 static void cleanup_children(void) {
     for (int i = 1; i < LUME_SPAWN_SLOTS; i++) {
         ProcSlot *s = &g_slots[i];
-        if (s->pid <= 0 || s->waited) continue;
+        if (!s->active || s->waited) continue;
         kill(s->pid, SIGKILL);
         int status = 0;
         while (waitpid(s->pid, &status, 0) < 0 && errno == EINTR) { }
@@ -197,8 +438,20 @@ static void cleanup_children(void) {
 
 static int slot_alloc(void) {
     for (int i = 1; i < LUME_SPAWN_SLOTS; i++)
-        if (g_slots[i].pid == 0) return i;
+        if (!g_slots[i].active) return i;
+    /* All 31 slots are occupied. A waited child is already reaped and its
+     * fds closed, so retiring that slot is safe; its old handle stops
+     * working because handle_ok() checks the generation. Never displace a
+     * child that is still running. */
+    for (int i = 1; i < LUME_SPAWN_SLOTS; i++)
+        if (g_slots[i].waited) { g_slots[i].active = false; return i; }
     return -1;
+}
+
+static long long handle_encode(int slot) {
+    g_slots[slot].gen = ++g_next_gen;
+    g_slots[slot].active = true;
+    return (long long)(g_slots[slot].gen * LUME_SPAWN_SLOTS + (unsigned)slot);
 }
 
 static void closefd(int *fd) {
@@ -206,7 +459,7 @@ static void closefd(int *fd) {
 }
 
 /* ------------------------------------------------------------------ *
- * spawn(argv, {input?}) -> {ok, handle, pid, err}
+ * spawn(argv, {input?, env?}) -> {ok, handle, pid, err}
  * ------------------------------------------------------------------ */
 void native_spawn(VM *vm, int argc, Value *args, Value *out) {
     *out = spawn_result(vm, false, 0, 0, "");
@@ -250,10 +503,14 @@ void native_spawn(VM *vm, int argc, Value *args, Value *out) {
         }
     }
 
+    Obj *opts = NULL;
+    if (argc >= 2 && IS_OBJ(args[1]) && AS_OBJ(args[1])->type == OBJ_MAP)
+        opts = AS_OBJ(args[1]);
+
     const char *input = NULL;
-    if (argc >= 2 && IS_OBJ(args[1]) && AS_OBJ(args[1])->type == OBJ_MAP) {
+    if (opts) {
         int found = 0;
-        Value in = map_get(vm, AS_OBJ(args[1]), "input", &found);
+        Value in = map_get(vm, opts, "input", &found);
         if (found && !IS_NULL(in)) {
             input = string_of(in);
             if (!input || strlen(input) > LUME_SPAWN_INPUT_MAX) {
@@ -275,10 +532,30 @@ void native_spawn(VM *vm, int argc, Value *args, Value *out) {
         return;
     }
 
-    int h = slot_alloc();
-    if (h < 0) {
+    /* Resolve only AFTER the allowlist check: a refused command must not
+     * leak filesystem facts (which roots exist, which paths resolve). */
+    const char *why = NULL;
+    char *exec_path = resolve_exec(vm, av[0], &why);
+    if (!exec_path) {
         for (int j = 0; j < n; j++) free(av[j]);
-        *out = spawn_result(vm, false, 0, 0, "spawn(): process table is full");
+        *out = spawn_result(vm, false, 0, 0, why);
+        return;
+    }
+    char **envp = build_env(vm, opts, &why);
+    if (why) {
+        free(exec_path);
+        for (int j = 0; j < n; j++) free(av[j]);
+        *out = spawn_result(vm, false, 0, 0, why);
+        return;
+    }
+
+    int slot = slot_alloc();
+    if (slot < 0) {
+        free(exec_path);
+        free_envp(envp);
+        for (int j = 0; j < n; j++) free(av[j]);
+        *out = spawn_result(vm, false, 0, 0,
+                            "spawn(): process table is full (31 children still running)");
         return;
     }
 
@@ -287,6 +564,8 @@ void native_spawn(VM *vm, int argc, Value *args, Value *out) {
         closefd(&in_pipe[0]); closefd(&in_pipe[1]);
         closefd(&out_pipe[0]); closefd(&out_pipe[1]);
         closefd(&err_pipe[0]); closefd(&err_pipe[1]);
+        free(exec_path);
+        free_envp(envp);
         for (int j = 0; j < n; j++) free(av[j]);
         *out = spawn_result(vm, false, 0, 0, "spawn(): pipe() failed");
         return;
@@ -297,23 +576,30 @@ void native_spawn(VM *vm, int argc, Value *args, Value *out) {
         closefd(&in_pipe[0]); closefd(&in_pipe[1]);
         closefd(&out_pipe[0]); closefd(&out_pipe[1]);
         closefd(&err_pipe[0]); closefd(&err_pipe[1]);
+        free(exec_path);
+        free_envp(envp);
         for (int j = 0; j < n; j++) free(av[j]);
         *out = spawn_result(vm, false, 0, 0, "spawn(): fork() failed");
         return;
     }
     if (pid == 0) {
-        /* Child: no shell, no inherited watcher/HTTP fds beyond stdio. */
+        /* Child: no shell, no inherited watcher/HTTP fds beyond stdio.
+         * exec_path is an absolute realpath; PATH is never consulted. */
         dup2(in_pipe[0], STDIN_FILENO);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
-        execvp(av[0], av);
-        fprintf(stderr, "lume spawn: execvp failed: %s\n", strerror(errno));
+        if (envp) execve(exec_path, av, envp);
+        else execv(exec_path, av);
+        fprintf(stderr, "lume spawn: exec failed: %s\n", strerror(errno));
         _exit(127);
     }
 
+    /* Parent-only: the child either exec'd or _exit'd with these maps. */
+    free(exec_path);
+    free_envp(envp);
     closefd(&in_pipe[0]);
     closefd(&out_pipe[1]);
     closefd(&err_pipe[1]);
@@ -331,19 +617,19 @@ void native_spawn(VM *vm, int argc, Value *args, Value *out) {
     fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL) | O_NONBLOCK);
     fcntl(err_pipe[0], F_SETFL, fcntl(err_pipe[0], F_GETFL) | O_NONBLOCK);
 
-    g_slots[h].pid = pid;
-    g_slots[h].in_fd = -1;
-    g_slots[h].out_fd = out_pipe[0];
-    g_slots[h].err_fd = err_pipe[0];
-    g_slots[h].waited = false;
-    g_slots[h].exit_code = -1;
+    g_slots[slot].pid = pid;
+    g_slots[slot].in_fd = -1;
+    g_slots[slot].out_fd = out_pipe[0];
+    g_slots[slot].err_fd = err_pipe[0];
+    g_slots[slot].waited = false;
+    g_slots[slot].exit_code = -1;
 
     if (!g_cleanup_registered) {
         atexit(cleanup_children);
         g_cleanup_registered = true;
     }
     for (int j = 0; j < n; j++) free(av[j]);
-    *out = spawn_result(vm, true, h, (long long)pid, "");
+    *out = spawn_result(vm, true, handle_encode(slot), (long long)pid, "");
 }
 
 /* ------------------------------------------------------------------ *

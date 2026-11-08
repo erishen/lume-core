@@ -1119,20 +1119,49 @@ fsroot-test: all
 #   emptyallow — 只开总闸、不给 LUME_SPAWN_ALLOW，仍须全部拒绝（fail closed）
 #   open       — 双闸齐全，走 spawn/proc_read/proc_wait/proc_kill 全链路
 # 每轮都同时看 rc 与输出里的 FAIL，防「脚本报 FAIL 但 exit 0」的假绿。
+# P14 step 2: trusted executable directories (both macOS split /bin:/usr/bin
+# and Linux usrmerge resolve here). SPAWN_ABS is passed to the script for the
+# "explicit absolute path" assertions. Do NOT derive it with
+# `dirname $(command -v cat)`: a shell shim/brokered-bin earlier in PATH can
+# make that point at a wrapper directory that has no echo, which silently
+# turns these assertions into a false red. /bin/echo exists on both platforms
+# (on usrmerge systems it realpath's into /usr/bin, still inside the roots).
+SPAWN_ROOTS := /bin:/usr/bin
+SPAWN_ABS   := /bin
+
 spawn-test: all
-	@env -u LUME_SPAWN -u LUME_SPAWN_ALLOW ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
+	@env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-locked.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-locked.out; then \
 	  echo "==> spawn locked 单测失败 (rc=$$rc)"; exit 1; fi; \
-	env -u LUME_SPAWN_ALLOW LUME_SPAWN=1 ./$(TARGET) tests/spawn-smoke.lume emptyallow > /tmp/lume-spawn-empty.out 2>&1; \
+	env -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT LUME_SPAWN=1 ./$(TARGET) tests/spawn-smoke.lume emptyallow > /tmp/lume-spawn-empty.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-empty.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-empty.out; then \
 	  echo "==> spawn emptyallow 单测失败 (rc=$$rc)"; exit 1; fi; \
-	LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep ./$(TARGET) tests/spawn-smoke.lume open > /tmp/lume-spawn-open.out 2>&1; \
+	LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep LUME_SPAWN_ROOT=$(SPAWN_ROOTS) ./$(TARGET) tests/spawn-smoke.lume open > /tmp/lume-spawn-open.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-open.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-open.out; then \
 	  echo "==> spawn open 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> spawn 单测全部通过 (locked + emptyallow + open)"
+	outside=$$(mktemp -d); \
+	printf '#!/bin/sh\necho ESCAPED\n' > $$outside/evil; chmod +x $$outside/evil; \
+	P14_SECRET=must-not-leak LUME_SPAWN=1 \
+	  LUME_SPAWN_ALLOW=echo,env,$(SPAWN_ABS)/echo,$$outside/evil,/etc/hosts \
+	  LUME_SPAWN_ROOT=$(SPAWN_ROOTS) \
+	  ./$(TARGET) tests/spawn-smoke.lume rooted $(SPAWN_ABS) $$outside > /tmp/lume-spawn-rooted.out 2>&1; \
+	rc=$$?; cat /tmp/lume-spawn-rooted.out; rm -rf $$outside; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-rooted.out; then \
+	  echo "==> spawn rooted 单测失败 (rc=$$rc)"; exit 1; fi; \
+	env -u LUME_SPAWN_ROOT LUME_SPAWN=1 \
+	  LUME_SPAWN_ALLOW=echo,$(SPAWN_ABS)/echo \
+	  ./$(TARGET) tests/spawn-smoke.lume abspath $(SPAWN_ABS) > /tmp/lume-spawn-abspath.out 2>&1; \
+	rc=$$?; cat /tmp/lume-spawn-abspath.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-abspath.out; then \
+	  echo "==> spawn abspath 单测失败 (rc=$$rc)"; exit 1; fi; \
+	LUME_SPAWN_ROOT=/definitely/not/a/lume-root ./$(TARGET) --check tests/spawn-smoke.lume > /tmp/lume-spawn-badroot.out 2>&1; \
+	if [ $$? -eq 0 ] || ! grep -q 'does not resolve' /tmp/lume-spawn-badroot.out; then \
+	  echo "==> spawn 无效 LUME_SPAWN_ROOT 未在启动时被拒"; cat /tmp/lume-spawn-badroot.out; exit 1; fi; \
+	echo "ok   spawn: 无效 LUME_SPAWN_ROOT 启动即失败"; \
+	echo "==> spawn 单测全部通过 (locked + emptyallow + open + rooted + abspath + badroot)"
 
 # 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
 # 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝

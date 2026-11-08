@@ -138,7 +138,12 @@ static void usage(const char *prog) {
 "  --spawn  allow gated child processes (spawn/proc_read/proc_wait/\n"
 "            proc_kill); OFF by default. Also LUME_SPAWN=1. Requires\n"
 "            LUME_SPAWN_ALLOW=cmd1,cmd2 — an empty allowlist permits\n"
-"            nothing. argv goes to execvp(); there is no shell.\n"
+"            nothing. There is no shell and PATH is never searched:\n"
+"            set LUME_SPAWN_ROOT=dir1:dir2 to resolve bare command\n"
+"            names inside realpath-checked trusted directories, or put\n"
+"            explicit absolute paths in the allowlist. Optional\n"
+"            spawn(argv,{input?,env?}) env is a string map; LD_/DYLD_/\n"
+"            PATH overrides are refused.\n"
 "  --version print version and exit\n"
 "  --dump    parse and dump the AST, then exit\n"
 #ifdef HAVE_LIBLLVM
@@ -557,6 +562,45 @@ int main(int argc, char **argv) {
     const char *allow_env = getenv("LUME_SPAWN_ALLOW");
     if (allow_env && allow_env[0]) spawn_allow = allow_env;
 
+    /* P14 step 2: LUME_SPAWN_ROOT is a colon-separated set of trusted
+     * executable directories — NOT a command list (that is SPAWN_ALLOW).
+     * Validate every entry at startup so a typo fails loudly instead of
+     * silently turning into "bare command names do not work". The builtin
+     * re-resolves with realpath() per spawn; nothing in the spawn path ever
+     * consults PATH, so a writable directory earlier in PATH cannot shadow
+     * an allowlisted name (TODO P14's PATH-hijack gap). */
+    const char *spawn_root = NULL;
+    const char *spawn_root_env = getenv("LUME_SPAWN_ROOT");
+    if (spawn_root_env && spawn_root_env[0]) {
+        const char *p = spawn_root_env;
+        while (*p) {
+            const char *s = p;
+            while (*p && *p != ':') p++;
+            size_t n = (size_t)(p - s);
+            if (n) {
+                char *seg = malloc(n + 1);
+                if (!seg) { fprintf(stderr, "lume: out of memory\n"); return 2; }
+                memcpy(seg, s, n);
+                seg[n] = '\0';
+                char *rp = lume_realpath(seg);
+                struct stat st;
+                bool ok = rp && stat(rp, &st) == 0 && S_ISDIR(st.st_mode);
+                if (!ok) {
+                    fprintf(stderr,
+                            "lume: LUME_SPAWN_ROOT entry %s does not resolve to a directory\n",
+                            seg);
+                    free(seg);
+                    free(rp);
+                    return 2;
+                }
+                free(seg);
+                free(rp);
+            }
+            if (*p == ':') p++;
+        }
+        spawn_root = spawn_root_env;
+    }
+
     /* LUME_FS_ROOT allowlist: a middle setting between free access and
      * --no-fs (the hard switch). fs_root_real is cached so the builtins do
      * not realpath the root on every call. An unresolvable root is a hard
@@ -623,6 +667,7 @@ int main(int argc, char **argv) {
     vm.fs_readonly = fs_readonly;
     vm.spawn_enabled = spawn_enabled;
     vm.spawn_allow = spawn_allow;
+    vm.spawn_root = spawn_root;
     bridge_init(&vm);
 
     /* Seed argv() with the script's trailing CLI arguments (after the script

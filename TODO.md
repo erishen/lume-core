@@ -1748,16 +1748,20 @@ builtins close that gap without pulling the whole runtime in.
 - [ ] **`spawn()` — gated, allowlisted, with a no-spawn default (the big one,
       ~a project).** Original shape: `spawn(args, {input?, env?})` returns
       `{pid, stdout_fd, stderr_fd}` with `proc_read` / `proc_wait` /
-      `proc_kill` siblings. **Landed 2026-11-08: the gate + the interpreter
-      leg.** See the numbered checklist below; the emitters and host merge
-      are still open.
+      `proc_kill` siblings. **Landed 2026-11-08: step 1 (the gate + the
+      interpreter leg) and step 2 (root resolution, filtered `env`,
+      generation-tagged handles).** Still open: the two native emitters
+      (blocked on a security decision, see below), host integration and
+      streaming.
 - [x] **Gate first, spawn second** (2026-11-08). Opt-IN `--spawn` /
       `LUME_SPAWN=1` **plus** a mandatory comma-separated
       `LUME_SPAWN_ALLOW`; enabling spawn with an empty allowlist permits
       nothing (fail closed). `spawn(argv)` hands a string list straight to
-      `execvp()` — no shell, no `system()`, no command line assembled from
-      script text — and argv is length/type/size checked. `input` is
-      supported (<= 4096 bytes, one atomic pipe write); `env` is not yet.
+      `execv()` / `execve()` with a realpath-resolved absolute binary — no
+      shell, no `system()`, no `execvp()`, no PATH search, no command line
+      assembled from script text — and argv is length/type/size checked.
+      `input` (<= 4096 bytes) and a filtered `env` map are supported
+      (step 2, see below).
       Refusals answer `{ok:false, err}` so a supervisor can branch on them,
       and the error never echoes the rejected command back (no allowlist
       probing through error text). An ungated shell primitive is exactly the
@@ -1774,8 +1778,9 @@ builtins close that gap without pulling the whole runtime in.
       `builtins.h` / `builtins_internal.h`; `VM.spawn_enabled` /
       `spawn_allow` in `lume.h`; CLI + env parsing in `main.c`; Makefile
       SRCS, Windows `filter-out`, `CFLAGS`, `spawn-test`, `test:` and
-      `.PHONY`. `make test` is green including `spawn-test` (three offline
-      rounds, 28 assertions) and `native-consistency` (no regressions).
+      `.PHONY`. `make test` is green including `spawn-test` (five offline
+      rounds, 52 assertions after step 2) and `native-consistency`
+      (no regressions).
 - [ ] **Two native emitters + a native-consistency case.** Code survey
       ground truth, not README memory: `rt.c` is **not** in the main
       binary's `SRCS` (`backend.c` compiles it only for native output), so
@@ -1788,6 +1793,25 @@ builtins close that gap without pulling the whole runtime in.
       `emit_builtin_declares()`, a call branch in each emitter, and a
       `LumeMap*` helper in `rt.c`. LLVM declares helpers on demand, so it
       needs the call branch but no declare-table row.
+
+      **Step-2 security finding (2026-11-08 — blocks a naive landing).**
+      `src/rt.c` has **zero** `getenv` / `LUME_*` gate logic, and
+      `codegen_call.c:3693` / `:3737` reject an unregistered builtin with
+      "call to unknown function". So today a natively compiled binary
+      simply cannot spawn — which is the *safe* default. Adding the helpers
+      exactly as described above would instead produce a standalone binary
+      with an ungated process primitive and no VM policy to consult,
+      undoing the gate-first rule that P14 itself demands. Before landing
+      the emitters, decide one of: (a) keep `spawn` interpreter-only and
+      document that compiled lume binaries never gain a child-process
+      surface; or (b) give `rt.c` its own fail-closed startup gate (read
+      `LUME_SPAWN` / `LUME_SPAWN_ALLOW` / `LUME_SPAWN_ROOT` into a static
+      policy, default deny) and prove it in a native case. Option (a) is
+      smaller and matches the "no shell primitive" posture. This item
+      must NOT be closed by merely declaring helpers. A byte-identical
+      native-consistency case is in any case impossible while `spawn`
+      returns a live OS pid — the opaque handle is a prerequisite either
+      way.
 - [ ] **Host integration, then `make sync-lang`.** The host `lang/` build
       currently has neither the gate nor a use for a child-process surface,
       and the native-emitter half above does not exist yet. Transitional
@@ -1799,22 +1823,41 @@ builtins close that gap without pulling the whole runtime in.
       debt, not a completed merge. Revisit once the emitters land. The host
       `agent-httpd` build is where a default-on spawn policy would live; the
       pure `lume-core` binary stays no-spawn.
-- [ ] **`env` option + `LUME_SPAWN_ROOT`.** The current allowlist matches
-      `argv[0]` exactly, but `execvp()` still searches `PATH`: a writable
-      directory earlier in `PATH` could shadow an allowlisted name. A
-      realpath-checked root (resolve the executable, verify it sits under
-      `LUME_SPAWN_ROOT`, then `execv` that absolute path) closes it. The
-      original line above called the allowlist `LUME_SPAWN_ROOT`; that name
-      is kept for this realpath check, and the command list is
-      `LUME_SPAWN_ALLOW`.
+- [x] **`env` option + `LUME_SPAWN_ROOT` (step 2, 2026-11-08).** The old
+      allowlist matched `argv[0]` exactly, but `execvp()` still searched
+      `PATH`: a writable directory earlier in `PATH` could shadow an
+      allowlisted name. `execvp()` is now gone entirely.
+      `LUME_SPAWN_ROOT` is a colon-separated set of trusted executable
+      directories (validated with `realpath()` + `S_ISDIR` at startup, an
+      unresolvable entry is a hard error — the `LUME_FS_ROOT` precedent).
+      Bare command names are resolved only inside those roots; **without a
+      root they are refused**, and only an explicit (realpath-checked,
+      `X_OK`-checked) absolute/relative path in the allowlist can run.
+      Every candidate is realpath'ed again and boundary-checked, so a
+      symlink inside a root cannot escape to a binary outside it. The
+      original line above used `LUME_SPAWN_ROOT` for the *command list*;
+      that is `LUME_SPAWN_ALLOW`, and `*_ROOT` keeps this repo's usual
+      realpath-boundary meaning. Residual, documented: TOCTOU between the
+      parent's `realpath` and the child's `execv` (a root that is writable
+      by an attacker is already a broken deployment), and no `argv[0]`
+      basename fallback for a command listed as a bare name.
+
+      `spawn(argv,{input?,env?})` now accepts a string map. An explicit
+      `env` does **not** inherit the whole parent environment: only a
+      small baseline (`PATH`/`HOME`/locale/`TERM`/`TZ`/`USER`/...) plus
+      the script's entries. `LD_` and `DYLD_` loader variables, `PATH`,
+      `IFS`, `ENV`, `BASH_ENV`, `SHELL` overrides and non-string values
+      are refused, and refusals never echo the rejected key. Without the
+      option, behaviour stays `execv` with the inherited environment.
 - [ ] **Streaming / long-lived reads (a real project, do after `spawn`).**
       `builtins_http.c`'s `http_get/post` are collect-then-return; a running
       job needs the body to arrive while it produces it. Either a
       `http_stream(url, {…})` returning a readable fd/lazy value, or a
       `read_chunk(handle, timeout)` pair that a loop polls — the second fits
       the existing sync model and the no-async-runtime constraint better.
-      Same "five edits + two emitters" surface. MCP client streaming rides on
-      this. Without it a pure-core executor can still **run** a job (via
+      Same "five edits + two emitters" surface — and therefore subject to
+      the emitter security decision recorded above. MCP client streaming
+      rides on this. Without it a pure-core executor can still **run** a job (via
       `spawn`) but cannot **tail** it, so `task.delegate`'s lazy
       `observe_delegate` stays polling a status endpoint instead of reading a
       stream.
@@ -1826,12 +1869,16 @@ byte-identically on all three legs" of `native-consistency`. Those two
 requirements cannot both hold: an OS pid and two pipe fds differ on every
 run and in every process, so three independently executed binaries can
 never print the same numbers. The shipped API returns
-`{ok, handle, pid, err}` where `handle` is a **1-based opaque slot** into a
-fixed 32-entry process table, and `proc_read` / `proc_wait` / `proc_kill`
-all take that handle. A script never holds a raw fd, slots are never reused
-(a stale handle cannot hit a different child), and `atexit` kills + reaps
-anything left behind. The slot index is also the only shape in which the two
-native emitters could later agree byte-identically.
+`{ok, handle, pid, err}` where `handle` is an **opaque, generation-tagged
+id** (`generation * 32 + slot`) into a fixed 32-entry process table, and
+`proc_read` / `proc_wait` / `proc_kill` all take that handle. A script never
+holds a raw fd. Step 1 never reused slots, which capped a long-lived VM at
+31 spawns — a sidecar executor would have died with "process table is
+full" after 31 jobs. Step 2 reclaims a slot only after its child has been
+waited for and bumps the generation, so a stale handle is rejected instead
+of ever addressing a different child; `atexit` still kills + reaps
+anything left behind. The deterministic id is also the only shape in which
+the two native emitters could later agree byte-identically.
 
 **Two documentation tensions found while implementing.** (1) The original
 third item said to "hand-merge the native-emitter half into the host's
@@ -1844,16 +1891,37 @@ this repo is a realpath boundary; the implementation uses
 `LUME_SPAWN_ALLOW` for the list and reserves `LUME_SPAWN_ROOT` for the
 realpath check that is still on the checklist above.
 
+### 2026-11-08 — step 2 LANDED: no PATH, filtered env, reclaimable slots
+
+`main.c` parses and validates `LUME_SPAWN_ROOT`; `builtins_spawn.c` gained
+`resolve_exec()` (root lookup, `realpath` containment, `X_OK`, `execv` on
+an absolute path) and `build_env()` (baseline + filtered explicit map,
+`execve`). `lume.h` gained `VM.spawn_root`. The generation-tagged handle
+and `slot_alloc()` reclamation above also landed here.
+
 Verification (local, 2026-11-08): macOS clang `make -j4 all` and a clean
-Ubuntu 24.04 / GCC 13 copy both build with zero diagnostics — the new file
-uses `clock_gettime` / `poll` / `execvp`, so the Linux leg is not optional.
-`make spawn-test` — three offline rounds (locked / emptyallow / open), 28
-PASS assertions on **both** platforms, covering gate refusal, fail-closed
-allowlist, argv type and length checks, stdout round-trip, stdin `input`,
-stderr, `proc_wait` exit codes, `proc_kill` + reap (exit 143), and unknown
-handles/streams. `make -j4 check` and the full `make -j4 test` rc=0
-including the existing `native-consistency` three legs (no regression);
-host `make check-sync` rc=0 after the transitional classification above.
+Ubuntu 24.04 / GCC 13 copy both build with **zero diagnostics** — the new
+file uses `clock_gettime` / `poll` / `realpath` / `execve` / `environ`, so
+the Linux leg is not optional. `make spawn-test` — five offline rounds
+(locked / emptyallow / open / rooted / abspath) plus a bad-root startup
+negative, **52 PASS assertions on both platforms**, covering the two gate
+halves, fail-closed allowlist, argv type/length checks, stdout round-trip,
+stdin `input`, stderr, `proc_wait` exit codes, `proc_kill` + reap (143),
+unknown handles/streams, bare-name resolution inside roots, refusal of a
+root-outside executable and a non-executable path, explicit absolute paths
+with no root, `env` propagation + baseline filtering + `LD_PRELOAD` /
+`PATH` / type refusals, 64 sequential spawns (slot reclamation) and a
+recycled handle rejected by its generation tag. `make -j4 check` and the
+full `make -j4 test` rc=0 including the existing `native-consistency`
+three legs (no regression); host `make check-sync` rc=0 after the
+transitional classification above.
+
+One test-harness trap worth remembering: deriving the trusted directory
+with `dirname $(command -v cat)` produced a WorkBuddy `brokered-bin` shim
+directory on this machine, so `/echo` did not exist and three assertions
+went red for a reason unrelated to the code. `SPAWN_ABS` is now the fixed
+`/bin`, which realpath's into `/usr/bin` on usrmerge systems and stays
+inside the `/bin:/usr/bin` roots on both platforms.
 
 **Done when:** a resolve-lume sidecar whose logic is `.lume` (routes, SQLite,
 tool defs, summaries) and whose only non-core surface is `spawn` + streaming,

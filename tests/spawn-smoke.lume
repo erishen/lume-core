@@ -1,14 +1,18 @@
 // lume —— P14 gated spawn 回归（tests/spawn-smoke.lume）
 //
-// 用法（make spawn-test 跑三轮，全程离线、只执行 echo/cat/sleep）：
+// 用法（make spawn-test 跑五轮，全程离线、只执行 echo/cat/sleep/env）：
 //   ./bin/lume-core tests/spawn-smoke.lume locked
-//   LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep \
+//   LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep LUME_SPAWN_ROOT=/bin:/usr/bin \
 //     ./bin/lume-core tests/spawn-smoke.lume open
 //   LUME_SPAWN=1 ./bin/lume-core tests/spawn-smoke.lume emptyallow
+//   ... tests/spawn-smoke.lume rooted <trusted-dir> <outside-dir>
+//   ... tests/spawn-smoke.lume abspath <trusted-dir>
 //
 // locked    : 默认纯 lume-core 二进制，必须拒绝一切 spawn。
-// open      : 双闸齐全，走 spawn/proc_read/proc_wait/proc_kill 全链路。
+// open      : 双闸 + 可信 root，走 spawn/proc_read/proc_wait/proc_kill 全链路。
 // emptyallow: 只开 --spawn、不给白名单，仍须拒绝一切命令（fail closed）。
+// rooted    : P14 step 2 —— 裸名在 root 内解析、越界/不可执行拒绝、env 过滤。
+// abspath   : P14 step 2 —— 无 root 时裸名拒绝（PATH 不搜索）、绝对路径可用。
 // 输出 PASS/FAIL，make spawn-test grep FAIL 判定。
 
 func check(name, cond) {
@@ -50,7 +54,7 @@ if (mode == "locked") {
   let s = spawn(["echo", "p14-ok"]);
   check("open: spawn ok", get(s, "ok", false) == true);
   let h = get(s, "handle", 0);
-  check("open: handle is 1-based", h >= 1);
+  check("open: handle is a positive opaque id", h >= 1);
   check("open: pid reported", get(s, "pid", 0) > 0);
   let r = proc_read(h, "stdout", 2000);
   check("open: stdout data", contains(get(r, "data", ""), "p14-ok"));
@@ -85,6 +89,83 @@ if (mode == "locked") {
   let w4 = proc_wait(h4, 2000);
   check("open: killed child reaped", get(w4, "ok", false) == true);
   check("open: killed child exit is 143", get(w4, "exit", -1) == 143);
+
+  // --- 槽回收：长生命周期 VM 不能在第 32 次 spawn 就 table full ---
+  // h 是第一个 handle（slot 1），回收从最小槽号开始，它必然最先被复用；
+  // generation 标记必须让这个旧 handle 失效，而不是指向新子进程。
+  let loop_ok = 0;
+  let p = spawn(["echo", "loop"]);
+  let pw = proc_wait(get(p, "handle", 0), 2000);
+  if (get(pw, "ok", false) == true) { loop_ok = loop_ok + 1; }
+  for (let i = 1; i < 64; i = i + 1) {
+    p = spawn(["echo", "loop"]);
+    pw = proc_wait(get(p, "handle", 0), 2000);
+    if (get(pw, "ok", false) == true) { loop_ok = loop_ok + 1; }
+  }
+  check("open: 64 sequential spawns reclaim waited slots", loop_ok == 64);
+  let reused = proc_wait(h, 100);
+  check("open: recycled handle rejected by generation tag", get(reused, "ok", true) == false);
+} else if (mode == "rooted") {
+  let abs = a[1];       // 可信 root 内的一个目录（Makefile 传入）
+  let outside = a[2];   // root 外的临时目录，里面放了一个可执行脚本
+
+  // --- 裸命令名只在 LUME_SPAWN_ROOT 里解析，PATH 从不参与 ---
+  let s = spawn(["echo", "rooted-ok"]);
+  check("rooted: bare name resolves in roots", get(s, "ok", false) == true);
+  let h = get(s, "handle", 0);
+  let r = proc_read(h, "stdout", 2000);
+  check("rooted: bare stdout", contains(get(r, "data", ""), "rooted-ok"));
+  let w = proc_wait(h, 2000);
+  check("rooted: bare exit 0", get(w, "exit", -1) == 0);
+
+  // --- 显式绝对路径：在 root 内放行 ---
+  let s2 = spawn([abs + "/echo", "abs-ok"]);
+  check("rooted: absolute path inside roots", get(s2, "ok", false) == true);
+  let h2 = get(s2, "handle", 0);
+  let r2 = proc_read(h2, "stdout", 2000);
+  check("rooted: abs stdout", contains(get(r2, "data", ""), "abs-ok"));
+  let w2 = proc_wait(h2, 2000);
+  check("rooted: abs exit 0", get(w2, "exit", -1) == 0);
+
+  // --- 越界：root 外的可执行脚本 / 不可执行文件都必须拒绝 ---
+  let esc = spawn([outside + "/evil"]);
+  check("rooted: outside-root executable refused", get(esc, "ok", true) == false);
+  check("rooted: refusal names the root", contains(get(esc, "err", ""), "LUME_SPAWN_ROOT"));
+  let etc = spawn(["/etc/hosts"]);
+  check("rooted: non-executable outside refused", get(etc, "ok", true) == false);
+
+  // --- env map：显式键值到达子进程，父进程私有变量不泄漏 ---
+  let se = spawn(["env"], {env: {P14_STEP2: "yes"}});
+  check("rooted: env spawn ok", get(se, "ok", false) == true);
+  let he = get(se, "handle", 0);
+  let re = proc_read(he, "stdout", 2000);
+  check("rooted: env value reaches child", contains(get(re, "data", ""), "P14_STEP2=yes"));
+  check("rooted: env filters parent environment", contains(get(re, "data", ""), "P14_SECRET=") == false);
+  let we = proc_wait(he, 2000);
+  check("rooted: env child exit 0", get(we, "exit", -1) == 0);
+
+  // --- env 危险键 / 类型校验 ---
+  let b1 = spawn(["env"], {env: {LD_PRELOAD: "x"}});
+  check("rooted: LD_PRELOAD refused", get(b1, "ok", true) == false);
+  let b2 = spawn(["env"], {env: {PATH: "/tmp"}});
+  check("rooted: PATH override refused", get(b2, "ok", true) == false);
+  let b3 = spawn(["env"], {env: 42});
+  check("rooted: non-map env refused", get(b3, "ok", true) == false);
+  let b4 = spawn(["env"], {env: {X: 42}});
+  check("rooted: non-string env value refused", get(b4, "ok", true) == false);
+} else if (mode == "abspath") {
+  let abs = a[1];
+  // 没有 root 时裸命令名不解析（PATH 从不搜索），必须显式给路径。
+  let bare = spawn(["echo", "must-not-run"]);
+  check("abspath: bare name refused without root", get(bare, "ok", true) == false);
+  check("abspath: refusal says PATH is never searched", contains(get(bare, "err", ""), "PATH is never searched"));
+  let s = spawn([abs + "/echo", "abspath-ok"]);
+  check("abspath: explicit absolute path works", get(s, "ok", false) == true);
+  let h = get(s, "handle", 0);
+  let r = proc_read(h, "stdout", 2000);
+  check("abspath: abs stdout", contains(get(r, "data", ""), "abspath-ok"));
+  let w = proc_wait(h, 2000);
+  check("abspath: abs exit 0", get(w, "exit", -1) == 0);
 } else {
   print("FAIL unknown mode");
 }

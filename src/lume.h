@@ -513,6 +513,13 @@ struct VM {
      * cannot probe the allowlist through error messages). */
     bool spawn_enabled;
     const char *spawn_allow;
+    /* P14 step 2: colon-separated trusted executable directories. NULL means
+     * "no root configured" — bare command names are then refused instead of
+     * being searched on PATH, and only an explicit absolute/relative argv[0]
+     * is resolved. main.c validates every entry with realpath() at startup;
+     * builtins_spawn.c uses lume_realpath() again per call so a symlink swap
+     * after startup cannot walk the resolved executable out of the roots. */
+    const char *spawn_root;
 
     /* module system (loader.c). The registry is populated once, before
      * agenthttpd_run forks workers; modules and their top-level envs are
