@@ -86,8 +86,8 @@ export func pde_tridiag(a: float[], b: float[], c: float[], d: float[]): float[]
   // 回代：从右往左 push（xr[0]=x[n-1]，末尾为刚算出的 x[i+1]），再反转
   let xr: float[] = [];
   xr = push(xr, dp[n - 1]);
-  for (let i = n - 2; i >= 0; i = i - 1) {
-    xr = push(xr, dp[i] - cp[i] * xr[len(xr) - 1]);
+  for (let i2 = n - 2; i2 >= 0; i2 = i2 - 1) {
+    xr = push(xr, dp[i2] - cp[i2] * xr[len(xr) - 1]);
   }
   return pde_reverse(xr);
 }
@@ -140,7 +140,7 @@ export func pde_heat_cn(u0: float[], a: float, b: float, alpha: float,
     let uin: float[] = pde_tridiag(Aa, Ab, Ac, rhs);
     let unew: float[] = [];
     unew = push(unew, left_bc);
-    for (let k = 0; k < m; k = k + 1) { unew = push(unew, uin[k]); }
+    for (let k2 = 0; k2 < m; k2 = k2 + 1) { unew = push(unew, uin[k2]); }
     unew = push(unew, right_bc);
     u = unew;
   }
@@ -337,9 +337,9 @@ export func pde_wave_leapfrog(u0: float[], a: float, b: float, c: float,
   for (let step = 1; step < nt; step = step + 1) {
     let unext: float[] = [];
     unext = push(unext, left_bc);
-    for (let i = 1; i < n - 1; i = i + 1) {
-      unext = push(unext, 2.0 * ucur[i] - uprev[i]
-                          + C2 * (ucur[i - 1] - 2.0 * ucur[i] + ucur[i + 1]));
+    for (let i2 = 1; i2 < n - 1; i2 = i2 + 1) {
+      unext = push(unext, 2.0 * ucur[i2] - uprev[i2]
+                          + C2 * (ucur[i2 - 1] - 2.0 * ucur[i2] + ucur[i2 + 1]));
     }
     unext = push(unext, right_bc);
     uprev = ucur;
@@ -557,15 +557,15 @@ export func pde_poisson_jacobi(f: float[][], h: float, iters: int): float[][] {
   }
   for (let it = 0; it < iters; it = it + 1) {
     let unew: float[][] = [];
-    for (let i = 0; i < n; i = i + 1) {
+    for (let i2 = 0; i2 < n; i2 = i2 + 1) {
       let row: float[] = [];
-      for (let j = 0; j < n; j = j + 1) {
-        if (i == 0 || i == n - 1 || j == 0 || j == n - 1) {
+      for (let j2 = 0; j2 < n; j2 = j2 + 1) {
+        if (i2 == 0 || i2 == n - 1 || j2 == 0 || j2 == n - 1) {
           row = push(row, 0.0);                       // 边界固定
         } else {
-          let v: float = 0.25 * (u[i - 1][j] + u[i + 1][j]
-                               + u[i][j - 1] + u[i][j + 1]
-                               - h * h * f[i][j]);
+          let v: float = 0.25 * (u[i2 - 1][j2] + u[i2 + 1][j2]
+                               + u[i2][j2 - 1] + u[i2][j2 + 1]
+                               - h * h * f[i2][j2]);
           row = push(row, v);
         }
       }
@@ -746,9 +746,9 @@ func pde_mg_prolong(ec: float[][]): float[][] {
     ef = push(ef, odd);
   }
   let last: float[] = [];
-  for (let J = 0; J < nc - 1; J = J + 1) {
-    last = push(last, ec[nc - 1][J]);
-    last = push(last, 0.5 * (ec[nc - 1][J] + ec[nc - 1][J + 1]));
+  for (let J2 = 0; J2 < nc - 1; J2 = J2 + 1) {
+    last = push(last, ec[nc - 1][J2]);
+    last = push(last, 0.5 * (ec[nc - 1][J2] + ec[nc - 1][J2 + 1]));
   }
   last = push(last, ec[nc - 1][nc - 1]);
   ef = push(ef, last);
@@ -875,20 +875,20 @@ export func pde_wave_2d(u0: float[][], v0: float[][], dx: float, dy: float,
   let ucur: float[][] = u1;
   for (let step = 1; step < nt; step = step + 1) {
     let unext: float[][] = [];
-    for (let i = 0; i < nx; i = i + 1) {
+    for (let i2 = 0; i2 < nx; i2 = i2 + 1) {
       let row2: float[] = [];
-      for (let j = 0; j < ny; j = j + 1) {
-        if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
+      for (let j2 = 0; j2 < ny; j2 = j2 + 1) {
+        if (i2 == 0 || i2 == nx - 1 || j2 == 0 || j2 == ny - 1) {
           row2 = push(row2, bc);
         } else {
-          let uc: float = ucur[i][j];
-          let uim1: float = pde_2d_val(ucur, i, j, -1, 0, nx, ny, false, bc);
-          let uip1: float = pde_2d_val(ucur, i, j,  1, 0, nx, ny, false, bc);
-          let ujm1: float = pde_2d_val(ucur, i, j, 0, -1, nx, ny, false, bc);
-          let ujp1: float = pde_2d_val(ucur, i, j, 0,  1, nx, ny, false, bc);
+          let uc: float = ucur[i2][j2];
+          let uim1: float = pde_2d_val(ucur, i2, j2, -1, 0, nx, ny, false, bc);
+          let uip1: float = pde_2d_val(ucur, i2, j2,  1, 0, nx, ny, false, bc);
+          let ujm1: float = pde_2d_val(ucur, i2, j2, 0, -1, nx, ny, false, bc);
+          let ujp1: float = pde_2d_val(ucur, i2, j2, 0,  1, nx, ny, false, bc);
           let d2: float = cx2 * (uip1 - 2.0 * uc + uim1)
                         + cy2 * (ujp1 - 2.0 * uc + ujm1);
-          row2 = push(row2, 2.0 * uc - uprev[i][j] + d2);
+          row2 = push(row2, 2.0 * uc - uprev[i2][j2] + d2);
         }
       }
       unext = push(unext, row2);

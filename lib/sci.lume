@@ -1,5 +1,11 @@
 // sci.lume — 信息与计算科学算法库（混合分层：.lume 算法层，零 C 摩擦）
 //
+// 兼容契约（P16.1）：本库必须能被最旧受支持的宿主 lume 0.12.2 import。
+// 0.12 把 for (let X ...) 的声明登记在「包含该循环的块」里，同一块内
+// 重复的 let 名会直接中止 import；因此每个块的循环变量必须唯一命名。
+// 不要依赖 0.13 的 for-init 块作用域，也不要去掉 let（0.13 会报未定义）。
+// 回归门禁：make test -> lib-compat（tests/lib-compat.py）。
+//
 // 三后端（解释器 / 文本 IR / LLVM）执行同一份 AST，浮点运算顺序由 lume
 // 显式控制，因此三后端天然一致，无需像 C native 那样手写镜像。
 //
@@ -111,8 +117,8 @@ export func mutual_information(joint: float[][]): float {
   }
   for (let j = 0; j < cols; j = j + 1) {
     let sj = 0.0;
-    for (let i = 0; i < rows; i = i + 1) {
-      sj = sj + joint[i][j];
+    for (let i2 = 0; i2 < rows; i2 = i2 + 1) {
+      sj = sj + joint[i2][j];
     }
     py = push(py, sj);
   }
@@ -584,18 +590,18 @@ export func adams_bashforth(f: fn(float, float) => float, y0: float, t0: float,
     }
   }
   let c: float[] = ab_coeffs(p);
-  for (let k = start; k < n; k = k + 1) {
+  for (let k2 = start; k2 < n; k2 = k2 + 1) {
     let inc: float = 0.0;
     for (let j = 0; j < p; j = j + 1) {
       inc = inc + c[j] * fh[j];
     }
-    let tnext: float = t0 + h * ((k + 1) * 1.0);
-    let yn: float = out[k] + h * inc;
+    let tnext: float = t0 + h * ((k2 + 1) * 1.0);
+    let yn: float = out[k2] + h * inc;
     out = push(out, yn);
     // 滚动窗口：丢弃最旧的 f，追加刚算出的 f(t_{k+1}, y_{k+1})
     let nf: float[] = [];
-    for (let j = 1; j < p; j = j + 1) {
-      nf = push(nf, fh[j]);
+    for (let j2 = 1; j2 < p; j2 = j2 + 1) {
+      nf = push(nf, fh[j2]);
     }
     nf = push(nf, f(tnext, yn));
     fh = nf;

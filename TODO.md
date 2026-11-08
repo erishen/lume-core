@@ -2022,26 +2022,60 @@ Filed while migrating `work/education/lume-energy` from lume-core 0.13 to
 lume 0.12.2. Two independent gaps surfaced; both are core-side, not
 project-side.
 
-### P16.1 `lib/*.lume` cannot be loaded by lume 0.12 (duplicate declarations)
+### P16.1 `lib/*.lume` cannot be loaded by lume 0.12 (duplicate declarations) — CLOSED 2026-11-08
 
-`lib/linalg.lume` `mat_qr_q()` declares `for (let i ...)` twice in the same
-function (lines 479 and 480; `mat_qr_r()` repeats the pattern at 513/515).
-lume 0.12 binds `let` at function scope, so the first import aborts with
-`lume: line 480: duplicate declaration of 'i' in the same scope`.
-`lib/optim.lume:187` already documents the rule, but `optim.lume` imports
-`linalg.lume`, so any consumer of optim/sci/linalg fails at load. This is not
-specific to energy: any 0.12 host that imports the 0.13 shared lib hits it.
+`lib/linalg.lume` `mat_qr_q()` declared `for (let i ...)` twice (lines 479/480;
+`mat_qr_r()` repeated it at 513/515), so the first 0.12.2 import aborted with
+`lume: line 480: duplicate declaration of 'i' in the same scope`. The precise
+0.12.2 rule is **block** scope, not function scope as originally filed: a
+`for (let X ...)` header is registered in the block *containing* the loop, so
+two such loops in the same block collide while the same names in nested or
+sibling blocks do not (verified against the released 0.12.2 binary). lume 0.13
+has proper for-init block scoping and additionally rejects an inner loop that
+shadows an outer local. Dropping the second `let` is NOT portable — 0.13 then
+reports "assignment to undefined variable" — so every repeated loop variable
+must be renamed together with the references in its header/body.
 
-- [ ] Make the three shipped libs parse under lume 0.12.2. Preferred:
-      rename loop variables per function (mechanical, no semantic change),
-      not change 0.12's `let` scope (that would be a language break).
-- [ ] Add a regression gate that actually loads `lib/sci.lume`,
-      `lib/optim.lume`, and `lib/linalg.lume` with a 0.12 binary and asserts
-      parse + a few known-value checks (`entropy`, `poly_fit`,
-      `linprog_simplex`). A grep for duplicate `let` names is not enough.
-- [ ] Document the compatibility contract in `lib/README` (or the lib
-      header): shared libs must remain loadable by the oldest supported
-      host lume, or be split into `lib/compat-0.12/`.
+- [x] **Make the shipped libs parse under lume 0.12.2.** 47 + 8 mechanical
+      renames in `sci.lume` / `optim.lume` / `linalg.lume` / `pde.lume`
+      (`i`→`i2`..`i12`, `j`→`j2`.., `k`→`k2`.., `J`→`J2`); no expression,
+      literal or comment text changed, no `let` removed. The three shipped
+      libs now import cleanly on the released 0.12.2, and `entropy` /
+      `poly_fit` / `linprog_simplex` / `mat_qr_q` give identical values on
+      0.12.2 and 0.13. `pde.lume`'s duplicate declarations are cleared too,
+      but see the builtin gap below.
+- [x] **Regression gate: `tests/lib-compat.py` → `make test` → `lib-compat`.**
+      Static leg (always runs, CI included): brace-aware, string/comment-
+      masked scan of all 13 `lib/*.lume` for duplicate `let` names in one
+      block, with a known-bad self-check. A grep is not used. Dynamic leg:
+      when a *legacy* 0.12.2 binary is present, it must first FAIL a probe
+      with two `for (let i)` loops (a 0.12 build that already has the
+      for-init scoping fix cannot prove anything), then really import the
+      three shipped libs and check four known values. No binary → explicit
+      skip; the static leg stays authoritative. Both negative controls were
+      replayed (blinded matcher → red; injected duplicate `let` → red).
+- [x] **Compatibility contract documented in the three shipped lib headers**
+      (and in `tests/lib-compat.py`): every loop variable must be unique per
+      block; do not rely on 0.13's for-init scoping; a new lib that only
+      works on 0.13 belongs in a `lib/compat-0.12/` split, not in the shared
+      set.
+- [x] **Close the coverage gap found while verifying this fix.**
+      `tests/{sci,linalg,optim,pde}_backends.sh` existed but no Makefile
+      target ever called them, so a change to `lib/` had no automatic
+      three-backend check. `make test` now runs `lib-backends` (all four,
+      with each script's own interp/text fallback when libLLVM is absent).
+      Before/after comparison of the four `*-consistency.lume` outputs
+      (22 + 33 + 13 + 144 = 212 lines) is byte-identical, which is the
+      evidence that the 55 mechanical renames changed no numeric value.
+
+**Known limits deliberately NOT in this item.** The released 0.12.2 also
+cannot load `complex.lume` / `sig.lume` (`atan2` undefined), `dist.lume`
+(`norminv`), `pde.lume` (`sin`) or `ml.lume` (parser difference at line 449).
+Those are missing-builtin / parser gaps, not duplicate declarations; fixing
+them means either backporting the 0.13 builtin set or a 0.12-specific lib
+split. `graph.lume` / `identity.lume` / `peer.lume` already import cleanly on
+0.12.2 — their repeated names live in different blocks, which is why the
+static leg is block-aware rather than function-wide.
 
 Workaround used by energy (not a fix): copy only the four needed functions
 into the app's `numeric.lume` and give every loop variable a unique name.

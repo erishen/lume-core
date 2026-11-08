@@ -1,5 +1,11 @@
 // optim.lume — 最优化算法库（混合分层：.lume 算法层，零 C 摩擦）
 //
+// 兼容契约（P16.1）：本库必须能被最旧受支持的宿主 lume 0.12.2 import。
+// 0.12 把 for (let X ...) 的声明登记在「包含该循环的块」里，同一块内
+// 重复的 let 名会直接中止 import；因此每个块的循环变量必须唯一命名。
+// 不要依赖 0.13 的 for-init 块作用域，也不要去掉 let（0.13 会报未定义）。
+// 回归门禁：make test -> lib-compat（tests/lib-compat.py）。
+//
 // 双轨接口：P0-1（fn 类型形参）落地后，一维/向量内核升级为通用 fn 版本，
 // 原数据驱动变体改为薄包装（内部 lambda 捕获不逃逸，三后端一致）：
 //   · golden_min(f, a, b, tol)          ← 通用 f；golden_poly_min 为其包装
@@ -333,18 +339,18 @@ export func nonlinear_ls(xs: float[], ys: float[], p0: float[], f: fn(float[], f
   for (let it = 0; it < iters; it = it + 1) {
     // 残差 r_i = y_i − f(p, x_i)
     let r: float[] = [];
-    for (let i = 0; i < n; i = i + 1) { r = push(r, ys[i] - f(p, xs[i])); }
+    for (let i2 = 0; i2 < n; i2 = i2 + 1) { r = push(r, ys[i2] - f(p, xs[i2])); }
     // Jacobian J（n × m），逐元素数值微分
     let J: float[][] = [];
-    for (let i = 0; i < n; i = i + 1) {
+    for (let i3 = 0; i3 < n; i3 = i3 + 1) {
       let row: float[] = [];
       for (let j = 0; j < m; j = j + 1) {
         let ppos: float[] = [];
         for (let k = 0; k < m; k = k + 1) { if (k == j) { ppos = push(ppos, p[k] + h); } else { ppos = push(ppos, p[k]); } }
-        let fp: float = f(ppos, xs[i]);
+        let fp: float = f(ppos, xs[i3]);
         let pneg: float[] = [];
-        for (let k = 0; k < m; k = k + 1) { if (k == j) { pneg = push(pneg, p[k] - h); } else { pneg = push(pneg, p[k]); } }
-        let fm: float = f(pneg, xs[i]);
+        for (let k2 = 0; k2 < m; k2 = k2 + 1) { if (k2 == j) { pneg = push(pneg, p[k2] - h); } else { pneg = push(pneg, p[k2]); } }
+        let fm: float = f(pneg, xs[i3]);
         row = push(row, (fp - fm) / (2.0 * h));
       }
       J = push(J, row);
@@ -353,22 +359,22 @@ export func nonlinear_ls(xs: float[], ys: float[], p0: float[], f: fn(float[], f
     let Jt: float[][] = la.mat_transpose(J);
     let A: float[][] = la.mat_mul(Jt, J);
     let Jtr: float[] = [];
-    for (let j = 0; j < m; j = j + 1) {
+    for (let j2 = 0; j2 < m; j2 = j2 + 1) {
       let s: float = 0.0;
-      for (let i = 0; i < n; i = i + 1) { s = s + Jt[j][i] * r[i]; }
+      for (let i4 = 0; i4 < n; i4 = i4 + 1) { s = s + Jt[j2][i4] * r[i4]; }
       Jtr = push(Jtr, s);
     }
     let Ad: float[][] = [];
-    for (let i = 0; i < m; i = i + 1) {
+    for (let i5 = 0; i5 < m; i5 = i5 + 1) {
       let arow: float[] = [];
-      for (let j = 0; j < m; j = j + 1) {
-        if (i == j) { arow = push(arow, A[i][j] + 1e-6); } else { arow = push(arow, A[i][j]); }
+      for (let j3 = 0; j3 < m; j3 = j3 + 1) {
+        if (i5 == j3) { arow = push(arow, A[i5][j3] + 1e-6); } else { arow = push(arow, A[i5][j3]); }
       }
       Ad = push(Ad, arow);
     }
     let delta: float[] = la.mat_solve(Ad, Jtr);
     let pnew: float[] = [];
-    for (let j = 0; j < m; j = j + 1) { pnew = push(pnew, p[j] + delta[j]); }
+    for (let j4 = 0; j4 < m; j4 = j4 + 1) { pnew = push(pnew, p[j4] + delta[j4]); }
     p = pnew;
   }
   return p;

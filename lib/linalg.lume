@@ -1,5 +1,11 @@
 // linalg.lume — 线性代数算法库（混合分层：.lume 算法层，零 C 摩擦）
 //
+// 兼容契约（P16.1）：本库必须能被最旧受支持的宿主 lume 0.12.2 import。
+// 0.12 把 for (let X ...) 的声明登记在「包含该循环的块」里，同一块内
+// 重复的 let 名会直接中止 import；因此每个块的循环变量必须唯一命名。
+// 不要依赖 0.13 的 for-init 块作用域，也不要去掉 let（0.13 会报未定义）。
+// 回归门禁：make test -> lib-compat（tests/lib-compat.py）。
+//
 // 矩阵用 list-of-list 表示：float[][]，约定 M[row][col]。
 // 因 lume 的 list 为值语义（不支持 r[i][j] = x 原地赋值），所有「修改」
 // 都通过返回新矩阵的帮助函数实现（mat_elim / mat_row_scale / mat_swap_rows
@@ -477,26 +483,26 @@ export func mat_qr_q(A: float[][]): float[][] {
   for (let j = 0; j < n; j = j + 1) {
     let v: float[] = [];
     for (let i = 0; i < m; i = i + 1) { v = push(v, A[i][j]); }
-    for (let i = 0; i < j; i = i + 1) {
+    for (let i2 = 0; i2 < j; i2 = i2 + 1) {
       let dot: float = 0.0;
-      for (let k = 0; k < m; k = k + 1) { dot = dot + Qcols[i][k] * v[k]; }
+      for (let k = 0; k < m; k = k + 1) { dot = dot + Qcols[i2][k] * v[k]; }
       let w: float[] = [];            // v = v - dot · Qcols[i]
-      for (let k = 0; k < m; k = k + 1) { w = push(w, v[k] - dot * Qcols[i][k]); }
+      for (let k2 = 0; k2 < m; k2 = k2 + 1) { w = push(w, v[k2] - dot * Qcols[i2][k2]); }
       v = w;
     }
     let norm: float = 0.0;
-    for (let k = 0; k < m; k = k + 1) { norm = norm + v[k] * v[k]; }
+    for (let k3 = 0; k3 < m; k3 = k3 + 1) { norm = norm + v[k3] * v[k3]; }
     norm = sqrt(norm);
     if (norm < 1e-14) { norm = 1e-14; }
     let qcol: float[] = [];
-    for (let k = 0; k < m; k = k + 1) { qcol = push(qcol, v[k] / norm); }
+    for (let k4 = 0; k4 < m; k4 = k4 + 1) { qcol = push(qcol, v[k4] / norm); }
     Qcols = push(Qcols, qcol);
   }
   // 列主序 → 行主序
   let Q: float[][] = [];
-  for (let k = 0; k < m; k = k + 1) {
+  for (let k5 = 0; k5 < m; k5 = k5 + 1) {
     let row: float[] = [];
-    for (let j = 0; j < n; j = j + 1) { row = push(row, Qcols[j][k]); }
+    for (let j2 = 0; j2 < n; j2 = j2 + 1) { row = push(row, Qcols[j2][k5]); }
     Q = push(Q, row);
   }
   return Q;
@@ -512,31 +518,31 @@ export func mat_qr_r(A: float[][]): float[][] {
     let v: float[] = [];
     for (let i = 0; i < m; i = i + 1) { v = push(v, A[i][j]); }
     let rcol: float[] = [];
-    for (let i = 0; i < j; i = i + 1) {
+    for (let i2 = 0; i2 < j; i2 = i2 + 1) {
       let dot: float = 0.0;
-      for (let k = 0; k < m; k = k + 1) { dot = dot + Qcols[i][k] * v[k]; }
+      for (let k = 0; k < m; k = k + 1) { dot = dot + Qcols[i2][k] * v[k]; }
       rcol = push(rcol, dot);
       let w: float[] = [];
-      for (let k = 0; k < m; k = k + 1) { w = push(w, v[k] - dot * Qcols[i][k]); }
+      for (let k2 = 0; k2 < m; k2 = k2 + 1) { w = push(w, v[k2] - dot * Qcols[i2][k2]); }
       v = w;
     }
     let norm: float = 0.0;
-    for (let k = 0; k < m; k = k + 1) { norm = norm + v[k] * v[k]; }
+    for (let k3 = 0; k3 < m; k3 = k3 + 1) { norm = norm + v[k3] * v[k3]; }
     norm = sqrt(norm);
     if (norm < 1e-14) { norm = 1e-14; }
     rcol = push(rcol, norm);
     let qcol: float[] = [];
-    for (let k = 0; k < m; k = k + 1) { qcol = push(qcol, v[k] / norm); }
+    for (let k4 = 0; k4 < m; k4 = k4 + 1) { qcol = push(qcol, v[k4] / norm); }
     Qcols = push(Qcols, qcol);
     Rcols = push(Rcols, rcol);
   }
   // 列主序（上三角）→ 行主序
   let R: float[][] = [];
-  for (let i = 0; i < n; i = i + 1) {
+  for (let i3 = 0; i3 < n; i3 = i3 + 1) {
     let row: float[] = [];
-    for (let j = 0; j < n; j = j + 1) {
-      if (j < i) { row = push(row, 0.0); }
-      else { row = push(row, Rcols[j][i]); }
+    for (let j2 = 0; j2 < n; j2 = j2 + 1) {
+      if (j2 < i3) { row = push(row, 0.0); }
+      else { row = push(row, Rcols[j2][i3]); }
     }
     R = push(R, row);
   }
@@ -553,20 +559,20 @@ export func mat_eig_power(A: float[][], iters: int): float[][] {
   let lambda: float = 0.0;
   for (let it = 0; it < iters; it = it + 1) {
     let w: float[] = [];              // w = A·v
-    for (let i = 0; i < n; i = i + 1) {
+    for (let i2 = 0; i2 < n; i2 = i2 + 1) {
       let s: float = 0.0;
-      for (let j = 0; j < n; j = j + 1) { s = s + A[i][j] * v[j]; }
+      for (let j = 0; j < n; j = j + 1) { s = s + A[i2][j] * v[j]; }
       w = push(w, s);
     }
     let ray: float = 0.0;             // Rayleigh 商 λ = vᵀAv（v 已单位化）
-    for (let i = 0; i < n; i = i + 1) { ray = ray + v[i] * w[i]; }
+    for (let i3 = 0; i3 < n; i3 = i3 + 1) { ray = ray + v[i3] * w[i3]; }
     lambda = ray;
     let nv: float = 0.0;
-    for (let i = 0; i < n; i = i + 1) { nv = nv + w[i] * w[i]; }
+    for (let i4 = 0; i4 < n; i4 = i4 + 1) { nv = nv + w[i4] * w[i4]; }
     nv = sqrt(nv);
     if (nv < 1e-14) { nv = 1.0; }
     let vn: float[] = [];
-    for (let i = 0; i < n; i = i + 1) { vn = push(vn, w[i] / nv); }
+    for (let i5 = 0; i5 < n; i5 = i5 + 1) { vn = push(vn, w[i5] / nv); }
     v = vn;
   }
   let out: float[][] = [];
@@ -587,7 +593,7 @@ export func mat_eigvals(A: float[][], iters: int): float[] {
     Ak = mat_mul(R, Q);
   }
   let out: float[] = [];
-  for (let i = 0; i < n; i = i + 1) { out = push(out, Ak[i][i]); }
+  for (let i2 = 0; i2 < n; i2 = i2 + 1) { out = push(out, Ak[i2][i2]); }
   return out;
 }
 
@@ -601,22 +607,22 @@ export func mat_eigvec(A: float[][], mu: float, iters: int): float[] {
   for (let i = 0; i < n; i = i + 1) { v = push(v, 1.0 / sqrt(float(n))); }
   // 构造 M = A − μI
   let M: float[][] = [];
-  for (let i = 0; i < n; i = i + 1) {
+  for (let i2 = 0; i2 < n; i2 = i2 + 1) {
     let row: float[] = [];
     for (let j = 0; j < n; j = j + 1) {
-      if (i == j) { row = push(row, A[i][j] - mu); }
-      else { row = push(row, A[i][j]); }
+      if (i2 == j) { row = push(row, A[i2][j] - mu); }
+      else { row = push(row, A[i2][j]); }
     }
     M = push(M, row);
   }
   for (let it = 0; it < iters; it = it + 1) {
     let w: float[] = mat_solve(M, v);      // 解 (A − μI) x = v
     let nv: float = 0.0;
-    for (let i = 0; i < n; i = i + 1) { nv = nv + w[i] * w[i]; }
+    for (let i3 = 0; i3 < n; i3 = i3 + 1) { nv = nv + w[i3] * w[i3]; }
     nv = sqrt(nv);
     if (nv < 1e-14) { nv = 1.0; }
     let vn: float[] = [];
-    for (let i = 0; i < n; i = i + 1) { vn = push(vn, w[i] / nv); }
+    for (let i4 = 0; i4 < n; i4 = i4 + 1) { vn = push(vn, w[i4] / nv); }
     v = vn;
   }
   return v;
@@ -707,10 +713,10 @@ export func mat_svd(A: float[][]): float[][] {
         let App: float = 0.0;
         let Aqq: float = 0.0;
         let Apq: float = 0.0;
-        for (let i = 0; i < m; i = i + 1) {
-          App = App + B[i][p] * B[i][p];
-          Aqq = Aqq + B[i][q] * B[i][q];
-          Apq = Apq + B[i][p] * B[i][q];
+        for (let i2 = 0; i2 < m; i2 = i2 + 1) {
+          App = App + B[i2][p] * B[i2][p];
+          Aqq = Aqq + B[i2][q] * B[i2][q];
+          Apq = Apq + B[i2][p] * B[i2][q];
         }
         // 仅当 off-diagonal 显著时才旋转（避免除零 / 无谓扰动）
         if (abs(Apq) > 1e-10 * sqrt(App * Aqq) + 1e-300) {
@@ -728,9 +734,9 @@ export func mat_svd(A: float[][]): float[][] {
   }
   // 奇异值 = B 各列范数
   let sig: float[] = [];
-  for (let j = 0; j < n; j = j + 1) {
+  for (let j2 = 0; j2 < n; j2 = j2 + 1) {
     let s2: float = 0.0;
-    for (let i = 0; i < m; i = i + 1) { s2 = s2 + B[i][j] * B[i][j]; }
+    for (let i3 = 0; i3 < m; i3 = i3 + 1) { s2 = s2 + B[i3][j2] * B[i3][j2]; }
     sig = push(sig, sqrt(s2));
   }
   // 降序排序，并同步置换 B 列（→U 列）与 V 列
@@ -743,10 +749,10 @@ export func mat_svd(A: float[][]): float[][] {
         let sa_val: float = sig[a];
         let sb_val: float = sig[bi];
         let sig_new: float[] = [];
-        for (let j = 0; j < n; j = j + 1) {
-          if (j == a) { sig_new = push(sig_new, sb_val); }
-          else if (j == bi) { sig_new = push(sig_new, sa_val); }
-          else { sig_new = push(sig_new, sig[j]); }
+        for (let j3 = 0; j3 < n; j3 = j3 + 1) {
+          if (j3 == a) { sig_new = push(sig_new, sb_val); }
+          else if (j3 == bi) { sig_new = push(sig_new, sa_val); }
+          else { sig_new = push(sig_new, sig[j3]); }
         }
         sig = sig_new;
         B = la_swap_cols(B, a, bi);
@@ -755,45 +761,45 @@ export func mat_svd(A: float[][]): float[][] {
   }
   // 左奇异向量 U（列主序构造，再转置为行主序）
   let Ucols: float[][] = [];
-  for (let j = 0; j < n; j = j + 1) {
-    let sv: float = sig[j];
+  for (let j4 = 0; j4 < n; j4 = j4 + 1) {
+    let sv: float = sig[j4];
     if (sv < 1e-14) { sv = 1e-14; }
     let col: float[] = [];
-    for (let i = 0; i < m; i = i + 1) { col = push(col, B[i][j] / sv); }
+    for (let i4 = 0; i4 < m; i4 = i4 + 1) { col = push(col, B[i4][j4] / sv); }
     Ucols = push(Ucols, col);
   }
   // 若 m > n，用 Gram–Schmidt 补足剩余标准正交列
-  for (let j = n; j < m; j = j + 1) {
+  for (let j5 = n; j5 < m; j5 = j5 + 1) {
     let cand: float[] = [];
-    for (let i = 0; i < m; i = i + 1) {
-      if (i == j) { cand = push(cand, 1.0); } else { cand = push(cand, 0.0); }
+    for (let i5 = 0; i5 < m; i5 = i5 + 1) {
+      if (i5 == j5) { cand = push(cand, 1.0); } else { cand = push(cand, 0.0); }
     }
-    for (let k = 0; k < j; k = k + 1) {
+    for (let k = 0; k < j5; k = k + 1) {
       let dot: float = 0.0;
-      for (let i = 0; i < m; i = i + 1) { dot = dot + Ucols[k][i] * cand[i]; }
+      for (let i6 = 0; i6 < m; i6 = i6 + 1) { dot = dot + Ucols[k][i6] * cand[i6]; }
       let nc: float[] = [];
-      for (let i = 0; i < m; i = i + 1) { nc = push(nc, cand[i] - dot * Ucols[k][i]); }
+      for (let i7 = 0; i7 < m; i7 = i7 + 1) { nc = push(nc, cand[i7] - dot * Ucols[k][i7]); }
       cand = nc;
     }
     let norm: float = 0.0;
-    for (let i = 0; i < m; i = i + 1) { norm = norm + cand[i] * cand[i]; }
+    for (let i8 = 0; i8 < m; i8 = i8 + 1) { norm = norm + cand[i8] * cand[i8]; }
     norm = sqrt(norm);
     if (norm < 1e-14) { norm = 1.0; }
     let col: float[] = [];
-    for (let i = 0; i < m; i = i + 1) { col = push(col, cand[i] / norm); }
+    for (let i9 = 0; i9 < m; i9 = i9 + 1) { col = push(col, cand[i9] / norm); }
     Ucols = push(Ucols, col);
   }
   let U: float[][] = [];
-  for (let i = 0; i < m; i = i + 1) {
+  for (let i10 = 0; i10 < m; i10 = i10 + 1) {
     let row: float[] = [];
-    for (let j = 0; j < m; j = j + 1) { row = push(row, Ucols[j][i]); }
+    for (let j6 = 0; j6 < m; j6 = j6 + 1) { row = push(row, Ucols[j6][i10]); }
     U = push(U, row);
   }
   // packing（ragged）
   let out: float[][] = [];
-  for (let i = 0; i < m; i = i + 1) { out = push(out, U[i]); }
+  for (let i11 = 0; i11 < m; i11 = i11 + 1) { out = push(out, U[i11]); }
   out = push(out, sig);
-  for (let i = 0; i < n; i = i + 1) { out = push(out, V[i]); }
+  for (let i12 = 0; i12 < n; i12 = i12 + 1) { out = push(out, V[i12]); }
   return out;
 }
 
