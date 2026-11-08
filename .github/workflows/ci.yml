@@ -179,7 +179,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+        # Keep in sync with release.yml's darwin-arm64 entry. macOS 14
+        # retired 2026-11-02; macos-15 is the pinned arm64 GA label.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - name: Install Linux build deps

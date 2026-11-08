@@ -68,7 +68,9 @@ jobs:
             asset: lume-core-linux-x64
           - os: ubuntu-24.04-arm
             asset: lume-core-linux-arm64
-          - os: macos-14
+          # Pinned arm64 label; keep in sync with ci.yml's release-build
+          # matrix. All macOS 14 images retired 2026-11-02; macos-15 is arm64.
+          - os: macos-15
             asset: lume-core-darwin-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
