@@ -1602,6 +1602,9 @@ void bridge_seed_builtins(VM *vm) {
         {"http_put", b_http_put},
         {"http_patch", b_http_patch},
         {"http_delete", b_http_delete},
+        {"http_stream_open", b_http_stream_open},
+        {"http_stream_read", b_http_stream_read},
+        {"http_stream_close", b_http_stream_close},
 #endif
         /* P14 子进程 (builtins_spawn.c): 默认全禁, --spawn + LUME_SPAWN_ALLOW
          * 双闸; argv 直接 execvp, 不过 shell, 不暴露裸 fd。 */

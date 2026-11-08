@@ -1,0 +1,82 @@
+// lume —— P17 入站 SSE 流式回归（tests/http-stream-smoke.lume）
+//
+// 用法（make http-stream-test 会先起本地 SSE server）：
+//   ./bin/lume-core tests/http-stream-smoke.lume stream <port>
+//   LUME_NO_NET=1 ./bin/lume-core tests/http-stream-smoke.lume locked
+//
+// stream : 连 127.0.0.1 的 SSE server，断言 http_stream_read 是真流式——
+//          第一次非空读只含 FIRST、不含 LAST（server 还睡在中间），而非收尾
+//          一次性 collect。
+// locked  : --no-net / LUME_NO_NET=1 下，open 与 read 都必须被闸门拒绝。
+// 输出 PASS/FAIL，make http-stream-test grep FAIL 判定。
+
+func check(name, cond) {
+  if (cond) {
+    print("PASS " + name);
+  } else {
+    print("FAIL " + name);
+  }
+}
+
+let a = argv();
+let mode = a[0];
+
+if (mode == "locked") {
+  // 网络被整体关掉：open 必须在建连前就拒绝（不会真正打出去）。
+  let r = http_stream_open("http://127.0.0.1:1/", {allow_private: true});
+  check("locked: open refused when network disabled", get(r, "ok", true) == false);
+  check("locked: refusal names the gate", contains(get(r, "err", ""), "disabled"));
+  let rd = http_stream_read(1, 100);
+  check("locked: read also refused", get(rd, "ok", true) == false);
+} else {
+  // stream 模式：port 在 argv[1]
+  let port = a[1];
+  let url = "http://127.0.0.1:" + port + "/";
+
+  // 127.0.0.1 是私有地址，必须显式 allow_private 才放行（与 http_get 同闸门）。
+  let open = http_stream_open(url, {allow_private: true});
+  check("open: ok", get(open, "ok", false) == true);
+  check("open: handle is positive", get(open, "handle", 0) >= 1);
+  check("open: 2xx status", get(open, "status", 0) >= 200 && get(open, "status", 0) < 300);
+  let h = get(open, "handle", 0);
+
+  let first = "";
+  let first_event = "";
+  let acc = "";
+  let eof = false;
+  let iters = 0;
+  let saw_first = false;
+  let saw_last = false;
+  while (iters < 40 && eof == false) {
+    iters = iters + 1;
+    let r = http_stream_read(h, 300);
+    if (get(r, "ok", false) == false) {
+      check("read: ok", false);
+      break;
+    }
+    let ev = get(r, "event", "");
+    let data = get(r, "data", "");
+    if (data != "") {
+      if (first == "") { first = data; first_event = ev; }
+      acc = acc + data;
+      if (data == "FIRST") { saw_first = true; }
+      if (data == "LAST") { saw_last = true; }
+    }
+    if (get(r, "eof", false) == true) { eof = true; }
+  }
+
+  // 流式铁证：第一次非空读只含 FIRST、不含 LAST（server 还睡在中间）。
+  // 若生产者被块缓冲、或本改动把 collect 提前，first 会同时含 LAST → 断言失败。
+  check("stream: first event is FIRST only (no LAST yet)",
+        contains(first, "FIRST") && contains(first, "LAST") == false);
+  // 默认 event 名为 "message"（server 没发 event: 字段）。
+  check("stream: default event name is message", first_event == "message");
+  check("stream: both events received", saw_first && saw_last);
+  // 多轮读取 = 真流式（边跑边收），而非收尾一次性 collect。
+  check("stream: read spanned multiple polls", iters > 1);
+  check("stream: end-of-stream observed", eof == true);
+
+  let c1 = http_stream_close(h);
+  check("close: returns true on first call", c1 == true);
+  check("close: stale handle rejected after close", http_stream_close(h) == false); // 已关，旧句柄失效
+}

@@ -1,0 +1,13 @@
+// P17 emitter-gate NEGATIVE control (tests/stream-native-gate.sh).
+//
+// --check must ACCEPT this file: http_stream_open is a real language builtin,
+// registered in typecheck.c's LUME_BUILTIN_NAMES. --compile-text must REJECT it
+// with "call to unknown function 'http_stream_open'": the native emitters have
+// no stream helper, and that is the deliberate, fail-closed default (TODO.md
+// P17, mirroring P14 decision (a) for spawn).
+//
+// Do not "fix" a red gate by deleting http_stream_open from the language: the
+// matching positive control is tests/http-stream-smoke.lume, which proves the
+// interpreter leg can actually stream when network is enabled.
+http_stream_open("http://example.com/sse");
+print("native stream reached");

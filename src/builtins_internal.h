@@ -97,6 +97,17 @@ void native_http_put(VM *vm, int argc, Value *args, Value *out);
 void native_http_patch(VM *vm, int argc, Value *args, Value *out);
 void native_http_delete(VM *vm, int argc, Value *args, Value *out);
 
+/* ---- 入站 SSE 流 (builtins_http.c; Windows 由 builtins.c 出 stub) ----
+ * http_stream_open(url, {headers?, timeout?, allow_private?}) -> {ok, handle, status, err}
+ * http_stream_read(handle, timeout_ms?) -> {ok, event, data, id, eof, err}
+ * http_stream_close(handle) -> bool
+ * Interpreter-only: registered in interp.c but NOT in the native emitters'
+ * BUILTINS[], so --compile-text rejects these names (call to unknown function),
+ * exactly like spawn. v1 has no auto-reconnect; the caller receives `id`. */
+void native_http_stream_open(VM *vm, int argc, Value *args, Value *out);
+void native_http_stream_read(VM *vm, int argc, Value *args, Value *out);
+void native_http_stream_close(VM *vm, int argc, Value *args, Value *out);
+
 /* ---- 高阶集合函数(builtins_hof.c) ---- */
 void native_range(VM *vm, int argc, Value *args, Value *out);
 void native_map(VM *vm, int argc, Value *args, Value *out);

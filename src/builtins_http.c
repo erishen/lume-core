@@ -691,8 +691,11 @@ static bool hdrs_has(Obj *hdrs, const char *key) {
  * (GET/DELETE 传 NULL)。skip_hdr 用来在降级成 GET 之后挡掉
  * Content-Length —— 留着一个说「后面还有 N 字节」的头而实际不发,服务端会
  * 一直读到超时。 */
+/* keep_alive: SSE streams must NOT send `Connection: close` — the response is
+ * read incrementally after the headers. The one-shot http_call passes 0. */
 static int build_request(sbuf *b, Url *u, const char *proxy, Obj *hdrs,
-                         const char *method, sbuf *body, const char *skip_hdr) {
+                         const char *method, sbuf *body, const char *skip_hdr,
+                         int keep_alive) {
     int via_proxy = (proxy && proxy[0] && !u->https) ? 1 : 0;
     if (via_proxy) { sb_str(b, method); sb_str(b, " "); sb_str(b, "http://"); sb_str(b, u->host); sb_str(b, u->path); }
     else           { sb_str(b, method); sb_str(b, " "); sb_str(b, u->path); }
@@ -704,7 +707,8 @@ static int build_request(sbuf *b, Url *u, const char *proxy, Obj *hdrs,
     /* 本实现不做解压,明确要 identity:否则中间代理(或服务端)回 gzip,
      * body 里就是一串二进制,脚本侧拿到的是乱码而非内容。 */
     sb_str(b, "Accept-Encoding: identity\r\n");
-    sb_str(b, "Connection: close\r\n"); /* 无 keep-alive:响应读完即收工 */
+    sb_str(b, keep_alive ? "Connection: keep-alive\r\n"
+                          : "Connection: close\r\n"); /* 无 keep-alive:响应读完即收工 */
     /* 带 body 的方法必须带 Content-Length:靠 Connection: close 结尾收尾的
      * 隐式长度对 POST/PUT/PATCH 不成立,服务端会当请求还没发完。
      * 但用户自己在 headers 里给了就别再补一个 —— 报文里出现两个
@@ -920,7 +924,7 @@ static void http_call(VM *vm, int argc, Value *args, Value *out,
         }
         sbuf req = {0};
         int brc = build_request(&req, &u, px, hdrs,
-                                cur_method, &body, skip_hdr);
+                                cur_method, &body, skip_hdr, 0);
         if (brc == 0) brc = conn_write(&c, req.p, req.len, deadline);
         free(req.p);
         if (brc != 0) {
@@ -1018,4 +1022,396 @@ void native_http_patch(VM *vm, int argc, Value *args, Value *out) {
 
 void native_http_delete(VM *vm, int argc, Value *args, Value *out) {
     http_call(vm, argc, args, out, "http_delete", "DELETE", 0);
+}
+
+/* ===================================================================== *
+ * http_stream_open / http_stream_read / http_stream_close  (P17, the
+ * inbound-SSE leg DEFERRED from P14 step 3).
+ *
+ * Interpreter-only, exactly like spawn: registered in interp.c but NOT in
+ * the two native emitters' BUILTINS[], so --compile-text rejects these names
+ * ("call to unknown function"). A compiled binary has no VM policy to consult,
+ * so a stream primitive there would be an ungated network surface — the same
+ * rationale as the spawn gate (TODO.md P14, decision (a)).
+ *
+ * Reuses the bare-socket transport already in this file: open_conn() (SSRF
+ * gate + proxy + TLS), build_request() (now with keep_alive), conn_write(),
+ * read_head() and conn_read_some(). The only new logic is the incremental
+ * SSE line parser below. v1 has no auto-reconnect (the caller receives `id`
+ * and manages reconnection itself) — mirrors the minimal-surface posture of
+ * decision (a). One per-call poll with a timeout mirrors native_proc_read.
+ * ===================================================================== */
+
+#ifndef LUME_STREAM_SLOTS
+#define LUME_STREAM_SLOTS 16
+#endif
+#define HTTP_STREAM_READ_MAX  65536
+#define HTTP_STREAM_DFLT_TIMEOUT_MS 500L
+
+typedef struct {
+    Conn c;                 /* kept open across reads */
+    bool active;
+    unsigned long long gen; /* generation tag embedded in the handle */
+    /* incremental SSE parse state */
+    sbuf rbuf;              /* raw bytes not yet split into lines */
+    sbuf ev_data;           /* accumulated data: lines joined by \n */
+    char ev_event[64];
+    bool ev_has_event;
+    char ev_id[256];
+    bool ev_has_id;
+    bool ev_ready;          /* a complete event is staged in out_* */
+    char out_event[64];
+    sbuf out_data;
+    char out_id[256];
+    bool eof_seen;          /* stream hit EOF; reads short-circuit, slot stays
+                               active until an explicit http_stream_close */
+} HttpStreamSlot;
+
+static HttpStreamSlot g_stream[LUME_STREAM_SLOTS];
+static unsigned long long g_stream_gen;
+
+static void sbuf_free(sbuf *b) {
+    if (b->p) { free(b->p); b->p = NULL; }
+    b->len = 0; b->cap = 0; b->oom = 0;
+}
+
+/* reset a slot's parse + connection state (keeps nothing across calls) */
+static void stream_slot_clear(HttpStreamSlot *s) {
+    conn_close(&s->c);
+    sbuf_free(&s->rbuf);
+    sbuf_free(&s->ev_data);
+    sbuf_free(&s->out_data);
+    s->ev_event[0] = '\0'; s->ev_has_event = false;
+    s->ev_id[0] = '\0';    s->ev_has_id = false;
+    s->ev_ready = false;
+    s->out_event[0] = '\0'; s->out_id[0] = '\0';
+    s->eof_seen = false;
+}
+
+static int stream_slot_alloc(void) {
+    for (int i = 1; i < LUME_STREAM_SLOTS; i++)
+        if (!g_stream[i].active) return i;
+    return -1;
+}
+
+static Value stream_open_result(VM *vm, bool ok, long long handle,
+                                long long status, const char *err) {
+    Obj *r = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(r));
+    map_set(vm, r, "ok", val_bool(ok));
+    map_set(vm, r, "handle", val_int(handle));
+    map_set(vm, r, "status", val_int(status));
+    map_set(vm, r, "err", make_string_cstr(vm, err ? err : ""));
+    return vm_pop(vm);
+}
+
+static Value stream_read_result(VM *vm, bool ok, const char *event,
+                                const char *data, size_t dlen,
+                                const char *id, bool eof, const char *err) {
+    Obj *r = AS_OBJ(make_map(vm));
+    vm_push(vm, val_obj(r));
+    map_set(vm, r, "ok", val_bool(ok));
+    map_set(vm, r, "event", make_string_cstr(vm, event ? event : ""));
+    map_set(vm, r, "data", make_string(vm, data ? data : "", dlen));
+    map_set(vm, r, "id", make_string_cstr(vm, id ? id : ""));
+    map_set(vm, r, "eof", val_bool(eof));
+    map_set(vm, r, "err", make_string_cstr(vm, err ? err : ""));
+    return vm_pop(vm);
+}
+
+/* parse one SSE field line (len bytes, no trailing CR/LF). A blank line
+ * (len == 0) dispatches the accumulated event. */
+static void sse_dispatch(HttpStreamSlot *s);
+static void sse_line(HttpStreamSlot *s, const char *line, size_t len) {
+    if (len == 0) { sse_dispatch(s); return; }
+    if (line[0] == ':') return; /* comment line */
+    size_t i = 0;
+    while (i < len && line[i] != ':') i++;
+    const char *field = line, *value = "";
+    size_t flen = i, vlen = 0;
+    if (i < len) {
+        value = line + i + 1; vlen = len - i - 1;
+        if (vlen > 0 && value[0] == ' ') { value++; vlen--; } /* strip one LWS */
+    }
+    if (flen == 4 && memcmp(field, "data", 4) == 0) {
+        if (s->ev_data.len > 0) sb_mem(&s->ev_data, "\n", 1);
+        sb_mem(&s->ev_data, value, vlen);
+    } else if (flen == 5 && memcmp(field, "event", 5) == 0) {
+        size_t n = vlen < sizeof s->ev_event - 1 ? vlen : sizeof s->ev_event - 1;
+        memcpy(s->ev_event, value, n); s->ev_event[n] = '\0'; s->ev_has_event = true;
+    } else if (flen == 2 && memcmp(field, "id", 2) == 0) {
+        size_t n = vlen < sizeof s->ev_id - 1 ? vlen : sizeof s->ev_id - 1;
+        memcpy(s->ev_id, value, n); s->ev_id[n] = '\0'; s->ev_has_id = true;
+    }
+    /* retry / unknown fields: ignored in v1 (no auto-reconnect) */
+}
+
+/* dispatch the accumulated event into out_*; no-op if there is no data.
+ * id persists across events (SSE spec); event/data reset after dispatch. */
+static void sse_dispatch(HttpStreamSlot *s) {
+    if (s->ev_data.len == 0 && !s->ev_has_event && !s->ev_has_id) {
+        s->ev_has_event = false; s->ev_event[0] = '\0';
+        s->ev_data.len = 0; if (s->ev_data.p) s->ev_data.p[0] = '\0';
+        return;
+    }
+    const char *ev = s->ev_has_event ? s->ev_event : "message";
+    size_t el = strlen(ev); if (el >= sizeof s->out_event) el = sizeof s->out_event - 1;
+    memcpy(s->out_event, ev, el); s->out_event[el] = '\0';
+    size_t dl = s->ev_data.len;
+    if (dl > 0 && s->ev_data.p[dl - 1] == '\n') dl--; /* drop joined trailing \n */
+    sbuf_free(&s->out_data);
+    s->out_data = (sbuf){0};
+    if (dl > 0) sb_mem(&s->out_data, s->ev_data.p, dl);
+    const char *id = s->ev_has_id ? s->ev_id : "";
+    size_t il = strlen(id); if (il >= sizeof s->out_id) il = sizeof s->out_id - 1;
+    memcpy(s->out_id, id, il); s->out_id[il] = '\0';
+    s->ev_ready = true;
+    s->ev_has_event = false; s->ev_event[0] = '\0';
+    s->ev_data.len = 0; if (s->ev_data.p) s->ev_data.p[0] = '\0';
+}
+
+/* feed bytes into the incremental parser; returns true if a full event is
+ * staged in out_* (further bytes left in rbuf for the next call). */
+static bool sse_feed(HttpStreamSlot *s, const char *buf, size_t len) {
+    if (len > 0) sb_mem(&s->rbuf, buf, len);
+    if (s->rbuf.oom) return s->ev_ready;
+    while (s->rbuf.len > 0) {
+        char *nl = memchr(s->rbuf.p, '\n', s->rbuf.len);
+        if (!nl) break;
+        size_t linelen = (size_t)(nl - s->rbuf.p);
+        size_t ll = linelen;
+        if (ll > 0 && s->rbuf.p[ll - 1] == '\r') ll--;
+        sse_line(s, s->rbuf.p, ll);
+        size_t consumed = linelen + 1;
+        memmove(s->rbuf.p, s->rbuf.p + consumed, s->rbuf.len - consumed);
+        s->rbuf.len -= consumed;
+        if (s->ev_ready) return true;
+    }
+    return s->ev_ready;
+}
+
+/* on EOF, flush a trailing event the server sent without a final blank line
+ * (browsers do this too) — but only if there is data. */
+static bool sse_flush(HttpStreamSlot *s) {
+    if (!s->ev_ready && (s->ev_data.len > 0 || s->ev_has_event || s->ev_has_id))
+        sse_dispatch(s);
+    return s->ev_ready;
+}
+
+void native_http_stream_open(VM *vm, int argc, Value *args, Value *out) {
+    *out = stream_open_result(vm, false, 0, 0, "");
+    if (vm->no_net) {
+        *out = stream_open_result(vm, false, 0, 0,
+            "http_stream_open(): network access is disabled in this run "
+            "(--no-net / LUME_NO_NET=1)");
+        return;
+    }
+    if (argc < 1) {
+        *out = stream_open_result(vm, false, 0, 0, "http_stream_open(): url is required");
+        return;
+    }
+    const char *url0 = NULL;
+    if (!arg_string(vm, args[0], &url0)) return;
+
+    long timeout_ms = HTTP_DFLT_TIMEOUT_MS;
+    int allow_private = 0;
+    Obj *hdrs = NULL;
+    if (argc >= 2 && IS_OBJ(args[1]) && AS_OBJ(args[1])->type == OBJ_MAP) {
+        Obj *o = AS_OBJ(args[1]);
+        int f = 0; Value v;
+        v = map_get(vm, o, "timeout", &f);
+        if (f && IS_NUM(v)) {
+            double d = AS_NUM(v);
+            if (d > 0) timeout_ms = HTTP_SEC_TO_MS(d) < HTTP_MAX_TIMEOUT_MS
+                                      ? HTTP_SEC_TO_MS(d) : HTTP_MAX_TIMEOUT_MS;
+        }
+        v = map_get(vm, o, "allow_private", &f);
+        if (f && IS_BOOL(v)) allow_private = AS_BOOL(v) ? 1 : 0;
+        v = map_get(vm, o, "headers", &f);
+        if (f && IS_OBJ(v) && AS_OBJ(v)->type == OBJ_MAP) hdrs = AS_OBJ(v);
+    }
+
+    char hostbuf[512];
+    Url u; memset(&u, 0, sizeof u);
+    if (url_parse(url0, hostbuf, sizeof hostbuf, &u) != 0) {
+        *out = stream_open_result(vm, false, 0, 0,
+            "http_stream_open(): unsupported url (need http:// or https://)");
+        return;
+    }
+    if (!allow_private && host_blocked(u.host)) {
+        *out = stream_open_result(vm, false, 0, 0,
+            "http_stream_open(): refused — host resolves to a private/reserved address");
+        return;
+    }
+
+    int slot = stream_slot_alloc();
+    if (slot < 0) {
+        *out = stream_open_result(vm, false, 0, 0, "http_stream_open(): stream table is full");
+        return;
+    }
+
+    long deadline = now_ms() + timeout_ms;
+    const char *px = effective_proxy(&u);
+    Conn c = { -1, NULL, { 0 } };
+    int rc = open_conn(&u, px, &c, deadline);
+    if (rc != 0) {
+        const char *why = c.why[0] ? c.why
+                         : (rc == 1 ? "https:// needs libssl (rebuild with openssl)"
+                                    : "connection refused");
+        *out = stream_open_result(vm, false, 0, 0, why);
+        return;
+    }
+
+    sbuf req = {0};
+    build_request(&req, &u, px, hdrs, "GET", NULL, NULL, 1 /*keep_alive*/);
+    if (req.oom || conn_write(&c, req.p, req.len, deadline) != 0) {
+        free(req.p); conn_close(&c);
+        *out = stream_open_result(vm, false, 0, 0,
+                                  "http_stream_open(): failed to send request");
+        return;
+    }
+    free(req.p);
+
+    char hdr[HTTP_MAX_HEADER_SZ];
+    memset(hdr, 0, sizeof hdr);
+    int status = 0;
+    int rrc = read_head(&c, hdr, sizeof hdr, &status, deadline);
+    if (rrc != 0) {
+        conn_close(&c);
+        *out = stream_open_result(vm, false, 0, status,
+            rrc == -2 ? "http_stream_open(): response headers timed out"
+                      : "http_stream_open(): malformed response headers");
+        return;
+    }
+    if (status < 200 || status >= 300) {
+        conn_close(&c);
+        *out = stream_open_result(vm, false, 0, status,
+                                  "http_stream_open(): non-2xx status (not an SSE stream)");
+        return;
+    }
+
+    g_stream[slot].c = c;
+    g_stream[slot].active = true;
+    g_stream[slot].eof_seen = false;
+    g_stream[slot].gen = ++g_stream_gen;
+    long long handle = (long long)(g_stream[slot].gen * LUME_STREAM_SLOTS + (unsigned)slot);
+    *out = stream_open_result(vm, true, handle, status, "");
+}
+
+void native_http_stream_read(VM *vm, int argc, Value *args, Value *out) {
+    *out = stream_read_result(vm, false, "", "", 0, "", false, "");
+    if (vm->no_net) {
+        *out = stream_read_result(vm, false, "", "", 0, "", false,
+            "http_stream_read(): network access is disabled in this run");
+        return;
+    }
+    if (argc < 1) {
+        *out = stream_read_result(vm, false, "", "", 0, "", false,
+                                  "http_stream_read(): handle is required");
+        return;
+    }
+    long long h = IS_INT(args[0]) ? AS_INT(args[0]) : 0;
+    long long gen = h / LUME_STREAM_SLOTS;
+    int idx = (int)(h % LUME_STREAM_SLOTS);
+    if (gen < 1 || idx < 1 || !g_stream[idx].active ||
+        g_stream[idx].gen != (unsigned long long)gen) {
+        *out = stream_read_result(vm, false, "", "", 0, "", false,
+                                  "http_stream_read(): unknown or closed stream handle");
+        return;
+    }
+    HttpStreamSlot *s = &g_stream[idx];
+
+    /* After EOF the socket is gone; short-circuit so repeated reads don't poll
+     * a closed fd. The slot stays active until an explicit http_stream_close. */
+    if (s->eof_seen) {
+        *out = stream_read_result(vm, true, "", "", 0, "", true, "");
+        return;
+    }
+
+    long long timeout = HTTP_STREAM_DFLT_TIMEOUT_MS;
+    if (argc >= 2 && IS_INT(args[1]) && AS_INT(args[1]) >= 0) timeout = AS_INT(args[1]);
+    if (timeout > 60000) timeout = 60000;
+
+    /* A complete event may already be buffered from a previous read that
+     * returned early (sse_feed leaves the remainder in rbuf). Don't block on
+     * poll for it — feed the empty buffer to finish parsing. */
+    if (s->rbuf.len > 0 && sse_feed(s, NULL, 0)) {
+        *out = stream_read_result(vm, true, s->out_event,
+                                  s->out_data.p ? s->out_data.p : "",
+                                  s->out_data.len, s->out_id, false, "");
+        s->ev_ready = false; s->out_event[0] = '\0'; s->out_id[0] = '\0';
+        sbuf_free(&s->out_data);
+        return;
+    }
+
+    struct pollfd p = { .fd = s->c.fd, .events = POLLIN | POLLHUP };
+    int pr = poll(&p, 1, (int)timeout);
+    if (pr < 0) {
+        if (errno == EINTR) {
+            *out = stream_read_result(vm, true, "", "", 0, "", false, "");
+            return;
+        }
+        *out = stream_read_result(vm, false, "", "", 0, "", false,
+                                  "http_stream_read(): poll() failed");
+        return;
+    }
+    if (pr == 0) {
+        *out = stream_read_result(vm, true, "", "", 0, "", false, ""); /* idle */
+        return;
+    }
+
+    long deadline = now_ms() + timeout;
+    char buf[HTTP_STREAM_READ_MAX];
+    size_t got = 0;
+    int r = conn_read_some(&s->c, buf, sizeof buf, &got, deadline);
+    if (r == -2) {
+        *out = stream_read_result(vm, false, "", "", 0, "", false,
+                                  "http_stream_read(): read timed out");
+        return;
+    }
+    if (r != 0) {
+        stream_slot_clear(s); s->active = false;
+        *out = stream_read_result(vm, false, "", "", 0, "", false,
+                                  "http_stream_read(): read failed");
+        return;
+    }
+    if (got == 0) {
+        bool fired = sse_flush(s);
+        if (fired) {
+            *out = stream_read_result(vm, true, s->out_event,
+                                      s->out_data.p ? s->out_data.p : "",
+                                      s->out_data.len, s->out_id, true, "");
+            s->ev_ready = false; s->out_event[0] = '\0'; s->out_id[0] = '\0';
+            sbuf_free(&s->out_data);
+        } else {
+            *out = stream_read_result(vm, true, "", "", 0, "", true, "");
+        }
+        conn_close(&s->c);     /* socket already drained; idempotent */
+        s->eof_seen = true;   /* slot stays active until explicit close */
+        return;
+    }
+    if (sse_feed(s, buf, got)) {
+        *out = stream_read_result(vm, true, s->out_event,
+                                  s->out_data.p ? s->out_data.p : "",
+                                  s->out_data.len, s->out_id, false, "");
+        s->ev_ready = false; s->out_event[0] = '\0'; s->out_id[0] = '\0';
+        sbuf_free(&s->out_data);
+        return;
+    }
+    *out = stream_read_result(vm, true, "", "", 0, "", false, ""); /* open, no event yet */
+}
+
+void native_http_stream_close(VM *vm, int argc, Value *args, Value *out) {
+    (void)vm;
+    *out = val_bool(false);
+    if (argc < 1 || !IS_INT(args[0])) return;
+    long long h = AS_INT(args[0]);
+    long long gen = h / LUME_STREAM_SLOTS;
+    int idx = (int)(h % LUME_STREAM_SLOTS);
+    if (gen < 1 || idx < 1 || !g_stream[idx].active ||
+        g_stream[idx].gen != (unsigned long long)gen) return;
+    stream_slot_clear(&g_stream[idx]);
+    g_stream[idx].active = false;
+    g_stream[idx].gen = ++g_stream_gen; /* invalidate stale handles */
+    *out = val_bool(true);
 }

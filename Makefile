@@ -392,7 +392,7 @@ endif
 # P14 emitter gate is part of the fast leg on every lane (ci.yml / release.yml
 # / windows.yml all run `make check`). It is command-only and needs no binary
 # beyond `all`, so it cannot be skipped by a stale target file.
-check: all $(CHECK_UNIT_TESTS) spawn-native-gate
+check: all $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -1089,7 +1089,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test spawn-test spawn-native-gate check-version lib-compat lib-backends static-cache-test \
+         fsroot-test spawn-test spawn-native-gate stream-native-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
@@ -1163,6 +1163,14 @@ SPAWN_ABS   := /bin
 # See TODO.md P14 and tests/spawn-native-gate.sh.
 spawn-native-gate: all
 	@sh tests/spawn-native-gate.sh
+
+# P17 emitter gate (decision (a) extended to inbound SSE): http_stream stays
+# interpreter-only, exactly like spawn. Asserts no stream token exists in the
+# emitters/rt.c, that --check still knows http_stream_open, and that
+# --compile-text rejects it with "call to unknown function". See TODO.md P17
+# and tests/stream-native-gate.sh.
+stream-native-gate: all
+	@sh tests/stream-native-gate.sh
 
 spawn-test: all
 	@env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
@@ -1525,6 +1533,34 @@ http-noproxy-test: all
 	   echo "==> proxy 相关环境变量:"; env | grep -i proxy || echo "(none)"; \
 	   exit 1; fi; \
 	 echo "==> http no_proxy 单测通过"
+
+# P17 入站 SSE 流式（2026-11-08）。起本地 SSE server（tests/http_stream_srv.py，
+# 127.0.0.1 仅推两个事件、中间睡 1s），验证 http_stream_read 是真流式：
+# 第一次非空读只含 FIRST、不含 LAST。再跑 locked 模式（LUME_NO_NET=1）确认
+# open/read 被网络闸门拒绝。沿用 noproxy 测试的 server 生命周期与 NO_PROXY 直连。
+http-stream-test: all
+	@PORT=18895; \
+	 python3 tests/http_stream_srv.py $$PORT > /tmp/lume-http-stream-srv.log 2>&1 & \
+	 SRV=$$!; \
+	 if ! python3 tests/wait_port.py $$PORT 15; then \
+	   echo "==> SSE server 15s 未就绪(端口被占/python3 故障?)"; \
+	   cat /tmp/lume-http-stream-srv.log; \
+	   kill $$SRV 2>/dev/null; exit 1; fi; \
+	 LUME_HTTP_PROXY= HTTP_PROXY= HTTPS_PROXY= NO_PROXY=127.0.0.1 \
+	   ./$(TARGET) tests/http-stream-smoke.lume stream $$PORT > /tmp/lume-http-stream.out 2>&1; \
+	 rc=$$?; \
+	 kill $$SRV 2>/dev/null; \
+	 cat /tmp/lume-http-stream.out; \
+	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-stream.out; then \
+	   echo "==> http_stream 流式单测失败 (rc=$$rc)"; \
+	   echo "==> server log:"; cat /tmp/lume-http-stream-srv.log; \
+	   exit 1; fi; \
+	 LUME_NO_NET=1 ./$(TARGET) tests/http-stream-smoke.lume locked > /tmp/lume-http-stream-locked.out 2>&1; \
+	 rc=$$?; \
+	 cat /tmp/lume-http-stream-locked.out; \
+	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-stream-locked.out; then \
+	   echo "==> http_stream locked 单测失败 (rc=$$rc)"; exit 1; fi; \
+	 echo "==> http_stream 流式单测通过 (stream + locked)"
 
 # map 下标标量读: 合规路径(get()/标注/可解析字面量)三后端一致; 未标注的
 # 「变量 map」标量读在原生后端给出准确、可操作的错误(不再是误导性的

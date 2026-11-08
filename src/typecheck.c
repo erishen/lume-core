@@ -496,6 +496,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* HTTP verbs that carry a body (2026-10-05) */
     "http_post", "http_put", "http_patch",
     "http_delete", /* same as http_get: no body */
+    /* inbound SSE (P17): interpreter-only like spawn, see TODO.md */
+    "http_stream_open", "http_stream_read", "http_stream_close",
     /* P14 gated child processes (builtins_spawn.c). Registered unconditionally
      * so scripts type-check; the runtime refuses every call unless the
      * --spawn / LUME_SPAWN_ALLOW gate is opened. */
@@ -601,6 +603,9 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"crypt_sha512",1,-1},
     {"http_get",1,-1}, {"http_post",1,-1}, {"http_put",1,-1},
     {"http_patch",1,-1}, {"http_delete",1,-1},
+    /* P17 inbound SSE: http_stream_open(url, {opts?}); http_stream_read(handle,
+     * timeout_ms?); http_stream_close(handle). */
+    {"http_stream_open",1,-1}, {"http_stream_read",1,2}, {"http_stream_close",1,1},
     {"try",1,-1},
     /* P14: spawn(argv, {input?}); proc_read(handle, stream?, timeout_ms?);
      * proc_wait(handle, timeout_ms?); proc_kill(handle). */
