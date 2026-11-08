@@ -1158,6 +1158,15 @@ fsroot-test: all
 # make that point at a wrapper directory that has no echo, which silently
 # turns these assertions into a false red. /bin/echo exists on both platforms
 # (on usrmerge systems it realpath's into /usr/bin, still inside the roots).
+# GH Actions runner images (2026-11) broke that assumption: they replaced
+# GNU coreutils with rust coreutils under /usr/lib/cargo/bin, so /bin/echo
+# there realpath's OUT of /bin:/usr/bin and rooted resolution refuses it
+# (correctly). The spawn-test recipe therefore probes /bin/echo's real
+# directory at run time — from the binary itself, never from PATH, so shims
+# cannot skew it — and, when it sits outside the defaults, extends the root
+# set and points ABS at it. Done in the recipe, not via $(shell): make ends
+# a function call at the first unmatched `)`, and shell `case` patterns
+# would truncate the probe mid-statement.
 SPAWN_ROOTS := /bin:/usr/bin
 SPAWN_ABS   := /bin
 
@@ -1181,7 +1190,12 @@ stream-native-gate: all
 	@sh tests/stream-native-gate.sh
 
 spawn-test: all
-	@env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
+	@ROOTS="/bin:/usr/bin"; ABS="/bin"; \
+	for e in /bin/echo /usr/bin/echo; do \
+	  d=$$(dirname $$(realpath $$e 2>/dev/null) 2>/dev/null); \
+	  if [ -n "$$d" ] && ! printf '%s' "$$d" | grep -qE '^/(bin|usr/bin)(/|$$)'; then ROOTS="$${ROOTS}:$$d"; ABS="$$d"; break; fi; \
+	done; \
+	env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-locked.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-locked.out; then \
 	  echo "==> spawn locked 单测失败 (rc=$$rc)"; exit 1; fi; \
@@ -1189,26 +1203,26 @@ spawn-test: all
 	rc=$$?; cat /tmp/lume-spawn-empty.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-empty.out; then \
 	  echo "==> spawn emptyallow 单测失败 (rc=$$rc)"; exit 1; fi; \
-	LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep LUME_SPAWN_ROOT=$(SPAWN_ROOTS) ./$(TARGET) tests/spawn-smoke.lume open > /tmp/lume-spawn-open.out 2>&1; \
+	LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep LUME_SPAWN_ROOT=$$ROOTS ./$(TARGET) tests/spawn-smoke.lume open > /tmp/lume-spawn-open.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-open.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-open.out; then \
 	  echo "==> spawn open 单测失败 (rc=$$rc)"; exit 1; fi; \
 	outside=$$(mktemp -d); \
 	printf '#!/bin/sh\necho ESCAPED\n' > $$outside/evil; chmod +x $$outside/evil; \
 	P14_SECRET=must-not-leak LUME_SPAWN=1 \
-	  LUME_SPAWN_ALLOW=echo,env,$(SPAWN_ABS)/echo,$$outside/evil,/etc/hosts \
-	  LUME_SPAWN_ROOT=$(SPAWN_ROOTS) \
-	  ./$(TARGET) tests/spawn-smoke.lume rooted $(SPAWN_ABS) $$outside > /tmp/lume-spawn-rooted.out 2>&1; \
+	  LUME_SPAWN_ALLOW=echo,env,$$ABS/echo,$$outside/evil,/etc/hosts \
+	  LUME_SPAWN_ROOT=$$ROOTS \
+	  ./$(TARGET) tests/spawn-smoke.lume rooted $$ABS $$outside > /tmp/lume-spawn-rooted.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-rooted.out; rm -rf $$outside; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-rooted.out; then \
 	  echo "==> spawn rooted 单测失败 (rc=$$rc)"; exit 1; fi; \
 	env -u LUME_SPAWN_ROOT LUME_SPAWN=1 \
-	  LUME_SPAWN_ALLOW=echo,$(SPAWN_ABS)/echo \
-	  ./$(TARGET) tests/spawn-smoke.lume abspath $(SPAWN_ABS) > /tmp/lume-spawn-abspath.out 2>&1; \
+	  LUME_SPAWN_ALLOW=echo,$$ABS/echo \
+	  ./$(TARGET) tests/spawn-smoke.lume abspath $$ABS > /tmp/lume-spawn-abspath.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-abspath.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-abspath.out; then \
 	    echo "==> spawn abspath 单测失败 (rc=$$rc)"; exit 1; fi; \
-	LUME_SPAWN=1 LUME_SPAWN_ALLOW=sh LUME_SPAWN_ROOT=$(SPAWN_ROOTS) ./$(TARGET) tests/spawn-smoke.lume stream > /tmp/lume-spawn-stream.out 2>&1; \
+	LUME_SPAWN=1 LUME_SPAWN_ALLOW=sh LUME_SPAWN_ROOT=$$ROOTS ./$(TARGET) tests/spawn-smoke.lume stream > /tmp/lume-spawn-stream.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-stream.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-stream.out; then \
 	  echo "==> spawn stream 单测失败 (rc=$$rc)"; exit 1; fi; \
