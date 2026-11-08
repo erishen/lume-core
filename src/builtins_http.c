@@ -546,11 +546,14 @@ static int open_conn(Url *u, const char *proxy, Conn *c, long deadline) {
     c->ssl = NULL;
 
     const char *chost = u->host;
+    /* phost 必须活到函数结束:chost 会指向它,而 getaddrinfo / 失败原因 /
+     * CONNECT 出错分支全都在下面的 if 块之外使用 chost。把缓冲留在块内
+     * 就是出作用域后读栈(GCC -Wdangling-pointer 会报),不是无害告警。 */
+    char phost[512];
     unsigned cport = u->port;
     int via_proxy = 0;
     if (proxy && proxy[0]) {
         /* 代理可能写成 host:port 或 http://host:port */
-        char phost[512];
         const char *p = proxy;
         if (strncasecmp(proxy, "http://", 7) == 0) p = proxy + 7;
         else if (strncasecmp(proxy, "https://", 8) == 0) p = proxy + 8;

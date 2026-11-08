@@ -672,7 +672,8 @@ and `make fuzz-driver` (the P1 Windows seed replay).
   by parts) or integration — independent of rt.c's ibeta/igamma
   formulas; quant-fuzz runs 10 series x 101 rows (1010 checks) with
   finiteness and (0,1] p-value assertions.
-  Still open: the Bootstrap (resampling) family.
+  Bootstrap / resampling family landed later (2026-10-31, see the checked
+  item below); this line is historical, not an open item.
 - [x] **Multivariate distributions / copulas (2026-10-30).**
   `rand_dirichlet(alphas)`: iid Gamma(alpha_i, 1) draws via the existing
   bi_gamma_sample (boost below shape 1), normalized — a simplex share in
@@ -1789,4 +1790,28 @@ pure `lume-core` binary remains no-spawn by default. This is the path to
 Note for sizing: `spawn` + gating is ~1 project (two weeks), streaming is ~1
 project; together they remove the last Node dependency on the executor path.
 Until they land, the C-A design's Node shim (sidecar `sh -c` / `make`) stays.
+
+## P15 — `builtins_http.c`: `phost` use-after-scope fixed (2026-11-08)
+
+`open_conn()` declared `char phost[512]` inside `if (proxy && proxy[0])`,
+then kept `chost = phost` for the rest of the function: `getaddrinfo`, the
+connect debug line, all `why` failure reasons and the CONNECT error
+branches. GCC's `-Wdangling-pointer` was reporting a real read of a dead
+stack buffer, not a cosmetic warning — the 2026-11-08 review had initially
+filed it as "one of the two warnings blocking -Werror". `phost` now lives
+at function scope with a comment pinning the reason. The host tree
+(`lume/lang/builtins_http.c`) is host-owned and received the same
+hand-merge; its `lang/PIN.lag` was refreshed with `sync-lang.py accept-lag`
+(upstream-only lines for this file dropped 24 -> 7, because the same pass
+also hand-merged core's `set_why()` into the host).
+
+Verification: macOS clang and Ubuntu 24.04 / GCC 13.3 full builds with zero
+diagnostics (host under `WERROR=1`, core under its normal flags);
+`make -j4 check http-noproxy-test` rc=0 with the ambient proxy env cleared;
+`LUME_HTTP_PROXY=http://127.0.0.1:9 NO_PROXY= ./bin/lume-core
+examples/http-get.lume` logs `connect(127.0.0.1) ... Connection refused` —
+the proxy hostname is read back intact after the `if` block, with no crash
+and no garbage in the failure reason. The host's full `make test` is green
+(`all tests passed`). No behaviour change on the success path: only the
+lifetime of the proxy host buffer.
 
