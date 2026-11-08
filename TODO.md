@@ -1781,7 +1781,28 @@ builtins close that gap without pulling the whole runtime in.
       `.PHONY`. `make test` is green including `spawn-test` (five offline
       rounds, 52 assertions after step 2) and `native-consistency`
       (no regressions).
-- [ ] **Two native emitters + a native-consistency case.** Code survey
+- [x] **Two native emitters + a native-consistency case — CLOSED by
+      decision (a), 2026-11-08 (no emitter work will be done).** Adopted
+      option (a): `spawn` is **interpreter-only**, permanently. A compiled
+      lume binary has no `VM` (`spawn_enabled` / `spawn_allow` /
+      `spawn_root` are VM fields) and `rt.c` has no gate of its own, so a
+      native helper could only ever be an ungated process primitive.
+      `make check` → `spawn-native-gate` now *enforces* the decision: it
+      fails if a spawn token appears in `rt.c`, `codegen_call.c`,
+      `llvm_codegen_internal.h`, `codegen_scan.c` or `llvm_cg_scan.inc`;
+      asserts `--compile-text` still rejects
+      `tests/spawn-native-denied.lume` with "call to unknown function";
+      and (POSIX) asserts the interpreter leg can still spawn when gated,
+      so the gate cannot be satisfied by deleting the builtin from the
+      language. Both negative controls were replayed — an injected
+      `"spawn"` token in `rt.c` turns it red, and a blinded matcher is
+      caught by its own self-check. Option (b) remains available, but
+      requires a real fail-closed startup policy in `rt.c` **and** a
+      deliberate rewrite of this gate; it must not be started by merely
+      declaring the helpers in the survey below. That survey is kept as
+      the reasoning record, not as a work plan.
+
+      Code survey
       ground truth, not README memory: `rt.c` is **not** in the main
       binary's `SRCS` (`backend.c` compiles it only for native output), so
       the process table cannot simply be shared between the interpreter and
@@ -1812,17 +1833,25 @@ builtins close that gap without pulling the whole runtime in.
       native-consistency case is in any case impossible while `spawn`
       returns a live OS pid — the opaque handle is a prerequisite either
       way.
-- [ ] **Host integration, then `make sync-lang`.** The host `lang/` build
-      currently has neither the gate nor a use for a child-process surface,
-      and the native-emitter half above does not exist yet. Transitional
-      state (2026-11-08, recorded in the host repo): `builtins_spawn.c` is
-      explicitly added to `CORE_ONLY_NAMES` in `scripts/sync-lang.py` so
-      `check-sync` can still see it, and `lang/PIN.lag` was refreshed with
-      `sync-lang.py accept-lag`. **The 7 host_owned files whose upstream
-      delta grew are accepted but NOT hand-merged** — this is an explicit
-      debt, not a completed merge. Revisit once the emitters land. The host
-      `agent-httpd` build is where a default-on spawn policy would live; the
-      pure `lume-core` binary stays no-spawn.
+- [x] **Host integration — CLOSED by a permanent core-only boundary,
+      2026-11-08 (no hand-merge).** The host `lang/` build has neither the
+      gate nor a use for a child-process surface, and with decision (a)
+      there will be no native-emitter half to merge either. Copying the
+      P14 registration chain (`typecheck.c` / `interp.c` / `builtins.c` /
+      `lume.h` / `main.c` / `builtins_internal.h` / `builtins.h`) into
+      host-owned files would add an **ungated** child-process primitive to
+      a server binary, so it is deliberately NOT done. The host repo now
+      records the boundary as permanent: `builtins_spawn.c` is a
+      `CORE_ONLY_NAMES` entry carrying a decision note, the four spawn
+      names in `tests/builtin-parity.allow` are marked PERMANENT rather
+      than TRANSITIONAL, and the host `TODO.md` has a P14 mirror section.
+      `lang/PIN.lag`'s accepted upstream-only deltas for those 7
+      host_owned files are **intentionally retained**, not a pending
+      merge — they are mostly the core-only spawn registrations. Re-opening
+      this item requires landing an equivalent fail-closed gate in `lang/`
+      FIRST, then removing the `CORE_ONLY_NAMES` entry, refreshing the
+      parity allow list and `PIN.lag`, and documenting the policy. The
+      pure `lume-core` binary stays no-spawn by default.
 - [x] **`env` option + `LUME_SPAWN_ROOT` (step 2, 2026-11-08).** The old
       allowlist matched `argv[0]` exactly, but `execvp()` still searched
       `PATH`: a writable directory earlier in `PATH` could shadow an
@@ -1922,6 +1951,36 @@ directory on this machine, so `/echo` did not exist and three assertions
 went red for a reason unrelated to the code. `SPAWN_ABS` is now the fixed
 `/bin`, which realpath's into `/usr/bin` on usrmerge systems and stays
 inside the `/bin:/usr/bin` roots on both platforms.
+
+### 2026-11-08 — step 3 LANDED: emitter decision (a) + host boundary
+
+No product C code changed in this step: the outcome is a **security decision
+made enforceable**. `spawn` stays interpreter-only; a compiled lume binary
+never gains a child-process surface. `tests/spawn-native-gate.sh` (wired
+into `make check`, hence every CI lane) proves it three ways — the emitter
+and `rt.c` files carry no spawn registration token, the text emitter
+rejects `tests/spawn-native-denied.lume` with
+"call to unknown function 'spawn'" (rc=1, no binary produced), and the
+interpreter positive control (`tests/spawn-native-gate.lume`) still spawns
+and waits when `LUME_SPAWN=1` + a one-command allowlist + two trusted
+roots are supplied. A self-check plus two replayed negatives guard against
+a false green.
+
+Verification (local, 2026-11-08): `sh tests/spawn-native-gate.sh` rc=0 on
+macOS/clang; `make -j4 check` rc=0 with the gate in the dependency graph
+(also green under `-j4`, i.e. no race with `all`). Negative A: appending
+`/* "spawn" */` to `src/rt.c` makes the gate fail with the exact line.
+Negative B: replacing `SPAWN_TOKEN_RE` with a never-matching literal makes
+the self-check fail. Both files were restored afterwards; `git status`
+showed only the three new test files. Windows/mingw runs the static and
+negative half and skips the POSIX positive control by `uname -s`.
+
+Host side (lume): the transitional classification is gone —
+`builtins_spawn.c` is a permanent `CORE_ONLY_NAMES` entry, the four spawn
+names in `tests/builtin-parity.allow` are marked PERMANENT, and `TODO.md`
+gained a P14 mirror section recording why the accepted `lang/PIN.lag`
+deltas are deliberately not hand-merged. Streaming remains the only open
+P14 engineering item below.
 
 **Done when:** a resolve-lume sidecar whose logic is `.lume` (routes, SQLite,
 tool defs, summaries) and whose only non-core surface is `spawn` + streaming,

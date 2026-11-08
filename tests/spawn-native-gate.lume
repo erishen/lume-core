@@ -1,0 +1,24 @@
+// P14 emitter-gate POSITIVE control (interpreter leg).
+//
+// tests/spawn-native-gate.sh runs this with LUME_SPAWN=1, a one-command
+// allowlist and two trusted roots. It proves the static + native-negative
+// half of the gate was not satisfied by simply ripping spawn out of the
+// language. The matching negative control is spawn-native-denied.lume.
+// Windows/mingw has no POSIX spawn, so the gate skips this leg there.
+
+func check(name, cond) {
+  if (cond) {
+    print("PASS " + name);
+  } else {
+    print("FAIL " + name);
+  }
+}
+
+let r = spawn(["/bin/echo", "p14-ok"]);
+check("interpreter spawn available", get(r, "ok", false) == true);
+
+let h = get(r, "handle", 0);
+check("interpreter handed out a handle", h > 0);
+
+let w = proc_wait(h);
+check("interpreter proc_wait available", get(w, "ok", false) == true);

@@ -389,7 +389,10 @@ CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-t
 else
 CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-test fsroot-test
 endif
-check: all $(CHECK_UNIT_TESTS)
+# P14 emitter gate is part of the fast leg on every lane (ci.yml / release.yml
+# / windows.yml all run `make check`). It is command-only and needs no binary
+# beyond `all`, so it cannot be skipped by a stale target file.
+check: all $(CHECK_UNIT_TESTS) spawn-native-gate
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -1065,7 +1068,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test spawn-test check-version \
+         fsroot-test spawn-test spawn-native-gate check-version \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
@@ -1128,6 +1131,17 @@ fsroot-test: all
 # (on usrmerge systems it realpath's into /usr/bin, still inside the roots).
 SPAWN_ROOTS := /bin:/usr/bin
 SPAWN_ABS   := /bin
+
+# P14 emitter gate (decision (a), 2026-11-08): spawn stays interpreter-only.
+# A statically compiled lume binary has no VM policy to consult, so a helper
+# in rt.c / the two emitters would be an UNGATED child-process primitive. The
+# gate asserts no spawn token exists there, that --compile-text still refuses
+# the fixture, and (POSIX) that the interpreter leg can still spawn when the
+# VM gate is opened. It also self-checks its own matcher. Windows runs the
+# static + negative half and skips the POSIX positive control.
+# See TODO.md P14 and tests/spawn-native-gate.sh.
+spawn-native-gate: all
+	@sh tests/spawn-native-gate.sh
 
 spawn-test: all
 	@env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \

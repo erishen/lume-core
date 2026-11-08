@@ -1,0 +1,13 @@
+// P14 emitter-gate NEGATIVE control (tests/spawn-native-gate.sh).
+//
+// --check must ACCEPT this file: spawn is a real language builtin, registered
+// in typecheck.c's LUME_BUILTIN_NAMES. --compile-text must REJECT it with
+// "call to unknown function 'spawn'": the native emitters have no spawn
+// helper, and that is the deliberate, fail-closed default (TODO.md P14,
+// decision (a)).
+//
+// Do not "fix" a red gate by deleting spawn from the language: the matching
+// positive control is tests/spawn-native-gate.lume, which proves the
+// interpreter leg can still spawn when the VM gate is opened.
+spawn(["/bin/echo", "must-not-run"]);
+print("native spawn reached");
