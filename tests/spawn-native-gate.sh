@@ -113,6 +113,15 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
            grep -q FAIL "${tmp}/interp.out"; then
             echo "FAIL spawn-native-gate: interpreter positive control did not pass:"
             cat "${tmp}/interp.out"
+            # Runner filesystem diagnostics: on an exotic runner the refusal
+            # ("executable not found in LUME_SPAWN_ROOT ...") names no cause,
+            # so show the layout the resolution actually saw.
+            echo "----- spawn-control fs diagnostics -----"
+            uname -m 2>/dev/null; id -u 2>/dev/null
+            ls -ld /bin /usr/bin 2>&1 || true
+            ls -l /bin/echo 2>&1 || true
+            (command -v realpath >/dev/null 2>&1 && realpath /bin /bin/echo 2>&1 || true)
+            echo "----- end diagnostics -----"
             exit 1
         fi
         echo "ok   spawn-native-gate: interpreter leg still spawns (gated)"
