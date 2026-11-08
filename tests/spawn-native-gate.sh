@@ -99,11 +99,33 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
         echo "skip spawn-native-gate: interpreter positive control (no POSIX spawn on Windows)"
         ;;
     *)
-        # /bin/echo resolves inside /bin (macOS) or /usr/bin (usrmerge Linux);
-        # both roots are listed, so the realpath boundary check passes on both.
-        if ! env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT \
-                LUME_SPAWN=1 LUME_SPAWN_ALLOW=/bin/echo \
+        # The control binary must resolve INSIDE the spawn roots. GH Actions
+        # runner images (2026-11) ship rust coreutils under
+        # /usr/lib/cargo/bin — /bin/echo there is a symlink OUT of /usr/bin,
+        # so a rooted /bin/echo control is refused (correctly). Shells are
+        # not coreutils applets: pick one whose realpath stays inside the
+        # roots on every lane.
+        CTRL=
+        for cand in /bin/sh /usr/bin/sh /bin/bash /usr/bin/bash /bin/dash /usr/bin/dash; do
+            [ -x "$cand" ] || continue
+            rp=$(realpath "$cand" 2>/dev/null || readlink -f "$cand" 2>/dev/null || true)
+            if [ -n "$rp" ]; then
+                case "$rp" in
+                    /bin/*|/usr/bin/*) CTRL="$cand"; break ;;
+                esac
+            fi
+        done
+        if [ -z "${CTRL}" ]; then
+            echo "FAIL spawn-native-gate: no shell resolves inside /bin:/usr/bin;"
+            echo "       the positive control has no target on this runner:"
+            ls -ld /bin /usr/bin 2>&1 || true
+            ls -l /bin/sh /bin/bash /bin/dash 2>&1 || true
+            exit 1
+        fi
+        if ! env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT -u LUME_SPAWN_CTRL \
+                LUME_SPAWN=1 LUME_SPAWN_ALLOW="${CTRL}" \
                 LUME_SPAWN_ROOT=/bin:/usr/bin \
+                LUME_SPAWN_CTRL="${CTRL}" \
                 "${BIN}" tests/spawn-native-gate.lume > "${tmp}/interp.out" 2>&1; then
             echo "FAIL spawn-native-gate: interpreter positive control crashed:"
             cat "${tmp}/interp.out"

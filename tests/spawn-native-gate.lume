@@ -5,6 +5,14 @@
 // half of the gate was not satisfied by simply ripping spawn out of the
 // language. The matching negative control is spawn-native-denied.lume.
 // Windows/mingw has no POSIX spawn, so the gate skips this leg there.
+//
+// The control binary is handed over in LUME_SPAWN_CTRL by the gate script:
+// it must be a shell whose realpath resolves INSIDE /bin:/usr/bin. GH
+// Actions runner images (2026-11) replaced GNU coreutils with rust
+// coreutils under /usr/lib/cargo/bin, so /bin/echo there is a symlink OUT
+// of /usr/bin and the rooted resolution refuses it — correctly. The gate
+// script therefore picks a shell (not a coreutils applet) that resolves
+// inside the roots on every lane.
 
 func check(name, cond) {
   if (cond) {
@@ -14,10 +22,11 @@ func check(name, cond) {
   }
 }
 
-let r = spawn(["/bin/echo", "p14-ok"]);
+let ctrl = env("LUME_SPAWN_CTRL");
+let r = spawn([ctrl, "-c", "exit 0"]);
 check("interpreter spawn available", get(r, "ok", false) == true);
 // Surface the refusal reason: the gate script only greps PASS/FAIL, so a
-// silent {ok:false} on an exotic runner (GH Actions) would be undebuggable.
+// silent {ok:false} on an exotic runner would be undebuggable.
 print("spawn.err=" + get(r, "err", "(none)"));
 
 let h = get(r, "handle", 0);
