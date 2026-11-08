@@ -1745,22 +1745,68 @@ the three "hands" — **spawn a child, stream its output while it runs, hold a
 long-lived MCP stream** — either in `agent-httpd` or a tiny Node shim. Two core
 builtins close that gap without pulling the whole runtime in.
 
-- [ ] **`spawn()` — gated, rooted, with a no-spawn default (the big one, ~a
-      project).** A `child_process`-shaped builtin: `spawn(args, {input?, env?})`
-      returns `{pid, stdout_fd, stderr_fd}`; siblings `proc_read(pid,
-      "stdout")` (blocking or a timeout-poll), `proc_wait(pid)` → `{exit}`,
-      `proc_kill(pid)` → bool. Five coordinated edits per the P13 rule
-      (`LUME_BUILTIN_NAMES` + arity in `typecheck.c`, dispatch in `interp.c`,
-      `b_*` in `builtins.c`, prototype in `builtins_internal.h`) **plus the
-      native emitters** (a process handle is an opaque slot: both text/LLVM
-      backends must declare the helpers, so this is a P12-shaped "audit the
-      container kinds" job, not an interpreter-only one).
-      **Security is the whole point** (the `no_fs` precedent, P13): spawn is
-      off by default (`--no-spawn` / `LUME_NO_SPAWN=1`), and when enabled runs
-      under a `LUME_SPAWN_ROOT` command allowlist + arg check, not an unguarded
-      `system()`. An unguarded shell primitive is exactly the disclosure this
-      repo has spent P5/P11/P13 avoiding. Land the gate first, the spawn
-      second — an ungated spawn would regress the `check_public` posture.
+- [ ] **`spawn()` — gated, allowlisted, with a no-spawn default (the big one,
+      ~a project).** Original shape: `spawn(args, {input?, env?})` returns
+      `{pid, stdout_fd, stderr_fd}` with `proc_read` / `proc_wait` /
+      `proc_kill` siblings. **Landed 2026-11-08: the gate + the interpreter
+      leg.** See the numbered checklist below; the emitters and host merge
+      are still open.
+- [x] **Gate first, spawn second** (2026-11-08). Opt-IN `--spawn` /
+      `LUME_SPAWN=1` **plus** a mandatory comma-separated
+      `LUME_SPAWN_ALLOW`; enabling spawn with an empty allowlist permits
+      nothing (fail closed). `spawn(argv)` hands a string list straight to
+      `execvp()` — no shell, no `system()`, no command line assembled from
+      script text — and argv is length/type/size checked. `input` is
+      supported (<= 4096 bytes, one atomic pipe write); `env` is not yet.
+      Refusals answer `{ok:false, err}` so a supervisor can branch on them,
+      and the error never echoes the rejected command back (no allowlist
+      probing through error text). An ungated shell primitive is exactly the
+      disclosure P5/P11/P13 and lume-a2a's `check_public.lume` guard against,
+      so the gate landed before the spawn builtin, as the original item
+      required. (The original text proposed `--no-spawn` / `LUME_NO_SPAWN`;
+      that is an opt-OUT switch and would have left the pure binary spawnable
+      by default — inverted to opt-IN.)
+- [x] **The four interpreter builtins + the full registration chain**
+      (2026-11-08). New `src/builtins_spawn.c`; `LUME_BUILTIN_NAMES` and
+      `LUME_BUILTIN_SIG` in `typecheck.c`; dispatch in `interp.c` behind a
+      `LUME_HAS_SPAWN` switch (same pattern as `LUME_HAS_HTTP`); `b_*`
+      wrappers and Windows stubs in `builtins.c`; declarations in
+      `builtins.h` / `builtins_internal.h`; `VM.spawn_enabled` /
+      `spawn_allow` in `lume.h`; CLI + env parsing in `main.c`; Makefile
+      SRCS, Windows `filter-out`, `CFLAGS`, `spawn-test`, `test:` and
+      `.PHONY`. `make test` is green including `spawn-test` (three offline
+      rounds, 28 assertions) and `native-consistency` (no regressions).
+- [ ] **Two native emitters + a native-consistency case.** Code survey
+      ground truth, not README memory: `rt.c` is **not** in the main
+      binary's `SRCS` (`backend.c` compiles it only for native output), so
+      the process table cannot simply be shared between the interpreter and
+      the emitters. The `BUILTINS[]` tables in `codegen_call.c` and
+      `llvm_codegen_internal.h` only express homogeneous scalar signatures,
+      so a map-returning helper needs the `kdj` / `alpha_beta` shape:
+      `type_anon_struct()` inference in both `codegen_scan.c` and
+      `llvm_cg_scan.inc`, a hand-written `declare i8*` in
+      `emit_builtin_declares()`, a call branch in each emitter, and a
+      `LumeMap*` helper in `rt.c`. LLVM declares helpers on demand, so it
+      needs the call branch but no declare-table row.
+- [ ] **Host integration, then `make sync-lang`.** The host `lang/` build
+      currently has neither the gate nor a use for a child-process surface,
+      and the native-emitter half above does not exist yet. Transitional
+      state (2026-11-08, recorded in the host repo): `builtins_spawn.c` is
+      explicitly added to `CORE_ONLY_NAMES` in `scripts/sync-lang.py` so
+      `check-sync` can still see it, and `lang/PIN.lag` was refreshed with
+      `sync-lang.py accept-lag`. **The 7 host_owned files whose upstream
+      delta grew are accepted but NOT hand-merged** — this is an explicit
+      debt, not a completed merge. Revisit once the emitters land. The host
+      `agent-httpd` build is where a default-on spawn policy would live; the
+      pure `lume-core` binary stays no-spawn.
+- [ ] **`env` option + `LUME_SPAWN_ROOT`.** The current allowlist matches
+      `argv[0]` exactly, but `execvp()` still searches `PATH`: a writable
+      directory earlier in `PATH` could shadow an allowlisted name. A
+      realpath-checked root (resolve the executable, verify it sits under
+      `LUME_SPAWN_ROOT`, then `execv` that absolute path) closes it. The
+      original line above called the allowlist `LUME_SPAWN_ROOT`; that name
+      is kept for this realpath check, and the command list is
+      `LUME_SPAWN_ALLOW`.
 - [ ] **Streaming / long-lived reads (a real project, do after `spawn`).**
       `builtins_http.c`'s `http_get/post` are collect-then-return; a running
       job needs the body to arrive while it produces it. Either a
@@ -1772,14 +1818,42 @@ builtins close that gap without pulling the whole runtime in.
       `spawn`) but cannot **tail** it, so `task.delegate`'s lazy
       `observe_delegate` stays polling a status endpoint instead of reading a
       stream.
-- [ ] **Host integration, then `make sync-lang`.** Both are core builtins
-      with no LLM, so they follow P13's rule: land in core, hand-merge the
-      native-emitter half into the host's `lume/lang/` (interp.c is
-      host-owned), and the host `agent-httpd` build is where the default-on
-      spawn policy actually lives (the pure `lume-core` binary stays
-      no-spawn). Regression: a `tests/spawn-smoke.lume` + a native-consistency
-      case (the `spawn` return map must agree byte-identically on all three
-      legs), and a `make spawn-test` gated on a non-network sandbox.
+### 2026-11-08 — step 1 LANDED: the gate and the interpreter leg
+
+**API deviation, deliberate.** The original spec above says `spawn()` returns
+`{pid, stdout_fd, stderr_fd}` and that the return map "must agree
+byte-identically on all three legs" of `native-consistency`. Those two
+requirements cannot both hold: an OS pid and two pipe fds differ on every
+run and in every process, so three independently executed binaries can
+never print the same numbers. The shipped API returns
+`{ok, handle, pid, err}` where `handle` is a **1-based opaque slot** into a
+fixed 32-entry process table, and `proc_read` / `proc_wait` / `proc_kill`
+all take that handle. A script never holds a raw fd, slots are never reused
+(a stale handle cannot hit a different child), and `atexit` kills + reaps
+anything left behind. The slot index is also the only shape in which the two
+native emitters could later agree byte-identically.
+
+**Two documentation tensions found while implementing.** (1) The original
+third item said to "hand-merge the native-emitter half into the host's
+`lume/lang/`", but the host `PIN` / `sync-lang.py` rules classify every
+`codegen*` / `llvm_*` file as `CORE_ONLY` — the host has no native backend
+at all, so there is no emitter half to merge there. What the host needs is
+the gate plus the registration chain. (2) The original allowlist name
+`LUME_SPAWN_ROOT` described a *command list*, while every other `*_ROOT` in
+this repo is a realpath boundary; the implementation uses
+`LUME_SPAWN_ALLOW` for the list and reserves `LUME_SPAWN_ROOT` for the
+realpath check that is still on the checklist above.
+
+Verification (local, 2026-11-08): macOS clang `make -j4 all` and a clean
+Ubuntu 24.04 / GCC 13 copy both build with zero diagnostics — the new file
+uses `clock_gettime` / `poll` / `execvp`, so the Linux leg is not optional.
+`make spawn-test` — three offline rounds (locked / emptyallow / open), 28
+PASS assertions on **both** platforms, covering gate refusal, fail-closed
+allowlist, argv type and length checks, stdout round-trip, stdin `input`,
+stderr, `proc_wait` exit codes, `proc_kill` + reap (exit 143), and unknown
+handles/streams. `make -j4 check` and the full `make -j4 test` rc=0
+including the existing `native-consistency` three legs (no regression);
+host `make check-sync` rc=0 after the transitional classification above.
 
 **Done when:** a resolve-lume sidecar whose logic is `.lume` (routes, SQLite,
 tool defs, summaries) and whose only non-core surface is `spawn` + streaming,
@@ -1815,3 +1889,59 @@ and no garbage in the failure reason. The host's full `make test` is green
 (`all tests passed`). No behaviour change on the success path: only the
 lifetime of the proxy host buffer.
 
+## P16 — lume 0.12 compatibility of `lib/` + conditional static responses (filed 2026-11-08)
+
+Filed while migrating `work/education/lume-energy` from lume-core 0.13 to
+lume 0.12.2. Two independent gaps surfaced; both are core-side, not
+project-side.
+
+### P16.1 `lib/*.lume` cannot be loaded by lume 0.12 (duplicate declarations)
+
+`lib/linalg.lume` `mat_qr_q()` declares `for (let i ...)` twice in the same
+function (lines 479 and 480; `mat_qr_r()` repeats the pattern at 513/515).
+lume 0.12 binds `let` at function scope, so the first import aborts with
+`lume: line 480: duplicate declaration of 'i' in the same scope`.
+`lib/optim.lume:187` already documents the rule, but `optim.lume` imports
+`linalg.lume`, so any consumer of optim/sci/linalg fails at load. This is not
+specific to energy: any 0.12 host that imports the 0.13 shared lib hits it.
+
+- [ ] Make the three shipped libs parse under lume 0.12.2. Preferred:
+      rename loop variables per function (mechanical, no semantic change),
+      not change 0.12's `let` scope (that would be a language break).
+- [ ] Add a regression gate that actually loads `lib/sci.lume`,
+      `lib/optim.lume`, and `lib/linalg.lume` with a 0.12 binary and asserts
+      parse + a few known-value checks (`entropy`, `poly_fit`,
+      `linprog_simplex`). A grep for duplicate `let` names is not enough.
+- [ ] Document the compatibility contract in `lib/README` (or the lib
+      header): shared libs must remain loadable by the oldest supported
+      host lume, or be split into `lib/compat-0.12/`.
+
+Workaround used by energy (not a fix): copy only the four needed functions
+into the app's `numeric.lume` and give every loop variable a unique name.
+
+### P16.2 `bridge_serve.c`: static responses have no validator, so no 304
+
+`send_resp()` (`src/bridge_serve.c:407`) writes a fixed header block:
+`Content-Type`, `Content-Length`, `Connection: close`, and the security
+headers. It never emits `ETag`, `Last-Modified`, `Cache-Control`, or
+`Accept-Ranges`; the static-file path at `:693` always sends status 200 and
+the whole body. Consequence measured on lume-energy: a 200 KB `app.js` was
+re-downloaded on every browser reload (transfer 200.4 KB / decoded 204898),
+while the same file on lume 0.12's `agent-httpd` was `0.3 KB / decoded 0`
+(304). `curl -I` on core also 404s (HEAD is not routed), so header-only
+checks are awkward.
+
+- [ ] Emit `ETag` (mtime+size is enough for local static files),
+      `Cache-Control: no-cache`, `Last-Modified`, and `Accept-Ranges: bytes`
+      on 200 static responses.
+- [ ] Parse `If-None-Match` / `If-Modified-Since` on static GET and return
+      `304` with no body (same validators); keep the security headers.
+- [ ] Route `HEAD` for static paths and return the same headers with an
+      empty body. (`curl -I` should stop returning 404.)
+- [ ] Regression: a shell/CI test that GETs a file, captures `ETag`,
+      re-GETs with `If-None-Match`, and asserts 304 + empty body; also
+      assert `HEAD` 200 and `Content-Length` equal to the GET body.
+
+**Done when:** a 0.12 host can `import` all three shipped libs without a
+parse error, and `bridge_serve` serves static assets with ETag/304 parity
+with `agent-httpd` (energy's reload transfer drops from ~200 KB to ~0.3 KB).

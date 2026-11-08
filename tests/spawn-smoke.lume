@@ -1,0 +1,90 @@
+// lume —— P14 gated spawn 回归（tests/spawn-smoke.lume）
+//
+// 用法（make spawn-test 跑三轮，全程离线、只执行 echo/cat/sleep）：
+//   ./bin/lume-core tests/spawn-smoke.lume locked
+//   LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep \
+//     ./bin/lume-core tests/spawn-smoke.lume open
+//   LUME_SPAWN=1 ./bin/lume-core tests/spawn-smoke.lume emptyallow
+//
+// locked    : 默认纯 lume-core 二进制，必须拒绝一切 spawn。
+// open      : 双闸齐全，走 spawn/proc_read/proc_wait/proc_kill 全链路。
+// emptyallow: 只开 --spawn、不给白名单，仍须拒绝一切命令（fail closed）。
+// 输出 PASS/FAIL，make spawn-test grep FAIL 判定。
+
+func check(name, cond) {
+  if (cond) {
+    print("PASS " + name);
+  } else {
+    print("FAIL " + name);
+  }
+}
+
+let a = argv();
+let mode = a[0];
+
+if (mode == "locked") {
+  let r = spawn(["echo", "must-not-run"]);
+  check("locked: spawn refused", get(r, "ok", true) == false);
+  check("locked: no handle handed out", get(r, "handle", -1) == 0);
+  check("locked: error names the gate", contains(get(r, "err", ""), "disabled"));
+  let w = proc_wait(1);
+  check("locked: proc_wait also gated", get(w, "ok", true) == false);
+  check("locked: proc_kill does nothing", proc_kill(1) == false);
+} else if (mode == "emptyallow") {
+  let r = spawn(["echo", "must-not-run"]);
+  check("emptyallow: spawn refused", get(r, "ok", true) == false);
+  check("emptyallow: no handle", get(r, "handle", -1) == 0);
+  check("emptyallow: error names the allowlist", contains(get(r, "err", ""), "empty"));
+} else if (mode == "open") {
+  // --- 闸门内的拒绝路径（不产生任何子进程） ---
+  let unlisted = spawn(["true"]);
+  check("open: unlisted command refused", get(unlisted, "ok", true) == false);
+  let badargv = spawn("echo hi");
+  check("open: string argv refused", get(badargv, "ok", true) == false);
+  let baditem = spawn(["echo", 42]);
+  check("open: non-string argv item refused", get(baditem, "ok", true) == false);
+  let badhandle = proc_wait(999);
+  check("open: unknown handle refused", get(badhandle, "ok", true) == false);
+
+  // --- 完整链路：stdout + exit code ---
+  let s = spawn(["echo", "p14-ok"]);
+  check("open: spawn ok", get(s, "ok", false) == true);
+  let h = get(s, "handle", 0);
+  check("open: handle is 1-based", h >= 1);
+  check("open: pid reported", get(s, "pid", 0) > 0);
+  let r = proc_read(h, "stdout", 2000);
+  check("open: stdout data", contains(get(r, "data", ""), "p14-ok"));
+  let w = proc_wait(h, 2000);
+  check("open: wait ok", get(w, "ok", false) == true);
+  check("open: exit 0", get(w, "exit", -1) == 0);
+
+  // --- stdin input 通道 ---
+  let s2 = spawn(["cat"], {input: "p14-input"});
+  check("open: spawn with input ok", get(s2, "ok", false) == true);
+  let h2 = get(s2, "handle", 0);
+  let r2 = proc_read(h2, "stdout", 2000);
+  check("open: input round-trips", contains(get(r2, "data", ""), "p14-input"));
+  let w2 = proc_wait(h2, 2000);
+  check("open: input child exits 0", get(w2, "exit", -1) == 0);
+
+  // --- stderr 通道存在且可读 ---
+  let s3 = spawn(["echo", "p14-third"]);
+  let h3 = get(s3, "handle", 0);
+  let e3 = proc_read(h3, "stderr", 2000);
+  check("open: stderr read is well formed", get(e3, "ok", false) == true);
+  let badstream = proc_read(h3, "stdin", 2000);
+  check("open: unknown stream refused", get(badstream, "ok", true) == false);
+  let w3 = proc_wait(h3, 2000);
+  check("open: third child exits 0", get(w3, "exit", -1) == 0);
+
+  // --- proc_kill：不要真的等 5 秒 ---
+  let s4 = spawn(["sleep", "5"]);
+  check("open: sleep spawned", get(s4, "ok", false) == true);
+  let h4 = get(s4, "handle", 0);
+  check("open: proc_kill returns true", proc_kill(h4) == true);
+  let w4 = proc_wait(h4, 2000);
+  check("open: killed child reaped", get(w4, "ok", false) == true);
+  check("open: killed child exit is 143", get(w4, "exit", -1) == 143);
+} else {
+  print("FAIL unknown mode");
+}

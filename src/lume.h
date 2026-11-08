@@ -504,6 +504,16 @@ struct VM {
      * total answer. */
     bool no_net;
 
+    /* P14 gated child processes (builtins_spawn.c). Unlike no_fs/no_net this
+     * is opt-IN, not opt-out: the pure lume-core binary must never be able to
+     * spawn by accident. --spawn / LUME_SPAWN=1 opens the surface, and
+     * LUME_SPAWN_ALLOW is a mandatory comma-separated command allowlist;
+     * enabling spawn with an empty allowlist permits nothing. spawn_allow is
+     * the env value as given (never echoed back on a refusal, so a script
+     * cannot probe the allowlist through error messages). */
+    bool spawn_enabled;
+    const char *spawn_allow;
+
     /* module system (loader.c). The registry is populated once, before
      * agenthttpd_run forks workers; modules and their top-level envs are
      * immutable afterwards. */

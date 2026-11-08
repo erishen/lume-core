@@ -61,6 +61,10 @@ endif
 # native_http_unavailable stubs in builtins.c). Defining it globally (not just
 # inside interp.c) lets every TU agree on whether the real http builtins exist.
 LUME_HAS_HTTP := 1
+# P14: src/builtins_spawn.c is POSIX-only (pipe/fork/execvp/waitpid). The
+# Windows port excludes it and compiles the stubs in builtins.c; declaring
+# the flag globally keeps interp.c and builtins.c in agreement.
+LUME_HAS_SPAWN := 1
 ifeq ($(UNAME_S),Linux)
     CFLAGS_EXTRA += -D_GNU_SOURCE
     # glibc fortify 与 agent-httpd 同开: Ubuntu 默认注入, 显式开启使本地
@@ -166,7 +170,7 @@ SRCS     := src/main.c src/lexer.c src/parser.c src/parser_stmt.c src/parser_exp
             src/value.c src/typecheck.c src/typecheck_expr.c src/typecheck_stmt.c \
             src/interp.c src/builtins.c src/builtins_fs.c src/os_win32.c \
             src/builtins_catalog.c src/builtins_hof.c src/builtins_str.c src/builtins_math.c src/builtins_crypt.c src/loader.c src/vdom.c \
-            src/token.c src/bridge_stub.c src/bridge_serve.c src/bridge_mcp.c src/bridge_lsp.c src/bridge_native.c src/builtins_http.c \
+            src/token.c src/bridge_stub.c src/bridge_serve.c src/bridge_mcp.c src/bridge_lsp.c src/bridge_native.c src/builtins_http.c src/builtins_spawn.c \
             src/codegen.c src/codegen_types.c src/codegen_expr.c src/codegen_scan.c src/codegen_sig.c src/codegen_stmt.c src/codegen_lit.c src/codegen_call.c src/codegen_match.c src/codegen_print.c src/irbuf.c src/backend.c \
             src/compat/sha256/sha256.c src/compat/sha512/sha512.c \
             src/compat/ed25519/ed25519.c
@@ -248,9 +252,10 @@ CFLAGS += -DLUME_HAS_SQLITE=$(HAVE_SQLITE)
 # with shims in the source, so a plain `make` in an MSYS2 mingw64 shell
 # builds bin/lume-core.exe.
 ifeq ($(IS_WINDOWS),1)
-    SRCS := $(filter-out src/builtins_http.c,$(SRCS))
+    SRCS := $(filter-out src/builtins_http.c src/builtins_spawn.c,$(SRCS))
     HAVE_OPENSSL := 0
     LUME_HAS_HTTP := 0
+    LUME_HAS_SPAWN := 0
     # bridge_serve.c / bridge_native.c link against winsock (winsock2.h).
     LDFLAGS_EXTRA += -lws2_32
     # builtins_crypt.c 的 ed25519_keypair() 在 Windows 走 BCryptGenRandom。
@@ -265,6 +270,7 @@ endif
 # Propagate the http flag to every TU so builtins.c emits the native_http_*
 # stubs exactly when builtins_http.c is excluded (Windows) and not otherwise.
 CFLAGS += -DLUME_HAS_HTTP=$(LUME_HAS_HTTP)
+CFLAGS += -DLUME_HAS_SPAWN=$(LUME_HAS_SPAWN)
 
 # 注意:这段必须在 SRCS := 之后 —— 这里用的是 +=,提前写会被上面的 := 盖掉。
 ifeq ($(HAVE_LLVM),1)
@@ -735,8 +741,16 @@ letexpr-test: all
 	done; \
 	echo "==> letexpr 单测通过"
 
+# P14 spawn 是 POSIX-only（pipe/fork/execvp/waitpid）；Windows 的 check lane
+# 既不含 spawn-test，也不该把它塞进 make test 的依赖里。
+ifeq ($(IS_WINDOWS),1)
+SPAWN_TEST :=
+else
+SPAWN_TEST := spawn-test
+endif
+
 test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
-      native native-text treecheck sci-test
+      native native-text treecheck sci-test $(SPAWN_TEST)
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
 # 两个原生后端是独立翻译单元，各持一份私有 infer_node_type；某个节点/类型
@@ -1051,7 +1065,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test check-version \
+         fsroot-test spawn-test check-version \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
@@ -1098,6 +1112,27 @@ fsroot-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-fsroot-ro.out; then \
 		echo "==> fsroot ro 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> fsroot 单测全部通过"
+
+# P14 gated spawn 单测（2026-11-08）。全程离线、非网络沙箱：只执行
+# echo / cat / sleep，不开 socket。三轮缺一不可：
+#   locked     — 无 --spawn / LUME_SPAWN，纯 lume-core 二进制必须拒绝一切
+#   emptyallow — 只开总闸、不给 LUME_SPAWN_ALLOW，仍须全部拒绝（fail closed）
+#   open       — 双闸齐全，走 spawn/proc_read/proc_wait/proc_kill 全链路
+# 每轮都同时看 rc 与输出里的 FAIL，防「脚本报 FAIL 但 exit 0」的假绿。
+spawn-test: all
+	@env -u LUME_SPAWN -u LUME_SPAWN_ALLOW ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
+	rc=$$?; cat /tmp/lume-spawn-locked.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-locked.out; then \
+	  echo "==> spawn locked 单测失败 (rc=$$rc)"; exit 1; fi; \
+	env -u LUME_SPAWN_ALLOW LUME_SPAWN=1 ./$(TARGET) tests/spawn-smoke.lume emptyallow > /tmp/lume-spawn-empty.out 2>&1; \
+	rc=$$?; cat /tmp/lume-spawn-empty.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-empty.out; then \
+	  echo "==> spawn emptyallow 单测失败 (rc=$$rc)"; exit 1; fi; \
+	LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep ./$(TARGET) tests/spawn-smoke.lume open > /tmp/lume-spawn-open.out 2>&1; \
+	rc=$$?; cat /tmp/lume-spawn-open.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-open.out; then \
+	  echo "==> spawn open 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> spawn 单测全部通过 (locked + emptyallow + open)"
 
 # 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
 # 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝

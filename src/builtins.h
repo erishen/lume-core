@@ -259,4 +259,10 @@ Value b_el(VM *vm, int argc, Value *args);
 Value b_render(VM *vm, int argc, Value *args);
 Value b_html(VM *vm, int argc, Value *args);
 
+/* ---- P14 gated child processes (builtins_spawn.c) ---- */
+Value b_spawn(VM *vm, int argc, Value *args);
+Value b_proc_read(VM *vm, int argc, Value *args);
+Value b_proc_wait(VM *vm, int argc, Value *args);
+Value b_proc_kill(VM *vm, int argc, Value *args);
+
 #endif /* LUME_BUILTINS_H */

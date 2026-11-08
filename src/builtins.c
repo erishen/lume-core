@@ -613,3 +613,29 @@ void native_sql_tx_rollback(VM *vm, int argc, Value *args, Value *out) { native_
 
 Value b_default_route(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_default_route); }
 Value b_resolve(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_resolve); }
+
+/* ---- P14 gated child processes (builtins_spawn.c) -------------------- */
+Value b_spawn(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_spawn); }
+Value b_proc_read(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_proc_read); }
+Value b_proc_wait(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_proc_wait); }
+Value b_proc_kill(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_proc_kill); }
+
+/* Same shape as the http and sql stubs (do not write their wildcard names
+ * inside a block comment: the star-slash closes it early). builtins_spawn.c
+ * is POSIX-only and filtered out of the Windows build, but the
+ * always-compiled b_spawn wrappers above still need their native symbols.
+ * They stay registered and type-checkable; calling one fails loudly instead
+ * of failing to link. */
+#ifndef LUME_HAS_SPAWN
+#define LUME_HAS_SPAWN 1
+#endif
+#if !LUME_HAS_SPAWN
+static void native_spawn_unavailable(VM *vm, int argc, Value *args, Value *out) {
+    (void)argc; (void)args; (void)out;
+    vm_set_error(vm, "spawn_* unavailable: this build has no POSIX process support");
+}
+void native_spawn(VM *vm, int argc, Value *args, Value *out)     { native_spawn_unavailable(vm, argc, args, out); }
+void native_proc_read(VM *vm, int argc, Value *args, Value *out) { native_spawn_unavailable(vm, argc, args, out); }
+void native_proc_wait(VM *vm, int argc, Value *args, Value *out) { native_spawn_unavailable(vm, argc, args, out); }
+void native_proc_kill(VM *vm, int argc, Value *args, Value *out) { native_spawn_unavailable(vm, argc, args, out); }
+#endif

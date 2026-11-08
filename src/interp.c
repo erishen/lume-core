@@ -1503,6 +1503,14 @@ static void seed_verb_groups(VM *vm) {
 #define LUME_HAS_HTTP 1
 #endif
 
+/* P14: builtins_spawn.c is POSIX-only. The Windows build excludes it and
+ * compiles the native_spawn_* stubs in builtins.c instead; a downstream that
+ * swaps in its own interp.c can opt out with -DLUME_HAS_SPAWN=0, exactly the
+ * LUME_HAS_HTTP pattern above. */
+#ifndef LUME_HAS_SPAWN
+#define LUME_HAS_SPAWN 1
+#endif
+
 void bridge_seed_builtins(VM *vm) {
     struct { const char *name; NativeFn fn; } built[] = {
         {"run", b_run},
@@ -1594,6 +1602,14 @@ void bridge_seed_builtins(VM *vm) {
         {"http_put", b_http_put},
         {"http_patch", b_http_patch},
         {"http_delete", b_http_delete},
+#endif
+        /* P14 子进程 (builtins_spawn.c): 默认全禁, --spawn + LUME_SPAWN_ALLOW
+         * 双闸; argv 直接 execvp, 不过 shell, 不暴露裸 fd。 */
+#if LUME_HAS_SPAWN
+        {"spawn", b_spawn},
+        {"proc_read", b_proc_read},
+        {"proc_wait", b_proc_wait},
+        {"proc_kill", b_proc_kill},
 #endif
         /* 数值内建 (2026-09-28, builtins_math.c) */
         {"abs", b_abs},

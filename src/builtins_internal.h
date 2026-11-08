@@ -114,4 +114,16 @@ void native_sql_tx_rollback(VM *vm, int argc, Value *args, Value *out);
 /* OBJ_SQLTX finalizer — value.c calls it when the GC reclaims a tx handle. */
 void sql_tx_finalize(Obj *o);
 
+/* ---- P14 子进程(builtins_spawn.c; Windows 由 builtins.c 出 stub) ----
+ * spawn(argv: list<string>, {input?}) -> {ok, handle, pid, err}
+ * proc_read(handle, "stdout"|"stderr", timeout_ms?) -> {ok, data, eof, err}
+ * proc_wait(handle, timeout_ms?) -> {ok, exit, err}
+ * proc_kill(handle) -> bool
+ * handle is a 1-based opaque process-table slot, NOT an OS pid or fd; the
+ * gate (VM.spawn_enabled + VM.spawn_allow) is checked inside each native. */
+void native_spawn(VM *vm, int argc, Value *args, Value *out);
+void native_proc_read(VM *vm, int argc, Value *args, Value *out);
+void native_proc_wait(VM *vm, int argc, Value *args, Value *out);
+void native_proc_kill(VM *vm, int argc, Value *args, Value *out);
+
 #endif /* LUME_BUILTINS_INTERNAL_H */

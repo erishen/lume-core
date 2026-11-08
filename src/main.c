@@ -128,13 +128,17 @@ static void lume_free_aliases(Node **mods, const char ***alias_list,
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text|--mcp|--lsp] [--no-fs] [--no-net] [--no-pass] <script.lume>\n"
+            "usage: %s [--check|--dump|--watch|--compile|--compile-llvm|--compile-text|--mcp|--lsp] [--no-fs] [--no-net] [--no-pass] [--spawn] <script.lume>\n"
             "  --check   parse + type check (no side effects)\n"
 "  --no-fs   runtime filesystem lock: read_file/write_file/files/\n"
 "            mkdir/lock_file fail at runtime instead of touching\n"
 "            the disk (also settable as LUME_NO_FS=1)\n"
 "  --no-net runtime network lock: http_get() fails instead of\n"
 "            opening a socket (also settable as LUME_NO_NET=1)\n"
+"  --spawn  allow gated child processes (spawn/proc_read/proc_wait/\n"
+"            proc_kill); OFF by default. Also LUME_SPAWN=1. Requires\n"
+"            LUME_SPAWN_ALLOW=cmd1,cmd2 — an empty allowlist permits\n"
+"            nothing. argv goes to execvp(); there is no shell.\n"
 "  --version print version and exit\n"
 "  --dump    parse and dump the AST, then exit\n"
 #ifdef HAVE_LIBLLVM
@@ -473,6 +477,11 @@ int main(int argc, char **argv) {
     int cli_argc = 0;
     bool no_fs = false;
     bool no_net = false;
+    /* P14: opt-IN. Both halves are required — spawn_enabled without an
+     * allowlist refuses every command, and an allowlist alone never turns
+     * the surface on. See VM.spawn_enabled in lume.h. */
+    bool spawn_enabled = false;
+    const char *spawn_allow = NULL;
     /* Accepted in both builds: --no-pass is a no-op without libLLVM, and
      * refusing the flag there would only break scripts that pass it. It is
      * read on the text path too (as a note), so neither build sees it unused. */
@@ -484,6 +493,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--check") == 0) do_check = true;
         else if (strcmp(argv[i], "--no-fs") == 0) no_fs = true;
         else if (strcmp(argv[i], "--no-net") == 0) no_net = true;
+        else if (strcmp(argv[i], "--spawn") == 0) spawn_enabled = true;
         else if (strcmp(argv[i], "--dump") == 0) do_dump = true;
         else if (strcmp(argv[i], "--watch") == 0) do_watch = true;
         else if (strcmp(argv[i], "--compile") == 0) do_compile = true;
@@ -533,6 +543,19 @@ int main(int argc, char **argv) {
         strcmp(no_net_env, "off") != 0 && strcmp(no_net_env, "false") != 0) {
         no_net = true;
     }
+
+    /* P14 spawn gate — opt-IN, the inverse of no_fs/no_net. Only an explicit
+     * truthy LUME_SPAWN turns the surface on; an empty value is unset (a
+     * stray export must not unlock process creation). The allowlist is an
+     * independent second key: setting it alone never enables spawn, and
+     * enabling spawn with an empty allowlist refuses every command. */
+    const char *spawn_env = getenv("LUME_SPAWN");
+    if (spawn_env && spawn_env[0] && strcmp(spawn_env, "0") != 0 &&
+        strcmp(spawn_env, "off") != 0 && strcmp(spawn_env, "false") != 0) {
+        spawn_enabled = true;
+    }
+    const char *allow_env = getenv("LUME_SPAWN_ALLOW");
+    if (allow_env && allow_env[0]) spawn_allow = allow_env;
 
     /* LUME_FS_ROOT allowlist: a middle setting between free access and
      * --no-fs (the hard switch). fs_root_real is cached so the builtins do
@@ -598,6 +621,8 @@ int main(int argc, char **argv) {
     vm.fs_root = fs_root;
     vm.fs_root_real = fs_root_real;
     vm.fs_readonly = fs_readonly;
+    vm.spawn_enabled = spawn_enabled;
+    vm.spawn_allow = spawn_allow;
     bridge_init(&vm);
 
     /* Seed argv() with the script's trailing CLI arguments (after the script

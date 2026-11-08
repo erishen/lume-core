@@ -496,6 +496,10 @@ const char *const LUME_BUILTIN_NAMES[] = {
     /* HTTP verbs that carry a body (2026-10-05) */
     "http_post", "http_put", "http_patch",
     "http_delete", /* same as http_get: no body */
+    /* P14 gated child processes (builtins_spawn.c). Registered unconditionally
+     * so scripts type-check; the runtime refuses every call unless the
+     * --spawn / LUME_SPAWN_ALLOW gate is opened. */
+    "spawn", "proc_read", "proc_wait", "proc_kill",
 };
 
 const size_t LUME_BUILTIN_COUNT =
@@ -598,6 +602,9 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"http_get",1,-1}, {"http_post",1,-1}, {"http_put",1,-1},
     {"http_patch",1,-1}, {"http_delete",1,-1},
     {"try",1,-1},
+    /* P14: spawn(argv, {input?}); proc_read(handle, stream?, timeout_ms?);
+     * proc_wait(handle, timeout_ms?); proc_kill(handle). */
+    {"spawn",1,2}, {"proc_read",1,3}, {"proc_wait",1,2}, {"proc_kill",1,1},
 };
 static const size_t LUME_BUILTIN_SIG_COUNT =
     sizeof(LUME_BUILTIN_SIG) / sizeof(LUME_BUILTIN_SIG[0]);
