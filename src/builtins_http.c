@@ -442,7 +442,11 @@ static int tls_attach(Conn *c, const char *sni_host, long deadline) {
         if (e == SSL_ERROR_WANT_WRITE) { if (wait_writable(c->fd, step) != 0) { SSL_free(ssl); return -1; } continue; }
         { unsigned long le = ERR_get_error(); char es[256] = "";
           ERR_error_string(le, es);
-          fprintf(stderr, "[dbg] tls handshake failed code=%d err=%lu (%s)\n", e, le, es); }        SSL_free(ssl);
+#ifndef NDEBUG
+          fprintf(stderr, "[dbg] tls handshake failed code=%d err=%lu (%s)\n", e, le, es);
+#endif
+        }
+        SSL_free(ssl);
         return -1;
     }
     c->ssl = ssl;
