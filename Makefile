@@ -1191,12 +1191,16 @@ spawn-test: all
 	  ./$(TARGET) tests/spawn-smoke.lume abspath $(SPAWN_ABS) > /tmp/lume-spawn-abspath.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-abspath.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-abspath.out; then \
-	  echo "==> spawn abspath 单测失败 (rc=$$rc)"; exit 1; fi; \
+	    echo "==> spawn abspath 单测失败 (rc=$$rc)"; exit 1; fi; \
+	LUME_SPAWN=1 LUME_SPAWN_ALLOW=sh LUME_SPAWN_ROOT=$(SPAWN_ROOTS) ./$(TARGET) tests/spawn-smoke.lume stream > /tmp/lume-spawn-stream.out 2>&1; \
+	rc=$$?; cat /tmp/lume-spawn-stream.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-stream.out; then \
+	  echo "==> spawn stream 单测失败 (rc=$$rc)"; exit 1; fi; \
 	LUME_SPAWN_ROOT=/definitely/not/a/lume-root ./$(TARGET) --check tests/spawn-smoke.lume > /tmp/lume-spawn-badroot.out 2>&1; \
 	if [ $$? -eq 0 ] || ! grep -q 'does not resolve' /tmp/lume-spawn-badroot.out; then \
 	  echo "==> spawn 无效 LUME_SPAWN_ROOT 未在启动时被拒"; cat /tmp/lume-spawn-badroot.out; exit 1; fi; \
 	echo "ok   spawn: 无效 LUME_SPAWN_ROOT 启动即失败"; \
-	echo "==> spawn 单测全部通过 (locked + emptyallow + open + rooted + abspath + badroot)"
+	echo "==> spawn 单测全部通过 (locked + emptyallow + open + rooted + abspath + stream + badroot)"
 
 # 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
 # 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝

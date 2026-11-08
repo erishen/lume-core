@@ -1878,18 +1878,43 @@ builtins close that gap without pulling the whole runtime in.
       `IFS`, `ENV`, `BASH_ENV`, `SHELL` overrides and non-string values
       are refused, and refusals never echo the rejected key. Without the
       option, behaviour stays `execv` with the inherited environment.
-- [ ] **Streaming / long-lived reads (a real project, do after `spawn`).**
-      `builtins_http.c`'s `http_get/post` are collect-then-return; a running
-      job needs the body to arrive while it produces it. Either a
-      `http_stream(url, {…})` returning a readable fd/lazy value, or a
-      `read_chunk(handle, timeout)` pair that a loop polls — the second fits
-      the existing sync model and the no-async-runtime constraint better.
-      Same "five edits + two emitters" surface — and therefore subject to
-      the emitter security decision recorded above. MCP client streaming
-      rides on this. Without it a pure-core executor can still **run** a job (via
-      `spawn`) but cannot **tail** it, so `task.delegate`'s lazy
-      `observe_delegate` stays polling a status endpoint instead of reading a
-      stream.
+- [x] **Streaming tail of a spawned job (the `proc_read` half) — LANDED
+      2026-11-08.** This is the `read_chunk(handle, timeout)` polling pair the
+      item recommended: `proc_read(handle, "stdout"|"stderr", timeout_ms?)`
+      already does a non-blocking poll + read (the read ends are `O_NONBLOCK`,
+      the loop drains only what `poll()` reports available, and a timeout
+      returns an empty `{ok,data:"",eof:false}` instead of blocking). What was
+      missing was a regression test proving *incremental* tailing rather than a
+      collect-at-end. New `stream` round in `tests/spawn-smoke.lume` (wired
+      into `make spawn-test`): it spawns
+      `sh -c '/bin/sleep 0.5; /usr/bin/printf "FIRST\n"; /bin/sleep 1.5;
+      /usr/bin/printf "LAST\n"'` (external `printf` so dash's builtin
+      pipe-buffering on Linux cannot mask a false green) and asserts the first
+      non-empty read contains `FIRST` but not `LAST` (process still sleeping =
+      real streaming), the empty poll is graceful, all chunks reassemble,
+      `iters > 1` (multi-poll, not one-shot collect), and `eof` is observed.
+      Verified on macOS/clang and a clean gcc:13-bookworm copy (dash as
+      `/bin/sh`): both 8 assertions green. This closes the "a pure-core
+      executor can **tail** a job" half of the item — `task.delegate`'s lazy
+      `observe_delegate` can now read a streamed child instead of polling a
+      status endpoint. CAVEAT (documented, not fixed): `proc_read` only ever
+      surfaces bytes the child *wrote*; a child whose stdout is block-buffered
+      by its own stdio (e.g. a Python script that never `flush()`es) will not
+      stream until it flushes or exits. That is correct Unix tailer semantics,
+      not a lume bug — callers must flush.
+- [ ] **`http_stream(url, {…})` / inbound SSE client — DEFERRED (separate
+      project).** The other half of the original item: `builtins_http.c`'s
+      `http_get/post` collect the whole body before returning, so the executor
+      cannot *receive* a response that streams (MCP `streamableHttp` SSE
+      client rides on this). This is a genuinely separate surface: it needs
+      either a new HTTP builtin with its own native-emitter registration — and
+      therefore a fresh pass through the P14 emitter security decision, because
+      decision (a) closed spawn's emitters but did not authorise a new
+      http_stream primitive — or an interpreter-only variant consistent with
+      the no-async-runtime constraint. It is NOT delivered by the `proc_read`
+      work above and is intentionally left for its own turn. Until then the
+      executor keeps using `http_get` (collect) for responses and `spawn` +
+      `proc_read` for the job it launches.
 ### 2026-11-08 — step 1 LANDED: the gate and the interpreter leg
 
 **API deviation, deliberate.** The original spec above says `spawn()` returns

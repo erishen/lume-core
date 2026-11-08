@@ -13,6 +13,7 @@
 // emptyallow: 只开 --spawn、不给白名单，仍须拒绝一切命令（fail closed）。
 // rooted    : P14 step 2 —— 裸名在 root 内解析、越界/不可执行拒绝、env 过滤。
 // abspath   : P14 step 2 —— 无 root 时裸名拒绝（PATH 不搜索）、绝对路径可用。
+// stream    : P14 streaming —— 长生命周期生产者边跑边读，proc_read 非阻塞流式。
 // 输出 PASS/FAIL，make spawn-test grep FAIL 判定。
 
 func check(name, cond) {
@@ -166,6 +167,47 @@ if (mode == "locked") {
   check("abspath: abs stdout", contains(get(r, "data", ""), "abspath-ok"));
   let w = proc_wait(h, 2000);
   check("abspath: abs exit 0", get(w, "exit", -1) == 0);
+} else if (mode == "stream") {
+  // 长生命周期生产者：先睡 0.5s（确保早期空 poll 稳定），打 FIRST，睡 1.5s，再打
+  // LAST 后退出。用外部 printf（每次退出即 flush），避免 shell 内建在管道下的块
+  // 缓冲导致 FIRST 不立即可读。这把 TODO 的“read_chunk(handle, timeout) 轮询”方案
+  // 落到实处：子进程还在 sleep 时就能取到前半段，而不是退出后一次性 collect。
+  let s = spawn(["sh", "-c", "/bin/sleep 0.5; /usr/bin/printf 'FIRST\\n'; /bin/sleep 1.5; /usr/bin/printf 'LAST\\n'"]);
+  check("stream: spawn ok", get(s, "ok", false) == true);
+  let h = get(s, "handle", 0);
+
+  // 非阻塞探针：子进程还活着、尚未产出时，短超时读必须干净返回空（不卡满超时、不误报 EOF）。
+  let early = proc_read(h, "stdout", 150);
+  check("stream: empty poll is graceful (ok, no data, not eof)",
+        get(early, "ok", false) == true && get(early, "data", "") == "" && get(early, "eof", true) == false);
+
+  // 流式读取：反复短超时 poll，边跑边收。
+  let acc = "";
+  let eof = false;
+  let iters = 0;
+  let first_nonempty = "";
+  while (iters < 20 && eof == false) {
+    iters = iters + 1;
+    let r = proc_read(h, "stdout", 200);
+    let d = get(r, "data", "");
+    if (d != "" && first_nonempty == "") { first_nonempty = d; }
+    acc = acc + d;
+    if (get(r, "eof", false) == true) { eof = true; }
+  }
+
+  // 流式铁证：第一次非空读只含 FIRST、不含 LAST（子进程还在 sleep）。
+  // 若生产者被块缓冲、或本改动把 collect 提前，first_nonempty 会同时含 LAST →
+  // 断言失败，正是要防的假绿。
+  check("stream: first chunk is partial (FIRST without LAST)",
+        contains(first_nonempty, "FIRST") && contains(first_nonempty, "LAST") == false);
+  check("stream: all chunks reassembled", contains(acc, "FIRST") && contains(acc, "LAST"));
+  // 多轮读取 = 真流式（边跑边收），而非进程退出后一次性 collect。
+  check("stream: read spanned multiple polls", iters > 1);
+  check("stream: end-of-stream observed", eof == true);
+
+  let w = proc_wait(h, 3000);
+  check("stream: child reaped", get(w, "ok", false) == true);
+  check("stream: exit 0", get(w, "exit", -1) == 0);
 } else {
   print("FAIL unknown mode");
 }
