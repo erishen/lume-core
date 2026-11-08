@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 
 #if defined(_WIN32)
 /* winnt.h's _TOKEN_INFORMATION_CLASS has an enum member TokenType, which
@@ -88,6 +89,19 @@ typedef int SockFd;
 #define lume_getpid() getpid()
 #endif
 
+/* Static validators (P16.2) need mtime + size. MSVCRT/UCRT spell these
+ * _stat / struct _stat and expose _S_IFREG rather than S_ISREG; keep the
+ * difference in one place so serve_static() stays platform-neutral. */
+#if defined(_WIN32)
+#define LUME_STAT(p, s)  _stat((p), (s))
+#define LUME_STAT_T      struct _stat
+#define LUME_ISREG(m)    (((m) & _S_IFMT) == _S_IFREG)
+#else
+#define LUME_STAT(p, s)  stat((p), (s))
+#define LUME_STAT_T      struct stat
+#define LUME_ISREG(m)    S_ISREG(m)
+#endif
+
 #define SERVE_BACKLOG 16
 #define HEAD_BUF_MAX 16384
 #define REQ_BUF_MAX (1 << 20)
@@ -101,6 +115,10 @@ typedef struct {
      * 接受 text/event-stream 时才这么回 —— 否则同样的路由给浏览器(过代理、
      * 中间层会缓冲)会卡住不显示。 */
     char accept[256];      /* raw Accept header value, or "" */
+    /* RFC 7232 conditional headers for the static-file path only. Route
+     * responses are dynamic and have no validator, so they ignore these. */
+    char inm[256];         /* raw If-None-Match value, or "" */
+    char ims[128];         /* raw If-Modified-Since value, or "" */
     char body[REQ_BUF_MAX];
     size_t body_len;
     const char *label;     /* route label, or NULL */
@@ -392,6 +410,7 @@ static const char *status_text(int code)
     switch (code) {
     case 200: return "OK";
     case 204: return "No Content";
+    case 304: return "Not Modified";
     case 400: return "Bad Request";
     case 404: return "Not Found";
     case 500: return "Internal Server Error";
@@ -404,8 +423,22 @@ static const char *status_text(int code)
  * = built-in default "default-src 'self'" (send_resp). */
 static char g_serve_csp[256];
 
-static void send_resp(SockFd fd, int status, const char *ctype,
-                      const char *body, size_t blen, const char *set_cookie)
+/* Full response writer. `extra_hdr` is a pre-validated block of CRLF-
+ * terminated header lines (static validators only); `head_only` sends the
+ * headers but suppresses the body, which is what HEAD needs while keeping
+ * the Content-Length a matching GET would have had (RFC 9110 9.3.2).
+ *
+ * 304 (RFC 9110 15.4.5) deliberately omits Content-Type / Content-Length:
+ * they describe a representation that is not being sent, and a zero
+ * Content-Length only invites proxy ambiguity. Cache directives and the
+ * security headers still ride on 304 (RFC 9111 4.3.4).
+ *
+ * send_resp() below keeps its original six-argument shape so the twelve
+ * existing call sites (routes, errors, SSE fallback) are untouched. */
+static void send_resp_full(SockFd fd, int status, const char *ctype,
+                           const char *body, size_t blen,
+                           const char *set_cookie, const char *extra_hdr,
+                           int head_only)
 {
     /* Default security headers on every response: serve() is a public-facing
      * HTTP surface, so nosniff / frame-deny / referrer-policy cost nothing
@@ -414,8 +447,19 @@ static void send_resp(SockFd fd, int status, const char *ctype,
      * `server { csp = "..." }` replaces the CSP line (the host's
      * agent-httpd has the same knob on its agenthttpd_config; both reject
      * CR/LF at ingest so the value cannot split the header). */
-    char hdr[2048];
-    int n = snprintf(hdr, sizeof hdr,
+    char hdr[4096];
+    const char *csp = g_serve_csp[0] ? g_serve_csp : "default-src 'self'";
+    int n;
+    if (status == 304) {
+        n = snprintf(hdr, sizeof hdr,
+                     "HTTP/1.1 304 Not Modified\r\n"
+                     "Connection: close\r\n"
+                     "X-Content-Type-Options: nosniff\r\n"
+                     "X-Frame-Options: DENY\r\n"
+                     "Referrer-Policy: no-referrer\r\n"
+                     "Content-Security-Policy: %s\r\n", csp);
+    } else {
+        n = snprintf(hdr, sizeof hdr,
                      "HTTP/1.1 %d %s\r\n"
                      "Content-Type: %s\r\n"
                      "Content-Length: %zu\r\n"
@@ -424,19 +468,37 @@ static void send_resp(SockFd fd, int status, const char *ctype,
                      "X-Frame-Options: DENY\r\n"
                      "Referrer-Policy: no-referrer\r\n"
                      "Content-Security-Policy: %s\r\n",
-                     status, status_text(status), ctype, blen,
-                     g_serve_csp[0] ? g_serve_csp : "default-src 'self'");
-    if (n > 0 && set_cookie && set_cookie[0]) {
-        int n2 = snprintf(hdr + n, (size_t)sizeof hdr - (size_t)n,
+                     status, status_text(status), ctype, blen, csp);
+    }
+    /* snprintf returns the would-be length; refusing a truncated header is
+     * fail-closed (never send a header whose Content-Length disagrees). */
+    if (n <= 0 || (size_t)n + 3 >= sizeof hdr) return;
+    size_t used = (size_t)n;
+
+    if (extra_hdr && extra_hdr[0]) {
+        size_t elen = strlen(extra_hdr);
+        if (used + 3 >= sizeof hdr || elen > sizeof hdr - used - 3) return;
+        memcpy(hdr + used, extra_hdr, elen);
+        used += elen;
+    }
+    if (set_cookie && set_cookie[0]) {
+        int n2 = snprintf(hdr + used, sizeof hdr - used,
                           "Set-Cookie: %s\r\n", set_cookie);
-        if (n2 > 0) n += n2;
+        if (n2 <= 0 || (size_t)n2 >= sizeof hdr - used) return;
+        used += (size_t)n2;
     }
-    if (n > 0 && (size_t)n + 2 < sizeof hdr) {
-        memcpy(hdr + n, "\r\n", 3);
-        n += 2;
-    }
-    if (n > 0) sock_send(fd, hdr, (size_t)n);
-    if (body && blen) sock_send(fd, body, blen);
+    if (used + 2 > sizeof hdr) return;
+    memcpy(hdr + used, "\r\n", 2);
+    used += 2;
+    sock_send(fd, hdr, used);
+    if (!head_only && status != 304 && body && blen)
+        sock_send(fd, body, blen);
+}
+
+static void send_resp(SockFd fd, int status, const char *ctype,
+                      const char *body, size_t blen, const char *set_cookie)
+{
+    send_resp_full(fd, status, ctype, body, blen, set_cookie, NULL, 0);
 }
 
 /* ---- SSE (text/event-stream) -----------------------------------------
@@ -515,6 +577,58 @@ static const char *ci_find(const char *hay, size_t hlen, const char *needle)
     return NULL;
 }
 
+/* ASCII case-insensitive prefix compare; no strncasecmp (mingw spelling
+ * differs) and no locale dependency. */
+static int ci_eq_n(const char *a, const char *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
+/* Strict header-line lookup. ci_find() above is a plain substring search,
+ * which is fine for an Accept/Content-Length scan of the header block but
+ * wrong for conditional request headers: "X-If-None-Match: ..." or a value
+ * containing "If-Modified-Since:" would otherwise be read as a validator.
+ * Only a name at the START of a header line followed by ':' is accepted.
+ * `hdr_len` must end at the CRLFCRLF terminator (parse_request's body_off),
+ * so no request body can ever be mistaken for headers. */
+static int header_value(const char *head, size_t hdr_len, const char *name,
+                        char *out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    size_t nlen = strlen(name);
+    size_t i = 0;
+    while (i < hdr_len && head[i] != '\n') i++;   /* skip request line */
+    if (i < hdr_len) i++;
+    while (i < hdr_len) {
+        size_t e = i;
+        while (e < hdr_len && head[e] != '\n') e++;
+        const char *line = head + i;
+        size_t len = e - i;
+        if (len > nlen && line[nlen] == ':' &&
+            ci_eq_n(line, name, nlen)) {
+            const char *v = line + nlen + 1;
+            const char *vend = line + len;
+            while (v < vend && (*v == ' ' || *v == '\t')) v++;
+            while (vend > v && (vend[-1] == ' ' || vend[-1] == '\t' ||
+                                vend[-1] == '\r')) vend--;
+            size_t vlen = (size_t)(vend - v);
+            if (vlen >= cap) vlen = cap - 1;
+            memcpy(out, v, vlen);
+            out[vlen] = '\0';
+            return 1;
+        }
+        i = e + 1;
+    }
+    return 0;
+}
+
 /* returns 0 on success; fills req. head may already contain part of body. */
 static int parse_request(const char *head, size_t hlen, HttpReq *req)
 {
@@ -589,6 +703,16 @@ static int parse_request(const char *head, size_t hlen, HttpReq *req)
         memcpy(req->body, head + body_off, have);
         req->body_len = have;
     }
+
+    /* Conditional request headers (RFC 7232), consumed only by the static
+     * docroot path. Captured here because the raw `head` buffer and its
+     * CRLFCRLF boundary are not available to serve_static(). */
+    req->inm[0] = '\0';
+    req->ims[0] = '\0';
+    header_value(head, body_off, "If-None-Match", req->inm,
+                 sizeof req->inm);
+    header_value(head, body_off, "If-Modified-Since", req->ims,
+                 sizeof req->ims);
     return 0;
 }
 
@@ -639,20 +763,177 @@ static const char *mime_of(const char *path)
 
 #define STATIC_MAX (64 * 1024 * 1024)
 
-/* Answer a route-miss GET from docroot. Returns 1 when the request has been
- * answered (200 with the file, or a 404: traversal attempt / missing file),
+/* ---- RFC 7232 validators for the docroot path (P16.2) -------------------
+ * Parity with agent-httpd's src/http/static.c: weak ETag W/"<size>-<mtime>"
+ * (hex), `Cache-Control: no-cache` (store, but revalidate), Last-Modified as
+ * IMF-fixdate, If-None-Match taking precedence over If-Modified-Since. A
+ * reload then costs the header block instead of the whole bundle.
+ *
+ * Deliberately NOT emitted: an `Accept-Ranges` value of "bytes".
+ * agent-httpd implements single-range 206 responses and can honestly
+ * advertise it; this bridge has no Range handling at all, so it declares
+ * `none` instead. Ignoring Range while claiming byte support makes clients
+ * retry and re-download behind our back. `Vary: Accept-Encoding` is likewise
+ * omitted (no gzip sibling negotiation here). */
+
+#define STATIC_CACHE_CONTROL "no-cache"
+
+/* Convert Unix time_t to proleptic-Gregorian UTC fields (Howard Hinnant's
+ * civil_from_days). Pure integer arithmetic: no gmtime_r/gmtime_s signature
+ * divergence between POSIX and UCRT, no locale-dependent %a/%b, and no
+ * timegm() (absent on Windows). Both sides of an If-Modified-Since compare
+ * are UTC, so comparing these field tuples is a genuine time comparison. */
+static void gm_parts(time_t t, int *year, unsigned *mon, unsigned *day,
+                     unsigned *hour, unsigned *min, unsigned *sec,
+                     unsigned *wday)
+{
+    time_t days = t / 86400;
+    time_t rem = t % 86400;
+    if (rem < 0) { rem += 86400; days--; }
+    *hour = (unsigned)(rem / 3600);
+    *min  = (unsigned)((rem % 3600) / 60);
+    *sec  = (unsigned)(rem % 60);
+    long w = (long)((days + 4) % 7);       /* 1970-01-01 was a Thursday */
+    if (w < 0) w += 7;
+    *wday = (unsigned)w;
+
+    time_t z = days + 719468;
+    time_t era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long y = (long)yoe + (long)era * 400;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    unsigned m = (mp < 10) ? mp + 3 : mp - 9;
+    y += (m <= 2);
+    *year = (int)y; *mon = m; *day = d;
+}
+
+static const char *const k_month[12] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
+static const char *const k_wday[7] = {
+    "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+};
+
+static void format_http_date(char *out, size_t outsz, time_t t)
+{
+    int y; unsigned mo, d, h, mi, s, wd;
+    gm_parts(t, &y, &mo, &d, &h, &mi, &s, &wd);
+    if (mo < 1 || mo > 12) mo = 1;
+    if (wd > 6) wd = 0;
+    snprintf(out, outsz, "%s, %02u %s %04d %02u:%02u:%02u GMT",
+             k_wday[wd], d, k_month[mo - 1], y, h, mi, s);
+}
+
+static void compute_etag(const LUME_STAT_T *st, char *out, size_t outsz)
+{
+    snprintf(out, outsz, "W/\"%zx-%zx\"",
+             (size_t)st->st_size, (size_t)st->st_mtime);
+}
+
+/* If-None-Match: "*" matches any current representation; a comma-separated
+ * list matches when any member equals our validator (weak comparison — the
+ * W/ prefix is ignored on both sides). */
+static int etag_matches(const char *header, const char *etag)
+{
+    if (!header || !header[0]) return 0;
+    if (strcmp(header, "*") == 0) return 1;
+    const char *q = etag;
+    if (q[0] == 'W' && q[1] == '/') q += 2;
+    size_t qlen = strlen(q);
+    const char *p = header;
+    while (*p) {
+        while (*p == ' ' || *p == ',') p++;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        const char *stop = p;
+        while (stop > start && (stop[-1] == ' ' || stop[-1] == '\r')) stop--;
+        size_t len = (size_t)(stop - start);
+        if (len > 2 && start[0] == 'W' && start[1] == '/') {
+            start += 2; len -= 2;
+        }
+        if (len == qlen && strncmp(start, q, len) == 0) return 1;
+    }
+    return 0;
+}
+
+typedef struct { int y; unsigned mo, d, h, mi, s; } HttpDate;
+
+/* Parse IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT") or a bare date. The
+ * time of day matters: a client replaying our Last-Modified is asking about
+ * the exact second the file changed, and "equal" counts as unmodified. */
+static int parse_http_date(const char *s, HttpDate *o)
+{
+    if (!s || !*s) return 0;
+    char mon[16] = "";
+    int day = 0, year = 0, h = 0, mi = 0, sec = 0;
+    const char *p = strchr(s, ',');
+    p = p ? p + 1 : s;
+    while (*p == ' ' || *p == '\t') p++;
+    int got = sscanf(p, "%d %15[A-Za-z] %d %d:%d:%d",
+                     &day, mon, &year, &h, &mi, &sec);
+    if (got != 3 && got != 6) return 0;
+    int mo = -1;
+    if (strlen(mon) >= 3) {
+        for (int i = 0; i < 12; i++)
+            if (ci_eq_n(mon, k_month[i], 3)) { mo = i + 1; break; }
+    }
+    if (mo < 0 || day < 1 || day > 31 || year < 0) return 0;
+    if (h > 23 || mi > 59 || sec > 60) return 0;
+    if (year < 100) year += (year < 50) ? 2000 : 1900;  /* RFC 850 form */
+    if (year < 1970) return 0;
+    o->y = year; o->mo = (unsigned)mo; o->d = (unsigned)day;
+    o->h = (unsigned)h; o->mi = (unsigned)mi; o->s = (unsigned)sec;
+    return 1;
+}
+
+static int date_leq(const HttpDate *a, const HttpDate *b)
+{
+    if (a->y != b->y) return a->y < b->y;
+    if (a->mo != b->mo) return a->mo < b->mo;
+    if (a->d != b->d) return a->d < b->d;
+    if (a->h != b->h) return a->h < b->h;
+    if (a->mi != b->mi) return a->mi < b->mi;
+    return a->s <= b->s;
+}
+
+static int not_modified_since(const char *header, time_t mtime)
+{
+    HttpDate since, changed;
+    if (!parse_http_date(header, &since)) return 0;
+    int y; unsigned mo, d, h, mi, s, wd;
+    gm_parts(mtime, &y, &mo, &d, &h, &mi, &s, &wd);
+    changed.y = y; changed.mo = mo; changed.d = d;
+    changed.h = h; changed.mi = mi; changed.s = s;
+    return date_leq(&changed, &since);   /* mtime <= validator time */
+}
+
+/* Answer a route-miss GET/HEAD from docroot. Returns 1 when the request has
+ * been answered (200/304 with the file, or a 404: traversal / missing),
  * 0 when docroot is unset so the caller can emit its plain route 404.
  * The request path is URL-decoded BEFORE the ".." check, so %2e%2e cannot
  * slip past the traversal guard. Directory-shaped paths (trailing '/') map
- * to index.html inside that directory. */
-static int serve_static(SockFd fd, const char *docroot, const char *path)
+ * to index.html inside that directory.
+ *
+ * P16.2: the validators are derived from stat() BEFORE the file is opened,
+ * so a conditional hit answers 304 without reading a single body byte.
+ * HEAD shares exactly the GET headers (including Content-Length) but sends
+ * no body. HEAD still reads the file: that keeps Content-Length honest about
+ * the bytes a GET would actually have served. */
+static int serve_static(SockFd fd, const char *docroot, const char *path,
+                        const HttpReq *req)
 {
     if (!docroot || !docroot[0]) return 0;
+    int head_only = (strcmp(req->method, "HEAD") == 0);
 
     char rel[1024];
     url_decode(path, rel, sizeof rel);
     if (strstr(rel, "..")) { /* traversal: hard 404, never resolved */
-        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        send_resp_full(fd, 404, "text/plain; charset=utf-8", "not found", 9,
+                       NULL, NULL, head_only);
         return 1;
     }
     size_t rlen = strlen(rel);
@@ -664,33 +945,71 @@ static int serve_static(SockFd fd, const char *docroot, const char *path)
     char full[2048];
     snprintf(full, sizeof full, "%s%s", docroot, rel);
 
+    LUME_STAT_T st;
+    if (LUME_STAT(full, &st) != 0 || !LUME_ISREG(st.st_mode) ||
+        st.st_size < 0 || (size_t)st.st_size > (size_t)STATIC_MAX) {
+        send_resp_full(fd, 404, "text/plain; charset=utf-8", "not found", 9,
+                       NULL, NULL, head_only);
+        return 1;
+    }
+
+    char etag[80], lm[64];
+    compute_etag(&st, etag, sizeof etag);
+    format_http_date(lm, sizeof lm, (time_t)st.st_mtime);
+
+    /* RFC 9110 13.2.2: If-None-Match is authoritative. When it is present
+     * but does not match, If-Modified-Since MUST be ignored. */
+    int not_modified = req->inm[0]
+        ? etag_matches(req->inm, etag)
+        : not_modified_since(req->ims, (time_t)st.st_mtime);
+
+    /* Both validators ride on 304 too (RFC 9111 4.3.4 wants the cache
+     * directives the 200 would have carried). Accept-Ranges is a 200-only
+     * entity header, and "none" is the honest value: no Range support here. */
+    char extra[256];
+    snprintf(extra, sizeof extra,
+             "ETag: %s\r\n"
+             "Cache-Control: %s\r\n"
+             "Last-Modified: %s\r\n"
+             "%s",
+             etag, STATIC_CACHE_CONTROL, lm,
+             not_modified ? "" : "Accept-Ranges: none\r\n");
+
+    if (not_modified) {
+        send_resp_full(fd, 304, mime_of(full), NULL, 0, NULL, extra, 1);
+        return 1;
+    }
+
     FILE *fp = fopen(full, "rb");
     if (!fp) {
-        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        send_resp_full(fd, 404, "text/plain; charset=utf-8", "not found", 9,
+                       NULL, NULL, head_only);
         return 1;
     }
     if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return 1; }
     long sz = ftell(fp);
     if (sz < 0 || sz > STATIC_MAX || fseek(fp, 0, SEEK_SET) != 0) {
         fclose(fp);
-        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        send_resp_full(fd, 404, "text/plain; charset=utf-8", "not found", 9,
+                       NULL, NULL, head_only);
         return 1;
     }
     char *buf = malloc(sz > 0 ? (size_t)sz : 1);
     if (!buf) {
         fclose(fp);
-        send_resp(fd, 500, "text/plain; charset=utf-8", "out of memory", 13,
-                  NULL);
+        send_resp_full(fd, 500, "text/plain; charset=utf-8",
+                       "out of memory", 13, NULL, NULL, head_only);
         return 1;
     }
     size_t got = fread(buf, 1, (size_t)sz, fp);
     fclose(fp);
     if (got != (size_t)sz) {
         free(buf);
-        send_resp(fd, 404, "text/plain; charset=utf-8", "not found", 9, NULL);
+        send_resp_full(fd, 404, "text/plain; charset=utf-8", "not found", 9,
+                       NULL, NULL, head_only);
         return 1;
     }
-    send_resp(fd, 200, mime_of(full), buf, got, NULL);
+    send_resp_full(fd, 200, mime_of(full), buf, got, NULL, extra, head_only);
     free(buf);
     return 1;
 }
@@ -891,10 +1210,13 @@ static void lume_http_serve_internal(const char *host, long port, int backlog, V
         }
 
         if (!match) {
-            /* Route miss: fall back to docroot static files for GET (the
-             * host's agent-httpd docroot behaviour, now in-tree). */
-            if (strcmp(req.method, "GET") == 0 &&
-                serve_static(cfd, docroot, req.path)) {
+            /* Route miss: fall back to docroot static files for GET/HEAD
+             * (the host's agent-httpd docroot behaviour, now in-tree).
+             * HEAD has to reach the same validator path — curl -I and
+             * browser header checks expect the GET headers with no body. */
+            if ((strcmp(req.method, "GET") == 0 ||
+                 strcmp(req.method, "HEAD") == 0) &&
+                serve_static(cfd, docroot, req.path, &req)) {
                 sock_close(cfd);
                 continue;
             }

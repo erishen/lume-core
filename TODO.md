@@ -2080,29 +2080,75 @@ static leg is block-aware rather than function-wide.
 Workaround used by energy (not a fix): copy only the four needed functions
 into the app's `numeric.lume` and give every loop variable a unique name.
 
-### P16.2 `bridge_serve.c`: static responses have no validator, so no 304
+### P16.2 `bridge_serve.c`: static responses had no validator, so no 304 — LANDED 2026-11-08
 
-`send_resp()` (`src/bridge_serve.c:407`) writes a fixed header block:
-`Content-Type`, `Content-Length`, `Connection: close`, and the security
-headers. It never emits `ETag`, `Last-Modified`, `Cache-Control`, or
-`Accept-Ranges`; the static-file path at `:693` always sends status 200 and
-the whole body. Consequence measured on lume-energy: a 200 KB `app.js` was
-re-downloaded on every browser reload (transfer 200.4 KB / decoded 204898),
-while the same file on lume 0.12's `agent-httpd` was `0.3 KB / decoded 0`
-(304). `curl -I` on core also 404s (HEAD is not routed), so header-only
-checks are awkward.
+The original symptom (kept as the reasoning record): `send_resp()` wrote a
+fixed header block with no `ETag`, `Last-Modified`, `Cache-Control` or
+`Accept-Ranges`; the static path always sent 200 + the whole body. Measured
+on lume-energy, a 200 KB `app.js` was re-downloaded on every browser reload
+(transfer 200.4 KB / decoded 204898), while lume 0.12's `agent-httpd`
+answered `0.3 KB / decoded 0` (304). `curl -I` also 404ed because HEAD was
+not routed.
 
-- [ ] Emit `ETag` (mtime+size is enough for local static files),
-      `Cache-Control: no-cache`, `Last-Modified`, and `Accept-Ranges: bytes`
-      on 200 static responses.
-- [ ] Parse `If-None-Match` / `If-Modified-Since` on static GET and return
-      `304` with no body (same validators); keep the security headers.
-- [ ] Route `HEAD` for static paths and return the same headers with an
-      empty body. (`curl -I` should stop returning 404.)
-- [ ] Regression: a shell/CI test that GETs a file, captures `ETag`,
-      re-GETs with `If-None-Match`, and asserts 304 + empty body; also
-      assert `HEAD` 200 and `Content-Length` equal to the GET body.
+- [x] Emit validators on 200 static responses: `ETag`, `Cache-Control:
+      no-cache`, `Last-Modified`. Format and semantics are aligned with
+      `agent-httpd/src/http/static.c` rather than invented: weak ETag
+      `W/"<size-hex>-<mtime-hex>"`, IMF-fixdate `Last-Modified` in UTC, and
+      `no-cache` (store, but revalidate — the 304 is what makes it cheap).
+      **`Accept-Ranges: bytes` is deliberately NOT emitted.** agent-httpd
+      implements single-range 206 responses and can honestly advertise it;
+      this bridge has no Range handling at all, so 200 responses declare
+      `Accept-Ranges: none`. A server that ignores `Range` while claiming
+      byte support makes clients retry and re-download behind our back.
+      Revisit only if 206/Content-Range lands; the test gate greps for the
+      literal `Accept-Ranges: bytes` in `bridge_serve.c` to keep it honest.
+      `Vary: Accept-Encoding` is likewise omitted (no gzip negotiation).
+- [x] Parse `If-None-Match` / `If-Modified-Since` on static GET and answer
+      `304` with no body. `stat()` runs BEFORE `fopen()`, so a conditional
+      hit reads zero body bytes — that is the actual transfer saving.
+      RFC 9110 13.2.2 precedence is honoured: a present-but-unmatched
+      `If-None-Match` suppresses `If-Modified-Since` entirely. `*` and
+      comma-separated lists work, with weak (`W/`) comparison. 304 omits
+      `Content-Type` / `Content-Length` (they describe a representation
+      that is not sent) but repeats the validators, `Cache-Control` and all
+      security headers (RFC 9111 4.3.4).
+- [x] Route `HEAD` for static paths. The route-miss fallback now accepts
+      GET and HEAD; `send_resp_full(..., head_only)` keeps the exact GET
+      headers including `Content-Length` while sending no body. 404/500 on
+      that path are body-less too. `curl -I` no longer 404s.
+- [x] Regression: `tests/static-cache-test.sh`, wired into `make test` and
+      `.PHONY`. Self-contained temp docroot on port 18893 (docroot-test owns
+      18892, so `make -j4 test` is safe). 37 assertions: independent UTC
+      date / ETag expectations, 304 + zero body, `*` and weak-list matching,
+      INM-beats-IMS, IMS replay / older / malformed, HEAD 200/304/404 with
+      `Content-Length` parity, security headers on 200 and 304, 404 without
+      a validator, traversal still 404, and an ETag that changes with the
+      file. Three replayed negatives: advertising byte ranges -> red,
+      blinded assertion matcher -> red at the self-check, and C `304`
+      disabled + rebuilt -> red. A matcher self-check runs on every pass.
+
+Implementation notes: `send_resp()` keeps its original six-argument shape
+(all 12 route/error call sites untouched) and delegates to a new
+`send_resp_full()` that accepts extra header lines and a `head_only` flag.
+Conditional headers use a new strict `header_value()` (line-anchored,
+case-insensitive name + colon) because the existing `ci_find()` is a plain
+substring search and would treat `X-If-None-Match:` or a value containing a
+header name as a validator. GMT conversion is pure integer arithmetic
+(`gm_parts()`, civil-from-days): no `gmtime_r`/`gmtime_s` signature
+divergence between POSIX and UCRT, no `timegm()` on Windows, and no
+locale-dependent `%a`/`%b`. Windows/mingw `stat` differences are isolated
+in `LUME_STAT` / `LUME_ISREG`.
+
+**Known limits (documented, not fixed here):** no `Date` header (a pre-existing
+gap of `send_resp()` for every response, not introduced by this item); no
+Range / 206, no gzip sibling negotiation; dynamic route responses have no
+validator (correct — their content is not a file); a same-second, same-size
+rewrite can collide with the weak ETag, exactly as with agent-httpd.
 
 **Done when:** a 0.12 host can `import` all three shipped libs without a
-parse error, and `bridge_serve` serves static assets with ETag/304 parity
-with `agent-httpd` (energy's reload transfer drops from ~200 KB to ~0.3 KB).
+parse error (done in P16.1), and `bridge_serve` serves static assets with
+ETag/304 parity with `agent-httpd`. Verified with a live curl probe: a 200
+KB GET is `200` with `W/"3201b-..."`; replaying its ETag returns `304` with
+`size_download=0`; the same holds for `If-Modified-Since`; `curl -I` returns
+`200` with the matching `Content-Length` and no body. The energy app itself
+was not redeployed in this pass.

@@ -753,7 +753,7 @@ SPAWN_TEST := spawn-test
 endif
 
 test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
-      native native-text treecheck sci-test $(SPAWN_TEST) lib-compat lib-backends
+      native native-text treecheck sci-test $(SPAWN_TEST) lib-compat lib-backends static-cache-test
 
 # P16.1 — lib/ 必须能被旧 lume 0.12.2 加载。静态腿用块级重复 let 分析
 # (CI 无 0.12 二进制时是唯一权威), 动态腿在本机找到「仍会拒绝重复
@@ -769,6 +769,12 @@ lib-backends: all
 	@for s in sci linalg optim pde; do \
 	  bash tests/$${s}_backends.sh || exit 1; \
 	done
+
+# P16.2 — docroot 静态响应的 ETag / 304 / HEAD 回归。脚本自带临时 docroot
+# 与独立端口 18893(docroot-test 用 18892), 因此 make -j4 test 并行不抢端口。
+# Windows lane 只跑 make check, 不跑 POSIX-only 的 make test。
+static-cache-test: all
+	@sh tests/static-cache-test.sh
 
 # --- 两后端 infer_node_type/str() 分派表 parity 闸门 -----------------------
 # 两个原生后端是独立翻译单元，各持一份私有 infer_node_type；某个节点/类型
@@ -1083,7 +1089,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test spawn-test spawn-native-gate check-version lib-compat lib-backends \
+         fsroot-test spawn-test spawn-native-gate check-version lib-compat lib-backends static-cache-test \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
