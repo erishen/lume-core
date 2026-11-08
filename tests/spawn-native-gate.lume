@@ -16,9 +16,13 @@ func check(name, cond) {
 
 let r = spawn(["/bin/echo", "p14-ok"]);
 check("interpreter spawn available", get(r, "ok", false) == true);
+// Surface the refusal reason: the gate script only greps PASS/FAIL, so a
+// silent {ok:false} on an exotic runner (GH Actions) would be undebuggable.
+print("spawn.err=" + get(r, "err", "(none)"));
 
 let h = get(r, "handle", 0);
 check("interpreter handed out a handle", h > 0);
 
 let w = proc_wait(h);
 check("interpreter proc_wait available", get(w, "ok", false) == true);
+print("wait.err=" + get(w, "err", "(none)"));
