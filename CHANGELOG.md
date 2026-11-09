@@ -112,10 +112,19 @@ without libLLVM), so parity is verified as `interp/text identical`.
   `linalg.mat_solve`, PCA (`pca_components` / `pca_project` over
   `linalg.mat_svd`), `multi_head_attention` extending the single-head
   `attention`, tabular `q_learn` + `q_best_action` (deterministic,
-  no random exploration), and spherical-covariance `gmm_em` (EM soft
+  no random exploration), and spherical-covariance   `gmm_em` (EM soft
   clustering). All new routines are deterministic (or `hash01`-seeded) and
   pass the three-backend consistency harness as
   `interp/text identical` on a host without libLLVM.
+- **Deep-learning building blocks — `lib/ml.lume` (v0.3.0).** Adds `l2_norm`
+  / `l1_norm` / `layer_norm`, `batch_norm_train` / `batch_norm_infer`
+  (per-feature mean/variance over the batch, with gamma/beta affine),
+  `dropout` (deterministic `hash01`-seeded mask, scaled by `1/(1-rate)`),
+  `conv1d` / `conv2d` (valid, stride-1), and `rnn_cell` / `rnn_forward` /
+  `gru_cell` / `gru_forward` (GRU gates `z`/`r`/`h̃` with `tanh`/`sigmoid`
+  activations). These compose with the existing `dense` / `relu_vec` /
+  `softmax` layers to build feed-forward, convolutional and recurrent nets
+  entirely in `.lume`. Again verified as `interp/text identical`.
 
 ### Changed
 

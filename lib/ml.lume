@@ -10,8 +10,9 @@ import "linalg.lume" as la;
 
 // 库版本：v0.1.0 初始集（kNN/k-means/逻辑回归/感知机/朴素贝叶斯/MLP/注意力）；
 // v0.2.0（2026-11-09）补激活函数族、损失函数、正规方程回归、PCA、
-// 多头注意力、表格 Q-learning、GMM-EM。
-export let ML_VERSION = "0.2.0";
+// 多头注意力、表格 Q-learning、GMM-EM；v0.3.0（2026-11-09）补深度学习构件
+// （范数/层归一化/批归一化/Dropout/Conv1d·Conv2d/RNN·GRU 单元及序列前向）。
+export let ML_VERSION = "0.3.0";
 
 // ---------- 内部帮助函数 ----------
 
@@ -855,4 +856,176 @@ export func gmm_em(X: float[][], k: int, iters: int, seed: int): int[] {
   }
   return assign;
 }
+
+// =====================================================================
+// 深度学习构件（v0.3.0, 2026-11-09）
+// 范数 / 归一化 / Dropout / 卷积 / RNN·GRU 单元及序列前向。约定同库首：
+// '/' 恒 float 需 * 1.0；list 值语义经 set_* 帮助函数；循环变量名函数内唯一；
+// Dropout 与既有 gmm_em 同样用 hash01 种子保证三后端一致。
+// =====================================================================
+
+// ---------- 范数 / 归一化 ----------
+export func l2_norm(v: float[]): float {
+  let s: float = 0.0;
+  for (let i = 0; i < len(v); i = i + 1) { s = s + v[i] * v[i]; }
+  return sqrt(s);
+}
+export func l1_norm(v: float[]): float {
+  let s: float = 0.0;
+  for (let j = 0; j < len(v); j = j + 1) { s = s + abs(v[j]); }
+  return s;
+}
+// 层归一化：对单条样本的特征维做均值 0、方差 1（eps 防除零）。
+export func layer_norm(x: float[], eps: float): float[] {
+  let n: float = len(x) * 1.0;
+  let mu: float = 0.0;
+  for (let a = 0; a < len(x); a = a + 1) { mu = mu + x[a]; }
+  mu = mu / n;
+  let varr: float = 0.0;
+  for (let b = 0; b < len(x); b = b + 1) { let d: float = x[b] - mu; varr = varr + d * d; }
+  varr = varr / n;
+  let out: float[] = [];
+  for (let c = 0; c < len(x); c = c + 1) {
+    out = push(out, (x[c] - mu) / sqrt(varr + eps));
+  }
+  return out;
+}
+
+// ---------- 批归一化 ----------
+// 训练态：对批次 X（batch×d）逐特征算均值/方差再标准化；gamma/beta 为长度 d 的
+// 缩放/平移参数。返回标准化后的批次。
+export func batch_norm_train(X: float[][], gamma: float[], beta: float[], eps: float): float[][] {
+  let n: int = len(X);
+  let d: int = len(X[0]);
+  let mean: float[] = zero_flt(d);
+  let varr: float[] = zero_flt(d);
+  for (let i = 0; i < n; i = i + 1) {
+    for (let j = 0; j < d; j = j + 1) { mean = set_flt(mean, j, mean[j] + X[i][j]); }
+  }
+  for (let j2 = 0; j2 < d; j2 = j2 + 1) { mean = set_flt(mean, j2, mean[j2] / (n * 1.0)); }
+  for (let i2 = 0; i2 < n; i2 = i2 + 1) {
+    for (let j3 = 0; j3 < d; j3 = j3 + 1) {
+      let dd: float = X[i2][j3] - mean[j3];
+      varr = set_flt(varr, j3, varr[j3] + dd * dd);
+    }
+  }
+  for (let j4 = 0; j4 < d; j4 = j4 + 1) { varr = set_flt(varr, j4, varr[j4] / (n * 1.0)); }
+  let out: float[][] = [];
+  for (let i3 = 0; i3 < n; i3 = i3 + 1) {
+    let row: float[] = [];
+    for (let j5 = 0; j5 < d; j5 = j5 + 1) {
+      let z: float = (X[i3][j5] - mean[j5]) / sqrt(varr[j5] + eps);
+      row = push(row, gamma[j5] * z + beta[j5]);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+// 推理态：用预计算的逐特征 mean/var 标准化（gamma/beta 同上）。
+export func batch_norm_infer(x: float[], mean: float[], varr: float[], gamma: float[], beta: float[], eps: float): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < len(x); i = i + 1) {
+    let z: float = (x[i] - mean[i]) / sqrt(varr[i] + eps);
+    out = push(out, gamma[i] * z + beta[i]);
+  }
+  return out;
+}
+
+// ---------- Dropout（训练态，确定性掩码）----------
+// 以概率 rate 置零并按 1/(1-rate) 放大其余；掩码由 hash01 生成，三后端一致。
+// seed 不同 → 掩码不同。
+export func dropout(v: float[], rate: float, seed: int): float[] {
+  let scale: float = 1.0 / (1.0 - rate);
+  let out: float[] = [];
+  for (let i = 0; i < len(v); i = i + 1) {
+    if (hash01(i, seed) < rate) { out = push(out, 0.0); }
+    else { out = push(out, v[i] * scale); }
+  }
+  return out;
+}
+
+// ---------- 卷积（valid，步长 1）----------
+// 一维卷积：x 长度 n，核 k 长度 m，返回长度 n-m+1。
+export func conv1d(x: float[], k: float[]): float[] {
+  let n: int = len(x);
+  let m: int = len(k);
+  let out: float[] = [];
+  for (let i = 0; i <= n - m; i = i + 1) {
+    let s: float = 0.0;
+    for (let j = 0; j < m; j = j + 1) { s = s + x[i + j] * k[j]; }
+    out = push(out, s);
+  }
+  return out;
+}
+// 二维卷积：x 为 h×w，核 k 为 kh×kw，返回 (h-kh+1)×(w-kw+1)。
+export func conv2d(x: float[][], k: float[][]): float[][] {
+  let h: int = len(x);
+  let w: int = len(x[0]);
+  let kh: int = len(k);
+  let kw: int = len(k[0]);
+  let out: float[][] = [];
+  for (let i = 0; i <= h - kh; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j <= w - kw; j = j + 1) {
+      let s: float = 0.0;
+      for (let ki = 0; ki < kh; ki = ki + 1) {
+        for (let kj = 0; kj < kw; kj = kj + 1) {
+          s = s + x[i + ki][j + kj] * k[ki][kj];
+        }
+      }
+      row = push(row, s);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// ---------- 循环单元 ----------
+// 简单 RNN 单元：h' = tanh(Wx·x + Wh·h + b)。Wx 为 hidden×in，Wh 为 hidden×hidden，b 为 hidden。
+export func rnn_cell(x: float[], h: float[], Wx: float[][], Wh: float[][], b: float[]): float[] {
+  let pre: float[] = [];
+  for (let r = 0; r < len(Wx); r = r + 1) { pre = push(pre, dotv(Wx[r], x)); }
+  for (let r2 = 0; r2 < len(Wh); r2 = r2 + 1) {
+    pre = set_flt(pre, r2, pre[r2] + dotv(Wh[r2], h) + b[r2]);
+  }
+  return tanh_vec(pre);
+}
+// RNN 前向：对序列 xs 迭代 rnn_cell，返回最终隐状态。
+export func rnn_forward(xs: float[][], h0: float[], Wx: float[][], Wh: float[][], b: float[]): float[] {
+  let h: float[] = h0;
+  for (let t = 0; t < len(xs); t = t + 1) {
+    h = rnn_cell(xs[t], h, Wx, Wh, b);
+  }
+  return h;
+}
+// GRU 单元：x 输入，h 隐状态；W*z/r/h 为 (hidden×in)，U*z/r/hh 为 (hidden×hidden)，
+// b*z/r/h 长度 hidden。返回新隐状态。
+export func gru_cell(x: float[], h: float[], Wz: float[][], Wr: float[][], Whh: float[][],
+                    Uz: float[][], Ur: float[][], Uhh: float[][], bz: float[], br: float[], bh: float[]): float[] {
+  let H: int = len(h);
+  let zpre: float[] = [];
+  for (let i = 0; i < H; i = i + 1) { zpre = push(zpre, dotv(Wz[i], x) + dotv(Uz[i], h) + bz[i]); }
+  let z: float[] = sigmoid_vec(zpre);
+  let rpre: float[] = [];
+  for (let j = 0; j < H; j = j + 1) { rpre = push(rpre, dotv(Wr[j], x) + dotv(Ur[j], h) + br[j]); }
+  let r: float[] = sigmoid_vec(rpre);
+  let rh: float[] = [];
+  for (let m = 0; m < H; m = m + 1) { rh = push(rh, r[m] * h[m]); }
+  let hpre: float[] = [];
+  for (let n = 0; n < H; n = n + 1) { hpre = push(hpre, dotv(Whh[n], x) + dotv(Uhh[n], rh) + bh[n]); }
+  let ht: float[] = tanh_vec(hpre);
+  let out: float[] = [];
+  for (let o = 0; o < H; o = o + 1) { out = push(out, (1.0 - z[o]) * h[o] + z[o] * ht[o]); }
+  return out;
+}
+// GRU 前向：对序列 xs 迭代 gru_cell，返回最终隐状态。
+export func gru_forward(xs: float[][], h0: float[], Wz: float[][], Wr: float[][], Whh: float[][],
+                       Uz: float[][], Ur: float[][], Uhh: float[][], bz: float[], br: float[], bh: float[]): float[] {
+  let h: float[] = h0;
+  for (let t = 0; t < len(xs); t = t + 1) {
+    h = gru_cell(xs[t], h, Wz, Wr, Whh, Uz, Ur, Uhh, bz, br, bh);
+  }
+  return h;
+}
+
 
