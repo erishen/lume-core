@@ -1621,11 +1621,61 @@ second is architectural: the 413 path force-closes and the body is a
 stack buffer, so "parse multipart" without "stream the body to a temp
 file" buys nothing.
 
-- [ ] Split the item: (a) a `multipart(req.body, req.content_type)` →
-      list of `{name, filename, type, body}` parts builtin, and (b) the
-      transport redesign that allows a body larger than one buffer. Do
-      not schedule (a) alone; it will be tested with 60 KiB files and
-      then fail in production.
+**Status 2026-11-09:** the paragraph above is the 2026-10-30 reasoning
+record, kept as-is. Both halves have now landed, in the order the warning
+below demanded — (b) on 2026-11-04, (a) on 2026-11-09. Uploads are no
+longer blocked in either tree.
+
+- [x] **Done 2026-11-09 (and correction to the old warning):** (a) the
+      `multipart(body, content_type)` builtin landed, but only after (b),
+      so the 60 KiB-trap the item warned about cannot recur. It is a
+      **three-backend** builtin (not an interpreter-only primitive like
+      P14 `spawn` / P17 `http_stream_*`): `typecheck.c` name + arity,
+      `interp.c` registry, `builtins.c` / `builtins.h` interpreter native
+      + `b_multipart`, `rt.c` `lume_bi_multipart`, `codegen_call.c`
+      declare/dispatch, `llvm_cg_call.inc` dispatch, and
+      `codegen_scan.c` / `llvm_cg_scan.inc` `list(any)` inference. The
+      RFC 7578 parser is a `(buf, len)` walker duplicated in
+      `builtins.c`, `rt.c` and the host `lang/builtins.c` — `rt.c` is a
+      self-contained TU compiled on its own by `backend.c`, so a shared
+      header would have to ship with every packed build; this follows the
+      `native_str_match` / `lume_bi_str_match` precedent instead, and the
+      `multipart` leg of `tests/native_backends.sh` diffs all three so a
+      copy that drifts turns `make test` red.
+
+      Returns a list of `{name, filename, type, body}` maps. Absent
+      `filename` / `type` are `""`, **not null**: the native anon-row
+      getter `lume_map_get_s()` collapses a null OBJ slot to `""`, so a
+      null there would make the same program disagree across backends.
+      Handles quoted boundaries, case-insensitive header names, CRLF and
+      bare LF, preamble/epilogue, and backslash-escaped quoted parameter
+      values; rejects wrong media type, missing/empty/overlong boundary,
+      missing delimiter or closing boundary, and unterminated part
+      headers through the VM error channel (`vm_set_error` /
+      `lume_error_set`, so `try()` catches it). Bounded at 4096 parts and
+      a 200-byte boundary.
+
+      **Binary boundary (deliberate, not a TODO):** the interpreter's
+      strings carry a length, so `native_multipart` uses
+      `obj_string_len()` and a NUL-containing part body survives intact
+      (`tests/multipart.lume` pins a 3-byte `A\0B` part and a 128 KiB
+      part). The compiled runtime's `LumeSlot.str` is a NUL-terminated C
+      string with no length field, so `lume_bi_multipart` passes
+      `strlen(body)` and a compiled program truncates such a part at the
+      first NUL — the same platform boundary `read_file` / `str_match`
+      already have. Making compiled strings binary-safe would mean
+      redesigning `rt.c`'s value representation, not this builtin.
+
+      Tests: `tests/multipart.lume` (35 interpreter assertions, `make
+      multipart-test`, wired into both `make check` — the Windows lane —
+      and `make test` — the POSIX CI lane) and the `multipart` leg of
+      `tests/native_backends.sh` (`make native-consistency`, also part of
+      `make test`) for interpreter / IR text / libLLVM verdict parity.
+      Host: hand-merged into all four
+      `host_owned` files, `lang/bridge.c` now exposes `req.body` with
+      `content_length` instead of `strlen` so binary parts reach the
+      parser, and `examples/upload-multipart.lume` shows the buffered /
+      spooled-body pattern.
 - [x] **Done 2026-11-04**: (b) the transport redesign landed: resumable
       body-to-tempfile in agent-httpd. Content-Length bodies above the
       64 KiB read buffer (`MAX_REQUEST_SIZE`) but within

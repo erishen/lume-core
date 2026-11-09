@@ -1604,6 +1604,7 @@ void bridge_seed_builtins(VM *vm) {
         {"sort", b_sort}, /* in-place list sort, homogeneous numbers/strings (2026-10-11) */
         {"str_match", b_str_match}, /* POSIX ERE findall -> [{text,index,groups}] (2026-10-11) */
         {"regex", b_str_match}, /* alias of str_match (2026-10-11) */
+        {"multipart", b_multipart}, /* RFC 7578 parts -> [{name,filename,type,body}] (2026-11-09, P13) */
         /* 量化 builtins (2026-10-24, builtins_math.c): 描述统计 /
          * 相关回归 / 时间序列,与原生后端同一套公式。 */
         {"mean", b_mean},

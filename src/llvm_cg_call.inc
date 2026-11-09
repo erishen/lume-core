@@ -1845,6 +1845,24 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(list_type(), r);
     }
 
+    /* multipart(body, content_type): RFC 7578 -> list of part maps.
+     * Kept in step with the text emitter's cg_builtin branch. */
+    if (strcmp(bname, "multipart") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: multipart() needs (body, content_type)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: multipart() needs two strings", n->line);
+        LLVMTypeRef p2[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef r = LLVMBuildCall2(g->ab, LLVMFunctionType(g->i8ptr, p2, 2, 0),
+                                        rt_decl(g, "lume_bi_multipart", g->i8ptr, p2, 2),
+                                        (LLVMValueRef[]){ a.v, b.v }, 2, "mp");
+        if (!r) ERRV(g, "line %zu: multipart() failed", n->line);
+        return val_make(list_type(), r);
+    }
+
     if (strcmp(bname, "exp") == 0 || strcmp(bname, "log") == 0 ||
         strcmp(bname, "ln") == 0) {
         if (argc < 1)

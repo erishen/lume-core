@@ -364,6 +364,10 @@ static Type *infer_node_type(CG *g, Node *n)
                  * runtime — list(any), same spelling as a json() array,
                  * so slot reads infer and emit on the native backends. */
                 return type_list(any_type());
+            /* multipart() rows are boxed OBJ slots with a runtime-only
+             * shape, exactly like str_match / json() array rows. */
+            if (strcmp(name, "multipart") == 0 && n->as.call.argc == 2)
+                return type_list(any_type());
             if (strcmp(name, "contains") == 0 && n->as.call.argc == 2)
                 return type_prim(TY_BOOL);
             /* crypt_verify / const_time_eq answer a bool (2026-11-04, P3):

@@ -456,6 +456,419 @@ static void native_sort(VM *vm, int argc, Value *args, Value *out) {
     *out = args[0];              /* sorted in place, original list returned */
 }
 
+/* ================= multipart(body, content_type) — RFC 7578 =================
+ * This parser block is kept byte-for-byte in step across three build sites:
+ *   lume-core/src/builtins.c   (interpreter)
+ *   lume-core/src/rt.c         (both native emitters)
+ *   lume/lang/builtins.c       (host mirror)
+ * rt.c is a self-contained TU compiled on its own by backend.c, so a shared
+ * header would have to ship with every packed build; duplicating this small
+ * parser follows the native_str_match / lume_bi_str_match precedent instead.
+ * The multipart legs of tests/native_backends.sh diff all three backends on
+ * the same fixture, so a copy that drifts turns make test red.
+ *
+ * Input is (buf, len), not a C string: the interpreter's strings carry an
+ * explicit length (read_file() is NUL-safe), so a part body containing NUL
+ * survives. The native runtime passes strlen(body) because its
+ * LumeSlot.str is a NUL-terminated C string — compiled programs keep the
+ * platform's existing binary-string boundary (documented in TODO.md P13).
+ */
+
+#define MP_MAX_PARTS     4096
+#define MP_BOUNDARY_MAX  200
+#define MP_FIELD_MAX     1024
+
+typedef struct { const char *p; size_t n; } MPSlice;
+typedef struct {
+    MPSlice name, filename, type, body;
+} MPPart;
+
+static int mp_space(int c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static int mp_ieq(const char *a, size_t an, const char *b)
+{
+    size_t i, bn = strlen(b);
+    if (an != bn) return 0;
+    for (i = 0; i < an; i++) {
+        int x = (unsigned char)a[i], y = (unsigned char)b[i];
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return 0;
+    }
+    return 1;
+}
+
+static MPSlice mp_trim(MPSlice s)
+{
+    while (s.n && mp_space((unsigned char)s.p[0])) { s.p++; s.n--; }
+    while (s.n && mp_space((unsigned char)s.p[s.n - 1])) s.n--;
+    return s;
+}
+
+/* Copy a header slice into dst, folding the backslash escapes RFC 7578
+ * permits inside quoted parameters. Header values are text, so the result
+ * is a NUL-terminated C string. */
+static size_t mp_copy(MPSlice s, char *dst, size_t cap)
+{
+    size_t k = 0, w = 0;
+    while (k < s.n && w + 1 < cap) {
+        if (s.p[k] == '\\' && k + 1 < s.n) k++;
+        dst[w++] = s.p[k++];
+    }
+    dst[w] = '\0';
+    return w;
+}
+
+/* memmem() is a GNU extension; MinGW/apple libc do not agree on it. */
+static const char *mp_memmem(const char *h, size_t n, const char *nd, size_t m)
+{
+    const char *end, *p;
+    if (!m || n < m) return NULL;
+    end = h + n - m;
+    p = h;
+    while (p <= end) {
+        p = (const char *)memchr(p, nd[0], (size_t)(end - p) + 1);
+        if (!p) return NULL;
+        if (memcmp(p, nd, m) == 0) return p;
+        p++;
+    }
+    return NULL;
+}
+
+/* Slice of the line at *pos without its EOL, then advance past the EOL.
+ * Accepts CRLF (RFC 2046) and bare LF (some clients). */
+static int mp_line(const char *buf, size_t len, size_t *pos, MPSlice *out)
+{
+    size_t s, e;
+    if (*pos >= len) return 0;
+    s = *pos;
+    e = s;
+    while (e < len && buf[e] != '\n') e++;
+    out->p = buf + s;
+    out->n = e - s;
+    if (out->n && buf[e - 1] == '\r') out->n--;
+    *pos = (e < len) ? e + 1 : e;
+    return 1;
+}
+
+/* Next occurrence of "--boundary" that starts a line, at or after `from`. */
+static const char *mp_next_delim(const char *buf, size_t len,
+                                 const char *mark, size_t marklen, size_t from)
+{
+    size_t i = from;
+    while (i + marklen <= len) {
+        const char *p = mp_memmem(buf + i, len - i, mark, marklen);
+        size_t off;
+        if (!p) return NULL;
+        off = (size_t)(p - buf);
+        if (off == 0 || buf[off - 1] == '\n') return p;
+        i = off + 1;
+    }
+    return NULL;
+}
+
+/* Pull `boundary=` out of a Content-Type header. Quoted values and
+ * whitespace around the token are accepted (browsers emit both). */
+static int mp_boundary(MPSlice ct, char *out, size_t cap, const char **err)
+{
+    size_t semi = 0;
+    MPSlice main;
+    main.p = ct.p;
+    main.n = 0;
+    while (semi < ct.n && ct.p[semi] != ';') semi++;
+    main.n = semi;
+    main = mp_trim(main);
+    if (!mp_ieq(main.p, main.n, "multipart/form-data")) {
+        *err = "multipart(): content_type is not multipart/form-data";
+        return 0;
+    }
+    while (semi < ct.n) {
+        size_t ks, ke, i = semi + 1;        /* step over ';' */
+        MPSlice v;
+        int quoted;
+        while (i < ct.n && mp_space((unsigned char)ct.p[i])) i++;
+        ks = i;
+        while (i < ct.n && ct.p[i] != '=' && ct.p[i] != ';') i++;
+        ke = i;
+        while (ke > ks && mp_space((unsigned char)ct.p[ke - 1])) ke--;
+        if (i >= ct.n || ct.p[i] != '=') {
+            while (i < ct.n && ct.p[i] != ';') i++;
+            semi = i;
+            continue;
+        }
+        i++;
+        while (i < ct.n && mp_space((unsigned char)ct.p[i])) i++;
+        v.p = ct.p + i;
+        v.n = 0;
+        quoted = (i < ct.n && ct.p[i] == '"');
+        if (quoted) {
+            i++;
+            v.p = ct.p + i;
+            while (i < ct.n && ct.p[i] != '"') {
+                if (ct.p[i] == '\\' && i + 1 < ct.n) i++;
+                i++;
+            }
+            v.n = (size_t)(ct.p + i - v.p);
+            if (i < ct.n) i++;
+        } else {
+            while (i < ct.n && ct.p[i] != ';') i++;
+            v.n = (size_t)(ct.p + i - v.p);
+            v = mp_trim(v);
+        }
+        if (mp_ieq(ct.p + ks, ke - ks, "boundary")) {
+            size_t w = mp_copy(v, out, cap);
+            if (!w) { *err = "multipart(): empty boundary"; return 0; }
+            if (w > MP_BOUNDARY_MAX) {
+                *err = "multipart(): boundary too long";
+                return 0;
+            }
+            return 1;
+        }
+        while (i < ct.n && ct.p[i] != ';') i++;
+        semi = i;
+    }
+    *err = "multipart(): missing boundary in content_type";
+    return 0;
+}
+
+/* Read a `name="..."` / `filename="..."` parameter from a
+ * Content-Disposition header value. The returned slice still points into
+ * the body and may carry backslash escapes; mp_copy() folds them. */
+static MPSlice mp_param(MPSlice hv, const char *key)
+{
+    size_t i = 0;
+    MPSlice empty;
+    empty.p = NULL;
+    empty.n = 0;
+    while (i < hv.n && hv.p[i] != ';') i++;   /* disposition type token */
+    while (i < hv.n) {
+        size_t ks, ke;
+        MPSlice v;
+        int quoted;
+        i++;                                   /* step over ';' */
+        while (i < hv.n && mp_space((unsigned char)hv.p[i])) i++;
+        ks = i;
+        while (i < hv.n && hv.p[i] != '=' && hv.p[i] != ';') i++;
+        ke = i;
+        while (ke > ks && mp_space((unsigned char)hv.p[ke - 1])) ke--;
+        if (i >= hv.n || hv.p[i] != '=') {
+            while (i < hv.n && hv.p[i] != ';') i++;
+            continue;
+        }
+        i++;
+        while (i < hv.n && mp_space((unsigned char)hv.p[i])) i++;
+        v.p = hv.p + i;
+        v.n = 0;
+        quoted = (i < hv.n && hv.p[i] == '"');
+        if (quoted) {
+            i++;
+            v.p = hv.p + i;
+            while (i < hv.n && hv.p[i] != '"') {
+                if (hv.p[i] == '\\' && i + 1 < hv.n) i++;
+                i++;
+            }
+            v.n = (size_t)(hv.p + i - v.p);
+            if (i < hv.n) i++;
+        } else {
+            while (i < hv.n && hv.p[i] != ';') i++;
+            v.n = (size_t)(hv.p + i - v.p);
+            v = mp_trim(v);
+        }
+        if (mp_ieq(hv.p + ks, ke - ks, key)) return v;
+        while (i < hv.n && hv.p[i] != ';') i++;
+    }
+    return empty;
+}
+
+/* Returns a malloc'd array of part descriptors (slices into buf); the
+ * caller frees it. NULL + *err means malformed input. Header parsing adds
+ * no allocations, so an error never leaves half-built VM containers. */
+static MPPart *mp_parse(const char *buf, size_t len, MPSlice ct,
+                        size_t *count, const char **err)
+{
+    char bnd[MP_BOUNDARY_MAX + 2];
+    char mark[MP_BOUNDARY_MAX + 4];
+    size_t marklen, pos, used = 0, cap = 8;
+    MPPart *parts;
+    const char *d;
+
+    *count = 0;
+    *err = NULL;
+    if (!mp_boundary(ct, bnd, sizeof bnd, err)) return NULL;
+    mark[0] = '-';
+    mark[1] = '-';
+    marklen = strlen(bnd);
+    memcpy(mark + 2, bnd, marklen);
+    marklen += 2;
+
+    parts = (MPPart *)malloc(sizeof(MPPart) * cap);
+    if (!parts) { *err = "multipart(): out of memory"; return NULL; }
+    if (!len) return parts;                 /* empty body -> empty list */
+
+    d = mp_next_delim(buf, len, mark, marklen, 0);
+    if (!d) { *err = "multipart(): no boundary delimiter in body"; goto fail; }
+    pos = (size_t)(d - buf);               /* the first delimiter line */
+
+    for (;;) {
+        MPSlice line;
+        MPPart part;
+        size_t body_start, body_end;
+        const char *next;
+        int closing, saw_blank = 0;
+
+        if (!mp_line(buf, len, &pos, &line)) {
+            *err = "multipart(): truncated boundary";
+            goto fail;
+        }
+        if (line.n < marklen || memcmp(line.p, mark, marklen) != 0) {
+            *err = "multipart(): malformed boundary line";
+            goto fail;
+        }
+        closing = (line.n >= marklen + 2 &&
+                   line.p[marklen] == '-' && line.p[marklen + 1] == '-');
+        if (closing) break;
+        {
+            size_t k = marklen;
+            while (k < line.n && mp_space((unsigned char)line.p[k])) k++;
+            if (k != line.n) {
+                *err = "multipart(): malformed boundary line";
+                goto fail;
+            }
+        }
+
+        memset(&part, 0, sizeof part);
+        while (mp_line(buf, len, &pos, &line)) {
+            size_t colon;
+            MPSlice hn, hv;
+            if (!line.n) { saw_blank = 1; break; }
+            colon = 0;
+            while (colon < line.n && line.p[colon] != ':') colon++;
+            if (colon == line.n) continue;  /* ignore a header without ':' */
+            hn.p = line.p;
+            hn.n = colon;
+            hv.p = line.p + colon + 1;
+            hv.n = line.n - colon - 1;
+            hv = mp_trim(hv);
+            if (mp_ieq(hn.p, hn.n, "content-disposition")) {
+                MPSlice nm = mp_param(hv, "name");
+                MPSlice fn = mp_param(hv, "filename");
+                if (nm.p) part.name = nm;
+                if (fn.p) part.filename = fn;
+            } else if (mp_ieq(hn.p, hn.n, "content-type")) {
+                part.type = hv;
+            }
+        }
+        if (!saw_blank) {
+            *err = "multipart(): unterminated part headers";
+            goto fail;
+        }
+
+        body_start = pos;
+        next = mp_next_delim(buf, len, mark, marklen, body_start);
+        if (!next) { *err = "multipart(): missing closing boundary"; goto fail; }
+        body_end = (size_t)(next - buf);
+        /* The CRLF just before the delimiter belongs to the delimiter, not
+         * to the part body (RFC 2046 §5.1.1). Guard the empty-body case:
+         * then `next == body_start` and the preceding LF is the blank
+         * header line, which must not be subtracted. */
+        if (body_end > body_start) {
+            if (body_end >= body_start + 2 &&
+                buf[body_end - 2] == '\r' && buf[body_end - 1] == '\n')
+                body_end -= 2;
+            else if (buf[body_end - 1] == '\n')
+                body_end -= 1;
+        }
+        part.body.p = buf + body_start;
+        part.body.n = body_end - body_start;
+
+        if (used == cap) {
+            MPPart *np;
+            if (cap >= MP_MAX_PARTS) {
+                *err = "multipart(): too many parts";
+                goto fail;
+            }
+            cap = cap * 2 > MP_MAX_PARTS ? MP_MAX_PARTS : cap * 2;
+            np = (MPPart *)realloc(parts, sizeof(MPPart) * cap);
+            if (!np) { *err = "multipart(): out of memory"; goto fail; }
+            parts = np;
+        }
+        parts[used++] = part;
+        pos = (size_t)(next - buf);        /* consume that delimiter line next */
+    }
+    *count = used;
+    return parts;
+fail:
+    free(parts);
+    return NULL;
+}
+
+/* multipart(body, content_type) -> [{name, filename, type, body}].
+ * Interpreter half; lume_bi_multipart (rt.c) is the native mirror and the
+ * multipart leg of tests/native_backends.sh pins their agreement. */
+static void native_multipart(VM *vm, int argc, Value *args, Value *out) {
+    const char *body, *ct;
+    size_t body_len, ct_len, n = 0, i;
+    MPPart *parts;
+    MPSlice cts;
+    const char *err = NULL;
+    Obj *res;
+
+    if (argc != 2) {
+        vm_set_error(vm, "multipart() needs (body, content_type)");
+        return;
+    }
+    if (!IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_STRING) {
+        vm_set_error(vm, "multipart(): body must be a string");
+        return;
+    }
+    if (!IS_OBJ(args[1]) || AS_OBJ(args[1])->type != OBJ_STRING) {
+        vm_set_error(vm, "multipart(): content_type must be a string");
+        return;
+    }
+    body = obj_string(AS_OBJ(args[0]));
+    body_len = obj_string_len(AS_OBJ(args[0]));
+    ct = obj_string(AS_OBJ(args[1]));
+    ct_len = obj_string_len(AS_OBJ(args[1]));
+    cts.p = ct;
+    cts.n = ct_len;
+
+    /* Parse first: mp_parse allocates nothing in the VM, so a malformed
+     * request errors out before any half-built list/map is rooted. */
+    parts = mp_parse(body, body_len, cts, &n, &err);
+    if (!parts) {
+        vm_set_error(vm, "%s", err ? err : "multipart(): parse failed");
+        return;
+    }
+
+    res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (i = 0; i < n; i++) {
+        char name[MP_FIELD_MAX], filename[MP_FIELD_MAX], type[MP_FIELD_MAX];
+        Obj *mo;
+        mp_copy(parts[i].name, name, sizeof name);
+        mp_copy(parts[i].filename, filename, sizeof filename);
+        mp_copy(parts[i].type, type, sizeof type);
+        mo = AS_OBJ(make_map(vm));
+        vm_push(vm, val_obj(mo));
+        map_set(vm, mo, "name", make_string(vm, name, strlen(name)));
+        /* Absent optional headers are "" rather than null: the native
+         * anon-row getter lume_map_get_s() collapses a null OBJ slot to
+         * "", so a null here would make the same program disagree between
+         * the interpreter and the two emitters. */
+        map_set(vm, mo, "filename", make_string(vm, filename, strlen(filename)));
+        map_set(vm, mo, "type", make_string(vm, type, strlen(type)));
+        map_set(vm, mo, "body", make_string(vm, parts[i].body.p, parts[i].body.n));
+        list_push(vm, res, val_obj(mo));
+        vm_pop(vm);
+    }
+    vm_pop(vm);
+    free(parts);
+    *out = val_obj(res);
+}
+
 /* str_match(pattern, text) / regex(pattern, text) — scan `text` with a POSIX
  * extended regex and return a list of match records, each
  *   { text: matched substring, index: 0-based offset, groups: [capture groups] }
@@ -563,6 +976,7 @@ Value b_push(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, a
 Value b_try(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_try); }
 Value b_sort(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_sort); }
 Value b_str_match(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_str_match); }
+Value b_multipart(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_multipart); }
 Value b_tools(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_tools); }
 Value b_skills(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_skills); }
 Value b_mcps(VM *vm, int argc, Value *args)      { return vm_native(vm, argc, args, native_mcps); }

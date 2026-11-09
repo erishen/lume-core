@@ -385,9 +385,9 @@ $(TARGET): $(OBJS) $(AH_LIB) | bin
 # 注释)。windows.yml 同样跑 `make check`, 以前 crypto-test 先红把它挡住了;
 # crypto 修好后它就成了下一个红灯。按平台摘掉, Linux/macOS 仍真跑。
 ifeq ($(IS_WINDOWS),1)
-CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-test
+CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test multipart-test vm-reuse-test
 else
-CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-test fsroot-test
+CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test multipart-test vm-reuse-test fsroot-test
 endif
 # Opted-out builtins only have a diagnostic to assert on the Windows lane:
 # POSIX builds compile builtins_http.c / builtins_spawn.c and seed the real
@@ -768,7 +768,7 @@ else
 HTTP_STREAM_TEST := http-stream-test
 endif
 
-test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
+test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test multipart-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
       native native-text treecheck sci-test $(SPAWN_TEST) $(HTTP_STREAM_TEST) lib-compat lib-backends static-cache-test
 
 # P16.1 — lib/ 必须能被旧 lume 0.12.2 加载。静态腿用块级重复 let 分析
@@ -1107,7 +1107,7 @@ endif
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
          fsroot-test spawn-test spawn-native-gate stream-native-gate unavailable-builtins-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
          ai-produce \
-         arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
+         arity-test asan-compile build-fuzz builtins-test multipart-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
          range-test route-cap-test sci-test sql-test ternary-test trailing-closure-test tuple-test
 # crypt_sha512 内建单测（glibc 生成 $6$ / macOS 平台报错 都算 PASS）。
@@ -1272,6 +1272,18 @@ builtins-test: all
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-builtins-test.out; then \
 		echo "==> builtins 单测失败 (rc=$$rc)"; exit 1; fi; \
 	echo "==> builtins 单测全部通过"
+
+# multipart(body, content_type) — P13 item (a)。解释器侧完整回归(含 128 KiB
+# body 与 NUL-safe part); 三后端值一致性另由 native-consistency 的
+# multipart 腿覆盖。make check 与 make test 都挂这个 target: Windows lane
+# 只跑 check, POSIX CI 跑 test, 两条路径都要固定 interpreter 实现; 后者
+# 再叠加编译产物一致性, 不能只靠 native-consistency 的那一个 fixture。
+multipart-test: all
+	@./$(TARGET) tests/multipart.lume > /tmp/lume-multipart-test.out 2>&1; \
+	rc=$$?; cat /tmp/lume-multipart-test.out; \
+	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-multipart-test.out; then \
+		echo "==> multipart 单测失败 (rc=$$rc)"; exit 1; fi; \
+	echo "==> multipart 单测全部通过"
 
 # 三元运算符 (2026-10-12): 值/优先级/右结合/int-float 加宽/map 值位置/
 # 与 `f()?` 传播后缀的前瞻消歧/惰性分支。解释器口径; 三后端一致值由

@@ -561,6 +561,8 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare i8* @lume_bi_replace(i8*, i8*, i8*)\n");
     EMIT(g, "declare i8* @lume_bi_substr(i8*, i64, i64)\n");
     EMIT(g, "declare i8* @lume_bi_str_match(i8*, i8*)\n");
+    /* multipart() -> list of dynamic part maps (2026-11-09, P13) */
+    EMIT(g, "declare i8* @lume_bi_multipart(i8*, i8*)\n");
     /* P3 password verification (2026-11-04): both helpers return i64 so the
      * bool emitters can truncate to i1 the way contains()/sql_tx_* do. */
     EMIT(g, "declare i64 @lume_bi_crypt_verify(i8*, i8*)\n");
@@ -3503,6 +3505,26 @@ static Val cg_builtin(CG *g, Node *n)
                                      a.v, b.v));
         free(a.v); free(b.v);
         if (!r.v) ERRV(g, "line %zu: %s() failed", n->line, bname);
+        return r;
+    }
+
+    /* multipart(body, content_type): RFC 7578 -> list of part maps.
+     * Same dynamic row shape as str_match, so it returns list(any) and
+     * rides the anon-struct / any-slot reads that str_match finished. */
+    if (strcmp(bname, "multipart") == 0) {
+        if (argc < 2)
+            ERRV(g, "line %zu: multipart() needs (body, content_type)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!a.v || !b.v || !a.ty || !b.ty ||
+            a.ty->kind != TY_STRING || b.ty->kind != TY_STRING)
+            ERRV(g, "line %zu: multipart() needs two strings", n->line);
+        Val r = val_take(type_list(type_anon_struct()),
+                         emit_instrf(g, type_list(type_anon_struct()),
+                                     "call i8* @lume_bi_multipart(i8* %s, i8* %s)",
+                                     a.v, b.v));
+        free(a.v); free(b.v);
+        if (!r.v) ERRV(g, "line %zu: multipart() failed", n->line);
         return r;
     }
 

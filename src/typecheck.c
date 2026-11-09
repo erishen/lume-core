@@ -438,6 +438,7 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "discovery_endpoints", "catalog", /* discovery builtins */
     "push", "try", /* collection / error handling (2026-09-27) */
     "sort", "str_match", "regex", /* collection / string search (2026-10-11) */
+    "multipart", /* multipart/form-data parser (2026-11-09, P13) */
     "replace", /* string builtins (2026-09-27) */
     "upper", "lower", "capitalize", "trim", "contains", "split", "join",
     "substr", /* string tools (2026-10-08, P4a codegen) */
@@ -539,6 +540,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     /* exact arity */
     {"len",1,1}, {"keys",1,1}, {"json",1,-1}, {"stringify",1,-1},
     {"render",1,1}, {"sort",1,1}, {"str_match",2,2}, {"regex",2,2},
+    {"multipart",2,2},
     {"sha256",1,1}, {"base64_encode",1,1}, {"base64_decode",1,1},
     {"ed25519_pubkey",1,1}, {"ed25519_sign",2,2}, {"ed25519_verify",3,3}, {"ed25519_keypair",0,0},
     {"crypt_verify",2,2}, {"const_time_eq",2,2},

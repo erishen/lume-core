@@ -759,3 +759,63 @@ for leg in "${RAN[@]}"; do
     sm_ran+=("$leg")
 done
 pass "str-match: str_match rows agree with the interpreter on every leg"
+
+# ---- multipart cross-backend consistency (P13 item (a), 2026-11-09) ----
+# multipart() is registered on all three backends, not just the interpreter
+# (unlike P14 spawn / P17 http_stream_*). Its rows are the same anonymous
+# list<any> maps str_match returns, so this block pins the values, the
+# absent-header "" convention and the error-channel verdict on every leg.
+# The fixture deliberately avoids embedded NUL and huge strings: the native
+# runtime's LumeSlot.str is a C string and would truncate a binary part —
+# that boundary is interpreter-only coverage in tests/multipart.lume (see
+# TODO.md P13), not a verdict the emitters can be asked to reproduce.
+MP_SCRIPT="$WORK/multipart.lume"
+cat > "$MP_SCRIPT" <<'LUME'
+let ct = "multipart/form-data; boundary=Xb7";
+let b = "--Xb7\r\n" +
+        "Content-Disposition: form-data; name=\"user\"\r\n\r\n" +
+        "alice\r\n" +
+        "--Xb7\r\n" +
+        "Content-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n" +
+        "Content-Type: text/plain\r\n\r\n" +
+        "hello\r\n" +
+        "--Xb7--\r\n";
+let parts = multipart(b, ct);
+print(len(parts));
+let r0 = get(parts, 0);
+print(get(r0, "name"));
+print(get(r0, "filename", "-"));
+print(get(r0, "type", "-"));
+print(get(r0, "body"));
+let r1 = get(parts, 1);
+print(get(r1, "name"));
+print(get(r1, "filename", "-"));
+print(get(r1, "type", "-"));
+print(get(r1, "body"));
+let q = multipart("--Q\r\nContent-Disposition: form-data; name=\"q\"\r\n\r\nv\r\n--Q--\r\n",
+                  "Multipart/Form-Data; boundary=\"Q\"");
+print(len(q));
+print(get(get(q, 0), "body"));
+let e = try(() => { multipart("x", "application/json"); return "ok"; });
+print(get(e, "err", null) != null);
+LUME
+mp_want=$("$TARGET" "$MP_SCRIPT" 2>/dev/null | tr -d '\r')
+[ -n "$mp_want" ] ||
+    fail "multipart: the interpreter produced no output for the fixture"
+mp_ran=()
+for leg in "${RAN[@]}"; do
+    case "$leg" in
+        text) flag=--compile-text ;;
+        llvm) flag=--compile-llvm ;;
+        *)    continue ;;
+    esac
+    "$TARGET" "$flag" "$MP_SCRIPT" -o "$WORK/multipart-$leg" >/dev/null 2>&1 ||
+        fail "multipart: $leg refused the multipart row reads (emitter gap)"
+    got=$("$WORK/multipart-$leg" 2>/dev/null | tr -d '\r')
+    [ "$got" = "$mp_want" ] || {
+        echo "got: $got"
+        fail "multipart: $leg disagrees with the interpreter on the parsed parts"
+    }
+    mp_ran+=("$leg")
+done
+pass "multipart: parsed parts agree with the interpreter on every leg"

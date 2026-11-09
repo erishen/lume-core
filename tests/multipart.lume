@@ -1,0 +1,131 @@
+// tests/multipart.lume — multipart(body, content_type) regression (P13 item (a))
+// 运行: make multipart-test (并入 make check, Windows lane 也跑)。
+//
+// 覆盖 RFC 7578 的常规形态 + 拒绝路径 + 两个容易「60 KiB 测过、生产挂掉」的
+// 边界: 大 body(不再受 64 KiB 读缓冲限制) 与含 NUL 的二进制 part。
+// 三后端值语义另由 tests/native_backends.sh 的 multipart 腿比对(解释器 /
+// --compile-text / --compile-llvm); 本文件只走解释器, 因为 NUL 与 128 KiB
+// 字符串在编译产物里没有对应的字符串表示(见 TODO.md P13)。
+
+func check(name, cond) {
+  if (cond) { print("PASS " + name); }
+  else { print("FAIL " + name); }
+}
+
+func main(): int {
+  // --- 基本形态: 一个普通字段 + 一个文件字段 ---
+  let ct = "multipart/form-data; boundary=----FormBoundary7MA4YWxk";
+  let body =
+    "------FormBoundary7MA4YWxk\r\n" +
+    "Content-Disposition: form-data; name=\"user\"\r\n" +
+    "\r\n" +
+    "alice\r\n" +
+    "------FormBoundary7MA4YWxk\r\n" +
+    "content-disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n" +
+    "content-type: text/plain\r\n" +
+    "\r\n" +
+    "hello\r\n" +
+    "------FormBoundary7MA4YWxk--\r\n";
+  let p = multipart(body, ct);
+  check("two parts", len(p) == 2);
+
+  let a = get(p, 0);
+  check("field name", get(a, "name") == "user");
+  check("missing filename is empty", get(a, "filename") == "");
+  check("missing type is empty", get(a, "type") == "");
+  check("field body", get(a, "body") == "alice");
+
+  let f = get(p, 1);
+  check("file name", get(f, "name") == "doc");
+  check("file filename", get(f, "filename") == "a.txt");
+  check("file type", get(f, "type") == "text/plain");
+  check("file body", get(f, "body") == "hello");
+  check("header names are case-insensitive", get(f, "filename") == "a.txt");
+
+  // --- quoted boundary / 额外参数 / 大小写不敏感的 media type ---
+  let q = multipart(
+    "--X\r\nContent-Disposition: form-data; name=\"q\"\r\n\r\nv\r\n--X--\r\n",
+    "Multipart/Form-Data; charset=utf-8; boundary=\"X\"");
+  check("quoted boundary", len(q) == 1);
+  check("quoted boundary name", get(get(q, 0), "name") == "q");
+  check("quoted boundary body", get(get(q, 0), "body") == "v");
+
+  // --- LF-only 行尾(部分客户端), preamble / epilogue ---
+  let lf = "--F\nContent-Disposition: form-data; name=\"lf\"\n\nvalue\n--F--\n";
+  let lfp = multipart(lf, "multipart/form-data; boundary=F");
+  check("LF line endings", len(lfp) == 1);
+  check("LF body", get(get(lfp, 0), "body") == "value");
+
+  let pre = "preamble ignored\r\n" +
+            "--P\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\n1\r\n" +
+            "--P--\r\n" + "epilogue ignored\r\n";
+  let prep = multipart(pre, "multipart/form-data; boundary=P");
+  check("preamble/epilogue skipped", len(prep) == 1);
+  check("preamble part body", get(get(prep, 0), "body") == "1");
+
+  // --- 空 body / 只有收尾分隔符 / 空 part body ---
+  check("empty request body", len(multipart("", "multipart/form-data; boundary=X")) == 0);
+  check("closing delimiter only",
+        len(multipart("--X--\r\n", "multipart/form-data; boundary=X")) == 0);
+  let eb = "--E\r\nContent-Disposition: form-data; name=\"e\"\r\n\r\n\r\n--E--\r\n";
+  let ebp = multipart(eb, "multipart/form-data; boundary=E");
+  check("empty part body", len(ebp) == 1);
+  check("empty part body is empty", get(get(ebp, 0), "body") == "");
+
+  // --- 引号参数里的反斜杠转义: name="a\"b" -> a"b ---
+  let esc = "--Q\r\nContent-Disposition: form-data; name=\"a\\\"b\"\r\n\r\nz\r\n--Q--\r\n";
+  let escp = multipart(esc, "multipart/form-data; boundary=Q");
+  check("escaped quote in name", get(get(escp, 0), "name") == "a\"b");
+
+  // --- 大 body: 128 KiB, 远超旧 64 KiB 读缓冲。字符串按倍增构造, 避免
+  // O(n^2) 拼接把套件拖慢。parser 走 (buf,len), 没有内置小缓冲上限。 ---
+  let big = "x";
+  let i = 0;
+  while (i < 17) { big = big + big; i = i + 1; }
+  let bigbody = "--L\r\nContent-Disposition: form-data; name=\"blob\"\r\n\r\n" +
+                big + "\r\n--L--\r\n";
+  let bp = multipart(bigbody, "multipart/form-data; boundary=L");
+  check("128 KiB part parsed", len(bp) == 1);
+  check("128 KiB part length", len(get(get(bp, 0), "body")) == len(big));
+
+  // --- NUL-safe: 解释器字符串带长度, part body 里的 \0 不能被截断 ---
+  let nul = "--N\r\n" +
+            "Content-Disposition: form-data; name=\"bin\"; filename=\"b.bin\"\r\n" +
+            "Content-Type: application/octet-stream\r\n" +
+            "\r\n" + "A\0B" + "\r\n--N--\r\n";
+  let np = multipart(nul, "multipart/form-data; boundary=N");
+  check("binary part parsed", len(np) == 1);
+  check("binary part keeps NUL", len(get(get(np, 0), "body")) == 3);
+  check("binary part filename", get(get(np, 0), "filename") == "b.bin");
+
+  // --- 拒绝路径: 全部走 VM error, try() 能接住, 不崩溃 ---
+  let e1 = try(() => { multipart("x", "application/json"); return "ok"; });
+  check("reject non-multipart content_type", get(e1, "err", null) != null);
+  let e2 = try(() => { multipart("x", "multipart/form-data"); return "ok"; });
+  check("reject missing boundary", get(e2, "err", null) != null);
+  let e3 = try(() => { multipart("x", "multipart/form-data; boundary=\"\""); return "ok"; });
+  check("reject empty boundary", get(e3, "err", null) != null);
+  let e4 = try(() => { multipart("x", "multipart/form-data; boundary=" + big); return "ok"; });
+  check("reject overlong boundary", get(e4, "err", null) != null);
+  let e5 = try(() => { multipart("no delimiter here", "multipart/form-data; boundary=X"); return "ok"; });
+  check("reject missing delimiter", get(e5, "err", null) != null);
+  let e6 = try(() => {
+    multipart("--U\r\nContent-Disposition: form-data; name=\"u\"\r\n",
+              "multipart/form-data; boundary=U");
+    return "ok";
+  });
+  check("reject unterminated headers", get(e6, "err", null) != null);
+  let e7 = try(() => {
+    multipart("--M\r\nContent-Disposition: form-data; name=\"m\"\r\n\r\nbody\r\n",
+              "multipart/form-data; boundary=M");
+    return "ok";
+  });
+  check("reject missing closing boundary", get(e7, "err", null) != null);
+  let e8 = try(() => { multipart(1, "multipart/form-data; boundary=X"); return "ok"; });
+  check("reject non-string body", get(e8, "err", null) != null);
+  let e9 = try(() => { multipart("x", 2); return "ok"; });
+  check("reject non-string content_type", get(e9, "err", null) != null);
+
+  return 0;
+}
+main();
