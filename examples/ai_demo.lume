@@ -1,0 +1,40 @@
+// ai_demo.lume — 演示 lib/ml.lume v0.2.0 新增的 AI 算法（2026-11-09）。
+//
+//   bin/lume-core examples/ai_demo.lume                解释器
+//   bin/lume-core --compile-text -o d.exe examples/ai_demo.lume && d.exe   文本 IR 后端
+//
+// 同一份源在三后端逐字节一致（tests/ml_backends.sh 钉死）。这里只做一次
+// 可读的小串联：线性回归 → PCA 降维 → 多头注意力 → Q-learning 策略 → GMM 聚类。
+
+import "../lib/ml.lume" as ml;
+
+print("ML_VERSION = " + ml.ML_VERSION);
+
+// ---- 1. 激活 / 损失速览 ----
+print(ml.sigmoid_vec([0.0, 2.0]));            // [0.5, 0.880797]
+print(ml.gelu_vec([0.0, 1.0]));              // [0, 0.841345]
+print(ml.mse([1.0, 2.0], [1.0, 3.0]));       // 0.5
+
+// ---- 2. 正规方程线性回归（y = 1 + 2x）----
+let X1: float[][] = [[0.0], [1.0], [2.0], [3.0]];
+let y1: float[] = [1.0, 3.0, 5.0, 7.0];
+print(ml.linear_regression(X1, y1));           // [1, 2]
+
+// ---- 3. PCA：2D 数据沿 (1,1) 方向方差最大 ----
+let blobs: float[][] = [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [0.0, 0.0], [4.0, 4.0]];
+print(ml.pca_components(blobs, 1));            // 主成分 ≈ [±0.7071, ±0.7071]
+
+// ---- 4. 多头注意力：seq=2, d=4, heads=2 ----
+let seq: float[][] = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 1.0, 0.0]];
+print(ml.multi_head_attention(seq, 2));
+
+// ---- 5. 表格 Q-learning：状态 0 选动作 0 最优（动作 0 给 +1 自环）----
+let trans: float[][] = [[0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0]];
+let Q: float[][] = ml.q_learn(trans, 2, 2, 0.9, 0.5, 20);
+print(ml.q_best_action(Q, 0));                 // 0
+
+// ---- 6. GMM-EM：两类明显分开 ----
+let gx: float[][] = [[0.0, 0.0], [0.1, 0.1], [0.0, 0.1],
+                     [10.0, 10.0], [10.1, 10.0], [9.9, 10.1]];
+print(ml.gmm_em(gx, 2, 10, 12345));           // [0,0,0,1,1,1]（标签可能整体翻转）

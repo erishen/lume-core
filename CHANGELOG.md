@@ -101,8 +101,21 @@ without libLLVM), so parity is verified as `interp/text identical`.
   descendants of a root (resolving `..` and symlinks before the boundary
   check; a not-yet-existing write target is checked through its parent).
   `LUME_FS_RO=1` adds a read-only mode. `--no-fs` remains the hard switch;
-  root resolution failure is a startup error. `lume_realpath()` wraps
+  root resolution failure is a startup error.   `lume_realpath()` wraps
   POSIX `realpath` and CRT `_fullpath` on Windows.
+- **AI algorithm expansion — `lib/ml.lume` (v0.2.0).** Adds to the existing
+  kNN / k-means / logistic-regression / perceptron / Gaussian-NB / MLP
+  toolkit: vectorised activations (`sigmoid_vec` / `tanh_vec` / `gelu_vec` /
+  `swish_vec` / `leaky_relu_vec` / `softplus_vec`), loss functions
+  (`mse` / `mae` / `binary_cross_entropy` / `categorical_cross_entropy`),
+  normal-equation `linear_regression` and `ridge_regression` over
+  `linalg.mat_solve`, PCA (`pca_components` / `pca_project` over
+  `linalg.mat_svd`), `multi_head_attention` extending the single-head
+  `attention`, tabular `q_learn` + `q_best_action` (deterministic,
+  no random exploration), and spherical-covariance `gmm_em` (EM soft
+  clustering). All new routines are deterministic (or `hash01`-seeded) and
+  pass the three-backend consistency harness as
+  `interp/text identical` on a host without libLLVM.
 
 ### Changed
 

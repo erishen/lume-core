@@ -89,3 +89,48 @@ print(ml.mlp2_loss(Pt2, XOR, yxor));
 // mlp2_init 确定性（sin hash 跨后端一致）
 let Pi: float[][] = ml.mlp2_init(3, 2, 42);
 print(Pi);
+
+// =====================================================================
+// AI 算法扩展（v0.2.0, 2026-11-09）三后端一致性
+// =====================================================================
+print(ml.ML_VERSION);
+
+// ---- 向量化激活 ----
+print(ml.sigmoid_vec([0.0, 2.0, -2.0]));
+print(ml.tanh_vec([0.0, 1.0]));
+print(ml.gelu_vec([0.0, 1.0]));
+print(ml.swish_vec([0.0, 1.0]));
+print(ml.leaky_relu_vec([-2.0, 0.0, 2.0], 0.1));
+print(ml.softplus_vec([0.0, 1.0]));
+
+// ---- 损失函数 ----
+print(ml.mse([1.0,2.0,3.0], [1.0,2.0,4.0]));     // 1/3
+print(ml.mae([1.0,2.0,3.0], [1.0,2.0,4.0]));     // 1/3
+print(ml.binary_cross_entropy(0.8, 1.0));
+print(ml.categorical_cross_entropy([0.1,0.7,0.2], 1));
+
+// ---- 正规方程回归（y = 1 + 2x）----
+let lrX: float[][] = [[0.0],[1.0],[2.0],[3.0]];
+let lry: float[] = [1.0, 3.0, 5.0, 7.0];
+print(ml.linear_regression(lrX, lry));             // ~[1, 2]
+print(ml.ridge_regression(lrX, lry, 0.0));         // 同 linear
+
+// ---- PCA：2D 数据沿 (1,1) 方向方差最大 ----
+let pcX: float[][] = [[1.0,1.0],[2.0,2.0],[3.0,3.0],[0.0,0.0],[4.0,4.0]];
+print(ml.pca_components(pcX, 1));                  // 主成分 ≈ [±0.7071, ±0.7071]
+print(ml.pca_project(pcX, 1));                     // 一维得分
+
+// ---- 多头注意力：seq=2, d=4, heads=2 ----
+let mhX: float[][] = [[1.0,0.0,0.0,1.0],[0.0,1.0,1.0,0.0]];
+print(ml.multi_head_attention(mhX, 2));
+
+// ---- 表格 Q-learning：2 状态 2 动作，状态 0 选动作 0 最优 ----
+let qtrans: float[][] = [[0.0,0.0,1.0,0.0],[0.0,1.0,0.0,0.0],[1.0,0.0,0.0,1.0],[1.0,1.0,0.0,1.0]];
+let Q: float[][] = ml.q_learn(qtrans, 2, 2, 0.9, 0.5, 20);
+print(Q);
+print(ml.q_best_action(Q, 0));                     // 0
+
+// ---- GMM-EM：两类明显分开 ----
+let gX: float[][] = [[0.0,0.0],[0.1,0.1],[0.0,0.1],[10.0,10.0],[10.1,10.0],[9.9,10.1]];
+print(ml.gmm_em(gX, 2, 10, 12345));                // 同一类内部标签可能整体翻转，但划分正确
+
