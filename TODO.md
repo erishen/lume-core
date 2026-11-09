@@ -2244,12 +2244,47 @@ as a permanent core-only boundary (`lume/TODO.md` P17 mirror) and marks
 the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
 `lang/PIN.lag` deltas are deliberately retained, not a pending merge.
 
-**Still open:**
+**Cross-platform verification — CLOSED 2026-11-09:**
 
-- [ ] Cross-platform verification: Linux `gcc:13-bookworm` (dash as
-      `/bin/sh`) and the Windows `LUME_HAS_HTTP=0` lane. The POSIX-only
-      test leg covers neither by itself; the same item is recorded in the
-      host's P17 mirror section.
+- [x] Windows `LUME_HAS_HTTP=0` lane: local `make -j4 check` (MinGW gcc
+      14.2) is green, including `stream-native-gate` (static self-check,
+      no stream token in emitters / `rt.c`, `--check` knows
+      `http_stream_open`, `--compile-text` refuses it) and
+      `spawn-native-gate`. CI run `42553136470` (Windows MSYS2) succeeded
+      on `63c3e1a`. The Windows port excludes `src/builtins_http.c`, so
+      no stream primitive is compiled into that binary at all.
+- [x] Linux dash `/bin/sh`: CI run `42553136496`, `test (ubuntu-latest)`
+      → `make test` → `==> http_stream 流式单测通过 (stream + locked)`;
+      `test (macos-latest)` green too. `2317de2` is what folded
+      `http-stream-test` into `make test` (POSIX-only).
+- **Coverage note, not a correctness gap:** the literal
+      `gcc:13-bookworm` container named in the original note has no
+      `container:` lane in `ci.yml`, and this machine has no docker (WSL
+      launch is blocked by the local security policy). P14's `649f2df`
+      did verify spawn streaming on that image by hand; P17 is covered by
+      Ubuntu/dash + macOS instead. Adding a dedicated runner lane is
+      optional.
+
+**Found during the Windows lane (new item):**
+
+- [ ] `LUME_HAS_HTTP=0` builds answer `undefined variable
+      'http_stream_open'` at runtime instead of the clear
+      `http_* unavailable: this build was compiled without LUME_HAS_HTTP`
+      error that `src/builtins.c`'s `native_http_unavailable` stubs
+      promise. `typecheck.c` registers the names unconditionally
+      (`LUME_BUILTIN_NAMES`), but `interp.c`'s whole HTTP builtin table
+      sits inside `#if LUME_HAS_HTTP`, so the interpreter never finds
+      them and the stubs are unreachable. Repro on the Windows
+      `LUME_HAS_HTTP=0` binary: a one-line
+      `let c = http_stream_open("http://127.0.0.1:1/sse");` exits 1 with
+      `lume: line 1: undefined variable 'http_stream_open'`. The older
+      `http_get` / `http_post` / ... are affected the same way, so this
+      is a pre-existing diagnostic gap, not a P17 regression and not a
+      security issue. Fix = register the `b_http_*` wrappers in the
+      `#else` branch of `interp.c` so calls route to the stubs, plus a
+      Windows-lane regression assertion. **Sync impact:** `interp.c` is
+      `host_owned`, so the host needs a hand-merge / `accept-lag` (and a
+      `PIN.lag` refresh) afterwards.
 
 **Known limits, deliberately not scheduled:** v1 has no auto-reconnect;
 P17 is an inbound SSE *client* and does not emit long-lived streamed
