@@ -1,0 +1,14 @@
+// tests/serve-sigpipe-srv.lume — serve() 存活性被测服务端 (2026-11-09)
+// 由 make serve-sigpipe-gate 后台拉起, 端口 18896。只挂一条 /ping:
+// 用来确认「客户端连上立刻断开」之后 server 还能继续服务正常请求。
+// 端口避开 18891/18892/18895/39184, 便于 make -j4 test 并行不抢端口。
+
+server {
+  port = 18896;
+}
+
+get "/ping", func(req) {
+  return {ok: true};
+};
+
+run();

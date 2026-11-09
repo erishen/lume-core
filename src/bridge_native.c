@@ -105,7 +105,23 @@ typedef int SockFd;
 #define sock_close(f) close(f)
 #define sock_err() errno
 #define SOCK_EINTR EINTR
-#define sock_send(f, b, n) send((f), (b), (n), 0)
+/* Keep the compiled-backend serve() in lockstep with bridge_serve.c: a
+ * response is sent as header + body, so an aborted client used to raise
+ * SIGPIPE on the second write and kill the generated server. Linux uses
+ * MSG_NOSIGNAL per send; BSD/macOS sets SO_NOSIGPIPE on each accepted
+ * socket below. Windows has no SIGPIPE. See the 2026-11-09 CI note. */
+#if defined(MSG_NOSIGNAL)
+#define LUME_SEND_FLAGS MSG_NOSIGNAL
+#elif defined(__linux__)
+/* backend_build_native() compiles this TU with plain `cc -O2` and no
+ * -D_GNU_SOURCE, so feature macros may hide MSG_NOSIGNAL on glibc. The
+ * kernel ABI value 0x4000 is stable; without the fallback this file would
+ * silently fall back to flags=0 and keep the SIGPIPE bug. */
+#define LUME_SEND_FLAGS 0x4000
+#else
+#define LUME_SEND_FLAGS 0
+#endif
+#define sock_send(f, b, n) send((f), (b), (n), LUME_SEND_FLAGS)
 #define sock_recv(f, b, n) recv((f), (b), (n), 0)
 #endif
 
@@ -668,6 +684,14 @@ void lume_srv_run(void)
             if (sock_err() == SOCK_EINTR) continue;
             break;
         }
+#if defined(SO_NOSIGPIPE)
+        /* BSD/macOS counterpart of MSG_NOSIGNAL above. */
+        {
+            int nosig = 1;
+            setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE,
+                       (const void *)&nosig, sizeof nosig);
+        }
+#endif
 
         char head[HEAD_BUF_MAX];
         size_t hlen = 0;

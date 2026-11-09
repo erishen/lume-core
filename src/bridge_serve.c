@@ -84,7 +84,28 @@ typedef int SockFd;
 #define sock_close(f) close(f)
 #define sock_err() errno
 #define SOCK_EINTR EINTR
-#define sock_send(f, b, n) send((f), (b), (n), 0)
+/* A peer that hangs up before the response is written (a readiness probe,
+ * an aborted SSE stream, a curl timeout) must not take this single-threaded
+ * server down with it. send_resp_full() writes the header and the body in
+ * two separate sends, so a bare send(..., 0) on the second write raises
+ * SIGPIPE with the default disposition and kills the process. Linux opts
+ * out per send via MSG_NOSIGNAL; BSD/macOS has no such flag and instead
+ * gets SO_NOSIGPIPE on each accepted socket below. Windows has no SIGPIPE.
+ * Found 2026-11-09: tests/wait_port.py opens a TCP connection and closes it
+ * without sending a request; the 400 response's body write was killing the
+ * route-cap server in the gcc:13-bookworm CI lane (curl saw code=000). */
+#if defined(MSG_NOSIGNAL)
+#define LUME_SEND_FLAGS MSG_NOSIGNAL
+#elif defined(__linux__)
+/* glibc/musl hide MSG_NOSIGNAL behind feature macros in strict-ANSI TUs.
+ * The kernel ABI value is stable (0x4000), so keep a fallback: otherwise
+ * a build with the macro hidden would silently get flags=0 and this bug
+ * would come back. BSD/macOS take the SO_NOSIGPIPE path below instead. */
+#define LUME_SEND_FLAGS 0x4000
+#else
+#define LUME_SEND_FLAGS 0
+#endif
+#define sock_send(f, b, n) send((f), (b), (n), LUME_SEND_FLAGS)
 #define sock_recv(f, b, n) recv((f), (b), (n), 0)
 #define lume_getpid() getpid()
 #endif
@@ -1129,6 +1150,15 @@ static void lume_http_serve_internal(const char *host, long port, int backlog, V
             if (sock_err() == SOCK_EINTR) continue;
             break;
         }
+#if defined(SO_NOSIGPIPE)
+        /* BSD/macOS counterpart of MSG_NOSIGNAL above: no SIGPIPE from this
+         * socket, so a client that aborts mid-response cannot kill serve(). */
+        {
+            int nosig = 1;
+            setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE,
+                       (const void *)&nosig, sizeof nosig);
+        }
+#endif
 
         HttpReq req;
         memset(&req, 0, sizeof req);

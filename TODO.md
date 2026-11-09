@@ -2343,6 +2343,32 @@ the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
       `native-llvm` already degrades to interp/text when
       `--compile-llvm` is unavailable. That is a toolchain-version
       finding, not a hole in the gcc 13 / dash coverage this lane adds.
+      A third, and this time real, defect surfaced on the same lane:
+      `route-cap-test` failed with `FAIL route-cap /r1: code=000`
+      (ci `42576245396`) even though `tests/wait_port.py` had just proved
+      port 39184 connectable and every `docroot-test` curl on 18892 had
+      passed. The same three-line `code=000` failure had appeared once
+      before as a flaky macOS leg (ci `42558781265`), while ubuntu-latest
+      and macOS were green on the very same commit `d468bba`. Root cause:
+      `serve()` is single-threaded and `send_resp_full()` writes the
+      header and the body in two separate `send(..., 0)` calls.
+      `wait_port.py` opens a TCP connection and closes it without
+      sending a request byte; the server accepts it, takes the 400 path,
+      and the body write to the half-closed socket raises SIGPIPE with
+      the default disposition — killing the whole server. Windows has no
+      SIGPIPE, which is why it never reproduced locally and why
+      `make route-cap-test` stayed green here. **Fixed 2026-11-09** in
+      both `src/bridge_serve.c` (interpreter) and `src/bridge_native.c`
+      (compiled-backend runtime): POSIX sends carry `MSG_NOSIGNAL`
+      (with a Linux ABI-value fallback for TUs built without
+      `-D_GNU_SOURCE`), and BSD/macOS set `SO_NOSIGPIPE` on each
+      accepted socket. Added `tests/serve-sigpipe-gate.sh` plus
+      `tests/serve-sigpipe-srv.lume` (port 18896) to `make test`: it
+      aborts three connections with `SO_LINGER(1,0)` so the write hits
+      EPIPE deterministically, then asserts the server is still alive
+      and still answers `/ping`. `route-cap-test`'s curl also gained
+      `-S --max-time 5`, so a future `code=000` prints the real
+      transport error instead of being swallowed by `-s`.
 
 **Found during the Windows lane (new item):**
 

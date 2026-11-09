@@ -768,7 +768,7 @@ else
 HTTP_STREAM_TEST := http-stream-test
 endif
 
-test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test multipart-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test native-consistency case-parity for-in-gc-test \
+test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test multipart-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test serve-sigpipe-gate native-consistency case-parity for-in-gc-test \
       native native-text treecheck sci-test $(SPAWN_TEST) $(HTTP_STREAM_TEST) lib-compat lib-backends static-cache-test
 
 # P16.1 — lib/ 必须能被旧 lume 0.12.2 加载。静态腿用块级重复 let 分析
@@ -1105,7 +1105,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test spawn-test spawn-native-gate stream-native-gate unavailable-builtins-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
+         fsroot-test spawn-test spawn-native-gate stream-native-gate unavailable-builtins-gate serve-sigpipe-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test multipart-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
@@ -1203,6 +1203,15 @@ stream-native-gate: all
 # tests/unavailable-builtins-gate.sh.
 unavailable-builtins-gate: all
 	@sh tests/unavailable-builtins-gate.sh
+
+# 2026-11-09 SIGPIPE regression: a client that hung up before the response
+# used to kill serve() (send_resp_full writes header and body separately, so
+# the second send raised SIGPIPE with the default disposition). Windows has
+# no SIGPIPE, hence the gate lives in `make test` where the POSIX lanes --
+# notably the gcc:13-bookworm container -- actually exercise it. See
+# TODO.md P17 and tests/serve-sigpipe-gate.sh.
+serve-sigpipe-gate: all
+	@sh tests/serve-sigpipe-gate.sh
 
 spawn-test: all
 	@ROOTS="/bin:/usr/bin"; ABS="/bin"; \
@@ -1686,7 +1695,7 @@ route-cap-test: all
 	probe() { url="$$1"; want="$$2"; \
 	  code="000"; body=""; \
 	  for i in 1 2 3 4 5; do \
-	    out=$$(curl -s --noproxy '*' -w '\n%{http_code}' "http://127.0.0.1:39184$$url"); \
+	    out=$$(curl -sS --noproxy '*' --max-time 5 -w '\n%{http_code}' "http://127.0.0.1:39184$$url"); \
 	    code=$$(printf '%s\n' "$$out" | tail -1); \
 	    body=$$(printf '%s\n' "$$out" | sed '$$d'); \
 	    if [ "$$code" = "200" ] && printf '%s' "$$body" | grep -q "$$want"; then break; fi; \
