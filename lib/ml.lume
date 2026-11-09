@@ -11,8 +11,11 @@ import "linalg.lume" as la;
 // 库版本：v0.1.0 初始集（kNN/k-means/逻辑回归/感知机/朴素贝叶斯/MLP/注意力）；
 // v0.2.0（2026-11-09）补激活函数族、损失函数、正规方程回归、PCA、
 // 多头注意力、表格 Q-learning、GMM-EM；v0.3.0（2026-11-09）补深度学习构件
-// （范数/层归一化/批归一化/Dropout/Conv1d·Conv2d/RNN·GRU 单元及序列前向）。
-export let ML_VERSION = "0.3.0";
+// （范数/层归一化/批归一化/Dropout/Conv1d·Conv2d/RNN·GRU 单元及序列前向）；
+// v0.4.0（2026-11-09）补优化器（vanilla SGD / SGD+momentum / Adam）与
+// 反向原语（embedding 查表+梯度、softmax 交叉熵损失+梯度），让纯 .lume
+// 训练循环得以落地。
+export let ML_VERSION = "0.4.0";
 
 // ---------- 内部帮助函数 ----------
 
@@ -1026,6 +1029,111 @@ export func gru_forward(xs: float[][], h0: float[], Wz: float[][], Wr: float[][]
     h = gru_cell(xs[t], h, Wz, Wr, Whh, Uz, Ur, Uhh, bz, br, bh);
   }
   return h;
+}
+
+// =====================================================================
+// 优化器与反向（v0.4.0, 2026-11-09）
+// 让「训练循环」能纯 .lume 落地：扁平 float[] 参数 + 状态打包 float[][]，
+// 三后端一致（pow 为内建；列表值语义经 set_*；'/' 恒 float 需 * 1.0；
+// 循环变量名函数内唯一）。
+// =====================================================================
+
+// ---------- 优化器 ----------
+// 朴素 SGD：params[i] -= lr * grad[i]。
+export func sgd_step(params: float[], grad: float[], lr: float): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < len(params); i = i + 1) {
+    out = push(out, params[i] - lr * grad[i]);
+  }
+  return out;
+}
+
+// SGD + 动量：速度初始化为零向量（长度 n）。
+export func sgd_momentum_init(n: int): float[] {
+  return zero_flt(n);
+}
+
+// SGD + 动量一步：vel' = mu·vel - lr·grad；params' = params + vel'。
+// 返回 [new_params, new_vel]（长度 2 的 float[][]），便于纯函数式串接。
+export func sgd_momentum_step(params: float[], grad: float[], vel: float[], lr: float, mu: float): float[][] {
+  let nvel: float[] = [];
+  let npar: float[] = [];
+  for (let i = 0; i < len(params); i = i + 1) {
+    let nv: float = mu * vel[i] - lr * grad[i];
+    nvel = push(nvel, nv);
+    npar = push(npar, params[i] + nv);
+  }
+  let out: float[][] = [];
+  out = push(out, npar);
+  out = push(out, nvel);
+  return out;
+}
+
+// Adam 状态初始化（一阶矩 m=0、二阶矩 v=0），返回 [m, v]。
+export func adam_init(n: int): float[][] {
+  let out: float[][] = [];
+  out = push(out, zero_flt(n));
+  out = push(out, zero_flt(n));
+  return out;
+}
+
+// Adam 一步（t 从 1 起算）。返回 [new_params, new_m, new_v]。
+// 偏差修正：mhat = m/(1-b1^t)、vhat = v/(1-b2^t)。
+export func adam_step(params: float[], grad: float[], state: float[][], t: int, lr: float, b1: float, b2: float, eps: float): float[][] {
+  let m: float[] = state[0];
+  let v: float[] = state[1];
+  let nm: float[] = [];
+  let nv: float[] = [];
+  let npar: float[] = [];
+  for (let i = 0; i < len(params); i = i + 1) {
+    let g: float = grad[i];
+    let mi: float = b1 * m[i] + (1.0 - b1) * g;
+    let vi: float = b2 * v[i] + (1.0 - b2) * g * g;
+    nm = push(nm, mi);
+    nv = push(nv, vi);
+    let mhat: float = mi / (1.0 - pow(b1, t * 1.0));
+    let vhat: float = vi / (1.0 - pow(b2, t * 1.0));
+    npar = push(npar, params[i] - lr * mhat / (sqrt(vhat) + eps));
+  }
+  let out: float[][] = [];
+  out = push(out, npar);
+  out = push(out, nm);
+  out = push(out, nv);
+  return out;
+}
+
+// ---------- 词嵌入（查表 + 反向梯度）----------
+// 查表：E 为 vocab×dim，返回 E[idx]（值语义，返回该行副本）。
+export func embedding_lookup(E: float[][], idx: int): float[] {
+  return E[idx];
+}
+
+// 嵌入反向：返回 vocab×dim 零矩阵，仅第 idx 行置为 g（稀疏梯度）。
+// 训练时对整表扁平化后，仅该行的梯度被优化器采用。
+export func embedding_grad(E: float[][], idx: int, g: float[]): float[][] {
+  let out: float[][] = zero_mat(len(E), len(E[0]));
+  return set_m(out, idx, g);
+}
+
+// ---------- softmax 交叉熵（数值稳定 + 反向）----------
+// 损失：对 logits 做稳定 softmax 后取 -log(p[label])（p 夹逼到 [1e-12,1]）。
+export func softmax_cross_entropy_loss(logits: float[], label: int): float {
+  let p: float[] = softmax(logits);
+  let pc: float = p[label];
+  if (pc < 1e-12) { pc = 1e-12; }
+  if (pc > 1.0 - 1e-12) { pc = 1.0 - 1e-12; }
+  return -log(pc);
+}
+
+// 反向：对 logits 的梯度 = softmax(logits) - onehot(label)（经典合并梯度）。
+export func softmax_cross_entropy_grad(logits: float[], label: int): float[] {
+  let p: float[] = softmax(logits);
+  let out: float[] = [];
+  for (let i = 0; i < len(p); i = i + 1) {
+    if (i == label) { out = push(out, p[i] - 1.0); }
+    else { out = push(out, p[i]); }
+  }
+  return out;
 }
 
 

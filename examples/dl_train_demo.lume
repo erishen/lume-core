@@ -1,0 +1,125 @@
+// dl_train_demo.lume —— 纯 .lume 训练循环 demo：用 Adam 训练 softmax 回归。
+// 证明「训练能在 .lume 里落地」（零 C 改动，三后端一致；rand_float 为内建，确定性）。
+// 跑法：bin/lume-core examples/dl_train_demo.lume
+import "../lib/ml.lume" as ml;
+
+// 合成 3 类数据（2D，明显可分）：类 0 左下、类 1 右上、类 2 中上。
+let X: float[][] = [
+  [0.0, 0.0], [0.1, 0.2], [0.2, 0.0], [0.0, 0.3],
+  [5.0, 5.0], [5.1, 4.9], [4.9, 5.1], [5.2, 5.0],
+  [2.0, 6.0], [2.1, 6.1], [1.9, 5.9], [2.2, 6.2]
+];
+let y: int[] = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2];
+
+let C: int = 3;
+let d: int = 2;
+let n: int = len(X);
+
+// 确定性伪随机（复用 rand_float 内建，跨后端一致；1000003 为质数混匀下标）。
+func demo_rand(i: int, seed: int): float {
+  return rand_float(i * 1000003 + seed);
+}
+
+// 本地值语义列表帮助函数（ml.lume 内部的 zero_flt/set_flt 为私有，这里自备）。
+func vzero(nn: int): float[] {
+  let out: float[] = [];
+  for (let k = 0; k < nn; k = k + 1) { out = push(out, 0.0); }
+  return out;
+}
+func vset(v: float[], i: int, x: float): float[] {
+  let out: float[] = [];
+  for (let j = 0; j < len(v); j = j + 1) {
+    if (j == i) { out = push(out, x); } else { out = push(out, v[j]); }
+  }
+  return out;
+}
+
+// 扁平参数布局：W[c][j] = p[c*d + j]；b[c] = p[C*d + c]。
+func init_params(cc: int, dd: int, seed: int): float[] {
+  let p: float[] = [];
+  for (let ic = 0; ic < cc; ic = ic + 1) {
+    for (let ij = 0; ij < dd; ij = ij + 1) {
+      p = push(p, 0.4 * (demo_rand(ic * 131 + ij, seed) - 0.5));
+    }
+  }
+  for (let cb = 0; cb < cc; cb = cb + 1) {
+    p = push(p, 0.0);
+  }
+  return p;
+}
+
+func forward_logits(p: float[], x: float[], cc: int, dd: int): float[] {
+  let out: float[] = [];
+  for (let c = 0; c < cc; c = c + 1) {
+    let s: float = p[cc * dd + c];
+    for (let j = 0; j < dd; j = j + 1) {
+      s = s + p[c * dd + j] * x[j];
+    }
+    out = push(out, s);
+  }
+  return out;
+}
+
+// 全批量 softmax 交叉熵梯度（已合并：dlogits = softmax - onehot），按 1/n 平均。
+func grad_of(p: float[], XX: float[][], yy: int[], cc: int, dd: int, nn: int): float[] {
+  let g: float[] = vzero(cc * dd + cc);
+  for (let bi = 0; bi < nn; bi = bi + 1) {
+    let logits: float[] = forward_logits(p, XX[bi], cc, dd);
+    let probs: float[] = ml.softmax(logits);
+    for (let c = 0; c < cc; c = c + 1) {
+      let dl: float = probs[c];
+      if (c == yy[bi]) { dl = dl - 1.0; }
+      for (let j = 0; j < dd; j = j + 1) {
+        g = vset(g, c * dd + j, g[c * dd + j] + dl * XX[bi][j] / (nn * 1.0));
+      }
+      g = vset(g, cc * dd + c, g[cc * dd + c] + dl / (nn * 1.0));
+    }
+  }
+  return g;
+}
+
+func loss_of(p: float[], XX: float[][], yy: int[], cc: int, dd: int, nn: int): float {
+  let s: float = 0.0;
+  for (let li = 0; li < nn; li = li + 1) {
+    // softmax_cross_entropy_loss 内部已做 softmax，这里传原始 logits（勿重复 softmax）。
+    let logits: float[] = forward_logits(p, XX[li], cc, dd);
+    s = s + ml.softmax_cross_entropy_loss(logits, yy[li]);
+  }
+  return s / (nn * 1.0);
+}
+
+func argmax_idx(v: float[]): int {
+  let bi: int = 0;
+  let bv: float = v[0];
+  for (let ai = 1; ai < len(v); ai = ai + 1) {
+    if (v[ai] > bv) { bv = v[ai]; bi = ai; }
+  }
+  return bi;
+}
+
+func demo(): int {
+  let P: float[] = init_params(C, d, 7);
+  let state: float[][] = ml.adam_init(C * d + C);
+  let t: int = 1;
+  print("init loss:");
+  print(loss_of(P, X, y, C, d, n));
+  for (let e = 0; e < 2000; e = e + 1) {
+    let g: float[] = grad_of(P, X, y, C, d, n);
+    let stepped: float[][] = ml.adam_step(P, g, state, t, 0.5, 0.9, 0.999, 1e-8);
+    P = stepped[0];
+    state = [stepped[1], stepped[2]];
+    t = t + 1;
+  }
+  print("final loss:");
+  print(loss_of(P, X, y, C, d, n));
+  let correct: int = 0;
+  for (let ai2 = 0; ai2 < n; ai2 = ai2 + 1) {
+    let pred: int = argmax_idx(forward_logits(P, X[ai2], C, d));
+    if (pred == y[ai2]) { correct = correct + 1; }
+  }
+  print("accuracy:");
+  print(correct * 1.0 / (n * 1.0));
+  return 0;
+}
+
+demo();

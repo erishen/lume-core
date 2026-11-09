@@ -182,7 +182,7 @@ print(sci.SCI_VERSION);                   // 0.7.0
 | `complex.lume` | v0.1.0 | 复数四则、模/辐角、指数/对数/幂/三角（`[Re, Im]` 表示） | `complex_backends.sh` |
 | `sig.lume` | 0.1.0 | 卷积、FIR、滑动平均、DFT / IDFT、基 2 FFT（`dft`/`idft` 复用 `complex.cmul`） | `sig_backends.sh` |
 | `graph.lume` | 0.1.0 | BFS / DFS、最短路、最小生成树 | `graph_backends.sh` |
-| `ml.lume` | v0.3.0 | AI / 机器学习：向量化激活（sigmoid/tanh/gelu/swish/leaky_relu/softplus）、损失（mse/mae/bce/cce）、正规方程线性回归与岭回归、PCA（基于 `linalg.mat_svd`）、单头 / 多头注意力、表格 Q-learning、GMM-EM；**深度学习构件**：L1/L2 范数、层归一化、批归一化（训练/推理）、Dropout、Conv1d/Conv2d、RNN/GRU 单元及序列前向；以及 kNN / k-means / 逻辑回归 / 感知机 / 朴素贝叶斯 / MLP 反向传播 | `ml_backends.sh` |
+| `ml.lume` | v0.4.0 | AI / 机器学习：向量化激活（sigmoid/tanh/gelu/swish/leaky_relu/softplus）、损失（mse/mae/bce/cce）、正规方程线性回归与岭回归、PCA（基于 `linalg.mat_svd`）、单头 / 多头注意力、表格 Q-learning、GMM-EM；**深度学习构件（v0.3.0）**：L1/L2 范数、层归一化、批归一化（训练/推理）、Dropout、Conv1d/Conv2d、RNN/GRU 单元及序列前向；**优化器与反向（v0.4.0）**：vanilla SGD / SGD+momentum / Adam、embedding 查表与稀疏梯度、softmax 交叉熵损失与梯度，并配 `examples/dl_train_demo.lume` 纯 .lume 训练循环；以及 kNN / k-means / 逻辑回归 / 感知机 / 朴素贝叶斯 / MLP 反向传播 | `ml_backends.sh` |
 
 > `approval.lume` / `domains.lume` / `identity.lume` / `peer.lume` 是宿主
 > 业务侧库，不属于科学计算算法层，故不列。

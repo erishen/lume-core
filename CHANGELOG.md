@@ -125,6 +125,20 @@ without libLLVM), so parity is verified as `interp/text identical`.
   activations). These compose with the existing `dense` / `relu_vec` /
   `softmax` layers to build feed-forward, convolutional and recurrent nets
   entirely in `.lume`. Again verified as `interp/text identical`.
+- **Optimisers and backprop — `lib/ml.lume` (v0.4.0).** Closes the loop that
+  the v0.3.0 building blocks opened: a pure-`.lume` training cycle now lands
+  end-to-end. Adds three optimisers over flat `float[]` parameters with their
+  state packed into `float[][]` — `sgd_step` (vanilla SGD), `sgd_momentum_init`
+  / `sgd_momentum_step` (SGD with momentum, returns `[params, velocity]`), and
+  `adam_init` / `adam_step` (Adam with bias correction, returns
+  `[params, m, v]`). Plus the backprop primitives `embedding_lookup` /
+  `embedding_grad` (sparse row-gradient into a `vocab×dim` table) and
+  `softmax_cross_entropy_loss` / `softmax_cross_entropy_grad` (the merged
+  `softmax − onehot` gradient, numerically-stable). `ML_VERSION` bumps to
+  `0.4.0`. The new `examples/dl_train_demo.lume` trains a softmax-regression
+  classifier with Adam on a synthetic 3-class problem (loss `1.13 → 1.2e-05`,
+  accuracy `1.0`), proving training runs natively in `.lume`. All new routines
+  are deterministic and pass the harness as `interp/text identical`.
 
 ### Changed
 

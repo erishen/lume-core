@@ -175,4 +175,36 @@ let gbr: float[] = [0.0, 0.0];
 let gbh: float[] = [0.0, 0.0];
 print(ml.gru_forward(rnnXs, [0.0, 0.0], gWz, gWr, gWhh, gUz, gUr, gUhh, gbz, gbr, gbh));
 
+// =====================================================================
+// 优化器与反向（v0.4.0, 2026-11-09）三后端一致性
+// =====================================================================
+print(ml.ML_VERSION);
+
+// ---- vanilla SGD ----
+print(ml.sgd_step([1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 0.5));     // [0.95, 1.9, 2.85]
+
+// ---- SGD + momentum（两步累积速度）----
+let v4Vel: float[] = ml.sgd_momentum_init(2);
+let v4S1: float[][] = ml.sgd_momentum_step([0.0, 0.0], [1.0, 1.0], v4Vel, 0.1, 0.9);
+print(v4S1[0]);                                                // [-0.1, -0.1]
+let v4S2: float[][] = ml.sgd_momentum_step(v4S1[0], [1.0, 1.0], v4S1[1], 0.1, 0.9);
+print(v4S2[0]);                                                // [-0.29, -0.29]
+
+// ---- Adam（两步，常量负梯度 → 参数单调下降）----
+let v4AState: float[][] = ml.adam_init(2);
+let v4A1: float[][] = ml.adam_step([1.0, 2.0], [-1.0, -1.0], v4AState, 1, 0.1, 0.9, 0.999, 1e-8);
+print(v4A1[0]);                                                // 一步后
+let v4A2: float[][] = ml.adam_step(v4A1[0], [-1.0, -1.0], [v4A1[1], v4A1[2]], 2, 0.1, 0.9, 0.999, 1e-8);
+print(v4A2[0]);                                                // 两步后
+
+// ---- 词嵌入（查表 + 反向稀疏梯度）----
+print(ml.embedding_lookup([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], 1));   // [3, 4]
+print(ml.embedding_grad([[1.0, 2.0], [3.0, 4.0]], 1, [0.5, 0.5]));     // [[0,0],[0.5,0.5]]
+
+// ---- softmax 交叉熵（损失 + 反向梯度）----
+print(ml.softmax_cross_entropy_loss([0.0, 0.0, 0.0], 2));      // 1.0986123
+print(ml.softmax_cross_entropy_loss([2.0, 1.0, 0.1], 0));      // ~0.417
+print(ml.softmax_cross_entropy_grad([0.0, 0.0, 0.0], 1));      // [0.333,-0.667,0.333]
+print(ml.softmax_cross_entropy_grad([2.0, 1.0, 0.1], 0));      // softmax - onehot(0)
+
 
