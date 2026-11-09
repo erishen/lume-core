@@ -1740,6 +1740,15 @@ Ground truth (verified in `src/`, not from README memory):
 | **MCP streamableHttp client** | long-lived SSE client | ❌ same |
 | **crash-restart launcher** | `spawn bash` + exit handler | ❌ no process management |
 
+**Status of this snapshot (updated 2026-11-09).** The table is kept as
+filed on 2026-11-04, not rewritten: the `sh -c` row is now closed by
+P14's `spawn`, and the MCP streamableHttp client row is closed by P17's
+`http_stream_*` (an inbound SSE client). The **SSE streaming a running
+job** row is still open — P17 *receives* a stream, but nothing in core
+*emits* a long-lived streamed response yet; the crash-restart launcher
+also remains out of scope. Recorded here so the ❌ column is not read as
+current ground truth.
+
 So: migrate routing / SQLite / tool defs / summaries to `.lume` now; keep only
 the three "hands" — **spawn a child, stream its output while it runs, hold a
 long-lived MCP stream** — either in `agent-httpd` or a tiny Node shim. Two core
@@ -1750,9 +1759,18 @@ builtins close that gap without pulling the whole runtime in.
       `{pid, stdout_fd, stderr_fd}` with `proc_read` / `proc_wait` /
       `proc_kill` siblings. **Landed 2026-11-08: step 1 (the gate + the
       interpreter leg) and step 2 (root resolution, filtered `env`,
-      generation-tagged handles).** Still open: the two native emitters
-      (blocked on a security decision, see below), host integration and
-      streaming.
+      generation-tagged handles).**
+      **Status corrected 2026-11-09:** the old "Still open: the two native
+      emitters, host integration and streaming" list is superseded.
+      Decision (a) below closed the emitter question **permanently**
+      (interpreter-only, enforced by `tests/spawn-native-gate.sh`; P17
+      has its own `stream-native-gate.sh`), host integration is closed as
+      a permanent core-only boundary in the host `TODO.md` P14 mirror,
+      and `649f2df` landed streaming `proc_read` (a live child is tailed,
+      not collected at exit). No builtin is missing. This item stays
+      unchecked only because **Done when** below still asks for the
+      `resolve-lume` sidecar to serve the same `/api/jobs` contract from
+      a `.lume` executor — integration work, a separate project.
 - [x] **Gate first, spawn second** (2026-11-08). Opt-IN `--spawn` /
       `LUME_SPAWN=1` **plus** a mandatory comma-separated
       `LUME_SPAWN_ALLOW`; enabling spawn with an empty allowlist permits
@@ -1902,19 +1920,28 @@ builtins close that gap without pulling the whole runtime in.
       by its own stdio (e.g. a Python script that never `flush()`es) will not
       stream until it flushes or exits. That is correct Unix tailer semantics,
       not a lume bug — callers must flush.
-- [ ] **`http_stream(url, {…})` / inbound SSE client — DEFERRED (separate
-      project).** The other half of the original item: `builtins_http.c`'s
-      `http_get/post` collect the whole body before returning, so the executor
-      cannot *receive* a response that streams (MCP `streamableHttp` SSE
-      client rides on this). This is a genuinely separate surface: it needs
-      either a new HTTP builtin with its own native-emitter registration — and
-      therefore a fresh pass through the P14 emitter security decision, because
-      decision (a) closed spawn's emitters but did not authorise a new
-      http_stream primitive — or an interpreter-only variant consistent with
-      the no-async-runtime constraint. It is NOT delivered by the `proc_read`
-      work above and is intentionally left for its own turn. Until then the
-      executor keeps using `http_get` (collect) for responses and `spawn` +
-      `proc_read` for the job it launches.
+- [x] **`http_stream(url, {…})` / inbound SSE client — LANDED 2026-11-08
+      as P17 (`f101133`).** Original 2026-11-04 assessment (kept as the
+      reasoning record): `builtins_http.c`'s `http_get/post` collect the
+      whole body before returning, so the executor cannot *receive* a
+      response that streams (MCP `streamableHttp` SSE client rides on
+      this). The estimate was that a new HTTP builtin would need either
+      its own native-emitter registration — and therefore a fresh pass
+      through the P14 emitter security decision — or an interpreter-only
+      variant consistent with the no-async-runtime constraint, and that
+      it was a separate project from the `proc_read` work above.
+      **Landed:** `http_stream_open` / `http_stream_read` /
+      `http_stream_close`, an interpreter-only SSE client with a
+      generation-tagged slot table and an incremental line parser
+      (`src/builtins_http.c`, +402 lines), reusing `url_parse`, the
+      `host_blocked` SSRF gate, `open_conn` (proxy + TLS), `read_head`
+      and `vm->no_net`. The emitter question was settled the same way as
+      P14 — no `BUILTINS[]` registration, enforced by
+      `tests/stream-native-gate.sh`. `http_stream_read` returns one
+      parsed event per call; v1 does not auto-reconnect, handing back the
+      last event id instead. See **P17** below. **Remaining:** the
+      cross-platform verification named there — Linux `gcc:13-bookworm`
+      (dash `/bin/sh`) and the Windows `LUME_HAS_HTTP=0` lane.
 ### 2026-11-08 — step 1 LANDED: the gate and the interpreter leg
 
 **API deviation, deliberate.** The original spec above says `spawn()` returns
@@ -2004,8 +2031,10 @@ Host side (lume): the transitional classification is gone —
 `builtins_spawn.c` is a permanent `CORE_ONLY_NAMES` entry, the four spawn
 names in `tests/builtin-parity.allow` are marked PERMANENT, and `TODO.md`
 gained a P14 mirror section recording why the accepted `lang/PIN.lag`
-deltas are deliberately not hand-merged. Streaming remains the only open
-P14 engineering item below.
+deltas are deliberately not hand-merged. **Update 2026-11-09:** the
+"Streaming remains the only open P14 engineering item below" note was
+superseded by `649f2df` (2026-11-08), which landed streaming `proc_read`.
+What remains is sidecar integration, not a missing core engineering item.
 
 **Done when:** a resolve-lume sidecar whose logic is `.lume` (routes, SQLite,
 tool defs, summaries) and whose only non-core surface is `spawn` + streaming,
@@ -2013,9 +2042,13 @@ serves the same `/api/jobs` contract the current Node sidecar does — and the
 pure `lume-core` binary remains no-spawn by default. This is the path to
 "replace the Node sidecar"; it is **not** "add a shell keyword".
 
-Note for sizing: `spawn` + gating is ~1 project (two weeks), streaming is ~1
-project; together they remove the last Node dependency on the executor path.
-Until they land, the C-A design's Node shim (sidecar `sh -c` / `make`) stays.
+Note for sizing (as filed 2026-11-04): `spawn` + gating is ~1 project (two
+weeks), streaming is ~1 project; together they remove the last Node
+dependency on the executor path. **Update 2026-11-09:** both landed on
+2026-11-08 (`843194b`..`458feef` for spawn, `649f2df` for streaming
+`proc_read`, `f101133` for P17's inbound SSE client). What still keeps the
+Node shim in play is the sidecar integration in **Done when** above, not
+an unimplemented builtin.
 
 ## P15 — `builtins_http.c`: `phost` use-after-scope fixed (2026-11-08)
 
@@ -2177,3 +2210,49 @@ KB GET is `200` with `W/"3201b-..."`; replaying its ETag returns `304` with
 `size_download=0`; the same holds for `If-Modified-Since`; `curl -I` returns
 `200` with the matching `Content-Length` and no body. The energy app itself
 was not redeployed in this pass.
+
+## P17 — interpreter-only inbound SSE client `http_stream_*` (landed 2026-11-08)
+
+Recorded here 2026-11-09: the feature shipped as `f101133` on 2026-11-08
+but existed only in that commit message and the host's P17 mirror section
+(`lume/TODO.md`). This `TODO.md` had no P17 section at all and still
+showed the P14 `http_stream` checkbox as DEFERRED; both are corrected
+above and below.
+
+**What landed.** `http_stream_open` / `http_stream_read` /
+`http_stream_close` in `src/builtins_http.c` (+402 lines, 700 across the
+commit): a fixed, generation-tagged slot handle table, an incremental SSE
+line parser, and reuse of the bare-socket HTTP/1.1 transport (`url_parse`,
+the `host_blocked` SSRF gate, `open_conn` proxy + TLS, `read_head`) with
+the shared `vm->no_net` gate. Registrations are interpreter-only
+(`interp.c` / `typecheck.c` / `builtins.c` / `builtins_internal.h` /
+`builtins.h`); neither `codegen_call.c` nor
+`llvm_codegen_internal.h`'s `BUILTINS[]` sees the names, enforced by
+`make check` -> `tests/stream-native-gate.sh`. `http_stream_read` returns
+one parsed event `{ok, event, data, id, eof, err}` per call; v1 does not
+auto-reconnect — the last event id is handed back so a script can do it.
+`tests/http-stream-smoke.lume`, `tests/http_stream_srv.py`,
+`tests/stream-native-denied.lume` and `tests/stream-native-gate.sh` ship
+with it. `2317de2` folded `http-stream-test` into `make test` as a
+POSIX-only leg (same shape as `spawn-test`), and `5b15f16` gated the
+`[dbg] tls handshake failed` stderr print behind `NDEBUG`.
+
+**Why interpreter-only.** P14's decision (a) closed spawn's emitters but
+did not authorise a *new* network primitive, and a compiled binary has no
+VM to carry `vm->no_net`. The host repo therefore treats `http_stream_*`
+as a permanent core-only boundary (`lume/TODO.md` P17 mirror) and marks
+the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
+`lang/PIN.lag` deltas are deliberately retained, not a pending merge.
+
+**Still open:**
+
+- [ ] Cross-platform verification: Linux `gcc:13-bookworm` (dash as
+      `/bin/sh`) and the Windows `LUME_HAS_HTTP=0` lane. The POSIX-only
+      test leg covers neither by itself; the same item is recorded in the
+      host's P17 mirror section.
+
+**Known limits, deliberately not scheduled:** v1 has no auto-reconnect;
+P17 is an inbound SSE *client* and does not emit long-lived streamed
+responses (P14's "SSE streaming a running job" row stays open); the host
+will not merge the registration chain without an equivalent fail-closed
+gate of its own.
