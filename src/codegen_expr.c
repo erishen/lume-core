@@ -1036,7 +1036,13 @@ static Val cg_index(CG *g, Node *n)
              ix_is_str ? "i64" : ishape, ix_is_str ? "0" : ix.v,
              ix_is_str ? ix.v : "null");
 
-    Val r = rt_call(g, rty, fn, "%s", args);
+    /* lume_index_int returns int64_t (declared i64) — the interpreter's bool
+     * representation — so a bool element must be called as i64 and narrowed
+     * to the i1 a bool value carries (the same lowering the acc_b accessor
+     * uses). Spelling the call i1 against the i64 declaration is exactly the
+     * clang rejection this file's map-put siblings hit. */
+    Val r = rt_call(g, rty->kind == TY_BOOL ? type_prim(TY_INT) : rty,
+                    fn, "%s", args);
     free(ix.v); free(obj.v);
     if (!r.v) ERRV(g, "line %zu: index read failed", n->line);
 
@@ -1062,6 +1068,12 @@ static Val cg_index(CG *g, Node *n)
      * try'd result and the wrapper builds { ok: null, err: msg }. */
     EMIT(g, "  br label %%L%d\n", lok);
     EMIT(g, "L%d:\n", lok);
+    if (rty->kind == TY_BOOL) {
+        char *bv = emit_instrf(g, rty, "trunc i64 %s to i1", r.v);
+        free(r.v);
+        if (!bv) ERRV(g, "line %zu: index read failed", n->line);
+        return val_take(rty, bv);
+    }
     return r;
 }
 
