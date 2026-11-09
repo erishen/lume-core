@@ -135,7 +135,10 @@ Val emit_struct_to_map(CG *g, const char *sv, Type *st)
             Val inner = emit_struct_to_map(g, pa, fty);
             free(pa);
             if (!inner.v) { free(key); free(m.v); return inner; }
-            Val r = rt_call(g, type_anon_struct(), "lume_map_put_obj",
+            /* lume_map_put_obj returns int64_t (declared i64), so the call's
+             * return type must be TY_INT — not the value's i8* struct pointer,
+             * which would clash with the module-level `declare i64`. */
+            Val r = rt_call(g, type_prim(TY_INT), "lume_map_put_obj",
                             "i8* %s, i8* %s, i8* %s", m.v, key, inner.v);
             free(inner.v); free(key);
             if (!r.v) { free(m.v); return r; }
@@ -169,7 +172,11 @@ Val emit_struct_to_map(CG *g, const char *sv, Type *st)
 
         char farg[128];
         snprintf(farg, sizeof farg, "%s %s", t, fv);
-        Val r = rt_call(g, type_anon_struct(), fn,
+        /* Every lume_map_put_* helper returns int64_t (declared i64 at the
+         * top of the IR), so the call's return type is TY_INT regardless of
+         * the field type. Using the field/value type here (e.g. i8* for a
+         * string) makes clang reject the call against the i64 declaration. */
+        Val r = rt_call(g, type_prim(TY_INT), fn,
                         "i8* %s, i8* %s, %s", m.v, key, farg);
         free(fv); free(key);
         if (!r.v) { free(m.v); return r; }
