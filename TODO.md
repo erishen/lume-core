@@ -1821,6 +1821,25 @@ builtins close that gap without pulling the whole runtime in.
       unchecked only because **Done when** below still asks for the
       `resolve-lume` sidecar to serve the same `/api/jobs` contract from
       a `.lume` executor — integration work, a separate project.
+
+      **Verified 2026-11-09 against the remote project (read-only):** the
+      `Done when` condition is still unmet. `erishen/resolve-lume@e90b5dc`
+      (main, 2026-11-05) keeps the whole gateway in `sidecar/*.js`:
+      `server.js` answers `GET /api/jobs` and `POST /api/jobs` and calls
+      `server.listen`, while `store.js` persists jobs through
+      `node:sqlite`'s `DatabaseSync` (WAL). Its own README lists the
+      sidecar as a **Node** host-resident process on 127.0.0.1:3000 and
+      credits `/api/jobs` persistence to `node:sqlite`; the
+      "zero-Node-runtime-dependency" claim covers the backend/frontend
+      containers, not that host sidecar. The three `.lume` files are
+      `lume-tools/tools.lume` (five demo MCP tools), the generated
+      `lume-tools/sidecar_ro.lume` (stdio MCP bridge onto the Node
+      sidecar's 42 tools) and `peer_node.lume` (an A2A static peer) —
+      none of them owns routes, SQLite, tool defs or summaries. So the
+      remaining work is a rewrite/integration in that external repo,
+      not a missing core builtin: gated `spawn`, streaming `proc_read`
+      and P17's inbound SSE client are all shipped here. Keep this box
+      unchecked until a `.lume` executor actually serves `/api/jobs`.
 - [x] **Gate first, spawn second** (2026-11-08). Opt-IN `--spawn` /
       `LUME_SPAWN=1` **plus** a mandatory comma-separated
       `LUME_SPAWN_ALLOW`; enabling spawn with an empty allowlist permits
@@ -2307,13 +2326,15 @@ the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
       → `make test` → `==> http_stream 流式单测通过 (stream + locked)`;
       `test (macos-latest)` green too. `2317de2` is what folded
       `http-stream-test` into `make test` (POSIX-only).
-- **Coverage note, not a correctness gap:** the literal
-      `gcc:13-bookworm` container named in the original note has no
-      `container:` lane in `ci.yml`, and this machine has no docker (WSL
-      launch is blocked by the local security policy). P14's `649f2df`
-      did verify spawn streaming on that image by hand; P17 is covered by
-      Ubuntu/dash + macOS instead. Adding a dedicated runner lane is
-      optional.
+- **Coverage note closed 2026-11-09:** the literal `gcc:13-bookworm`
+      container named in the original note now has its own `bookworm:`
+      job in `ci.yml`, running `make check` + `make test` under gcc 13
+      and dash `/bin/sh`. It used to be hand-verification only — P14's
+      `649f2df` checked spawn streaming on that image — with no docker
+      on this machine (WSL launch blocked by the local security policy),
+      so it was recorded as coverage, not a correctness gap. Adding the
+      lane was optional; it is now done, and Ubuntu/dash, macOS and the
+      container leg all exercise P17's stream tests.
 
 **Found during the Windows lane (new item):**
 
