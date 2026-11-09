@@ -1511,6 +1511,33 @@ static void seed_verb_groups(VM *vm) {
 #define LUME_HAS_SPAWN 1
 #endif
 
+/* The two switches above are LINK-level opt-outs, not "hide the name"
+ * switches: a downstream that reuses this file but supplies its own
+ * builtins.c must not need any HTTP or spawn wrapper symbol. typecheck.c
+ * nevertheless registers those names unconditionally, so dropping them
+ * from the runtime table left --check green while the interpreter answered
+ * `undefined variable` (Windows/mingw lane, filed 2026-11-09). Keep the
+ * names seeded against a stub defined RIGHT HERE: no external symbol, so
+ * downstream linking is unchanged, and the caller gets the same clear
+ * message builtins.c's native implementations use. Those implementations
+ * only exist to keep the always-compiled wrappers linkable; in an opted-out
+ * build the wrappers are unreferenced. No capability is granted by a name
+ * whose only behaviour is to raise an error. */
+#if !LUME_HAS_HTTP
+static Value b_http_unavailable(VM *vm, int argc, Value *args) {
+    (void)argc; (void)args;
+    vm_set_error(vm, "http_* unavailable: this build was compiled without LUME_HAS_HTTP");
+    return val_null();
+}
+#endif
+#if !LUME_HAS_SPAWN
+static Value b_spawn_unavailable(VM *vm, int argc, Value *args) {
+    (void)argc; (void)args;
+    vm_set_error(vm, "spawn_* unavailable: this build has no POSIX process support");
+    return val_null();
+}
+#endif
+
 void bridge_seed_builtins(VM *vm) {
     struct { const char *name; NativeFn fn; } built[] = {
         {"run", b_run},
@@ -1605,6 +1632,16 @@ void bridge_seed_builtins(VM *vm) {
         {"http_stream_open", b_http_stream_open},
         {"http_stream_read", b_http_stream_read},
         {"http_stream_close", b_http_stream_close},
+#else
+        /* Names stay type-checkable and diagnosable; see the stub above. */
+        {"http_get", b_http_unavailable},
+        {"http_post", b_http_unavailable},
+        {"http_put", b_http_unavailable},
+        {"http_patch", b_http_unavailable},
+        {"http_delete", b_http_unavailable},
+        {"http_stream_open", b_http_unavailable},
+        {"http_stream_read", b_http_unavailable},
+        {"http_stream_close", b_http_unavailable},
 #endif
         /* P14 子进程 (builtins_spawn.c): 默认全禁, --spawn + LUME_SPAWN_ALLOW
          * 双闸; argv 直接 execvp, 不过 shell, 不暴露裸 fd。 */
@@ -1613,6 +1650,11 @@ void bridge_seed_builtins(VM *vm) {
         {"proc_read", b_proc_read},
         {"proc_wait", b_proc_wait},
         {"proc_kill", b_proc_kill},
+#else
+        {"spawn", b_spawn_unavailable},
+        {"proc_read", b_spawn_unavailable},
+        {"proc_wait", b_spawn_unavailable},
+        {"proc_kill", b_spawn_unavailable},
 #endif
         /* 数值内建 (2026-09-28, builtins_math.c) */
         {"abs", b_abs},

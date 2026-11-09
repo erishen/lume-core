@@ -2267,7 +2267,7 @@ the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
 
 **Found during the Windows lane (new item):**
 
-- [ ] `LUME_HAS_HTTP=0` builds answer `undefined variable
+- [x] `LUME_HAS_HTTP=0` builds answer `undefined variable
       'http_stream_open'` at runtime instead of the clear
       `http_* unavailable: this build was compiled without LUME_HAS_HTTP`
       error that `src/builtins.c`'s `native_http_unavailable` stubs
@@ -2280,11 +2280,56 @@ the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
       `lume: line 1: undefined variable 'http_stream_open'`. The older
       `http_get` / `http_post` / ... are affected the same way, so this
       is a pre-existing diagnostic gap, not a P17 regression and not a
-      security issue. Fix = register the `b_http_*` wrappers in the
-      `#else` branch of `interp.c` so calls route to the stubs, plus a
-      Windows-lane regression assertion. **Sync impact:** `interp.c` is
-      `host_owned`, so the host needs a hand-merge / `accept-lag` (and a
-      `PIN.lag` refresh) afterwards.
+      security issue. The original note proposed registering the
+      `b_http_*` wrappers in the `#else` branch — **that proposal was
+      rejected**, see the correction below. **Sync impact:** `interp.c`
+      is `host_owned`, so the host owes a hand-merge / `accept-lag` and a
+      `PIN.lag` refresh.
+
+**Fixed 2026-11-09 (and correction to the proposed fix):** the
+`#if LUME_HAS_HTTP` / `#if LUME_HAS_SPAWN` gates in `src/interp.c` are
+**link-level opt-outs**, not "hide the name" switches. `bfe1f6d`
+(2026-10-04) added them so a downstream that reuses `interp.c` but
+supplies its own `builtins.c` never needs an undefined `b_http_get`
+symbol; registering `b_http_*` under `#else` would break exactly that
+guarantee. `de5c012` (2026-10-06) added the Windows stubs two days later
+and their comment promised a clear runtime failure that the older gate
+made unreachable — the two halves never agreed. The fix keeps the gates
+intact and adds a **self-contained diagnostic stub defined inside
+`interp.c`** (`b_http_unavailable` / `b_spawn_unavailable`), seeding all
+eight HTTP names and all four spawn names in the `#else` branches with
+the same messages the `builtins.c` stubs carry. No external `b_*`
+symbol is referenced, so downstream linking is unchanged and the host's
+`lang/interp.c` can still eventually leave `host_owned`. A name whose
+only behaviour is `vm_set_error` grants no capability; the P14 double
+gate and the P17 interpreter-only emitter boundary are untouched. The
+`LUME_HAS_SPAWN=0` Windows lane had the identical defect and was fixed
+in the same change. `src/builtins.c` comments were corrected to say the
+native stubs exist purely to close the link for the always-compiled
+wrappers.
+
+Regression: `tests/unavailable-builtins-gate.sh`, wired into `make check`
+as `unavailable-builtins-gate` on the Windows lane only (POSIX has
+`LUME_HAS_HTTP=1` / `LUME_HAS_SPAWN=1`). It asserts `--check` still
+accepts each name, that running it fails with the clear "unavailable"
+message, and that `undefined variable` never comes back. Verified on
+MinGW gcc 14.2: `make -j4 check`, `make native-consistency`,
+`make native-text` and `make native` are green; `http_stream_open`,
+`http_get` and `spawn` now report `http_* unavailable: ...` /
+`spawn_* unavailable: ...`.
+
+Host sync landed in the same change: `lume/lang/interp.c` hand-merged
+with the five outbound verbs (no spawn — the host never adopted P14 —
+and no `http_stream_*` — the permanent core-only boundary),
+`lume/lang/builtins.c` comment corrected, `tests/http-unavailable-gate.sh`
+added to the host's Windows `make check` (it also asserts
+`http_stream_open` stays absent), and `lang/PIN.lag` refreshed with
+`sync-lang.py accept-lag`. That `accept-lag` also absorbed the
+pre-existing `builtins_http.c` +4 drift from `5b15f16` (the host copy
+deliberately omits the `[dbg]` TLS print), which had been making
+`make check-sync` red before this change. `make check-sync` and
+`make check-parity` are green again. `lang/PIN`'s sha stays folded:
+no synced file changed.
 
 **Known limits, deliberately not scheduled:** v1 has no auto-reconnect;
 P17 is an inbound SSE *client* and does not emit long-lived streamed

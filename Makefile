@@ -389,10 +389,18 @@ CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-t
 else
 CHECK_UNIT_TESTS := crypt-test crypto-test ed25519-test builtins-test vm-reuse-test fsroot-test
 endif
+# Opted-out builtins only have a diagnostic to assert on the Windows lane:
+# POSIX builds compile builtins_http.c / builtins_spawn.c and seed the real
+# implementations, while Windows forces LUME_HAS_HTTP=0 / LUME_HAS_SPAWN=0.
+ifeq ($(IS_WINDOWS),1)
+UNAVAILABLE_GATE := unavailable-builtins-gate
+else
+UNAVAILABLE_GATE :=
+endif
 # P14 emitter gate is part of the fast leg on every lane (ci.yml / release.yml
 # / windows.yml all run `make check`). It is command-only and needs no binary
 # beyond `all`, so it cannot be skipped by a stale target file.
-check: all $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate
+check: all $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate $(UNAVAILABLE_GATE)
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -1097,7 +1105,7 @@ endif
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
          treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
-         fsroot-test spawn-test spawn-native-gate stream-native-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
+         fsroot-test spawn-test spawn-native-gate stream-native-gate unavailable-builtins-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test case-parity docroot-test enum-test eq2-test \
          http-noproxy-test interp2-test letexpr-test lint localfn-test map-index-test match2-test out \
@@ -1188,6 +1196,13 @@ spawn-native-gate: all
 # and tests/stream-native-gate.sh.
 stream-native-gate: all
 	@sh tests/stream-native-gate.sh
+
+# Windows lane regression (2026-11-09): when LUME_HAS_HTTP / LUME_HAS_SPAWN
+# are off, the names must still be seeded and fail with the clear "unavailable"
+# error instead of `undefined variable`. See TODO.md P17 and
+# tests/unavailable-builtins-gate.sh.
+unavailable-builtins-gate: all
+	@sh tests/unavailable-builtins-gate.sh
 
 spawn-test: all
 	@ROOTS="/bin:/usr/bin"; ABS="/bin"; \

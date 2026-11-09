@@ -579,10 +579,12 @@ Value b_http_stream_read(VM *vm, int argc, Value *args)  { return vm_native(vm, 
 Value b_http_stream_close(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_http_stream_close); }
 
 /* When the build opts out of HTTP (LUME_HAS_HTTP=0 — the Windows/mingw port
- * excludes src/builtins_http.c), the five native_http_* symbols still have to
- * exist so the always-compiled b_http_* wrappers above link. They resolve at
- * type-check time (LUME_BUILTIN_NAMES carries the names) but fail clearly at
- * runtime instead of crashing on a missing symbol. */
+ * excludes src/builtins_http.c), the native_http_* symbols still have to
+ * exist so the always-compiled b_http_* wrappers above link. Those wrappers
+ * are unreferenced in that build: interp.c seeds the same names against its
+ * own diagnostic stub (no external wrapper symbol needed), which is what
+ * produces the clear runtime error. These implementations exist purely to
+ * keep the link closed. */
 #if !LUME_HAS_HTTP
 static void native_http_unavailable(VM *vm, int argc, Value *args, Value *out) {
     (void)argc; (void)args; (void)out;
@@ -630,8 +632,9 @@ Value b_proc_kill(VM *vm, int argc, Value *args) { return vm_native(vm, argc, ar
  * inside a block comment: the star-slash closes it early). builtins_spawn.c
  * is POSIX-only and filtered out of the Windows build, but the
  * always-compiled b_spawn wrappers above still need their native symbols.
- * They stay registered and type-checkable; calling one fails loudly instead
- * of failing to link. */
+ * interp.c keeps the names registered and type-checkable through its own
+ * diagnostic stub and raises the clear runtime error; these implementations
+ * only close the link. */
 #ifndef LUME_HAS_SPAWN
 #define LUME_HAS_SPAWN 1
 #endif
