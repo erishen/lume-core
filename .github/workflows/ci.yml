@@ -80,21 +80,27 @@ jobs:
   # is blocked by local security policy. Make it a real CI leg instead:
   # gcc 13 + dash /bin/sh is a different toolchain from ubuntu-latest, and
   # `make test` is where the POSIX-only http_stream legs actually run.
-  # The container runs as root (no sudo). All four packages are things the
-  # ubuntu-latest runner already has: python3 for make test's lib-compat leg,
-  # and clang because the IR-text backend (src/backend_llvm.c) assembles its
-  # .ll with clang — plain gcc cannot parse LLVM IR, so `enum-test`'s
-  # --compile-text leg fails on the first run without it.
+  # The container runs as root (no sudo). python3 is for make test's
+  # lib-compat leg; clang is mandatory because the IR-text backend
+  # (src/backend_llvm.c) assembles its .ll with clang — gcc cannot parse
+  # LLVM IR and enum-test's --compile-text leg dies without it.
+  #
+  # Deliberately NO libLLVM here (HAVE_LLVM=0): bookworm ships LLVM 14, and
+  # --compile-llvm segfaults against that C API while ubuntu-latest's LLVM
+  # 18 is green. The libLLVM emitter is covered there; this lane's job is
+  # gcc 13 + dash /bin/sh, where the POSIX-only spawn/stream tests live.
+  # All *_backends.sh and native-llvm already degrade to interp/text when
+  # --compile-llvm is unavailable, so make test stays meaningful.
   bookworm:
     runs-on: ubuntu-latest
     container: gcc:13-bookworm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
-      - name: container deps (libcrypt / libLLVM / libsqlite3 / clang / python3)
-        run: apt-get update && apt-get install -y libcrypt-dev llvm-dev libsqlite3-dev clang python3
-      - run: make check
-      - run: make test
+      - name: container deps (libcrypt / libsqlite3 / clang / python3)
+        run: apt-get update && apt-get install -y libcrypt-dev libsqlite3-dev clang python3
+      - run: make HAVE_LLVM=0 check
+      - run: make HAVE_LLVM=0 test
 
   # Leak detection only works here: LSan is unavailable on macOS (ASan says
   # "detect_leaks is not supported on this platform"), so this is the only

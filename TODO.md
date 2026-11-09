@@ -2334,7 +2334,15 @@ the three names PERMANENT in `tests/builtin-parity.allow`; the accepted
       on this machine (WSL launch blocked by the local security policy),
       so it was recorded as coverage, not a correctness gap. Adding the
       lane was optional; it is now done, and Ubuntu/dash, macOS and the
-      container leg all exercise P17's stream tests.
+      container leg all exercise P17's stream tests. Two image-specific
+      dependencies surfaced while bringing it up: `--compile-text` needs
+      clang (gcc cannot assemble LLVM IR), and bookworm's LLVM 14 C API
+      segfaults in `--compile-llvm` while ubuntu-latest's LLVM 18 is
+      green. The lane therefore builds `HAVE_LLVM=0` and leaves the
+      libLLVM emitter to the Ubuntu job; every `*_backends.sh` and
+      `native-llvm` already degrades to interp/text when
+      `--compile-llvm` is unavailable. That is a toolchain-version
+      finding, not a hole in the gcc 13 / dash coverage this lane adds.
 
 **Found during the Windows lane (new item):**
 
