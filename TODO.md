@@ -2500,3 +2500,139 @@ serve-loop wiring), `src/builtins_http.c` (the three natives), `src/builtins.c`
 + `src/builtins_internal.h` (wrappers + native declarations + `!HTTP` stubs),
 `src/interp.c` (dispatch + `!HTTP` stub), `src/typecheck.c` (names + arity),
 `Makefile`, and the four test files.
+
+## P19 — 2026-11-09 fastapi-web re-review: PII at rest + evaluation erratum
+
+Filed 2026-11-09 after a second look at
+`personal/web-services/fastapi-web`, this time against the **11-09
+compliance hardening** (field-level PII encryption, mandatory consent,
+retention cleanup, fail-closed error bodies), not the 10-30 baseline
+that P13 scoped. Two corrections to the verbal comparison given that
+day, then the one genuinely new language gap. Cross-refs: agent-httpd
+`TODO.md` P3, lume host `TODO.md` P13 addendum. **Do not re-file P13's
+"Deliberately not filed" list** (no ORM / migrations / OpenAPI / Redis /
+middleware) — those remain intentional trades for the zero-dependency
+property.
+
+### Erratum — the stack is not SQLite-only and does have password auth
+
+The 11-09 verbal evaluation claimed "only SQLite", "no password hashing
+/ JWT" and "no concurrency". All three were wrong for the lume stack as
+a whole (they described `bridge_serve.c` or core's builtin table in
+isolation, not the deployed shape):
+
+- agent-httpd `src/agent/db_layer.c:355` is a real libmysqlclient
+  prepared-statement backend with a cap-8 pool; `WITH_PG=1` adds libpq;
+  the `ubuntu-db` CI leg smoke-runs both against real DSNs (agent-httpd
+  `TODO.md` P2, "MySQL/PG backends ... invisible to CI", closed
+  2026-11-04).
+- `src/security/auth.c` + `src/security/bcrypt.c` provide htpasswd +
+  bcrypt + session cookies; core P13 landed `crypt_verify` and
+  `const_time_eq` on 2026-11-04. Auth is **session-cookie based, not
+  JWT** — a different design, not a missing capability.
+- `src/bridge_serve.c` is the single-threaded *standalone harness*
+  (`tests/http_smoke.lume`, port 8891). Production front ends use
+  agent-httpd's multi-worker pool. Keep the two separate in future
+  comparisons.
+
+- [x] Add a short capability matrix to `docs/` (or `README.md`) covering
+      DB backends / auth / concurrency / builtins. Done-when: the next
+      "can lume replace FastAPI" review answers those three from one
+      lookup instead of re-deriving them from `interp.c`, and
+      `bridge_serve` is explicitly labelled the standalone harness.
+      **Done 2026-11-09**: `docs/CAPABILITIES.md` — stack-wide matrix
+      (language / agent-httpd / host), opens with the
+      "`bridge_serve` is a harness" warning, and closes with P13's
+      "Deliberately not filed" list so the next review cannot re-file it.
+
+### PII at rest — no symmetric encrypt/decrypt builtin (the real new gap)
+
+11-09 fastapi-web added `app/crypto_pii.py`: booking `name`/`phone` are
+Fernet-encrypted from a `SECRET_KEY`-derived key before insert and
+decrypted at the response boundary, with legacy plaintext rows left
+readable. Core has `sha256`, `hmac_sha256`, `base64_*`, `ed25519_*`
+(sign/verify) and `crypt_verify` (one-way verify) — but **no
+encrypt/decrypt pair**, so a DSL handler cannot round-trip a stored PII
+field. ed25519 is a signature scheme and is not a substitute; an
+HMAC is not reversible either.
+
+- [x] Decide the policy **before** writing code and record the verdict
+      here: (a) add an AEAD builtin pair keyed from an env secret, or
+      (b) declare PII-at-rest out of scope for pure-lume services and
+      make the data store / an external KMS own it. Option (b) keeps the
+      zero-dependency property; option (a) needs P13's five coordinated
+      edits (`typecheck.c`, `interp.c`, `builtins.c`,
+      `builtins_internal.h` + arity contract), a `native-consistency`
+      case, and a host `make sync-lang`. Do not ship an unverified
+      home-grown cipher or a raw AES-CBC wrapper without a MAC.
+      **Verdict 2026-11-09 — conditional (b), adopted from
+      `docs/PII_AT_REST.md`.** Three clauses, also written into host
+      `SECURITY.md` ("Encryption at rest and personal data"):
+        1. Pure `lume-core` / `bridge_serve` services backed by the
+           built-in SQLite **must not collect PII**. No field-level
+           primitive exists and neither tree has transparent SQLite
+           encryption; a copied `.db` is plaintext.
+        2. PII-at-rest is the **storage layer's responsibility** and
+           counts as covered only for agent-httpd + remote MySQL/PG with
+           operator-enabled TDE **and** log / backup / replica hygiene
+           (TDE protects data files only).
+        3. If field-level protection is ever required, prefer (c)
+           framework-layer encryption over (a) a new language builtin.
+      (a) and (c) remain open as future options, not closed work; the
+      two corrigenda below still apply to (a)'s cost estimate.
+
+**Research 2026-11-09** → `docs/PII_AT_REST.md` (full evidence, cost model,
+and option (c)). Verdict recorded in the box above; this section stays as
+the evidence trail. Two corrigenda to the original wording:
+
+- "Five coordinated edits" is an undercount. Tracing `crypt_verify` (the
+  2026-11-04 crypt builtin) shows **10 source files / 11+ registration
+  points**: `typecheck.c` (names + arity, 2), `interp.c`, `builtins.h`,
+  `builtins_crypt.c`, `rt.c`, `codegen_scan.c`, `codegen_call.c` (declare
+  + emit, 2), `llvm_cg_scan.inc`, `llvm_cg_call.inc`. A host
+  `make sync-lang` is necessary but **not sufficient**:
+  `scripts/sync-lang.py:97-133` marks `interp.c` / `typecheck.c` /
+  `builtins.h` / `builtins_internal.h` as HOST_PINNED, so the registration
+  must be hand-merged into `lang/` and the drift accepted via `PIN.lag`.
+- (b) is not uniformly free. MySQL/PG can use TDE, but the pure-lume path
+  is SQLite and neither tree carries sqlcipher / SEE / `SQLITE_HAS_CODEC`
+  (verified); only whole-volume encryption applies, and a copied `.db` is
+  plaintext. (b) therefore covers **only** agent-httpd + a remote DB with
+  an operator-side TDE + log-hygiene assertion. It leaves a policy vacuum
+  in `SECURITY.md` (38 lines, no encryption-at-rest statement at all).
+
+What makes (a) cheaper than it looks: `read_urandom()`
+(`builtins_crypt.c:254`) already provides a fail-loud cross-platform
+CSPRNG, `env()` masking (`builtins_fs.c:95-120`) already provides the
+"key read in C, never exposed to the DSL" pattern, and vendored SHA-256 +
+`base64_*` cover KDF and token packaging. If (a) is chosen, the research
+doc recommends ChaCha20-Poly1305 (RFC 8439 vectors), a key-id in the token
+(fixing `crypto_pii.py`'s rotation hole), and an HMAC blind index only if
+SQL ever filters on a PII column (fastapi-web does not — `anti_spam.py:25`
+de-duplicates in-process).
+
+The research doc recommends **conditional (b) as the stated policy**, and
+**(c) framework-layer field encryption** (`db_query_json` / `db_write_exec`
+in agent-httpd, `db_layer.c:710`/`:749`, exposed as an MCP tool) ahead of
+(a) if a pure-lume PII port is ever required. (c) keeps field granularity
+without the 11-point builtin surface, but does not cover `bridge_serve`.
+
+- [ ] **Deferred by the 2026-11-09 verdict.** If (a) is ever selected:
+      pin the backward-compat rule as a test — decrypting a legacy
+      plaintext row returns that row unchanged, never a 500 and never
+      an empty field (this is exactly the fastapi-web behaviour).
+- [ ] Retention cleanup needs a scheduler primitive `bridge_serve` does
+      not have (single-threaded, no timer). Use agent-httpd's
+      `session_prune_thread` (`src/core/framework.c:389`, created at
+      `:627`) as the pattern, or external cron + a one-shot CLI. Do not
+      add a background writer to the standalone serve loop. Cross-ref:
+      agent-httpd `TODO.md` P3.
+
+### Known trap carried over from the 11-09 fastapi-web bug
+
+A Chinese-language privacy notice placed in a response **header** made
+Starlette raise `UnicodeEncodeError` *after* the row had been committed
+— "data saved but 500". HTTP field values are byte strings. Human
+readable notices belong in the response **body**; headers carry ASCII
+machine-readable markers only. See agent-httpd P3 for the verbatim
+`extra_headers` path.
