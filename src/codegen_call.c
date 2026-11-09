@@ -1009,10 +1009,13 @@ static Val emit_get_call(CG *g, Node *mnode, Node *knode, Node *dnode,
         darg = dflt;
         free(d.v);
     } else if (rty->kind == TY_STRING || rty->kind == TY_NULL ||
+               rty->kind == TY_ANY ||
                rty->kind == TY_LIST || rty->kind == TY_STRUCT ||
                rty->kind == TY_RESULT) {
         /* The pointer-returning getters take an i8* default; i64 0 would
-         * not verify. */
+         * not verify. TY_ANY is the two-argument get() on an unknown-shape
+         * map: lume_map_get_slot (declared (i8*, i8*, i8*)) boxes the
+         * answer, so its absent-key default is i8* null too. */
         darg = "i8* null";
     } else if (rty->kind == TY_FLOAT) {
         darg = "double 0.0";
