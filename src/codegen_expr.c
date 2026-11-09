@@ -948,18 +948,22 @@ static Val cg_index(CG *g, Node *n)
         snprintf(jtst, sizeof jtst, "%%t%d", g->tid++);
         int lbad = g->lid++, lok = g->lid++;
         EMIT(g, "  %s = alloca i8*\n", jslot);
-        EMIT(g, "  store i8* %s, i8* %s\n", r.v, jslot);
+        /* %js is an i8** (alloca of i8*): the store's destination and the
+         * load's operand must spell i8**. Typed-pointer clang (bookworm's
+         * LLVM 14) rejects i8* there even though opaque-pointer clang
+         * folds both to ptr and would let it slide. */
+        EMIT(g, "  store i8* %s, i8** %s\n", r.v, jslot);
         EMIT(g, "  %s = icmp eq i8* %s, null\n", jtst, r.v);
         free(r.v);
         EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", jtst, lbad, lok);
         EMIT(g, "L%d:\n", lbad);
-        EMIT(g, "  store i8* null, i8* %s\n", jslot);
+        EMIT(g, "  store i8* null, i8** %s\n", jslot);
         char *what = cg_string_val(g, "index read failed", 17);
         EMIT(g, "  call void @lume_index_error(i8* %s)\n", what);
         free(what);
         EMIT(g, "  br label %%L%d\n", lok);
         EMIT(g, "L%d:\n", lok);
-        char *jv = emit_instrf(g, any_type(), "load i8*, i8* %s", jslot);
+        char *jv = emit_instrf(g, any_type(), "load i8*, i8** %s", jslot);
         if (!jv) ERRV(g, "line %zu: index read failed to lower", n->line);
         return val_take(any_type(), jv);
     }

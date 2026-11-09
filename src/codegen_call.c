@@ -2634,18 +2634,22 @@ static Val cg_builtin(CG *g, Node *n)
                     snprintf(jtst, sizeof jtst, "%%t%d", g->tid++);
                     int jler = g->lid++, jlok = g->lid++, jle = g->lid++;
                     EMIT(g, "  %s = alloca i8*\n", jslot);
-                    EMIT(g, "  store i8* %s, i8* %s\n", tmp2, jslot);
+                    /* %js is an i8** (alloca of i8*): stores/load must spell
+                     * the pointer-to-pointer level. Typed-pointer clang
+                     * (bookworm's LLVM 14) rejects the i8* spelling even
+                     * though opaque-pointer clang folds both to ptr. */
+                    EMIT(g, "  store i8* %s, i8** %s\n", tmp2, jslot);
                     EMIT(g, "  %s = icmp eq i8* %s, null\n", jtst, tmp2);
                     EMIT(g, "  br i1 %s, label %%L%d, label %%L%d\n", jtst, jler, jlok);
                     EMIT(g, "L%d:\n", jler);
-                    EMIT(g, "  store i8* null, i8* %s\n", jslot);
+                    EMIT(g, "  store i8* null, i8** %s\n", jslot);
                     EMIT(g, "  call void @lume_error_set(i8* %s)\n", ep);
                     EMIT(g, "  br label %%L%d\n", jle);
                     EMIT(g, "L%d:\n", jlok);
                     EMIT(g, "  br label %%L%d\n", jle);
                     EMIT(g, "L%d:\n", jle);
                     char *jv = emit_instrf(g, type_prim(TY_ANY),
-                                           "load i8*, i8* %s", jslot);
+                                           "load i8*, i8** %s", jslot);
                     if (!jv) { free(a.v);
                                ERRV(g, "line %zu: json() failed to lower", n->line); }
                     free(a.v);
