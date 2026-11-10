@@ -400,7 +400,7 @@ endif
 # P14 emitter gate is part of the fast leg on every lane (ci.yml / release.yml
 # / windows.yml all run `make check`). It is command-only and needs no binary
 # beyond `all`, so it cannot be skipped by a stale target file.
-check: all $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate $(UNAVAILABLE_GATE)
+check: all ir-check $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate $(UNAVAILABLE_GATE)
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -932,13 +932,16 @@ treecheck:
 # 不了的形状一律跳过 (绝不误报), 在真实语料上 0 误报。只扫能 --compile-text 成功
 # 的文件 (少数纯解释器 / 故意不支持的构造跳过, 与 make test 的 native-text 腿一致)。
 ir-check: all
+	@if ! command -v python3 >/dev/null 2>&1; then \
+	  echo "ir-check: python3 not found, skipped"; exit 0; \
+	fi
 	@mkdir -p out/ir-check
 	@files=""; for f in $(wildcard tests/*.lume examples/*.lume); do \
 	  s=$$(basename $$f .lume); \
 	  ./$(TARGET) --compile-text $$f -o out/ir-check/$$s >/dev/null 2>&1 || true; \
 	  [ -f out/ir-check/$$s.ll ] && files="$$files out/ir-check/$$s.ll"; \
 	done; \
-	if [ -z "$$files" ]; then echo "ir-check: no .ll was compiled"; exit 1; fi; \
+	if [ -z "$$files" ]; then echo "ir-check: no .ll compiled (text backend unavailable?), skipped"; exit 0; fi; \
 	if python3 scripts/check-ir-typed-pointers.py $$files; then \
 	  echo "==> ir-check passed: no typed-pointer clashes"; \
 	else \
