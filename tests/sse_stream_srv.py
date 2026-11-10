@@ -72,11 +72,15 @@ def main():
         return 1
     header_end = header_buf.index(b"\r\n\r\n")
     head = header_buf[:header_end].decode("utf-8", "replace")
-    body = header_buf[header_end + 4:]
+    # body 来自 bytes 缓冲区, 这里统一解码成 str, 后续按 "\n\n" 切分事件 /
+    # 拼接新 chunk 才不会因为 bytes/str 混用抛 TypeError。
+    body = header_buf[header_end + 4:].decode("utf-8", "replace")
 
     # --- 断言 SSE 头 ---
     first_line = head.split("\r\n", 1)[0]
-    check("sse: HTTP status is 200", first_line.strip().endswith("200"))
+    status_parts = first_line.split()
+    status_code = status_parts[1] if len(status_parts) >= 2 else ""
+    check("sse: HTTP status is 200", status_code == "200")
     check("sse: Content-Type is text/event-stream",
           "text/event-stream" in head.lower())
 
