@@ -1,0 +1,41 @@
+// lume —— P18 服务端 SSE 主动推送流式回归（tests/sse-stream.lume）
+//
+// 用法（make sse-stream-test 会先起本服务，再用 sse_stream_srv.py 当客户端）：
+//   ./bin/lume-core tests/sse-stream.lume
+//
+// 定义一个 GET /progress 路由，handler 在运行中通过 sse_open()/sse_send()/
+// sse_close() 把进度事件增量推给客户端——事件在 handler 还在执行时就逐条
+// 发出（不是先算完再一次性返回 { sse: [...] } 的批量模式）。客户端（python）
+// 断言：
+//   1) 收到 200 + Content-Type: text/event-stream 的 SSE 头；
+//   2) 依次收到 step 0..4 共 5 个事件，顺序与内容正确；
+//   3) 最后一个事件后连接被服务端关闭（EOF）。
+//
+// 注意：本文件末尾显式 run() 启动 accept 循环（server{} 只登记配置，不自动
+// 服务）。make sse-stream-test 靠 wait_port.py 等端口就绪后再让客户端连接。
+// 端口固定 18907（与 http-stream-test 18895 等错开，便于 make -j 并行）。
+
+let port = 18907;
+server {
+  host = "127.0.0.1";
+  port = port;
+}
+
+get "/progress", (req) => {
+  let r = sse_open();
+  if (get(r, "ok", false) == false) {
+    // 客户端没声明接受 text/event-stream：退回普通 JSON，不要发流。
+    return { error: get(r, "err", "") };
+  }
+  let n = 5;
+  let i = 0;
+  while (i < n) {
+    sse_send({ step: i, total: n });
+    i = i + 1;
+  }
+  sse_close();
+  return { ok: true };
+};
+
+print("sse-stream-ready");
+run();

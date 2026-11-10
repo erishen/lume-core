@@ -76,8 +76,10 @@ static void mcp_write(long long id, const char *result_json,
     fflush(stdout);
 }
 
-/* Serialise a lume value to JSON text (append into b). */
-static void value_to_json(VM *vm, sbuf *b, Value v) {
+/* Serialise a lume value to JSON text (append into b). Renamed from the
+ * shared value_to_json (now external, defined in bridge_serve.c) to avoid a
+ * static/non-static collision after that symbol was promoted for sse_send. */
+static void mcp_value_to_json(VM *vm, sbuf *b, Value v) {
     json_append_value(vm, b, v);
 }
 
@@ -253,7 +255,7 @@ static void mcp_tools_call(VM *vm, long long id, Obj *params) {
             json_esc(&b, obj_string(AS_OBJ(result)));
         } else {
             sbuf rj = {0};
-            value_to_json(vm, &rj, result);
+            mcp_value_to_json(vm, &rj, result);
             json_esc(&b, rj.p ? rj.p : "null");
             free(rj.p);
         }

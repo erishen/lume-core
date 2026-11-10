@@ -521,6 +521,44 @@ struct VM {
      * after startup cannot walk the resolved executable out of the roots. */
     const char *spawn_root;
 
+    /* P18 server-side SSE push. When a route handler wants to stream events
+     * to the client *while it is still running* (instead of computing every
+     * event up front and returning { sse: [...] } for the batch path), it
+     * calls sse_open()/sse_send()/sse_close() from builtins_http.c. Those
+     * builtins reach into the live connection through these fields, which the
+     * serve loop seeds per request.
+     *
+     *   sse_fd       — the client socket for the current request, or -1 when
+     *                  no request is in flight / incremental SSE is inactive.
+     *                  Stored as intptr_t so it can hold either a POSIX `int`
+     *                  fd or a Windows `SOCKET` without a cast soup.
+     *   sse_accept   — true iff the client's request carried
+     *                  `Accept: text/event-stream`. Seeded before the handler
+     *                  runs so sse_open() can decide whether to really stream
+     *                  or hand back an error handle (the script then falls
+     *                  back to returning a plain map / { sse: [...] }).
+     *   sse_open     — true after sse_open() has sent the SSE header and we
+     *                  are mid-stream; sse_send() is a no-op until this is set.
+     *   sse_broken   — set when a sock_send() returns < 0 (client vanished);
+     *                  further sse_send() calls become no-ops and the builtin
+     *                  reports the failure so the script can bail out.
+     *   sse_streamed — true once we have sent *any* incremental event for this
+     *                  request. The serve loop reads this after the handler
+     *                  returns to know it must NOT also run the batch / normal
+     *                  serialize-and-close path (which would double-write and
+     *                  double-close). Reset to false by the loop each request.
+     *                  Unlike sse_open, it is NOT cleared by sse_close().
+     *
+     * Note: Set-Cookie (session) is computed *after* the handler returns, so
+     * incremental SSE headers cannot carry it — streaming handlers are
+     * expected to authenticate via the request map instead. This matches the
+     * existing batch { sse: [...] } path, which also omits the cookie. */
+    intptr_t sse_fd;
+    bool sse_accept;
+    bool sse_open;
+    bool sse_broken;
+    bool sse_streamed;
+
     /* module system (loader.c). The registry is populated once, before
      * agenthttpd_run forks workers; modules and their top-level envs are
      * immutable afterwards. */
@@ -537,6 +575,12 @@ struct VM {
      * reachable only through this field once seeded by main(). */
     Obj *argv;
 };
+
+/* P18: interpreter-only value -> JSON serializer, defined in bridge_serve.c
+ * (mirrors the batch SSE path). Exposed here so builtins_http.c's sse_send
+ * can JSON-serialize non-string payloads consistently with the { sse: [...] }
+ * return convention. Must NOT be registered in any native backend. */
+void value_to_json(VM *vm, sbuf *b, Value v);
 
 /* ===================== modules / loader ===================== */
 

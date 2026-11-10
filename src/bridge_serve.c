@@ -210,7 +210,7 @@ static void json_escape(sbuf *b, const char *s, size_t n)
     sb_chr(b, '"');
 }
 
-static void value_to_json(VM *vm, sbuf *b, Value v)
+void value_to_json(VM *vm, sbuf *b, Value v)
 {
     switch (v.type) {
     case VAL_NULL: sb_str(b, "null"); break;
@@ -561,22 +561,59 @@ static void send_sse_head(SockFd fd, const char *set_cookie)
 /* 发一个 SSE 事件: "data: <json>\n\n"。json 里的换行必须已被序列化器转义
  * (
  变成两个字符), 否则一个事件会被拆成多行 —— 客户端解析出错。
- * 这里再做一次防御: 若真的含裸换行, 拆成多个 data: 行(RFC 允许)。 */
-static void send_sse_event(SockFd fd, const char *data, size_t len)
+ * 这里再做一次防御: 若真的含裸换行, 拆成多个 data: 行(RFC 允许)。
+ * 返回 0 表示全部 sock_send 成功; 任一段 < 0(连接断开)返回 -1, 供调用方
+ * 标记 sse_broken。 */
+static int send_sse_event(SockFd fd, const char *data, size_t len)
 {
     static const char prefix[] = "data: ";
     static const char nl = '\n';
     size_t start = 0;
+    int worst = 0;
     while (start <= len) {
         size_t end = start;
         while (end < len && data[end] != '\n') end++;
-        sock_send(fd, prefix, sizeof prefix - 1);
-        if (end > start) sock_send(fd, data + start, end - start);
-        sock_send(fd, &nl, 1);
-        sock_send(fd, &nl, 1);
+        if (sock_send(fd, prefix, sizeof prefix - 1) < 0) worst = -1;
+        if (end > start && sock_send(fd, data + start, end - start) < 0) worst = -1;
+        if (sock_send(fd, &nl, 1) < 0) worst = -1;
+        if (sock_send(fd, &nl, 1) < 0) worst = -1;
         if (end >= len) break;
         start = end + 1;
     }
+    return worst;
+}
+
+/* ---- P18: 导出给 builtins_http.c 的 SSE 助手 -------------------------
+ * 这些函数直接操作 vm 上的 per-request SSE 字段。serve 主循环在每个匹配的
+ * 请求调用 handler 之前会先种好 sse_fd / sse_accept 并清零其余标志; handler
+ * 运行中通过 sse_open/sse_send/sse_close 间接调用这里。 */
+
+int lume_serve_sse_head(VM *vm)
+{
+    /* 客户端没声明接受 text/event-stream 时绝不发头 —— 否则一个不期望流的
+     * 客户端会收到永远读不满的 body。调用方(builtin)会据此返回错误 handle。 */
+    if (vm->sse_fd < 0 || !vm->sse_accept) return -1;
+    send_sse_head((SockFd)vm->sse_fd, NULL);
+    vm->sse_open = true;
+    vm->sse_streamed = true;
+    return 0;
+}
+
+int lume_serve_sse_send(VM *vm, const char *data, size_t len)
+{
+    if (vm->sse_fd < 0 || !vm->sse_open || vm->sse_broken) return -1;
+    if (send_sse_event((SockFd)vm->sse_fd, data, len) < 0) {
+        vm->sse_broken = true;
+        return -1;
+    }
+    return 0;
+}
+
+void lume_serve_sse_close(VM *vm)
+{
+    /* 仅作逻辑关闭: 真正的 sock_close 由 serve 主循环在 handler 返回后统一
+     * 做一次, 避免 sse_close 先关、循环又关造成重复 close。 */
+    vm->sse_open = false;
 }
 
 /* case-insensitive substring search (Content-Length lookup) */
@@ -1259,12 +1296,43 @@ static void lume_http_serve_internal(const char *host, long port, int backlog, V
         req.label = match->label;
         Value reqv = make_req_map(vm, &req, route_params);
 
+        /* P18: 为每个匹配的请求种好 SSE 状态。sse_fd 指向当前客户端连接;
+         * sse_accept 标记客户端是否声明接受 text/event-stream(决定
+         * sse_open 能否真正发头); 其余标志清零。handler 通过
+         * sse_open/sse_send/sse_close 在这些字段上驱动增量推送。 */
+        {
+            int wants_sse = 0;
+            for (const char *p2 = req.accept; *p2; p2++) {
+                if (ci_find(p2, strlen(p2), "text/event-stream")) { wants_sse = 1; break; }
+            }
+            vm->sse_fd = (intptr_t)cfd;
+            vm->sse_accept = wants_sse ? true : false;
+            vm->sse_open = false;
+            vm->sse_broken = false;
+            vm->sse_streamed = false;
+        }
+
         vm->error = false;
         vm->error_msg[0] = '\0';
         vm_push(vm, match->handler);
         vm_push(vm, reqv);
         call_function(vm, match->handler, 1);
         Value res = vm_pop(vm);
+
+        /* P18: handler 若在运行中通过 sse_open()/sse_send() 把响应以增量方式
+         * 写给客户端, 连接就已按 200 + text/event-stream 提交, 无论是否报错
+         * 都不能再回头发 500 或普通序列化(会双重写 / 双重关)。直接收尾。 */
+        if (vm->sse_streamed) {
+            vm->error = false;
+            if (vm->sse_fd >= 0) sock_close(cfd);
+            vm->sse_fd = -1;
+            vm->sse_accept = false;
+            vm->sse_open = false;
+            vm->sse_broken = false;
+            vm->sse_streamed = false;
+            continue;
+        }
+
 
         if (vm->error) {
             send_resp(cfd, 500, "text/plain; charset=utf-8",
@@ -1297,11 +1365,9 @@ static void lume_http_serve_internal(const char *host, long port, int backlog, V
          * 声明接受 text/event-stream 时才流; 否则退回普通 JSON 一次性返回,
          * 让调用方至少拿到完整数据而不是半个流。
          */
-        int wants_sse = 0;
-        const char *acc = req.accept;
-        for (const char *p2 = acc; *p2; p2++) {
-            if (ci_find(p2, strlen(p2), "text/event-stream")) { wants_sse = 1; break; }
-        }
+        /* Accept 标志已在调用 handler 前种入 vm->sse_accept, 这里直接复用,
+         * 不再重复扫描请求头。 */
+        int wants_sse = vm->sse_accept ? 1 : 0;
         Value sse_items = val_null();
         int has_sse = 0;
         if (IS_OBJ(res) && AS_OBJ(res)->type == OBJ_MAP) {

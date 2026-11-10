@@ -36,6 +36,7 @@
  * http_get 仍可用,但对 https:// 直接报 "needs libssl",不静默降明文。 */
 
 #include "builtins_internal.h"
+#include "server.h"   /* P18: lume_serve_sse_head / _send / _close 声明 */
 #include <ctype.h>
 #include <fcntl.h>
 #include <netinet/tcp.h>
@@ -1300,6 +1301,78 @@ void native_http_stream_open(VM *vm, int argc, Value *args, Value *out) {
     g_stream[slot].gen = ++g_stream_gen;
     long long handle = (long long)(g_stream[slot].gen * LUME_STREAM_SLOTS + (unsigned)slot);
     *out = stream_open_result(vm, true, handle, status, "");
+}
+
+/* ---- P18: server-side SSE push --------------------------------------
+ * 与 http_stream_* 一样是 interpreter-only: 这些 builtin 直接驱动当前请求的
+ * 实时连接(bridge_serve.c 里的 vm->sse_fd), native 发射器不注册它们——编译
+ * 后的程序无法在一次调用之间保持连接打开。三个函数都返回
+ * { ok, status, err } 形状(map), 与 stream_open_result 对齐, 便于脚本判断
+ * 推送是否成功(客户端中途断开时 ok=false)。
+ *
+ * 典型用法:
+ *   get "/progress", (req) => {
+ *     let r = sse_open();
+ *     if (!r.ok) return { error: r.err };   // 客户端没要流, 退回普通响应
+ *     for (let i in 0..10) {
+ *       if (sse_send({ step: i }).ok) { sleep(0.1); } else { break; }
+ *     }
+ *     sse_close();
+ *   };
+ * 注意: 真正开始服务需在顶层显式 run()。 */
+
+void native_sse_open(VM *vm, int argc, Value *args, Value *out) {
+    (void)argc; (void)args;
+    /* 客户端没声明接受 text/event-stream: 不要发头(否则不期望流的客户端会
+     * 卡在永远读不满的 body)。把错误交给脚本, 让它自行退回普通返回。 */
+    if (!vm->sse_accept) {
+        *out = stream_open_result(vm, false, 0, 0,
+            "sse_open(): client did not request text/event-stream — "
+            "send `Accept: text/event-stream`, or fall back to returning a map");
+        return;
+    }
+    if (lume_serve_sse_head(vm) != 0) {
+        *out = stream_open_result(vm, false, 0, 0,
+            "sse_open(): failed to begin stream (connection gone)");
+        return;
+    }
+    *out = stream_open_result(vm, true, 0, 200, "");
+}
+
+void native_sse_send(VM *vm, int argc, Value *args, Value *out) {
+    if (argc < 1) {
+        *out = stream_open_result(vm, false, 0, 0, "sse_send(): data is required");
+        return;
+    }
+    const char *data;
+    size_t len;
+    sbuf jb = {0};
+    if (IS_OBJ(args[0]) && AS_OBJ(args[0])->type == OBJ_STRING) {
+        Obj *s = AS_OBJ(args[0]);
+        data = obj_string(s);
+        len = obj_string_len(s);
+    } else {
+        /* 非字符串: JSON 序列化(与批量 { sse: [...] } 路径一致)。 */
+        value_to_json(vm, &jb, args[0]);
+        data = jb.p ? jb.p : "null";
+        len  = jb.p ? jb.len : 4;
+    }
+    int rc = lume_serve_sse_send(vm, data, len);
+    free(jb.p);
+    if (rc != 0) {
+        *out = stream_open_result(vm, false, 0, 0,
+            "sse_send(): stream not open or connection lost");
+        return;
+    }
+    *out = stream_open_result(vm, true, 0, 0, "");
+}
+
+void native_sse_close(VM *vm, int argc, Value *args, Value *out) {
+    (void)argc; (void)args;
+    /* 仅逻辑关闭: 真正的 sock_close 由 serve 主循环在 handler 返回后统一做,
+     * 避免重复关闭。即使没调用 sse_close, 循环也会在 sse_streamed 分支收尾。 */
+    lume_serve_sse_close(vm);
+    *out = stream_open_result(vm, true, 0, 0, "");
 }
 
 void native_http_stream_read(VM *vm, int argc, Value *args, Value *out) {

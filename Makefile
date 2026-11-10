@@ -400,7 +400,7 @@ endif
 # P14 emitter gate is part of the fast leg on every lane (ci.yml / release.yml
 # / windows.yml all run `make check`). It is command-only and needs no binary
 # beyond `all`, so it cannot be skipped by a stale target file.
-check: all ir-check $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate $(UNAVAILABLE_GATE)
+check: all ir-check $(CHECK_UNIT_TESTS) spawn-native-gate stream-native-gate sse-native-gate $(UNAVAILABLE_GATE)
 	@for f in $(EXAMPLES); do ./$(TARGET) --check $$f || exit 1; done
 
 # 原生后端端到端: --compile 产出可执行, 跑一遍再和解释器口径下的期望比对。
@@ -768,6 +768,14 @@ else
 HTTP_STREAM_TEST := http-stream-test
 endif
 
+# P18 服务端 SSE 主动推送：与 HTTP_STREAM_TEST 同理，是 POSIX-only（python3
+# 客户端 + localhost server）。Windows 的 check/test lane 不应把它塞进去。
+ifeq ($(IS_WINDOWS),1)
+SSE_TEST :=
+else
+SSE_TEST := sse-stream-test
+endif
+
 # HTTP/TLS 在 Windows 强制关掉（LUME_HAS_HTTP=0, builtins_http.c 不编入,
 # 运行期 http_* 直接走 native_http_unavailable 桩）。任何依赖运行期 HTTP 的
 # 单测在 Windows 都该跳过——与 http-stream-test 同理, 否则 make test 在 Windows
@@ -779,7 +787,7 @@ HTTP_TESTS := http-noproxy-test docroot-test route-cap-test serve-sigpipe-gate s
 endif
 
 test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test multipart-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test map-index-test sql-test native-consistency case-parity for-in-gc-test \
-      native native-text treecheck sci-test $(SPAWN_TEST) $(HTTP_STREAM_TEST) lib-compat lib-backends $(HTTP_TESTS)
+      native native-text treecheck sci-test $(SPAWN_TEST) $(HTTP_STREAM_TEST) $(SSE_TEST) lib-compat lib-backends $(HTTP_TESTS)
 
 # P16.1 — lib/ 必须能被旧 lume 0.12.2 加载。静态腿用块级重复 let 分析
 # (CI 无 0.12 二进制时是唯一权威), 动态腿在本机找到「仍会拒绝重复
@@ -1231,6 +1239,14 @@ spawn-native-gate: all
 stream-native-gate: all
 	@sh tests/stream-native-gate.sh
 
+# P18 emitter gate: server-side SSE push (sse_open/sse_send/sse_close) stays
+# interpreter-only, exactly like spawn (P14) and the inbound http_stream_*
+# (P17). Asserts no SSE token exists in the emitters/rt.c, that --check still
+# knows the names, and that --compile-text rejects them with "call to unknown
+# function". See TODO.md P18 and tests/sse-native-gate.sh.
+sse-native-gate: all
+	@sh tests/sse-native-gate.sh
+
 # Windows lane regression (2026-11-09): when LUME_HAS_HTTP / LUME_HAS_SPAWN
 # are off, the names must still be seeded and fail with the clear "unavailable"
 # error instead of `undefined variable`. See TODO.md P17 and
@@ -1653,6 +1669,28 @@ http-stream-test: all
 	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-stream-locked.out; then \
 	   echo "==> http_stream locked tests failed (rc=$$rc)"; exit 1; fi; \
 	 echo "==> http_stream streaming tests passed (stream + locked)"
+
+# P18 server-side SSE push: 起一个 lume 本地 server（run() 阻塞在 accept 循环，
+# 路由 /progress 通过 sse_open/sse_send/sse_close 增量推送进度事件），再用
+# python 客户端（sse_stream_srv.py）断言事件按序到达、连接最后关闭。
+# POSIX-only：依赖 python3 客户端 + localhost server，与 http-stream-test 同理。
+sse-stream-test: all
+	@PORT=18907; \
+	 ./$(TARGET) tests/sse-stream.lume > /tmp/lume-sse-srv.log 2>&1 & \
+	 SRV=$$!; \
+	 if ! python3 tests/wait_port.py $$PORT 15; then \
+	   echo "==> SSE server not ready in 15s (port busy/python3 failure?)"; \
+	   cat /tmp/lume-sse-srv.log; \
+	   kill $$SRV 2>/dev/null; exit 1; fi; \
+	 python3 tests/sse_stream_srv.py $$PORT > /tmp/lume-sse-client.out 2>&1; \
+	 rc=$$?; \
+	 kill $$SRV 2>/dev/null; \
+	 cat /tmp/lume-sse-client.out; \
+	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-sse-client.out; then \
+	   echo "==> sse-stream tests failed (rc=$$rc)"; \
+	   echo "==> server log:"; cat /tmp/lume-sse-srv.log; \
+	   exit 1; fi; \
+	 echo "==> sse-stream tests passed"
 
 # map 下标标量读: 合规路径(get()/标注/可解析字面量)三后端一致; 未标注的
 # 「变量 map」标量读在原生后端给出准确、可操作的错误(不再是误导性的

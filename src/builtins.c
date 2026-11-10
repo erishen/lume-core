@@ -991,6 +991,10 @@ Value b_http_delete(VM *vm, int argc, Value *args) { return vm_native(vm, argc, 
 Value b_http_stream_open(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_http_stream_open); }
 Value b_http_stream_read(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_http_stream_read); }
 Value b_http_stream_close(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_http_stream_close); }
+/* P18 server-side SSE push: thin wrappers over builtins_http.c. */
+Value b_sse_open(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_sse_open); }
+Value b_sse_send(VM *vm, int argc, Value *args)  { return vm_native(vm, argc, args, native_sse_send); }
+Value b_sse_close(VM *vm, int argc, Value *args) { return vm_native(vm, argc, args, native_sse_close); }
 
 /* When the build opts out of HTTP (LUME_HAS_HTTP=0 — the Windows/mingw port
  * excludes src/builtins_http.c), the native_http_* symbols still have to
@@ -1012,6 +1016,9 @@ void native_http_delete(VM *vm, int argc, Value *args, Value *out) { native_http
 void native_http_stream_open(VM *vm, int argc, Value *args, Value *out)  { native_http_unavailable(vm, argc, args, out); }
 void native_http_stream_read(VM *vm, int argc, Value *args, Value *out)  { native_http_unavailable(vm, argc, args, out); }
 void native_http_stream_close(VM *vm, int argc, Value *args, Value *out) { native_http_unavailable(vm, argc, args, out); }
+void native_sse_open(VM *vm, int argc, Value *args, Value *out)  { native_http_unavailable(vm, argc, args, out); }
+void native_sse_send(VM *vm, int argc, Value *args, Value *out)  { native_http_unavailable(vm, argc, args, out); }
+void native_sse_close(VM *vm, int argc, Value *args, Value *out) { native_http_unavailable(vm, argc, args, out); }
 #endif
 
 /* Same pattern as the http_* stubs: when the build has no libsqlite3

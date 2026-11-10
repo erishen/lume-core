@@ -16,4 +16,25 @@ typedef struct VM VM;
 
 void lume_http_serve(const char *host, long port, int backlog, VM *vm);
 
+/* P18 server-side SSE push. The interpreter-only builtins sse_open() /
+ * sse_send() / sse_close() (builtins_http.c) drive a live response through
+ * these helpers, which read/write the per-request SSE fields on the VM
+ * (sse_fd / sse_accept / sse_open / sse_broken / sse_streamed). They are
+ * deliberately NOT registered in any native backend (codegen_call.c /
+ * llvm_codegen_internal.h / rt.c) — mirroring the interpreter-only
+ * http_stream_* gating: a compiled program cannot keep a connection open
+ * across builtin calls.
+ *
+ *   lume_serve_sse_head — send the SSE header. Returns 0 on success, -1 if
+ *                         the client did not request text/event-stream or the
+ *                         connection is gone. Sets sse_open + sse_streamed.
+ *   lume_serve_sse_send — send one `data: <payload>\n\n` event. Returns 0 on
+ *                         success, -1 if not open / broken / gone.
+ *   lume_serve_sse_close — logical close: stops further sends. The actual
+ *                         socket is closed once by the serve loop after the
+ *                         handler returns, so this must NOT close it. */
+int  lume_serve_sse_head(VM *vm);
+int  lume_serve_sse_send(VM *vm, const char *data, size_t len);
+void lume_serve_sse_close(VM *vm);
+
 #endif /* LUME_SERVER_H */

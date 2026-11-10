@@ -1786,18 +1786,18 @@ Ground truth (verified in `src/`, not from README memory):
 | 42 tool definitions | `builtin-tools.json` | ✅ `builtins_catalog.c` tool/skill registry |
 | business rules / summaries | JS pure logic | ✅ `.lume` |
 | **`sh -c` / `make` / `uv run python`** | `child_process.spawn` | ❌ no process builtin (searched `src/builtins*.c` + `interp.c`) |
-| **SSE streaming a running job** | long-lived streamed response | ❌ `builtins_http.c` collects the whole body synchronously |
+| **SSE streaming a running job** | long-lived streamed response | ✅ P18 server-side SSE push (`sse_open`/`sse_send`/`sse_close`, 2026-11-10) |
 | **MCP streamableHttp client** | long-lived SSE client | ❌ same |
 | **crash-restart launcher** | `spawn bash` + exit handler | ❌ no process management |
 
-**Status of this snapshot (updated 2026-11-09).** The table is kept as
+**Status of this snapshot (updated 2026-11-10).** The table is kept as
 filed on 2026-11-04, not rewritten: the `sh -c` row is now closed by
-P14's `spawn`, and the MCP streamableHttp client row is closed by P17's
-`http_stream_*` (an inbound SSE client). The **SSE streaming a running
-job** row is still open — P17 *receives* a stream, but nothing in core
-*emits* a long-lived streamed response yet; the crash-restart launcher
-also remains out of scope. Recorded here so the ❌ column is not read as
-current ground truth.
+P14's `spawn`, the MCP streamableHttp client row is closed by P17's
+`http_stream_*` (an inbound SSE client), and the **SSE streaming a running
+job** row is closed by P18's server-side SSE push
+(`sse_open`/`sse_send`/`sse_close`, 2026-11-10); the crash-restart
+launcher remains out of scope. Recorded here so the ❌ column is not read
+as current ground truth.
 
 So: migrate routing / SQLite / tool defs / summaries to `.lume` now; keep only
 the three "hands" — **spawn a child, stream its output while it runs, hold a
@@ -2436,8 +2436,67 @@ deliberately omits the `[dbg]` TLS print), which had been making
 `make check-parity` are green again. `lang/PIN`'s sha stays folded:
 no synced file changed.
 
-**Known limits, deliberately not scheduled:** v1 has no auto-reconnect;
-P17 is an inbound SSE *client* and does not emit long-lived streamed
-responses (P14's "SSE streaming a running job" row stays open); the host
-will not merge the registration chain without an equivalent fail-closed
-gate of its own.
+**Known limits, deliberately not scheduled:** v1 has no auto-reconnect
+(P17's inbound client and P18's server push both hand back the last id /
+let the script decide); P18's server-side SSE push closes P14's "SSE
+streaming a running job" row — a running handler now emits events
+incrementally via `sse_open`/`sse_send`/`sse_close`. The host will not
+merge the registration chain without an equivalent fail-closed gate of
+its own.
+
+## P18 — server-side SSE push `sse_open`/`sse_send`/`sse_close` (landed 2026-11-10)
+
+**Problem.** P14's gap table listed "SSE streaming a running job" as open:
+core could answer a request only by computing the whole body and returning
+it. The batch `{ sse: [...] }` path already existed, but it still collects
+every event first and *then* emits — a route handler could not *push* events
+while it was still executing. No progress stream, no "compute and stream".
+
+**Design.** Keep the interpreter-only gating that P14 (spawn) and P17
+(http_stream_*) established: `sse_open`/`sse_send`/`sse_close` are
+registered in `typecheck.c` + `interp.c`/`builtins.c` but are **not** in
+any native emitter (`codegen_call.c` / `llvm_codegen_internal.h` / `rt.c`),
+so `--compile-text` rejects them with "call to unknown function" — a
+compiled binary has no live request connection to push onto. Enforced by
+`tests/sse-native-gate.sh` (mirrors `stream-native-gate.sh`).
+
+Three builtins, each returning `{ ok, status, err }`:
+- `sse_open()` — sends the `200 / text/event-stream` header, but only if the
+  client's request carried `Accept: text/event-stream`; otherwise returns
+  `ok:false` and the script falls back to a plain return.
+- `sse_send(data)` — writes one `data: <json>\n\n` event (string sent raw,
+  any other value JSON-serialized via the shared `value_to_json`); returns
+  `ok:false` if the connection dropped so the script can bail out.
+- `sse_close()` — logical close (the actual `sock_close` is done once by the
+  serve loop after the handler returns, so it is never double-closed).
+
+**Plumbing.** `bridge_serve.c`'s accept loop seeds `vm->sse_fd` (the client
+socket, stored as `intptr_t`), `vm->sse_accept`, and clears `sse_open` /
+`sse_broken` / `sse_streamed` *before* invoking the handler. After the
+handler returns, if `sse_streamed` is set the loop short-circuits — it does
+not re-run the batch or the normal serialize-and-close path, which would
+double-write and double-close. `vm->sse_accept` is computed up front so
+`sse_open()` can decide whether to really stream.
+
+**Why interpreter-only is correct here.** A compiled program runs once and
+exits; it has no request connection to keep open across `sse_send` calls, so
+emitting these in a native backend would be an ungated streaming surface —
+the same rationale as P14 (a) and P17.
+
+**Tests.**
+- `tests/sse-native-denied.lume` + `tests/sse-native-gate.sh` — emitter gate
+  (positive control: `--check` knows the names; negative: `--compile-text`
+  refuses them).
+- `tests/sse-stream.lume` + `tests/sse_stream_srv.py` + the `sse-stream-test`
+  Makefile target — end-to-end: a `GET /progress` handler pushes 5 progress
+  events incrementally; a Python client asserts it receives `200 +
+  text/event-stream`, the 5 `data:` events in order, and a clean EOF close.
+  POSIX-only (needs `builtins_http.c` + a localhost server), wired into
+  `make test` and `make check` via `SSE_TEST` / `sse-native-gate`.
+
+**Files touched.** `src/lume.h` (VM SSE fields), `src/server.h` (helper
+declarations), `src/bridge_serve.c` (exported `lume_serve_sse_*` helpers +
+serve-loop wiring), `src/builtins_http.c` (the three natives), `src/builtins.c`
++ `src/builtins_internal.h` (wrappers + native declarations + `!HTTP` stubs),
+`src/interp.c` (dispatch + `!HTTP` stub), `src/typecheck.c` (names + arity),
+`Makefile`, and the four test files.

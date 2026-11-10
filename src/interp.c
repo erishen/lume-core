@@ -1529,6 +1529,11 @@ static Value b_http_unavailable(VM *vm, int argc, Value *args) {
     vm_set_error(vm, "http_* unavailable: this build was compiled without LUME_HAS_HTTP");
     return val_null();
 }
+static Value b_sse_unavailable(VM *vm, int argc, Value *args) {
+    (void)argc; (void)args;
+    vm_set_error(vm, "sse_* unavailable: this build was compiled without LUME_HAS_HTTP");
+    return val_null();
+}
 #endif
 #if !LUME_HAS_SPAWN
 static Value b_spawn_unavailable(VM *vm, int argc, Value *args) {
@@ -1633,6 +1638,12 @@ void bridge_seed_builtins(VM *vm) {
         {"http_stream_open", b_http_stream_open},
         {"http_stream_read", b_http_stream_read},
         {"http_stream_close", b_http_stream_close},
+        /* P18 server-side SSE push (builtins_http.c): sse_open/sse_send/
+         * sse_close drive the live connection; interpreter-only like the
+         * http_stream_* above. */
+        {"sse_open", b_sse_open},
+        {"sse_send", b_sse_send},
+        {"sse_close", b_sse_close},
 #else
         /* Names stay type-checkable and diagnosable; see the stub above. */
         {"http_get", b_http_unavailable},
@@ -1643,6 +1654,9 @@ void bridge_seed_builtins(VM *vm) {
         {"http_stream_open", b_http_unavailable},
         {"http_stream_read", b_http_unavailable},
         {"http_stream_close", b_http_unavailable},
+        {"sse_open", b_sse_unavailable},
+        {"sse_send", b_sse_unavailable},
+        {"sse_close", b_sse_unavailable},
 #endif
         /* P14 子进程 (builtins_spawn.c): 默认全禁, --spawn + LUME_SPAWN_ALLOW
          * 双闸; argv 直接 execvp, 不过 shell, 不暴露裸 fd。 */

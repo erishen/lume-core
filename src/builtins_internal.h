@@ -108,6 +108,17 @@ void native_http_stream_open(VM *vm, int argc, Value *args, Value *out);
 void native_http_stream_read(VM *vm, int argc, Value *args, Value *out);
 void native_http_stream_close(VM *vm, int argc, Value *args, Value *out);
 
+/* ---- 服务端 SSE 主动推送 (builtins_http.c; Windows 由 builtins.c 出 stub) ----
+ * sse_open() -> {ok, status, err}
+ * sse_send(data) -> {ok, err}   (data: string 原样; 其它值 JSON 序列化)
+ * sse_close() -> {ok, err}
+ * 与 http_stream_* 同理: interpreter-only, 不进 native 发射器 BUILTINS[],
+ * 所以 --compile-text 拒这些名(call to unknown function)。handler 运行中
+ * 通过它们驱动当前请求的实时连接(bridge_serve.c 的 vm->sse_fd)。 */
+void native_sse_open(VM *vm, int argc, Value *args, Value *out);
+void native_sse_send(VM *vm, int argc, Value *args, Value *out);
+void native_sse_close(VM *vm, int argc, Value *args, Value *out);
+
 /* ---- 高阶集合函数(builtins_hof.c) ---- */
 void native_range(VM *vm, int argc, Value *args, Value *out);
 void native_map(VM *vm, int argc, Value *args, Value *out);

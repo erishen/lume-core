@@ -96,6 +96,10 @@ Value b_http_delete(VM *vm, int argc, Value *args);
 Value b_http_stream_open(VM *vm, int argc, Value *args);
 Value b_http_stream_read(VM *vm, int argc, Value *args);
 Value b_http_stream_close(VM *vm, int argc, Value *args);
+/* P18 server-side SSE push (interpreter-only, mirror of http_stream_*). */
+Value b_sse_open(VM *vm, int argc, Value *args);
+Value b_sse_send(VM *vm, int argc, Value *args);
+Value b_sse_close(VM *vm, int argc, Value *args);
 Value b_default_route(VM *vm, int argc, Value *args);
 Value b_abs(VM *vm, int argc, Value *args);
 Value b_sqrt(VM *vm, int argc, Value *args);

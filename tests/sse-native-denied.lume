@@ -1,0 +1,16 @@
+// P18 emitter-gate NEGATIVE control (tests/sse-native-gate.sh).
+//
+// --check must ACCEPT this file: sse_open/sse_send/sse_close are real language
+// builtins, registered in typecheck.c's LUME_BUILTIN_NAMES. --compile-text must
+// REJECT it with "call to unknown function": the native emitters have no SSE
+// helper, and that is the deliberate, fail-closed default — a compiled binary
+// has no live request connection to push onto, so server-side SSE stays
+// interpreter-only (mirroring P14 decision (a) for spawn and P17 for the
+// inbound http_stream_*).
+//
+// Do not "fix" a red gate by deleting sse_* from the language: the matching
+// positive control is tests/sse-stream.lume, which proves the interpreter leg
+// can actually push events while a handler is still running.
+sse_open();
+sse_send("first");
+sse_close();

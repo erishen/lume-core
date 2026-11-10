@@ -499,6 +499,9 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "http_delete", /* same as http_get: no body */
     /* inbound SSE (P17): interpreter-only like spawn, see TODO.md */
     "http_stream_open", "http_stream_read", "http_stream_close",
+    /* P18 server-side SSE push: sse_open()/sse_send(x)/sse_close() drive the
+     * live response; interpreter-only, mirror of the http_stream_* gating. */
+    "sse_open", "sse_send", "sse_close",
     /* P14 gated child processes (builtins_spawn.c). Registered unconditionally
      * so scripts type-check; the runtime refuses every call unless the
      * --spawn / LUME_SPAWN_ALLOW gate is opened. */
@@ -608,6 +611,8 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     /* P17 inbound SSE: http_stream_open(url, {opts?}); http_stream_read(handle,
      * timeout_ms?); http_stream_close(handle). */
     {"http_stream_open",1,-1}, {"http_stream_read",1,2}, {"http_stream_close",1,1},
+    /* P18 server-side SSE push: sse_open(); sse_send(data); sse_close(). */
+    {"sse_open",0,0}, {"sse_send",1,1}, {"sse_close",0,0},
     {"try",1,-1},
     /* P14: spawn(argv, {input?}); proc_read(handle, stream?, timeout_ms?);
      * proc_wait(handle, timeout_ms?); proc_kill(handle). */
