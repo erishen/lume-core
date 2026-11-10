@@ -229,6 +229,36 @@ without libLLVM), so parity is verified as `interp/text identical`.
   `$(shell $(LLVM_CONFIG) --version ...)` degrade to `/bin/sh --version`,
   printing a screen of GNU long-option usage on every parse; guarded
   with `$(if)` so no shell runs when the path is empty.
+- **Text-IR backend declaration / call-site type family (the `bookworm`
+  lane).** The new `gcc:13-bookworm` CI leg builds `HAVE_LLVM=0` and
+  assembles its `.ll` with LLVM 14, which still enforces typed pointers —
+  so every place the text emitter disagreed with the per-backend native
+  declaration is now caught there, even though the opaque-pointer clang on
+  the local dev machine and on `ubuntu-latest`/`macos-latest` folds all
+  pointers to `ptr` and accepts. Four spots fixed:
+  - `emit_struct_to_map` (`src/codegen_print.c`) spelt the
+    `lume_map_put_s` / `lume_map_put_obj` call return type as `i8*` instead
+    of the declared `i64` — the put helpers all return `int64_t`.
+  - the two-argument `get()` path (`src/codegen_call.c`) answered through
+    `lume_map_get_slot` (declared `(i8*, i8*, i8*)`) but left the absent-key
+    default as `i64 0`, because the pointer-default branch missed `TY_ANY`;
+    now aligned with the LLVM backend's `get_zero_default`.
+  - `list<bool>` element reads (`src/codegen_expr.c`) emitted
+    `call i1 @lume_index_int` against the declared `i64`; bool elements now
+    call it as `i64` and narrow to `i1`, matching the LLVM backend's
+    `g->i64` routing.
+  - the tagged-any subscript / `json()`-parse buffers (`src/codegen_expr.c`,
+    `src/codegen_call.c`) parked results in an `alloca i8*` but spelt the
+    stores / load through it as `i8*` instead of `i8**` — six spellings
+    corrected.
+- **`treecheck` privacy gate failed inside CI containers.** The gate runs
+  `git rev-parse` / `git ls-tree` over `HEAD`, and `gcc:13-bookworm` runs as
+  root over a checkout owned by the runner user, so git ≥ 2.35.2 refused
+  every command ("dubious ownership") and the silent failure surfaced as
+  `no HEAD yet; nothing tracked` — a green-looking miss. The script
+  (`scripts/check-tree-privacy.sh`) now trusts the working tree via
+  per-process `GIT_CONFIG_*` env config (nothing written to disk); the gate
+  still scans blob *contents*, and directory ownership is not its question.
 
 ## [0.13.0] - 2026-11-04
 

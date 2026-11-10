@@ -924,6 +924,23 @@ treecheck:
 	@./scripts/check-tree-privacy.sh
 	@echo "==> treecheck passed: no build-machine path tracked in HEAD"
 
+# --- 文本后端 typed-pointer 静态检查 (make ir-check) ------------------------
+# 文本后端 (HAVE_LLVM=0) 吐的 IR 是 typed pointer。本机 opaque-pointer 的 clang
+# 把所有指针折成 ptr 而放行, 但 bookworm 的 LLVM 14 仍强查 —— 正是这一族 bug 红过
+# bookworm (见 CHANGELOG "Text-IR backend declaration / call-site type family")。
+# 这里用纯 python 静态检查在本地 / CI 早一步抓出, 不依赖 clang 版本。脚本对解析
+# 不了的形状一律跳过 (绝不误报), 在真实语料上 0 误报。只扫能 --compile-text 成功
+# 的文件 (少数纯解释器 / 故意不支持的构造跳过, 与 make test 的 native-text 腿一致)。
+ir-check: all
+	@mkdir -p out/ir-check
+	@fail=0; for f in $(wildcard tests/*.lume examples/*.lume); do \
+	  s=$$(basename $$f .lume); \
+	  if ./$(TARGET) --compile-text $$f -o out/ir-check/$$s >/dev/null 2>&1; then \
+	    python3 scripts/check-ir-typed-pointers.py out/ir-check/$$s.ll || fail=1; \
+	  fi; \
+	done; \
+	if [ $$fail -eq 0 ]; then echo "==> ir-check passed: no typed-pointer clashes"; else exit 1; fi
+
 # --- 扩展隐私闸门 (make privacycheck) --------------------------------------
 # treecheck 只认 /Users|/home/<name>; 2026-11-07 审计发现公开历史里还有私有
 # 工作区名混在编译过的 CGI 二进制中, 凭据形态与敏感文件名同样无人拦。
@@ -1104,7 +1121,7 @@ endif
 # other mkdir-only directory targets above.
 .PHONY: all build bin build-asan build-pack check dump vscode-cpp test clean asan native native-text \
          native-llvm native-bench native-consistency crypt-test crypto-test ed25519-test backend-parity pack packcheck \
-         treecheck privacycheck letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
+         treecheck privacycheck ir-check letpat-test fuzz fuzz-ci fuzz-driver vm-reuse-test ai-verify ai-verify-loop for-in-gc-test \
          fsroot-test spawn-test spawn-native-gate stream-native-gate unavailable-builtins-gate serve-sigpipe-gate http-stream-test check-version lib-compat lib-backends static-cache-test \
          ai-produce \
          arity-test asan-compile build-fuzz builtins-test multipart-test case-parity docroot-test enum-test eq2-test \
