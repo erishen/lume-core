@@ -933,13 +933,17 @@ treecheck:
 # 的文件 (少数纯解释器 / 故意不支持的构造跳过, 与 make test 的 native-text 腿一致)。
 ir-check: all
 	@mkdir -p out/ir-check
-	@fail=0; for f in $(wildcard tests/*.lume examples/*.lume); do \
+	@files=""; for f in $(wildcard tests/*.lume examples/*.lume); do \
 	  s=$$(basename $$f .lume); \
-	  if ./$(TARGET) --compile-text $$f -o out/ir-check/$$s >/dev/null 2>&1; then \
-	    python3 scripts/check-ir-typed-pointers.py out/ir-check/$$s.ll || fail=1; \
-	  fi; \
+	  ./$(TARGET) --compile-text $$f -o out/ir-check/$$s >/dev/null 2>&1 || true; \
+	  [ -f out/ir-check/$$s.ll ] && files="$$files out/ir-check/$$s.ll"; \
 	done; \
-	if [ $$fail -eq 0 ]; then echo "==> ir-check passed: no typed-pointer clashes"; else exit 1; fi
+	if [ -z "$$files" ]; then echo "ir-check: no .ll was compiled"; exit 1; fi; \
+	if python3 scripts/check-ir-typed-pointers.py $$files; then \
+	  echo "==> ir-check passed: no typed-pointer clashes"; \
+	else \
+	  echo "==> ir-check FAILED: typed-pointer clashes listed above"; exit 1; \
+	fi
 
 # --- 扩展隐私闸门 (make privacycheck) --------------------------------------
 # treecheck 只认 /Users|/home/<name>; 2026-11-07 审计发现公开历史里还有私有
