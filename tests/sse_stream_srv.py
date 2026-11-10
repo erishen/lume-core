@@ -22,17 +22,20 @@ EXPECTED_STEPS = list(range(5))  # step 0..4, total 5
 
 
 def recv_until(sock, terminator, timeout, buf):
-    """把 sock 读到出现 terminator 为止，已读内容留在 buf 里返回。"""
+    """把 sock 读到出现 terminator 为止，返回累积到的 bytes；失败(超时或对端
+    提前关闭)返回 None。注意: bytes 不可变, 这里必须返回新累积值, 不能在调用方
+    原地修改——之前误用 `buf += chunk`(只重绑了局部变量)导致调用方 buffer 始终
+    为空, 触发 line 70 `bytes.index` 抛 ValueError: subsection not found。"""
     sock.settimeout(timeout)
     while terminator not in buf:
         try:
             chunk = sock.recv(4096)
         except socket.timeout:
-            return False
+            return None
         if chunk == b"":
-            return False  # 对端提前关闭
+            return None  # 对端提前关闭
         buf += chunk
-    return True
+    return buf
 
 
 def main():
@@ -63,8 +66,8 @@ def main():
     sock.sendall(req.encode("utf-8"))
 
     # --- 读 headers 直到 \r\n\r\n ---
-    header_buf = b""
-    if not recv_until(sock, b"\r\n\r\n", 10.0, header_buf):
+    header_buf = recv_until(sock, b"\r\n\r\n", 10.0, b"")
+    if header_buf is None:
         print("FAIL sse: never received response headers")
         return 1
     header_end = header_buf.index(b"\r\n\r\n")
