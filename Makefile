@@ -686,15 +686,15 @@ range-test: all
 	@set -e; \
 	./$(TARGET) tests/range.lume > /tmp/lume-range-test.out 2>&1; \
 	if ! grep -q "^PASS" /tmp/lume-range-test.out; then \
-		echo "==> range 解释器单测失败:"; cat /tmp/lume-range-test.out; exit 1; fi; \
+		echo "==> range interpreter tests failed:"; cat /tmp/lume-range-test.out; exit 1; fi; \
 	echo "ok   range interp 10/10"; \
 	./$(TARGET) --compile-text tests/range.lume > /dev/null 2>&1; \
-	./out/range | grep -q "^PASS" || { echo "==> range text 腿失败"; exit 1; }; \
+	./out/range | grep -q "^PASS" || { echo "==> range text backend failed"; exit 1; }; \
 	echo "ok   range text 10/10"; \
 	./$(TARGET) --compile-llvm tests/range.lume -o /dev/null > /tmp/lume-range-llvm.log 2>&1 || true; \
 	if grep -q "needs a build with libLLVM" /tmp/lume-range-llvm.log; then \
-		echo "ok   range: libLLVM 后端跳过(无 libLLVM)"; exit 0; fi; \
-	./out/range | grep -q "^PASS" || { echo "==> range llvm 腿失败"; exit 1; }; \
+		echo "ok   range: libLLVM backend skipped (no libLLVM)"; exit 0; fi; \
+	./out/range | grep -q "^PASS" || { echo "==> range llvm backend failed"; exit 1; }; \
 	echo "ok   range llvm 10/10"
 
 localfn-test: all
@@ -702,55 +702,55 @@ localfn-test: all
 	./$(TARGET) tests/localfn.lume > /tmp/lume-localfn-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-localfn-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-localfn-test.out; then \
-		echo "==> localfn 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> localfn tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-localfn-test.out) -ne 12 ]; then \
-		echo "==> localfn 断言数不符 (期望 12)"; exit 1; fi; \
+		echo "==> localfn assertion count mismatch (expected 12)"; exit 1; fi; \
 	check_bad_lf() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/localfn-bad/$$f.lume > /tmp/lume-localfn-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-localfn-bad.out; then \
-	    echo "==> localfn 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-localfn-bad.out; exit 1; fi; \
-	  echo "ok   localfn-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> localfn NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-localfn-bad.out; exit 1; fi; \
+	  echo "ok   localfn-bad $$f: rejected with accurate diag"; }; \
 	check_bad_lf dup-name "local function 'dup' is declared twice"; \
 	check_bad_lf outside "undefined variable 'inner'"; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/localfn.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   localfn: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   localfn: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/localfn.lume -o /tmp/localfn_$$be > /dev/null 2>&1 || { echo "==> localfn $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/localfn.lume -o /tmp/localfn_$$be > /dev/null 2>&1 || { echo "==> localfn $$be compile failed"; exit 1; }; \
 	  /tmp/localfn_$$be > /tmp/localfn_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/localfn_$$be.out || [ $$(grep -c PASS /tmp/localfn_$$be.out) -ne 12 ]; then \
-	    echo "==> localfn $$be 输出不符 (rc=$$rc):"; cat /tmp/localfn_$$be.out; exit 1; fi; \
-	  echo "ok   localfn: $$be 后端 12/12"; \
+	    echo "==> localfn $$be output mismatch (rc=$$rc):"; cat /tmp/localfn_$$be.out; exit 1; fi; \
+	  echo "ok   localfn: $$be backend 12/12"; \
 	done; \
-	echo "==> localfn 单测通过"
+	echo "==> localfn tests passed"
 
 letexpr-test: all
 	@set -e; \
 	./$(TARGET) tests/letexpr.lume > /tmp/lume-letexpr-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-letexpr-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-letexpr-test.out; then \
-		echo "==> letexpr 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> letexpr tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-letexpr-test.out) -ne 12 ]; then \
-		echo "==> letexpr 断言数不符 (期望 12)"; exit 1; fi; \
+		echo "==> letexpr assertion count mismatch (expected 12)"; exit 1; fi; \
 	check_bad_le() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/letexpr-bad/$$f.lume > /tmp/lume-letexpr-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-letexpr-bad.out; then \
-	    echo "==> letexpr 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-letexpr-bad.out; exit 1; fi; \
-	  echo "ok   letexpr-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> letexpr NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-letexpr-bad.out; exit 1; fi; \
+	  echo "ok   letexpr-bad $$f: rejected with accurate diag"; }; \
 	check_bad_le outside "undefined variable 'x'"; \
 	check_bad_le annot-mismatch "is not assignable to the declared type"; \
 	check_bad_le missing-in "needs 'in'"; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/letexpr.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   letexpr: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   letexpr: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/letexpr.lume -o /tmp/letexpr_$$be > /dev/null 2>&1 || { echo "==> letexpr $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/letexpr.lume -o /tmp/letexpr_$$be > /dev/null 2>&1 || { echo "==> letexpr $$be compile failed"; exit 1; }; \
 	  /tmp/letexpr_$$be > /tmp/letexpr_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/letexpr_$$be.out || [ $$(grep -c PASS /tmp/letexpr_$$be.out) -ne 12 ]; then \
-	    echo "==> letexpr $$be 输出不符 (rc=$$rc):"; cat /tmp/letexpr_$$be.out; exit 1; fi; \
-	  echo "ok   letexpr: $$be 后端 12/12"; \
+	    echo "==> letexpr $$be output mismatch (rc=$$rc):"; cat /tmp/letexpr_$$be.out; exit 1; fi; \
+	  echo "ok   letexpr: $$be backend 12/12"; \
 	done; \
-	echo "==> letexpr 单测通过"
+	echo "==> letexpr tests passed"
 
 # P14 spawn 是 POSIX-only（pipe/fork/execvp/waitpid）；Windows 的 check lane
 # 既不含 spawn-test，也不该把它塞进 make test 的依赖里。
@@ -768,8 +768,18 @@ else
 HTTP_STREAM_TEST := http-stream-test
 endif
 
-test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test multipart-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test http-noproxy-test map-index-test sql-test docroot-test route-cap-test serve-sigpipe-gate native-consistency case-parity for-in-gc-test \
-      native native-text treecheck sci-test $(SPAWN_TEST) $(HTTP_STREAM_TEST) lib-compat lib-backends static-cache-test
+# HTTP/TLS 在 Windows 强制关掉（LUME_HAS_HTTP=0, builtins_http.c 不编入,
+# 运行期 http_* 直接走 native_http_unavailable 桩）。任何依赖运行期 HTTP 的
+# 单测在 Windows 都该跳过——与 http-stream-test 同理, 否则 make test 在 Windows
+# 必红。POSIX(lume 带 HTTP) 全量照跑。
+ifeq ($(IS_WINDOWS),1)
+HTTP_TESTS :=
+else
+HTTP_TESTS := http-noproxy-test docroot-test route-cap-test serve-sigpipe-gate static-cache-test
+endif
+
+test: all backend-parity tests/smoke-bin crypt-test crypto-test arity-test builtins-test multipart-test ternary-test trailing-closure-test enum-test match2-test eq2-test tuple-test range-test localfn-test letexpr-test letpat-test interp2-test map-index-test sql-test native-consistency case-parity for-in-gc-test \
+      native native-text treecheck sci-test $(SPAWN_TEST) $(HTTP_STREAM_TEST) lib-compat lib-backends $(HTTP_TESTS)
 
 # P16.1 — lib/ 必须能被旧 lume 0.12.2 加载。静态腿用块级重复 let 分析
 # (CI 无 0.12 二进制时是唯一权威), 动态腿在本机找到「仍会拒绝重复
@@ -1027,7 +1037,7 @@ tests/smoke-bin-asan: tests/smoke.c $(ASAN_CORE_OBJS) build-asan/tests | $(AH_LI
 
 # tests/tools-bin-asan is not carried in (same reason as tests/tools-bin).
 asan: $(ASAN_TARGET) tests/smoke-bin-asan asan-compile
-	@echo "==> ASan/UBSan: --check 全部示例 + lang-basics 直跑 + 单测 + 工具派发"
+	@echo "==> ASan/UBSan: --check all examples + lang-basics direct-run + unit tests + tool dispatch"
 	# LSan 现在是开着的 (ASAN_BASE_OPTS 默认为空 = ASan 默认 detect_leaks=1)。
 	# 开放之前的实测基线, 2026-10-03 在 gcc:12 / Ubuntu bookworm arm64 容器里
 	# 跑 LSan 全开: SUMMARY: 6091427 byte(s) leaked in 42939 allocation(s), rc=1
@@ -1139,16 +1149,16 @@ crypt-test: all
 	@./$(TARGET) tests/test-crypt.lume > /tmp/lume-crypt-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-crypt-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-crypt-test.out; then \
-		echo "==> crypt 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> crypt 单测全部通过"
+		echo "==> crypt tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> crypt all tests passed"
 
 # sha256 / hmac_sha256 内建单测（已知向量 + 负例；纯 C 实现，全平台一致）。
 crypto-test: all
 	@./$(TARGET) tests/test-crypto.lume > /tmp/lume-crypto-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-crypto-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-crypto-test.out; then \
-		echo "==> crypto 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> crypto 单测全部通过"
+		echo "==> crypto tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> crypto all tests passed"
 
 # Ed25519 内建单测（RFC 8032 官方向量 + 伪造拒绝 + 长消息）。
 # 与 crypto-test 分开: 后者是纯哈希, 这里是公钥签名, 失败时的排查路径不同。
@@ -1156,8 +1166,8 @@ ed25519-test: all
 	@./$(TARGET) tests/test-crypto.lume > /tmp/lume-ed25519-test.out 2>&1; \
 	rc=$$?; grep -E "ed25519|FAIL" /tmp/lume-ed25519-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ed25519-test.out; then \
-		echo "==> ed25519 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> ed25519 单测全部通过"
+		echo "==> ed25519 tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> ed25519 all tests passed"
 
 # LUME_FS_ROOT allowlist 单测（P3 2026-11-04）。Linux leg: Windows 没有
 # /tmp 的 realpath 语义, 本地验证用真实目录路径手工跑（见提交说明）。预置
@@ -1170,12 +1180,12 @@ fsroot-test: all
 	LUME_FS_ROOT=/tmp/lume-fsroot ./$(TARGET) tests/test-fs-root.lume /tmp/lume-fsroot > /tmp/lume-fsroot-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-fsroot-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-fsroot-test.out; then \
-		echo "==> fsroot 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> fsroot tests failed (rc=$$rc)"; exit 1; fi; \
 	LUME_FS_ROOT=/tmp/lume-fsroot LUME_FS_RO=1 ./$(TARGET) tests/test-fs-root.lume /tmp/lume-fsroot ro > /tmp/lume-fsroot-ro.out 2>&1; \
 	rc=$$?; cat /tmp/lume-fsroot-ro.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-fsroot-ro.out; then \
-		echo "==> fsroot ro 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> fsroot 单测全部通过"
+		echo "==> fsroot ro tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> fsroot all tests passed"
 
 # P14 gated spawn 单测（2026-11-08）。全程离线、非网络沙箱：只执行
 # echo / cat / sleep，不开 socket。三轮缺一不可：
@@ -1246,15 +1256,15 @@ spawn-test: all
 	env -u LUME_SPAWN -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT ./$(TARGET) tests/spawn-smoke.lume locked > /tmp/lume-spawn-locked.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-locked.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-locked.out; then \
-	  echo "==> spawn locked 单测失败 (rc=$$rc)"; exit 1; fi; \
+	  echo "==> spawn locked tests failed (rc=$$rc)"; exit 1; fi; \
 	env -u LUME_SPAWN_ALLOW -u LUME_SPAWN_ROOT LUME_SPAWN=1 ./$(TARGET) tests/spawn-smoke.lume emptyallow > /tmp/lume-spawn-empty.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-empty.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-empty.out; then \
-	  echo "==> spawn emptyallow 单测失败 (rc=$$rc)"; exit 1; fi; \
+	  echo "==> spawn emptyallow tests failed (rc=$$rc)"; exit 1; fi; \
 	LUME_SPAWN=1 LUME_SPAWN_ALLOW=echo,cat,sleep LUME_SPAWN_ROOT=$$ROOTS ./$(TARGET) tests/spawn-smoke.lume open > /tmp/lume-spawn-open.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-open.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-open.out; then \
-	  echo "==> spawn open 单测失败 (rc=$$rc)"; exit 1; fi; \
+	  echo "==> spawn open tests failed (rc=$$rc)"; exit 1; fi; \
 	outside=$$(mktemp -d); \
 	printf '#!/bin/sh\necho ESCAPED\n' > $$outside/evil; chmod +x $$outside/evil; \
 	P14_SECRET=must-not-leak LUME_SPAWN=1 \
@@ -1263,22 +1273,22 @@ spawn-test: all
 	  ./$(TARGET) tests/spawn-smoke.lume rooted $$ABS $$outside > /tmp/lume-spawn-rooted.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-rooted.out; rm -rf $$outside; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-rooted.out; then \
-	  echo "==> spawn rooted 单测失败 (rc=$$rc)"; exit 1; fi; \
+	  echo "==> spawn rooted tests failed (rc=$$rc)"; exit 1; fi; \
 	env -u LUME_SPAWN_ROOT LUME_SPAWN=1 \
 	  LUME_SPAWN_ALLOW=echo,$$ABS/echo \
 	  ./$(TARGET) tests/spawn-smoke.lume abspath $$ABS > /tmp/lume-spawn-abspath.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-abspath.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-abspath.out; then \
-	    echo "==> spawn abspath 单测失败 (rc=$$rc)"; exit 1; fi; \
+	    echo "==> spawn abspath tests failed (rc=$$rc)"; exit 1; fi; \
 	LUME_SPAWN=1 LUME_SPAWN_ALLOW=sh LUME_SPAWN_ROOT=$$ROOTS ./$(TARGET) tests/spawn-smoke.lume stream > /tmp/lume-spawn-stream.out 2>&1; \
 	rc=$$?; cat /tmp/lume-spawn-stream.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-spawn-stream.out; then \
-	  echo "==> spawn stream 单测失败 (rc=$$rc)"; exit 1; fi; \
+	  echo "==> spawn stream tests failed (rc=$$rc)"; exit 1; fi; \
 	LUME_SPAWN_ROOT=/definitely/not/a/lume-root ./$(TARGET) --check tests/spawn-smoke.lume > /tmp/lume-spawn-badroot.out 2>&1; \
 	if [ $$? -eq 0 ] || ! grep -q 'does not resolve' /tmp/lume-spawn-badroot.out; then \
-	  echo "==> spawn 无效 LUME_SPAWN_ROOT 未在启动时被拒"; cat /tmp/lume-spawn-badroot.out; exit 1; fi; \
-	echo "ok   spawn: 无效 LUME_SPAWN_ROOT 启动即失败"; \
-	echo "==> spawn 单测全部通过 (locked + emptyallow + open + rooted + abspath + stream + badroot)"
+	  echo "==> spawn invalid LUME_SPAWN_ROOT not rejected at startup"; cat /tmp/lume-spawn-badroot.out; exit 1; fi; \
+	echo "ok   spawn: invalid LUME_SPAWN_ROOT fails at startup"; \
+	echo "==> spawn all tests passed (locked + emptyallow + open + rooted + abspath + stream + badroot)"
 
 # 编译期 arity 闸门回归（2026-10-21）：builtin 参数个数契约在 typecheck 阶段
 # 闭环，三后端一致。tests/arity-bad/*.lume 按分支故意少参，必须被 --check 拒绝
@@ -1288,23 +1298,23 @@ arity-test: all
 	check_arity() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/arity-bad/$$f.lume > /tmp/lume-arity-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-arity-bad.out; then \
-	    echo "==> arity 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-arity-bad.out; exit 1; fi; \
-	  echo "ok   arity-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> arity NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-arity-bad.out; exit 1; fi; \
+	  echo "ok   arity-bad $$f: rejected with accurate diag"; }; \
 	check_arity fixed-1 "expects 1 argument(s), got 0"; \
 	check_arity fixed-2 "expects 2 argument(s), got 1"; \
 	check_arity fixed-3 "expects 3 argument(s), got 2"; \
 	check_arity variadic-1 "expects at least 1 argument(s), got 0"; \
 	check_arity variadic-2 "expects at least 2 argument(s), got 1"; \
 	check_arity bounded-over "expects at most 3 argument(s), got 4"; \
-	echo "==> arity 编译期闸门回归通过"
+	echo "==> arity compile-time gate regression passed"
 
 # sort() / str_match() / regex() 通用内建回归(解释器路径, 与 json() 一致)。
 builtins-test: all
 	@./$(TARGET) tests/builtins-sort-regex.lume > /tmp/lume-builtins-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-builtins-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-builtins-test.out; then \
-		echo "==> builtins 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> builtins 单测全部通过"
+		echo "==> builtins tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> builtins all tests passed"
 
 # multipart(body, content_type) — P13 item (a)。解释器侧完整回归(含 128 KiB
 # body 与 NUL-safe part); 三后端值一致性另由 native-consistency 的
@@ -1315,8 +1325,8 @@ multipart-test: all
 	@./$(TARGET) tests/multipart.lume > /tmp/lume-multipart-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-multipart-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-multipart-test.out; then \
-		echo "==> multipart 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> multipart 单测全部通过"
+		echo "==> multipart tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> multipart all tests passed"
 
 # 三元运算符 (2026-10-12): 值/优先级/右结合/int-float 加宽/map 值位置/
 # 与 `f()?` 传播后缀的前瞻消歧/惰性分支。解释器口径; 三后端一致值由
@@ -1325,16 +1335,16 @@ ternary-test: all
 	@./$(TARGET) tests/ternary.lume > /tmp/lume-ternary-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-ternary-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-ternary-test.out; then \
-		echo "==> ternary 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> ternary tests failed (rc=$$rc)"; exit 1; fi; \
 	set -e; \
 	check_bad_t() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/ternary-bad/$$f.lume > /tmp/lume-ternary-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-ternary-bad.out; then \
-	    echo "==> ternary 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-ternary-bad.out; exit 1; fi; \
-	  echo "ok   ternary-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> ternary NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-ternary-bad.out; exit 1; fi; \
+	  echo "ok   ternary-bad $$f: rejected with accurate diag"; }; \
 	check_bad_t if-no-else "an if-expression needs an else branch"; \
 	check_bad_t if-arm-type "ternary branches have different types"; \
-	echo "==> ternary 单测全部通过"
+	echo "==> ternary all tests passed"
 
 # 尾随闭包 f(args) { |x| body } (2026-10-14): 纯解析器层糖, 折叠成普通
 # N_FUNC_LIT 实参——表达式体(隐式 return)/多语句体+末尾值/尾随 ; 弃值/
@@ -1345,21 +1355,21 @@ trailing-closure-test: all
 	@./$(TARGET) tests/trailing-closure.lume > /tmp/lume-tc-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-tc-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-tc-test.out; then \
-		echo "==> trailing-closure 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> trailing-closure tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-tc-test.out) -ne 16 ]; then \
-		echo "==> trailing-closure 断言数不是 16"; exit 1; fi; \
+		echo "==> trailing-closure assertion count is not 16"; exit 1; fi; \
 	set -e; \
 	check_bad_tc() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/trailing-closure-bad/$$f.lume > /tmp/lume-tc-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-tc-bad.out; then \
-	    echo "==> trailing-closure 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-tc-bad.out; exit 1; fi; \
-	  echo "ok   trailing-closure-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> trailing-closure NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-tc-bad.out; exit 1; fi; \
+	  echo "ok   trailing-closure-bad $$f: rejected with accurate diag"; }; \
 	check_bad_tc no-pipe "expected ), got {"; \
 	check_bad_tc bad-param "trailing closure parameters must be plain names"; \
 	check_bad_tc unclosed "expected }, got end of input"; \
 	check_bad_tc bad-annotation "unknown type 'nosuchtype'"; \
 	check_bad_tc extra-arg "function expects 0 argument(s), got 1"; \
-	echo "==> trailing-closure 单测全部通过"
+	echo "==> trailing-closure all tests passed"
 
 # enum + match (2026-10-12): 解释器 19 断言全 PASS; 8 个编译期拒绝各断言
 # 自己的诊断句(穷尽性/未知变体/重复臂/arity/载荷类型/非 enum match/构造名
@@ -1369,13 +1379,13 @@ enum-test: all
 	@./$(TARGET) tests/enum.lume > /tmp/lume-enum-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-enum-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-enum-test.out; then \
-		echo "==> enum 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> enum tests failed (rc=$$rc)"; exit 1; fi; \
 	set -e; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/enum-bad/$$f.lume > /tmp/lume-enum-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-enum-bad.out; then \
-	    echo "==> enum 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-enum-bad.out; exit 1; fi; \
-	  echo "ok   enum-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> enum NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-enum-bad.out; exit 1; fi; \
+	  echo "ok   enum-bad $$f: rejected with accurate diag"; }; \
 	check_bad bad-arity "expects 1 argument(s), got 2"; \
 	check_bad bad-payload-type "cannot use a value of type string where float is expected"; \
 	check_bad dup-arm "duplicate match arm"; \
@@ -1386,15 +1396,15 @@ enum-test: all
 	check_bad wrong-binds "payload field(s), arm binds"; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/enum.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   enum: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   enum: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/enum.lume -o /tmp/enum_$$be > /dev/null 2>&1 || { echo "==> enum $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/enum.lume -o /tmp/enum_$$be > /dev/null 2>&1 || { echo "==> enum $$be compile failed"; exit 1; }; \
 	  /tmp/enum_$$be > /tmp/enum_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/enum_$$be.out || [ $$(grep -c PASS /tmp/enum_$$be.out) -ne 19 ]; then \
-	    echo "==> enum $$be 输出不符 (rc=$$rc):"; cat /tmp/enum_$$be.out; exit 1; fi; \
-	  echo "ok   enum: $$be 后端 19/19"; \
+	    echo "==> enum $$be output mismatch (rc=$$rc):"; cat /tmp/enum_$$be.out; exit 1; fi; \
+	  echo "ok   enum: $$be backend 19/19"; \
 	done; \
-	echo "==> enum 单测通过"
+	echo "==> enum tests passed"
 
 # or 模式 / 匹配守卫 / if-let 单测(tests/match2.lume + tests/match2-bad/*)。
 # 正向: 解释器 20 条断言 + 两个原生后端各编各跑, 输出必须全 PASS 无 FAIL;
@@ -1403,15 +1413,15 @@ match2-test: all
 	@./$(TARGET) tests/match2.lume > /tmp/lume-match2-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-match2-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-match2-test.out; then \
-		echo "==> match2 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> match2 tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-match2-test.out) -ne 20 ]; then \
-		echo "==> match2 断言数不符 (期望 20)"; exit 1; fi; \
+		echo "==> match2 assertion count mismatch (expected 20)"; exit 1; fi; \
 	set -e; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/match2-bad/$$f.lume > /tmp/lume-match2-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-match2-bad.out; then \
-	    echo "==> match2 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-match2-bad.out; exit 1; fi; \
-	  echo "ok   match2-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> match2 NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-match2-bad.out; exit 1; fi; \
+	  echo "ok   match2-bad $$f: rejected with accurate diag"; }; \
 	check_bad or-bind-names "or-pattern alternatives must bind the same names"; \
 	check_bad or-bind-types "or-pattern binding .* has conflicting types"; \
 	check_bad guard-only "does not cover variant"; \
@@ -1423,15 +1433,15 @@ match2-test: all
 	check_bad or-dup "duplicate match pattern"; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/match2.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   match2: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   match2: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/match2.lume -o /tmp/match2_$$be > /dev/null 2>&1 || { echo "==> match2 $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/match2.lume -o /tmp/match2_$$be > /dev/null 2>&1 || { echo "==> match2 $$be compile failed"; exit 1; }; \
 	  /tmp/match2_$$be > /tmp/match2_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/match2_$$be.out || [ $$(grep -c PASS /tmp/match2_$$be.out) -ne 20 ]; then \
-	    echo "==> match2 $$be 输出不符 (rc=$$rc):"; cat /tmp/match2_$$be.out; exit 1; fi; \
-	  echo "ok   match2: $$be 后端 20/20"; \
+	    echo "==> match2 $$be output mismatch (rc=$$rc):"; cat /tmp/match2_$$be.out; exit 1; fi; \
+	  echo "ok   match2: $$be backend 20/20"; \
 	done; \
-	echo "==> match2 单测通过"
+	echo "==> match2 tests passed"
 
 # 结构性相等单测(tests/eq2.lume + tests/eq2-bad/*)。SPEC §1.8:
 # == / != 对容器是结构比较(list 逐元素、map 键顺序无关、enum 比 "$"+载荷、
@@ -1442,15 +1452,15 @@ eq2-test: all
 	@./$(TARGET) tests/eq2.lume > /tmp/lume-eq2-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-eq2-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-eq2-test.out; then \
-		echo "==> eq2 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> eq2 tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-eq2-test.out) -ne 43 ]; then \
-		echo "==> eq2 断言数不符 (期望 43)"; exit 1; fi; \
+		echo "==> eq2 assertion count mismatch (expected 43)"; exit 1; fi; \
 	set -e; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/eq2-bad/$$f.lume > /tmp/lume-eq2-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-eq2-bad.out; then \
-	    echo "==> eq2 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-eq2-bad.out; exit 1; fi; \
-	  echo "ok   eq2-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> eq2 NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-eq2-bad.out; exit 1; fi; \
+	  echo "ok   eq2-bad $$f: rejected with accurate diag"; }; \
 	check_bad num-str "does not apply to int and string"; \
 	check_bad bool-num "does not apply to bool and int"; \
 	check_bad str-bool "does not apply to string and bool"; \
@@ -1460,15 +1470,15 @@ eq2-test: all
 	check_bad bool-null "does not apply to bool and null"; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/eq2.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   eq2: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   eq2: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/eq2.lume -o /tmp/eq2_$$be > /dev/null 2>&1 || { echo "==> eq2 $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/eq2.lume -o /tmp/eq2_$$be > /dev/null 2>&1 || { echo "==> eq2 $$be compile failed"; exit 1; }; \
 	  /tmp/eq2_$$be > /tmp/eq2_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/eq2_$$be.out || [ $$(grep -c PASS /tmp/eq2_$$be.out) -ne 43 ]; then \
-	    echo "==> eq2 $$be 输出不符 (rc=$$rc):"; cat /tmp/eq2_$$be.out; exit 1; fi; \
-	  echo "ok   eq2: $$be 后端 43/43"; \
+	    echo "==> eq2 $$be output mismatch (rc=$$rc):"; cat /tmp/eq2_$$be.out; exit 1; fi; \
+	  echo "ok   eq2: $$be backend 43/43"; \
 	done; \
-	echo "==> eq2 单测通过"
+	echo "==> eq2 tests passed"
 
 # --- tuple: 元组 (a, b) + .N 访问 + let (x, y) = e 解构 (SPEC §4.13) ---
 # 元组 = 位置字段 _0/_1/... 的匿名 struct, 无新运行时表示。解释器 15 断言 +
@@ -1477,30 +1487,30 @@ tuple-test: all
 	@./$(TARGET) tests/tuple.lume > /tmp/lume-tuple-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-tuple-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-tuple-test.out; then \
-		echo "==> tuple 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> tuple tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-tuple-test.out) -ne 15 ]; then \
-		echo "==> tuple 断言数不符 (期望 15)"; exit 1; fi; \
+		echo "==> tuple assertion count mismatch (expected 15)"; exit 1; fi; \
 	set -e; \
 	check_bad_tup() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/tuple-bad/$$f.lume > /tmp/lume-tuple-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-tuple-bad.out; then \
-	    echo "==> tuple 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-tuple-bad.out; exit 1; fi; \
-	  echo "ok   tuple-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> tuple NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-tuple-bad.out; exit 1; fi; \
+	  echo "ok   tuple-bad $$f: rejected with accurate diag"; }; \
 	check_bad_tup dup-name "pattern binds 'x' twice"; \
 	check_bad_tup non-struct "destructuring needs a map value (got int)"; \
 	check_bad_tup missing-field "type has no field '_0'"; \
 	check_bad_tup type-annot "expected a type, got ("; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/tuple.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   tuple: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   tuple: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/tuple.lume -o /tmp/tuple_$$be > /dev/null 2>&1 || { echo "==> tuple $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/tuple.lume -o /tmp/tuple_$$be > /dev/null 2>&1 || { echo "==> tuple $$be compile failed"; exit 1; }; \
 	  /tmp/tuple_$$be > /tmp/tuple_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/tuple_$$be.out || [ $$(grep -c PASS /tmp/tuple_$$be.out) -ne 15 ]; then \
-	    echo "==> tuple $$be 输出不符 (rc=$$rc):"; cat /tmp/tuple_$$be.out; exit 1; fi; \
-	  echo "ok   tuple: $$be 后端 15/15"; \
+	    echo "==> tuple $$be output mismatch (rc=$$rc):"; cat /tmp/tuple_$$be.out; exit 1; fi; \
+	  echo "ok   tuple: $$be backend 15/15"; \
 	done; \
-	echo "==> tuple 单测通过"
+	echo "==> tuple tests passed"
 
 # --- interp2: 字符串插值 s!"..." + 结构体更新 { base with ... } (仅解释器) ---
 # 三后端一致由 native-consistency 的插值/更新探针段覆盖, 这里只验解释器腿的
@@ -1509,14 +1519,14 @@ interp2-test: all
 	@./$(TARGET) tests/interp2.lume > /tmp/lume-interp2-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-interp2-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-interp2-test.out; then \
-		echo "==> interp2 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> interp2 tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-interp2-test.out) -ne 68 ]; then \
-		echo "==> interp2 断言数不符 (期望 68)"; exit 1; fi; \
+		echo "==> interp2 assertion count mismatch (expected 68)"; exit 1; fi; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/interp2-bad/$$f.lume > /tmp/lume-interp2-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-interp2-bad.out; then \
-	    echo "==> interp2 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-interp2-bad.out; exit 1; fi; \
-	  echo "ok   interp2-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> interp2 NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-interp2-bad.out; exit 1; fi; \
+	  echo "ok   interp2-bad $$f: rejected with accurate diag"; }; \
 	check_bad istr-bad-expr "unexpected token 'end-of-file' in expression"; \
 	check_bad istr-noquote "unterminated interpolated string literal"; \
 	check_bad istr-unclosed "unterminated interpolation segment (missing '}')"; \
@@ -1525,7 +1535,7 @@ interp2-test: all
 	check_bad with-scalar "'with' update requires a map or struct base"; \
 	check_bad with-type-mismatch "struct field: cannot use a value of type string where int is expected"; \
 	check_bad with-unknown-field "unknown field 'z' in struct update"; \
-	echo "==> interp2 单测通过"
+	echo "==> interp2 tests passed"
 
 # 科学计数法词法单测(tests/sci.lume + tests/sci-bad/*)。
 # 正向: 解释器 11 条断言全 PASS 无 FAIL; 负例: 不完整指数 `1e` 被拒,
@@ -1534,17 +1544,17 @@ sci-test: all
 	@./$(TARGET) tests/sci.lume > /tmp/lume-sci-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-sci-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-sci-test.out; then \
-		echo "==> sci 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> sci tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-sci-test.out) -ne 11 ]; then \
-		echo "==> sci 断言数不符 (期望 11)"; exit 1; fi; \
+		echo "==> sci assertion count mismatch (expected 11)"; exit 1; fi; \
 	set -e; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/sci-bad/$$f.lume > /tmp/lume-sci-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-sci-bad.out; then \
-	    echo "==> sci 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-sci-bad.out; exit 1; fi; \
-	  echo "ok   sci-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> sci NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-sci-bad.out; exit 1; fi; \
+	  echo "ok   sci-bad $$f: rejected with accurate diag"; }; \
 	check_bad incomplete-exp "expected ), got identifier ('e')"; \
-	echo "==> sci 单测通过"
+	echo "==> sci tests passed"
 
 # 记录解构 `let { a, b } = e;` (SPEC §4.12): 解释器 12 条断言全 PASS; 两个原生
 # 后端各编各跑，输出必须同为 12/12 无 FAIL; 7 个编译期拒绝各断言自己的诊断句
@@ -1555,15 +1565,15 @@ letpat-test: all
 	@./$(TARGET) tests/letpat.lume > /tmp/lume-letpat-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-letpat-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-letpat-test.out; then \
-		echo "==> letpat 单测失败 (rc=$$rc)"; exit 1; fi; \
+		echo "==> letpat tests failed (rc=$$rc)"; exit 1; fi; \
 	if [ $$(grep -c PASS /tmp/lume-letpat-test.out) -ne 12 ]; then \
-		echo "==> letpat 断言数不符 (期望 12)"; exit 1; fi; \
+		echo "==> letpat assertion count mismatch (expected 12)"; exit 1; fi; \
 	set -e; \
 	check_bad() { f=$$1; key=$$2; \
 	  rc=0; ./$(TARGET) --check tests/letpat-bad/$$f.lume > /tmp/lume-letpat-bad.out 2>&1 || rc=$$?; \
 	  if [ $$rc -eq 0 ] || ! grep -q "$$key" /tmp/lume-letpat-bad.out; then \
-	    echo "==> letpat 负例 $$f 未被拒或诊断不符 (rc=$$rc):"; cat /tmp/lume-letpat-bad.out; exit 1; fi; \
-	  echo "ok   letpat-bad $$f: 拒绝且诊断准确"; }; \
+	    echo "==> letpat NEGATIVE $$f not rejected or wrong diag (rc=$$rc):"; cat /tmp/lume-letpat-bad.out; exit 1; fi; \
+	  echo "ok   letpat-bad $$f: rejected with accurate diag"; }; \
 	check_bad empty "a destructuring pattern needs at least one name"; \
 	check_bad not-name "expected a name in the destructuring pattern"; \
 	check_bad len-name "'len' is a container property, not a map key"; \
@@ -1573,15 +1583,15 @@ letpat-test: all
 	check_bad enum-init "destructuring needs a map value (got E)"; \
 	for be in text llvm; do \
 	  if [ "$$be" = llvm ] && ./$(TARGET) --compile-llvm tests/letpat.lume -o /dev/null 2>&1 | grep -q "needs a build with libLLVM"; then \
-	    echo "ok   letpat: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	    echo "ok   letpat: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	  if [ "$$be" = llvm ]; then flag=--compile-llvm; else flag=--compile-text; fi; \
-	  ./$(TARGET) $$flag tests/letpat.lume -o /tmp/letpat_$$be > /dev/null 2>&1 || { echo "==> letpat $$be 编译失败"; exit 1; }; \
+	  ./$(TARGET) $$flag tests/letpat.lume -o /tmp/letpat_$$be > /dev/null 2>&1 || { echo "==> letpat $$be compile failed"; exit 1; }; \
 	  /tmp/letpat_$$be > /tmp/letpat_$$be.out 2>&1; rc=$$?; \
 	  if [ $$rc -ne 0 ] || grep -q FAIL /tmp/letpat_$$be.out || [ $$(grep -c PASS /tmp/letpat_$$be.out) -ne 12 ]; then \
-	    echo "==> letpat $$be 输出不符 (rc=$$rc):"; cat /tmp/letpat_$$be.out; exit 1; fi; \
-	  echo "ok   letpat: $$be 后端 12/12"; \
+	    echo "==> letpat $$be output mismatch (rc=$$rc):"; cat /tmp/letpat_$$be.out; exit 1; fi; \
+	  echo "ok   letpat: $$be backend 12/12"; \
 	done; \
-	echo "==> letpat 单测通过"
+	echo "==> letpat tests passed"
 
 # for-in 临时表达式 iterable 的 GC root 回归（interp-only: 原生后端无 GC）。
 # 修复前: iterable pop 出栈后不再被 GC root, 循环体内分配触发回收 ->
@@ -1590,8 +1600,8 @@ for-in-gc-test: all
 	@./$(TARGET) tests/for-in-gc.lume > /tmp/lume-for-in-gc-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-for-in-gc-test.out; \
 	if [ $$rc -ne 0 ] || ! grep -q "^PASS for-in GC root regression" /tmp/lume-for-in-gc-test.out; then \
-		echo "==> for-in GC root 回归失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> for-in GC root 回归通过"
+		echo "==> for-in GC root regression failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> for-in GC root regression passed"
 
 
 # NO_PROXY 绕过代理、直连内网地址。起一个本地 server(127.0.0.1:18891),
@@ -1601,7 +1611,7 @@ http-noproxy-test: all
 	 python3 tests/http_noproxy_srv.py $$PORT > /tmp/lume-http-noproxy-srv.log 2>&1 & \
 	 SRV=$$!; \
 	 if ! python3 tests/wait_port.py $$PORT 15; then \
-	   echo "==> noproxy server 15s 未就绪(端口被占/python3 故障?)"; \
+	   echo "==> noproxy server not ready in 15s (port busy/python3 failure?)"; \
 	   cat /tmp/lume-http-noproxy-srv.log; \
 	   kill $$SRV 2>/dev/null; exit 1; fi; \
 	 HTTP_PROXY=http://127.0.0.1:9 LUME_HTTP_PROXY= NO_PROXY=127.0.0.1 \
@@ -1610,11 +1620,11 @@ http-noproxy-test: all
 	 kill $$SRV 2>/dev/null; \
 	 cat /tmp/lume-http-noproxy.out; \
 	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-noproxy.out; then \
-	   echo "==> http no_proxy 单测失败 (rc=$$rc)"; \
+	   echo "==> http no_proxy tests failed (rc=$$rc)"; \
 	   echo "==> server log:"; cat /tmp/lume-http-noproxy-srv.log; \
-	   echo "==> proxy 相关环境变量:"; env | grep -i proxy || echo "(none)"; \
+	   echo "==> proxy-related env vars:"; env | grep -i proxy || echo "(none)"; \
 	   exit 1; fi; \
-	 echo "==> http no_proxy 单测通过"
+	 echo "==> http no_proxy tests passed"
 
 # P17 入站 SSE 流式（2026-11-08）。起本地 SSE server（tests/http_stream_srv.py，
 # 127.0.0.1 仅推两个事件、中间睡 1s），验证 http_stream_read 是真流式：
@@ -1625,7 +1635,7 @@ http-stream-test: all
 	 python3 tests/http_stream_srv.py $$PORT > /tmp/lume-http-stream-srv.log 2>&1 & \
 	 SRV=$$!; \
 	 if ! python3 tests/wait_port.py $$PORT 15; then \
-	   echo "==> SSE server 15s 未就绪(端口被占/python3 故障?)"; \
+	   echo "==> SSE server not ready in 15s (port busy/python3 failure?)"; \
 	   cat /tmp/lume-http-stream-srv.log; \
 	   kill $$SRV 2>/dev/null; exit 1; fi; \
 	 LUME_HTTP_PROXY= HTTP_PROXY= HTTPS_PROXY= NO_PROXY=127.0.0.1 \
@@ -1634,15 +1644,15 @@ http-stream-test: all
 	 kill $$SRV 2>/dev/null; \
 	 cat /tmp/lume-http-stream.out; \
 	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-stream.out; then \
-	   echo "==> http_stream 流式单测失败 (rc=$$rc)"; \
+	   echo "==> http_stream streaming tests failed (rc=$$rc)"; \
 	   echo "==> server log:"; cat /tmp/lume-http-stream-srv.log; \
 	   exit 1; fi; \
 	 LUME_NO_NET=1 ./$(TARGET) tests/http-stream-smoke.lume locked > /tmp/lume-http-stream-locked.out 2>&1; \
 	 rc=$$?; \
 	 cat /tmp/lume-http-stream-locked.out; \
 	 if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-http-stream-locked.out; then \
-	   echo "==> http_stream locked 单测失败 (rc=$$rc)"; exit 1; fi; \
-	 echo "==> http_stream 流式单测通过 (stream + locked)"
+	   echo "==> http_stream locked tests failed (rc=$$rc)"; exit 1; fi; \
+	 echo "==> http_stream streaming tests passed (stream + locked)"
 
 # map 下标标量读: 合规路径(get()/标注/可解析字面量)三后端一致; 未标注的
 # 「变量 map」标量读在原生后端给出准确、可操作的错误(不再是误导性的
@@ -1654,30 +1664,30 @@ map-index-test: all
 	   if [ "$$be" = llvm ]; then \
 	     flag=--compile-llvm; \
 	     if ./$(TARGET) --compile-llvm tests/map-index-scalar.lume -o /tmp/mi_p 2>&1 | grep -q "needs a build with libLLVM"; then \
-	       echo "ok   map-index: libLLVM 后端跳过(无 libLLVM)"; continue; fi; \
+	       echo "ok   map-index: libLLVM backend skipped (no libLLVM)"; continue; fi; \
 	   else flag=--compile-text; fi; \
-	   ./$(TARGET) $$flag tests/map-index-scalar.lume -o /tmp/mi_$$be > /dev/null 2>&1 || { echo "==> map-index $$be 合规路径编译失败"; exit 1; }; \
+	   ./$(TARGET) $$flag tests/map-index-scalar.lume -o /tmp/mi_$$be > /dev/null 2>&1 || { echo "==> map-index $$be compliant-path compile failed"; exit 1; }; \
 	   /tmp/mi_$$be > /tmp/mi_$$be.out 2>&1; rc=$$?; \
 	   if [ $$rc -ne 0 ] || ! diff -q /tmp/mi_expected /tmp/mi_$$be.out > /dev/null; then \
-	     echo "==> map-index $$be 合规路径输出不符 (rc=$$rc):"; cat /tmp/mi_$$be.out; exit 1; fi; \
+	     echo "==> map-index $$be compliant-path output mismatch (rc=$$rc):"; cat /tmp/mi_$$be.out; exit 1; fi; \
 	   ./$(TARGET) $$flag tests/map-index-scalar-bad.lume -o /tmp/mib_$$be > /dev/null 2>&1 || true; \
 	   /tmp/mib_$$be > /tmp/mib_$$be.out 2>&1; rc=$$?; \
 	   if [ $$rc -eq 0 ] || ! grep -q "map value at this key is a scalar" /tmp/mib_$$be.out; then \
-	     echo "==> map-index $$be 未标注标量读未给出准确错误 (rc=$$rc):"; cat /tmp/mib_$$be.out; exit 1; fi; \
+	     echo "==> map-index $$be unannotated scalar read did not give accurate error (rc=$$rc):"; cat /tmp/mib_$$be.out; exit 1; fi; \
 	   ./$(TARGET) $$flag tests/map-get-default-bad.lume -o /tmp/mgb_$$be > /tmp/mgb_$$be.out 2>&1; rc=$$?; \
 	   if [ $$rc -eq 0 ] || ! grep -q "get() default is int but key" /tmp/mgb_$$be.out; then \
-	     echo "==> map-index $$be get() 默认/形状冲突未在编译期拒绝 (rc=$$rc):"; cat /tmp/mgb_$$be.out; exit 1; fi; \
-	   echo "ok   map-index: $$be 合规路径正确 + 标量读报错准确"; \
+	     echo "==> map-index $$be get() default/shape conflict not rejected at compile time (rc=$$rc):"; cat /tmp/mgb_$$be.out; exit 1; fi; \
+	   echo "ok   map-index: $$be compliant path correct + scalar read error accurate"; \
 	 done; \
-	 echo "==> map-index 单测通过"
+	 echo "==> map-index tests passed"
 
 # SQLite (2026-10-12): tests/sqlite.lume 自带可用性探针, stub 构建整段 SKIP。
 sql-test: all
 	@./$(TARGET) tests/sqlite.lume > /tmp/lume-sql-test.out 2>&1; \
 	rc=$$?; cat /tmp/lume-sql-test.out; \
 	if [ $$rc -ne 0 ] || grep -q FAIL /tmp/lume-sql-test.out; then \
-		echo "==> sqlite 单测失败 (rc=$$rc)"; exit 1; fi; \
-	echo "==> sqlite 单测通过"
+		echo "==> sqlite tests failed (rc=$$rc)"; exit 1; fi; \
+	echo "==> sqlite tests passed"
 
 # docroot 静态服务 (2026-10-12): 路由优先; 静态 200/404; 穿越路径(含
 # URL 编码 %2e%2e)一律 404。--path-as-is 防 curl 把 ../ 归一化掉。
@@ -1704,8 +1714,8 @@ docroot-test: all
 	 probe "/%2e%2e/secret.txt" 404 ""; \
 	 probe "/sub/../../secret.txt" 404 ""; \
 	 kill $$SRV 2>/dev/null; \
-	 if [ $$fail -ne 0 ]; then echo "==> docroot 单测失败"; exit 1; fi; \
-	 echo "==> docroot 单测通过"
+	 if [ $$fail -ne 0 ]; then echo "==> docroot tests failed"; exit 1; fi; \
+	 echo "==> docroot tests passed"
 
 # 路由表上限回归 (2026-10-17): 40 条路由越过旧上限 32。解释器侧
 # MAX_AL_ROUTES / 原生侧 NATIVE_ROUTES_MAX 必须同步——只改一边,
@@ -1714,7 +1724,7 @@ route-cap-test: all
 	@./$(TARGET) tests/route-cap-srv.lume > /tmp/lume-route-cap-srv.log 2>&1 & \
 	SRV=$$!; \
 	if ! python3 tests/wait_port.py 39184 30; then \
-	  echo "==> route-cap server 30s 未就绪(路由注册失败?)"; cat /tmp/lume-route-cap-srv.log; kill $$SRV 2>/dev/null; exit 1; fi; \
+	  echo "==> route-cap server not ready in 30s (route registration failed?)"; cat /tmp/lume-route-cap-srv.log; kill $$SRV 2>/dev/null; exit 1; fi; \
 	fail=0; \
 	probe() { url="$$1"; want="$$2"; \
 	  code="000"; body=""; \
@@ -1732,8 +1742,8 @@ route-cap-test: all
 	probe "/r32" '"n":32'; \
 	probe "/r40" '"n":40'; \
 	kill $$SRV 2>/dev/null; \
-	if [ $$fail -ne 0 ]; then echo "==> route-cap 单测失败"; exit 1; fi; \
-	echo "==> route-cap 单测通过 (40/40 路由注册)"
+	if [ $$fail -ne 0 ]; then echo "==> route-cap tests failed"; exit 1; fi; \
+	echo "==> route-cap tests passed (40/40 route registrations)"
 
 # 静态检查：两个原生后端 (text / libLLVM) 必须覆盖同一组 AST 节点类型，
 # 否则单边新增节点会静默漂移（另一端掉进 default:）。见脚本内注释。
