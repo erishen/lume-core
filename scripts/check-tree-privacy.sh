@@ -62,6 +62,17 @@
 #
 set -u
 
+# CI container jobs (gcc:13-bookworm) run as root over a checkout owned by
+# the runner user; git >= 2.35.2 refuses every command with "dubious
+# ownership" before any scanning can happen, and the silent failure mode
+# here was "no HEAD yet; nothing tracked" — a green-looking miss. Trust the
+# tree for this process only (env config, nothing written to disk): the
+# guard asks about blob *contents*, and who owns the directory is not a
+# question it is in a position to answer.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0='*'
+
 fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
 # Same pattern as check-pack-privacy.sh, on purpose: the two guards must
