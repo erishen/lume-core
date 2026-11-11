@@ -1,5 +1,6 @@
 // pinn-consistency.lume —— lib/pinn.lume 三后端一致性测试。
-// 覆盖：前向模式 AD（Taylor 二阶）·对输入求导（Jacobian·一阶/二阶）·热方程残差。
+// 覆盖：前向模式 AD（Taylor 二阶）·对输入求导（Jacobian·一阶/二阶）·热方程残差
+//       ·PINN 损失 / 数值梯度 / Adam（v0.2.0）·解析梯度（伴随反扫 v0.3.0）及与数值梯度互证。
 // 同一份源在三后端（解释器 / 文本 IR / LLVM）逐字节一致，由 tests/pinn_backends.sh 驱动。
 // 数值正确性（AD vs 中心差分）另由 examples/pinn_demo.lume 自检。
 import "../lib/ml.lume" as ml;
@@ -16,7 +17,7 @@ let W2: float[][] = [P[h + 1]];
 let b2: float[] = P[h + 2];
 let xt: float[] = [0.3, 0.2];   // 采样点 (x=0.3·t=0.2)
 
-print(pinn.PINN_VERSION);                          // 0.2.0
+print(pinn.PINN_VERSION);                          // 0.3.0
 print(pinn.mlp2_value(W1, b1, W2, b2, xt));        // u(x,t)
 print(pinn.mlp2_dx(W1, b1, W2, b2, xt, 0));        // ∂u/∂x
 print(pinn.mlp2_dx(W1, b1, W2, b2, xt, 1));        // ∂u/∂t
@@ -32,7 +33,24 @@ let TB2: float[] = [0.3, 0.5];
 let GB2: float[] = [0.0, 0.0];
 print(pinn.pinn_heat_loss_packed(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2));
 let G2: float[][] = pinn.pinn_grad_fd(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2, 1e-5);
-print(G2[0]);                                      // 梯度第 0 行（W1 首行）
+print(G2[0]);                                      // 数值梯度第 0 行（W1 首行）
+// ---- v0.3.0：解析梯度（伴随反扫）+ 与数值梯度互证（应为差分自身噪声 ~1e-9）----
+let G3: float[][] = pinn.pinn_heat_grad(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2);
+print(G3[0]);                                      // 解析梯度第 0 行（W1 首行）
+let gmax: float = 0.0;
+for (let gr = 0; gr < len(G3); gr = gr + 1) {
+  for (let gc = 0; gc < len(G3[gr]); gc = gc + 1) {
+    let gd: float = G3[gr][gc] - G2[gr][gc];
+    if (gd < 0.0) { gd = 0.0 - gd; }
+    if (gd > gmax) { gmax = gd; }
+  }
+}
+print(gmax);
+if (gmax < 1e-7) {
+  print("PASS pinn v0.3.0: analytic grad matches FD");
+} else {
+  print("FAIL pinn v0.3.0: analytic grad drift");
+}
 let PA: float[][] = pinn.pinn_adam_train(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2, 3, 0.01);
 print(PA[0]);                                      // Adam 3 轮后 W1 首行
 print(pinn.pinn_heat_loss_packed(PA, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2));

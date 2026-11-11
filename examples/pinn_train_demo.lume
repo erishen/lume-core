@@ -1,7 +1,7 @@
 // pinn_train_demo.lume —— PINN 训练闭环（第二步：损失 + 第三步：Adam 训练）。
-// 跑法（解释器·约 4-5 分钟）：
+// 跑法（解释器·约 19 秒）：
 //   bin/lume-core examples/pinn_train_demo.lume
-// 跑法（文本 IR 编译后端·约 10 秒·输出与解释器逐字节一致）：
+// 跑法（文本 IR 编译后端·约 1.3 秒·输出与解释器逐字节一致）：
 //   bin/lume-core --compile-text -o /tmp/ptd.exe examples/pinn_train_demo.lume && /tmp/ptd.exe
 //
 // 问题（通用数学·不绑定任何应用领域）：
@@ -10,7 +10,7 @@
 //   精确解：u(x,t) = sin(pi·x)·exp(-alpha·pi²·t)
 //
 // 三方对照（研究闭环）：
-//   ① PINN   —— 2-H-1 tanh MLP·Adam（数值梯度）·pinn.lume v0.2.0
+//   ① PINN   —— 2-H-1 tanh MLP·Adam（解析梯度·伴随反扫）·pinn.lume v0.3.0
 //   ② 精确解 —— 上面闭式
 //   ③ 有限差分 —— pde.lume pde_heat_explicit（FTCS·41 点网格·r=0.4）
 // 同一份源在三后端逐字节一致（print 单参 + str()）。纯数学·无领域背景。
@@ -140,5 +140,5 @@ if (emax_fd < 0.01) {
 if (sqrt(sse / ssu) < 0.1) {
   print("  ✅ PINN 与精确解相对 L2 < 0.1——训练闭环成立");
 } else {
-  print("  ⚠️ PINN 精度有限（教学实现：小网络+数值梯度）——加大迭代/隐层可再降");
+  print("  ⚠️ PINN 精度有限（教学实现：小网络+小采样集）——加大迭代/隐层/采样可再降");
 }

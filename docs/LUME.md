@@ -183,7 +183,7 @@ print(sci.SCI_VERSION);                   // 0.7.0
 | `sig.lume` | 0.1.0 | 卷积、FIR、滑动平均、DFT / IDFT、基 2 FFT（`dft`/`idft` 复用 `complex.cmul`） | `sig_backends.sh` |
 | `graph.lume` | 0.1.0 | BFS / DFS、最短路、最小生成树 | `graph_backends.sh` |
 | `ml.lume` | v0.4.0 | AI / 机器学习：向量化激活（sigmoid/tanh/gelu/swish/leaky_relu/softplus）、损失（mse/mae/bce/cce）、正规方程线性回归与岭回归、PCA（基于 `linalg.mat_svd`）、单头 / 多头注意力、表格 Q-learning、GMM-EM；**深度学习构件（v0.3.0）**：L1/L2 范数、层归一化、批归一化（训练/推理）、Dropout、Conv1d/Conv2d、RNN/GRU 单元及序列前向；**优化器与反向（v0.4.0）**：vanilla SGD / SGD+momentum / Adam、embedding 查表与稀疏梯度、softmax 交叉熵损失与梯度，并配 `examples/dl_train_demo.lume` 纯 .lume 训练循环；以及 kNN / k-means / 逻辑回归 / 感知机 / 朴素贝叶斯 / MLP 反向传播 | `ml_backends.sh` |
-| `pinn.lume` | v0.2.0 | 物理信息神经网络（PINN）：前向模式自动微分（Taylor 二阶 dual numbers）**对网络输入求导**（∂u/∂x_j·∂²u/∂x_j²·Jacobian）、热方程 PDE 残差（解析导数）；**训练闭环（v0.2.0）**：PINN 损失（内部残差 + 初始 + 边界）、对权重数值梯度（中心差分）、Adam 训练；配 `examples/pinn_demo.lume`（AD vs 中心差分自检·机器精度一致）与 `examples/pinn_train_demo.lume`（训练闭环：PINN vs 精确解 vs `pde.lume` 有限差分三方对照） | `pinn_backends.sh` |
+| `pinn.lume` | v0.3.0 | 物理信息神经网络（PINN）：前向模式自动微分（Taylor 二阶 dual numbers）**对网络输入求导**（∂u/∂x_j·∂²u/∂x_j²·Jacobian）、热方程 PDE 残差（解析导数）；**训练闭环（v0.2.0）**：PINN 损失（内部残差 + 初始 + 边界）、Adam 训练；**反向传播（v0.3.0）**：对权重解析梯度（伴随 dual 反扫·无磁带分配），梯度步实测 ~8× 提速（demo 全程 10s→1.3s 编译 / 4.5min→19s 解释器），解析 vs 数值梯度互证 ~1e-11、Python 独立复算逐位吻合；`pinn_grad_fd`（中心差分）保留作验证 oracle；配 `examples/pinn_demo.lume`（AD vs 中心差分自检·机器精度一致）与 `examples/pinn_train_demo.lume`（训练闭环：PINN vs 精确解 vs `pde.lume` 有限差分三方对照） | `pinn_backends.sh` |
 
 > `approval.lume` / `domains.lume` / `identity.lume` / `peer.lume` 是宿主
 > 业务侧库，不属于科学计算算法层，故不列。
