@@ -1,5 +1,6 @@
 // ml.lume —— AI/机器学习算法库（纯 .lume，零 C 改动，三后端一致）。
-// 复用 linalg（mat_mul/mat_transpose/mat_scale）与 C 内核（exp/log/sqrt）。
+// 复用 blas（mat_mul·C kernel 背书·12×）与 linalg（mat_transpose/mat_scale）
+// 及 C 内核（exp/log/sqrt）。mat_mul 走 blas（墙 3），其余矩阵变换走 linalg。
 // 语言约束规避（实证坑，见日志）：
 //   * lume 的 '/' 恒产生 float —— 所有「除以整数」处显式 * 1.0；
 //   * let 为函数作用域 —— 每个函数内循环变量名全局唯一；
@@ -7,6 +8,7 @@
 //   * list 为值语义 —— 所有「修改」经 set_* 帮助函数返回新容器。
 
 import "linalg.lume" as la;
+import "blas.lume" as blas;
 
 // 库版本：v0.1.0 初始集（kNN/k-means/逻辑回归/感知机/朴素贝叶斯/MLP/注意力）；
 // v0.2.0（2026-11-09）补激活函数族、损失函数、正规方程回归、PCA、
@@ -15,7 +17,9 @@ import "linalg.lume" as la;
 // v0.4.0（2026-11-09）补优化器（vanilla SGD / SGD+momentum / Adam）与
 // 反向原语（embedding 查表+梯度、softmax 交叉熵损失+梯度），让纯 .lume
 // 训练循环得以落地。
-export let ML_VERSION = "0.4.0";
+// v0.4.1（2026-11-11）mat_mul 全部接线 blas.lume（墙 3·C kernel 背书·12×：
+// attention / 正规方程 / PCA 路径自动提速·linalg 保留供 mat_transpose/mat_scale）。
+export let ML_VERSION = "0.4.1";
 
 // ---------- 内部帮助函数 ----------
 
@@ -432,14 +436,14 @@ export func mlp2_forward(W1: float[][], b1: float[], W2: float[][], b2: float[],
 // 缩放点积注意力：softmax(Q·Kᵀ/√dk)·V（单头，Q/K/V 均为 seq×dk）。
 export func attention(Q: float[][], K: float[][], V: float[][]): float[][] {
   let dk: int = len(Q[0]);
-  let S: float[][] = la.mat_mul(Q, la.mat_transpose(K));
+  let S: float[][] = blas.mat_mul(Q, la.mat_transpose(K));
   let Ss: float[][] = la.mat_scale(S, 1.0 / sqrt(dk * 1.0));
   let A: float[][] = [];
   for (let ri = 0; ri < len(Ss); ri = ri + 1) {
     let r: float[] = softmax(Ss[ri]);
     A = push(A, r);
   }
-  return la.mat_mul(A, V);
+  return blas.mat_mul(A, V);
 }
 
 // ---------- MLP 反向传播训练 ----------
@@ -663,7 +667,7 @@ export func linear_regression(X: float[][], y: float[]): float[] {
   let Xb: float[][] = add_bias(X);
   let dd: int = len(Xb[0]);
   let Xt: float[][] = la.mat_transpose(Xb);
-  let A: float[][] = la.mat_mul(Xt, Xb);
+  let A: float[][] = blas.mat_mul(Xt, Xb);
   let Xty: float[] = [];
   for (let r = 0; r < dd; r = r + 1) {
     let s: float = 0.0;
@@ -677,7 +681,7 @@ export func ridge_regression(X: float[][], y: float[], alpha: float): float[] {
   let Xb: float[][] = add_bias(X);
   let dd: int = len(Xb[0]);
   let Xt: float[][] = la.mat_transpose(Xb);
-  let A: float[][] = la.mat_mul(Xt, Xb);
+  let A: float[][] = blas.mat_mul(Xt, Xb);
   for (let r = 0; r < dd; r = r + 1) {
     A = set_m(A, r, set_flt(A[r], r, A[r][r] + alpha));
   }
@@ -721,7 +725,7 @@ export func pca_components(X: float[][], k: int): float[][] {
 export func pca_project(X: float[][], k: int): float[][] {
   let Xc: float[][] = pca_center(X);
   let comps: float[][] = pca_components(X, k);
-  return la.mat_mul(Xc, la.mat_transpose(comps));
+  return blas.mat_mul(Xc, la.mat_transpose(comps));
 }
 
 // ---------- 多头注意力（扩展既有单头 attention）----------
@@ -739,11 +743,11 @@ export func multi_head_attention(X: float[][], nheads: int): float[][] {
       for (let c = 0; c < hd; c = c + 1) { row = push(row, X[r][h * hd + c]); }
       Xh = push(Xh, row);
     }
-    let S: float[][] = la.mat_mul(Xh, la.mat_transpose(Xh));
+    let S: float[][] = blas.mat_mul(Xh, la.mat_transpose(Xh));
     let Ss: float[][] = la.mat_scale(S, 1.0 / sqrt(hd * 1.0));
     let A: float[][] = [];
     for (let ri = 0; ri < seq; ri = ri + 1) { A = push(A, softmax(Ss[ri])); }
-    let Yh: float[][] = la.mat_mul(A, Xh);
+    let Yh: float[][] = blas.mat_mul(A, Xh);
     for (let r2 = 0; r2 < seq; r2 = r2 + 1) {
       let orow: float[] = out[r2];
       for (let c2 = 0; c2 < hd; c2 = c2 + 1) {
