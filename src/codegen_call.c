@@ -692,6 +692,7 @@ void emit_builtin_declares(CG *g)
     EMIT(g, "declare double @lume_bi_avg_loss(i8*)\n");
     EMIT(g, "declare double @lume_bi_max_consecutive_losses(i8*)\n");
     EMIT(g, "declare i8* @lume_bi_pct_change(i8*)\n");
+    EMIT(g, "declare i8* @lume_bi_matmul(i8*, i8*)\n");
     EMIT(g, "declare double @lume_bi_max_drawdown(i8*)\n");
     EMIT(g, "declare double @lume_bi_skew(i8*)\n");
     EMIT(g, "declare double @lume_bi_kurtosis(i8*)\n");
@@ -3243,6 +3244,28 @@ static Val cg_builtin(CG *g, Node *n)
         char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
                               "call i8* @%s(i8* %s)", fn, a.v);
         free(a.v);
+        return val_take(type_list(type_prim(TY_FLOAT)), t);
+    }
+
+    /* matmul (2026-11-11, wall 3): A(m×p)·B(p×n) -> float[][]. 两个 list
+     * 实参·C kernel (rt.c lume_bi_matmul) 返回新嵌套 list·与解释器逐位一致。 */
+    if (strcmp(bname, "matmul") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: matmul() takes (A, B)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: matmul() needs a list", n->line);
+        }
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: matmul() needs a list", n->line);
+        }
+        char *t = emit_instrf(g, type_list(type_prim(TY_FLOAT)),
+                              "call i8* @lume_bi_matmul(i8* %s, i8* %s)",
+                              a.v, b.v);
+        free(a.v); free(b.v);
         return val_take(type_list(type_prim(TY_FLOAT)), t);
     }
 

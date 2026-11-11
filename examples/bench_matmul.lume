@@ -1,0 +1,82 @@
+// bench_matmul.lume —— 墙 3 实测：blas.mat_mul（C kernel）vs 手写三重循环
+// （= linalg.mat_mul 的同一参考·纯 lume）在 128×128 上的用时对比 + 逐位互证。
+// 跑法（编译后端·~几秒）：
+//   bin/lume-core --compile-text -o /tmp/bm.exe examples/bench_matmul.lume && /tmp/bm.exe
+// 实测（2026-11-11·Apple M 系列·30 次 128³·user time·两侧校验和一致）：
+//   C kernel 0.05s vs 纯 lume 0.60s ≈ **12×**·逐位一致（max|diff| = 0）。
+// C 参照：无——墙 2 的 Kernel C 已给出 lume vs C 的绝对差距（~16×）。
+import "../lib/blas.lume" as blas;
+
+let N: int = 128;
+let ITERS: int = 30;   // 30 次 128³ 乘加 ≈ 6.3e7 FMA/实现——编译后端各 ~0.2-3s。
+
+// 确定性矩阵（行主序·同 wall-2 Kernel C 的生成式）。
+let A: float[][] = [];
+for (let r = 0; r < N; r = r + 1) {
+  let row: float[] = [];
+  for (let c = 0; c < N; c = c + 1) {
+    row = push(row, (r * 31 + c * 17) * 0.0001 - 1.0);
+  }
+  A = push(A, row);
+}
+let B: float[][] = [];
+for (let r2 = 0; r2 < N; r2 = r2 + 1) {
+  let row2: float[] = [];
+  for (let c2 = 0; c2 < N; c2 = c2 + 1) {
+    row2 = push(row2, (r2 * 13 + c2 * 7) * 0.0002 - 0.5);
+  }
+  B = push(B, row2);
+}
+
+// 手写三重循环（严格 FP·k 升序·linalg.mat_mul 的同一参考）。
+func ref_mul(A: float[][], B: float[][]): float[][] {
+  let m: int = len(A);
+  let n: int = len(B[0]);
+  let p: int = len(B);
+  let out: float[][] = [];
+  for (let i = 0; i < m; i = i + 1) {
+    let row: float[] = [];
+    for (let j = 0; j < n; j = j + 1) {
+      let s: float = 0.0;
+      for (let k = 0; k < p; k = k + 1) { s = s + A[i][k] * B[k][j]; }
+      row = push(row, s);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// ① 逐位互证（一次·两实现输出必须完全相同的 double）。
+let Cfast: float[][] = blas.mat_mul(A, B);
+let Cref: float[][] = ref_mul(A, B);
+let bd: float = 0.0;
+for (let i = 0; i < len(Cfast); i = i + 1) {
+  for (let j = 0; j < len(Cfast[i]); j = j + 1) {
+    let d: float = Cfast[i][j] - Cref[i][j];
+    if (d < 0.0) { d = 0.0 - d; }
+    if (d > bd) { bd = d; }
+  }
+}
+print("bit-exact max|diff| = " + str(bd));
+if (bd == 0.0) {
+  print("PASS bench_matmul: C kernel bit-exact vs pure lume");
+} else {
+  print("FAIL bench_matmul: drift");
+}
+
+// ② 计时（user time 口径：外层 shell 时间·每实现 ITERS 次）。
+// 用 argv 选边（默认 fast·"ref" 则只跑手写循环）——拆开测速：
+//   /tmp/bm.exe            # 只跑 C kernel
+//   /tmp/bm.exe ref        # 只跑手写循环
+let args: string[] = argv();
+let mode: string = "fast";
+if (len(args) > 0) { mode = args[0]; }
+let accFast: float = 0.0;
+let accRef: float = 0.0;
+if (mode == "ref") {
+  for (let g = 0; g < ITERS; g = g + 1) { accRef = accRef + ref_mul(A, B)[0][0]; }
+} else {
+  for (let f = 0; f < ITERS; f = f + 1) { accFast = accFast + blas.mat_mul(A, B)[0][0]; }
+}
+print("acc=" + str(accFast + accRef));
+print("done: 计时看 shell time（ITERS=" + str(ITERS) + "·128×128·mode=" + mode + "）");

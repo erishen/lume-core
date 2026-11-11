@@ -1627,6 +1627,10 @@ void bridge_seed_builtins(VM *vm) {
         {"rolling_mean", b_rolling_mean},
         {"rolling_stddev", b_rolling_stddev},
         {"ewma", b_ewma},
+        /* matmul (2026-11-11, wall 3): C-kernel dense matmul — interpreter
+         * native in builtins_math_quant.inc, compiled backends call rt.c's
+         * lume_bi_matmul; bit-identical to linalg.mat_mul. */
+        {"matmul", b_matmul},
         /* 出站 HTTP (2026-10-04, builtins_http.c): raw socket, no libcurl.
          * 私有地址默认拒绝,--no-net / LUME_NO_NET=1 整体关掉。 */
 #if LUME_HAS_HTTP

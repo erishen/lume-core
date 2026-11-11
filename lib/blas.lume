@@ -1,0 +1,38 @@
+// blas.lume —— C kernel 背书的稠密线性代数快路径（墙 3·NumPy 模式）。
+// 「语言做编排·C 做计算」：mat_mul 直通内建 matmul()（src/rt.c
+// lume_bi_matmul·三后端共享），与 linalg.mat_mul 的纯 lume 三重循环
+// **逐位一致**（同一严格 FP 契约：k 升序·显式 mul-then-add·无 FMA 紧缩）。
+//
+// 边界（诚实·2026-11-11）：
+//   * 本库依赖新内建 matmul()——**legacy 0.12.2 宿主不能 import 本库**
+//     （旧宿主无此内建·故不进 lib-compat 的 SHIPPED 清单，静态 P16.1
+//     重复 let 扫描仍覆盖本文件）。linalg.lume 保持纯 .lume 不动，
+//     老宿主兼容性由它继续承担。
+//   * 实测（examples/bench_matmul.lume·128×128·30 次）：C kernel 0.05s vs
+//     纯 lume 三重循环 0.60s ≈ **12×**（与墙 2 判定一致——差距在 list 元素访问）。
+//   * codegen 已知局限：文本 IR / LLVM 把导出函数平铺为 L_<名>（无模块限定），
+//     本库与 linalg.lume 同名导出（mat_mul）**不能在同一程序里同时 import**
+//     两个库（L_mat_mul 重定义）——解释器按模块别名解析没问题。避开即可。
+//
+// 语言约束（同 pinn.lume）：'/' 恒 float·let 函数作用域（循环变量唯一）·
+// list 值语义（修改经 push 返回新容器）。
+//
+// 版本：v0.1.0（2026-11-11·墙 3）。
+
+// A(m×p)·B(p×n) -> float[][]（C kernel 背书·逐位一致于 linalg.mat_mul）。
+export func mat_mul(A: float[][], B: float[][]): float[][] {
+  return matmul(A, B);
+}
+
+// 矩阵-向量积：A(m×p)·x(p) -> float[m]（C kernel 一次乘法·x 视为 p×1）。
+export func mat_vec(A: float[][], x: float[]): float[] {
+  let out: float[] = [];
+  for (let i = 0; i < len(A); i = i + 1) {
+    let s: float = 0.0;
+    for (let k = 0; k < len(x); k = k + 1) {
+      s = s + A[i][k] * x[k];
+    }
+    out = push(out, s);
+  }
+  return out;
+}

@@ -3404,6 +3404,54 @@ double lume_bi_mean(const LumeList *l)
     return s / (double)n;
 }
 
+/* matmul (2026-11-11, wall 3 — C-kernel backed dense linear algebra):
+ * A(m×p)·B(p×n) -> float[][], laid out row-major like linalg.mat_mul.
+ * Bit-identical to the pure-lume triple loop: the inner sum still walks k
+ * ascending per output element, and the mul goes through a temp so clang
+ * cannot contract it into an FMA and change the rounding (FP_CONTRACT off —
+ * the interpreter native and this kernel share the same strict-FP contract
+ * as linalg.mat_mul). Layout never changes accumulation order: B is copied
+ * column-major (bt[j*p+k] = B[k][j]) so the inner k loop reads contiguous
+ * doubles; results are the same values in the same order.
+ * Invalid input (null/empty/ragged) answers an empty list; the interpreter
+ * native reports a proper error, mirroring the quant-builtin convention. */
+LumeList *lume_bi_matmul(const LumeList *A, const LumeList *B)
+{
+    #pragma STDC FP_CONTRACT OFF
+    if (!A || !B) return lume_list_new();
+    int64_t m = lume_list_len(A), p = lume_list_len(B);
+    LumeList *result = lume_list_new();
+    if (m == 0 || p == 0) return result;
+    const LumeList *b0 = lume_list_at_obj(B, 0);
+    int64_t n = b0 ? lume_list_len(b0) : 0;
+    if (n == 0) return result;
+    double *bt = (double *)malloc((size_t)(p * n) * sizeof(double));
+    double *ar = (double *)malloc((size_t)(p ? p : 1) * sizeof(double));
+    if (!bt || !ar) { free(bt); free(ar); return result; }
+    for (int64_t k = 0; k < p; k++) {
+        const LumeList *row = lume_list_at_obj(B, k);
+        if (!row || lume_list_len(row) != n) { free(bt); free(ar); return result; }
+        for (int64_t j = 0; j < n; j++) bt[j * p + k] = lume_list_at_f(row, j);
+    }
+    for (int64_t i = 0; i < m; i++) {
+        const LumeList *arow = lume_list_at_obj(A, i);
+        if (!arow || lume_list_len(arow) != p) { free(bt); free(ar); return result; }
+        for (int64_t k = 0; k < p; k++) ar[k] = lume_list_at_f(arow, k);
+        LumeList *outrow = lume_list_new();
+        for (int64_t j = 0; j < n; j++) {
+            double s = 0.0;
+            for (int64_t k = 0; k < p; k++) {
+                double t = ar[k] * bt[j * p + k];
+                s += t;
+            }
+            lume_list_push_f(outrow, s);
+        }
+        lume_list_push_obj(result, outrow);
+    }
+    free(bt); free(ar);
+    return result;
+}
+
 /* Fisher-Yates shuffle of a fresh list (the input is left untouched): for
  * i = n-1 down to 1, swap i with rand_int(0, i). rand_int consumes two
  * PCG32 draws per step, and the fixed stream makes the permutation

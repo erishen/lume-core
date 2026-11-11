@@ -1,0 +1,68 @@
+// blas-consistency.lume —— lib/blas.lume（C kernel matmul）三后端一致性测试。
+// 同一份源在三后端（解释器 / 文本 IR / LLVM）逐字节一致，由 tests/blas_backends.sh 驱动。
+// 数值正确性：blas.mat_mul（C kernel）vs 本地手写三重循环 **逐位相等**。
+// 注：不 import linalg.lume——文本 IR 把导出函数平铺为 L_<名>（无模块限定），
+// 两库同名 mat_mul 会符号撞车（codegen 既有局限·见 lib/blas.lume 头注）。
+import "../lib/blas.lume" as blas;
+
+// 确定性矩阵（含负数·非整·int/float 混合）。
+let A: float[][] = [[1.5, -2.0, 0.25], [4.0, 5.25, -6.5]];
+let Bm: float[][] = [[7.0, 8.5], [-9.25, 10.0], [11.0, -12.75]];
+print(blas.mat_mul(A, Bm));
+// 本地手写三重循环（k 升序·严格 FP·与 linalg.mat_mul 同一参考）。
+let m0: int = len(A);
+let n0: int = len(Bm[0]);
+let p0: int = len(Bm);
+let R0: float[][] = [];
+for (let i0 = 0; i0 < m0; i0 = i0 + 1) {
+  let row0: float[] = [];
+  for (let j0 = 0; j0 < n0; j0 = j0 + 1) {
+    let s0: float = 0.0;
+    for (let k0 = 0; k0 < p0; k0 = k0 + 1) { s0 = s0 + A[i0][k0] * Bm[k0][j0]; }
+    row0 = push(row0, s0);
+  }
+  R0 = push(R0, row0);
+}
+print(R0);
+// 逐位互证：C kernel 与手写循环必须输出完全相同的 double。
+let CM: float[][] = blas.mat_mul(A, Bm);
+let bd: float = 0.0;
+for (let i = 0; i < len(CM); i = i + 1) {
+  for (let j = 0; j < len(CM[i]); j = j + 1) {
+    let d: float = CM[i][j] - R0[i][j];
+    if (d < 0.0) { d = 0.0 - d; }
+    if (d > bd) { bd = d; }
+  }
+}
+print(bd);
+if (bd == 0.0) {
+  print("PASS blas v0.1.0: mat_mul bit-exact vs reference");
+} else {
+  print("FAIL blas v0.1.0: mat_mul drift vs reference");
+}
+// 2×2·纯 float 元素（int 混合在 C kernel 层宽化·经库类型仍是 float[][]）。
+print(blas.mat_mul([[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]));
+// mat_vec：C kernel 一次乘法结果 vs 手写点积（逐位）。
+let V: float[] = [0.5, -1.5, 2.0];
+print(blas.mat_vec(A, V));
+let mv: float[] = [];
+for (let i2 = 0; i2 < len(A); i2 = i2 + 1) {
+  let s2: float = 0.0;
+  for (let k2 = 0; k2 < len(V); k2 = k2 + 1) {
+    s2 = s2 + A[i2][k2] * V[k2];
+  }
+  mv = push(mv, s2);
+}
+let bm2: float[] = blas.mat_vec(A, V);
+let vd: float = 0.0;
+for (let r = 0; r < len(mv); r = r + 1) {
+  let d3: float = bm2[r] - mv[r];
+  if (d3 < 0.0) { d3 = 0.0 - d3; }
+  if (d3 > vd) { vd = d3; }
+}
+print(vd);
+if (vd == 0.0) {
+  print("PASS blas v0.1.0: mat_vec bit-exact vs hand dot");
+} else {
+  print("FAIL blas v0.1.0: mat_vec drift");
+}

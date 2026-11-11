@@ -492,6 +492,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "mean", "variance", "stddev", "median", "percentile",
     "covariance", "correlation", "linreg", "pct_change", "max_drawdown",
     "skew", "kurtosis", "rolling_mean", "rolling_stddev", "ewma",
+    /* matmul (2026-11-11, wall 3): C-kernel dense matmul, A·B -> float[][] */
+    "matmul",
     /* outbound HTTP (2026-10-04, builtins_http.c) */
     "http_get",
     /* HTTP verbs that carry a body (2026-10-05) */
@@ -549,6 +551,7 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"crypt_verify",2,2}, {"const_time_eq",2,2},
     {"pow",2,2}, {"hmac_sha256",2,2}, {"push",2,2}, {"map",2,2}, {"filter",2,2},
     {"reduce",3,3}, {"igamma",2,2}, {"ibeta",3,3}, {"tdist_cdf",2,2}, {"chisq_cdf",2,2},
+    {"matmul",2,2},
     {"sql_tx_begin",1,1}, {"sql_tx_exec",2,3}, {"sql_tx_commit",1,1}, {"sql_tx_rollback",1,1},
     {"normcdf",1,1}, {"norminv",1,1}, {"erf",1,1}, {"gamma",1,1}, {"lgamma",1,1},
     {"seed",1,1}, {"rand",0,0}, {"rand_range",2,2}, {"rand_int",2,2}, {"rand_normal",2,2},

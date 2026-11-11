@@ -38,6 +38,9 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIB = ROOT / "lib"
 SHIPPED = ("sci.lume", "optim.lume", "linalg.lume")
+# 注：blas.lume 不在 SHIPPED——它依赖新内建 matmul()，legacy 0.12.2 宿主
+# 没有该内建（墙 3 的 C kernel 快路径·见 lib/blas.lume 头注）。静态 P16.1
+# 重复 let 扫描仍覆盖全部 lib/*.lume（含 blas.lume）。
 
 # Two `for (let i)` in the same block: the exact shape 0.12.2 rejects.
 BAD_SAMPLE = """func f() {

@@ -1687,6 +1687,66 @@ static void native_obv(VM *vm, int argc, Value *args, Value *out) {
     *out = val_obj(res);
 }
 
+/* matmul (2026-11-11, wall 3): A(m×p)·B(p×n) -> float[][]. 与 rt.c
+ * lume_bi_matmul 同一份严格 FP 契约(列主序转置 + 显式 mul-then-add·k 升序
+ * 累加)——与 linalg.mat_mul 的纯 lume 三重循环逐位一致。非法输入
+ * (空 / 非数字 / 行长不齐)一律 vm_set_error。 */
+static void native_matmul(VM *vm, int argc, Value *args, Value *out) {
+    #pragma STDC FP_CONTRACT OFF
+    ObjList *A, *B;
+    if (argc < 2 || !arg_list(vm, args[0], &A) || !arg_list(vm, args[1], &B)) return;
+    int m = A->count, p = B->count;
+    if (m == 0 || p == 0) { vm_set_error(vm, "matmul() needs non-empty matrices"); return; }
+    ObjList *b0;
+    if (!arg_list(vm, B->items[0], &b0)) return;
+    int n = b0->count;
+    if (n == 0) { vm_set_error(vm, "matmul() needs non-empty matrices"); return; }
+    double *bt = (double *)malloc((size_t)(p * n) * sizeof(double));
+    double *ar = (double *)malloc((size_t)(p ? p : 1) * sizeof(double));
+    if (!bt || !ar) { free(bt); free(ar); vm_set_error(vm, "out of memory"); return; }
+    for (int k = 0; k < p; k++) {
+        ObjList *row;
+        if (!arg_list(vm, B->items[k], &row)) { free(bt); free(ar); return; }
+        if (row->count != n) {
+            free(bt); free(ar);
+            vm_set_error(vm, "matmul() dimension mismatch (ragged B)");
+            return;
+        }
+        for (int j = 0; j < n; j++)
+            if (!list_num(vm, row, j, &bt[j * p + k])) { free(bt); free(ar); return; }
+    }
+    Obj *res = AS_OBJ(make_list(vm));
+    vm_push(vm, val_obj(res));
+    for (int i = 0; i < m; i++) {
+        ObjList *arow;
+        if (!arg_list(vm, A->items[i], &arow)) { free(bt); free(ar); return; }
+        if (arow->count != p) {
+            free(bt); free(ar);
+            vm_set_error(vm, "matmul() dimension mismatch (ragged A)");
+            return;
+        }
+        for (int k = 0; k < p; k++)
+            if (!list_num(vm, arow, k, &ar[k])) { free(bt); free(ar); return; }
+        Obj *orow = AS_OBJ(make_list(vm));
+        vm_push(vm, val_obj(orow));
+        for (int j = 0; j < n; j++) {
+            double s = 0.0;
+            for (int k = 0; k < p; k++) {
+                double t = ar[k] * bt[j * p + k];
+                s += t;
+            }
+            list_push(vm, orow, val_num(s));
+        }
+        vm_pop(vm);
+        list_push(vm, res, val_obj(orow));
+    }
+    vm_pop(vm);
+    free(bt); free(ar);
+    *out = val_obj(res);
+}
+
+Value b_matmul(VM *vm, int argc, Value *args)        { return vm_native(vm, argc, args, native_matmul); }
+
 Value b_mean(VM *vm, int argc, Value *args)         { return vm_native(vm, argc, args, native_mean); }
 Value b_variance(VM *vm, int argc, Value *args)     { return vm_native(vm, argc, args, native_variance); }
 Value b_stddev(VM *vm, int argc, Value *args)       { return vm_native(vm, argc, args, native_stddev); }

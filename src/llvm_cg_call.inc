@@ -2831,6 +2831,29 @@ static Val cg_builtin(CG *g, Node *n)
         return val_make(type_list(type_prim(TY_FLOAT)), r);
     }
 
+    /* matmul (2026-11-11, wall 3): A(m×p)·B(p×n) -> float[][] — rt.c
+     * lume_bi_matmul·与文本 IR 后端同一发射形状。 */
+    if (strcmp(bname, "matmul") == 0) {
+        if (argc != 2)
+            ERRV(g, "line %zu: matmul() takes (A, B)", n->line);
+        Val a = cg_expr(g, n->as.call.args[0]);
+        if (!a.v || !a.ty || a.ty->kind != TY_LIST) {
+            free(a.v);
+            ERRV(g, "line %zu: matmul() needs a list", n->line);
+        }
+        Val b = cg_expr(g, n->as.call.args[1]);
+        if (!b.v || !b.ty || b.ty->kind != TY_LIST) {
+            free(a.v); free(b.v);
+            ERRV(g, "line %zu: matmul() needs a list", n->line);
+        }
+        LLVMTypeRef pp[2] = { g->i8ptr, g->i8ptr };
+        LLVMValueRef vs[2] = { a.v, b.v };
+        LLVMValueRef r = LLVMBuildCall2(g->ab,
+            LLVMFunctionType(g->i8ptr, pp, 2, 0),
+            rt_decl(g, "lume_bi_matmul", g->i8ptr, pp, 2), vs, 2, "q");
+        return val_make(type_list(type_prim(TY_FLOAT)), r);
+    }
+
     /* rolling_mean/rolling_stddev (list, window) and ewma (list, alpha):
      * one list plus one scalar, returning a fresh float list. The window
      * is an integer semantic: an int passes straight through as i64, a

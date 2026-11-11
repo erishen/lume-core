@@ -257,6 +257,9 @@ Value b_percentile(VM *vm, int argc, Value *args);
 Value b_covariance(VM *vm, int argc, Value *args);
 Value b_correlation(VM *vm, int argc, Value *args);
 Value b_linreg(VM *vm, int argc, Value *args);
+/* matmul (2026-11-11, wall 3): A(m×p)·B(p×n) -> float[][] — C-kernel backed
+ * dense linear algebra (rt.c lume_bi_matmul mirrors native_matmul). */
+Value b_matmul(VM *vm, int argc, Value *args);
 Value b_pct_change(VM *vm, int argc, Value *args);
 Value b_max_drawdown(VM *vm, int argc, Value *args);
 Value b_skew(VM *vm, int argc, Value *args);
