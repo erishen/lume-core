@@ -196,13 +196,19 @@ static void native_join(VM *vm, int argc, Value *args, Value *out) {
 }
 
 /* substr(s, start, len?) — byte-based substring. Negative start counts from
- * the end; len clamps to the string end. */
+ * the end; len clamps to the string end. Length comes from the object's
+ * stored byte length, NOT strlen: binary payloads (JPEG/VRM) contain NUL
+ * bytes, and strlen would truncate every slice at the first one. */
 static void native_substr(VM *vm, int argc, Value *args, Value *out) {
     if (argc < 2) { vm_set_error(vm, "substr() needs (s, start)"); return; }
-    const char *s = NULL;
-    if (!arg_string(vm, args[0], &s)) return;
+    if (!IS_OBJ(args[0]) || AS_OBJ(args[0])->type != OBJ_STRING) {
+        vm_set_error(vm, "substr() needs a string");
+        return;
+    }
+    Obj *so = AS_OBJ(args[0]);
+    const char *s = obj_string(so);
     if (!IS_NUM(args[1])) { vm_set_error(vm, "substr() start must be a number"); return; }
-    long n = (long)strlen(s);
+    long n = (long)obj_string_len(so);
     long start = (long)AS_NUM(args[1]);
     if (start < 0) start = n + start;
     if (start < 0) start = 0;
