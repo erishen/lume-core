@@ -1,0 +1,38 @@
+// pinn-consistency.lume —— lib/pinn.lume 三后端一致性测试。
+// 覆盖：前向模式 AD（Taylor 二阶）·对输入求导（Jacobian·一阶/二阶）·热方程残差。
+// 同一份源在三后端（解释器 / 文本 IR / LLVM）逐字节一致，由 tests/pinn_backends.sh 驱动。
+// 数值正确性（AD vs 中心差分）另由 examples/pinn_demo.lume 自检。
+import "../lib/ml.lume" as ml;
+import "../lib/pinn.lume" as pinn;
+
+// 固定网络（seed=42·确定性）+ 固定采样点——golden 输出，三后端一致。
+let d: int = 2;   // 输入 = [x, t]
+let h: int = 3;   // 隐层
+let P: float[][] = ml.mlp2_init(d, h, 42);
+let W1: float[][] = [];
+for (let i = 0; i < h; i = i + 1) { W1 = push(W1, P[i]); }
+let b1: float[] = P[h];
+let W2: float[][] = [P[h + 1]];
+let b2: float[] = P[h + 2];
+let xt: float[] = [0.3, 0.2];   // 采样点 (x=0.3·t=0.2)
+
+print(pinn.PINN_VERSION);                          // 0.2.0
+print(pinn.mlp2_value(W1, b1, W2, b2, xt));        // u(x,t)
+print(pinn.mlp2_dx(W1, b1, W2, b2, xt, 0));        // ∂u/∂x
+print(pinn.mlp2_dx(W1, b1, W2, b2, xt, 1));        // ∂u/∂t
+print(pinn.mlp2_dxx(W1, b1, W2, b2, xt, 0));       // ∂²u/∂x²
+print(pinn.pinn_heat_residual(W1, b1, W2, b2, 0.1, xt));  // u_t - 0.1·u_xx
+// ---- v0.2.0：损失 / 数值梯度 / Adam（小规模·确定性·三后端逐字节一致）----
+let XF2: float[] = [0.3, 0.6];
+let TF2: float[] = [0.2, 0.4];
+let X02: float[] = [0.2, 0.7];
+let U02: float[] = [0.587785, 0.809017];
+let XB2: float[] = [0.0, 1.0];
+let TB2: float[] = [0.3, 0.5];
+let GB2: float[] = [0.0, 0.0];
+print(pinn.pinn_heat_loss_packed(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2));
+let G2: float[][] = pinn.pinn_grad_fd(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2, 1e-5);
+print(G2[0]);                                      // 梯度第 0 行（W1 首行）
+let PA: float[][] = pinn.pinn_adam_train(P, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2, 3, 0.01);
+print(PA[0]);                                      // Adam 3 轮后 W1 首行
+print(pinn.pinn_heat_loss_packed(PA, 0.1, XF2, TF2, X02, U02, XB2, TB2, GB2));

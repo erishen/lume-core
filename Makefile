@@ -800,7 +800,7 @@ lib-compat:
 # 却没有任何自动门禁能证明三后端数值语义没漂移。无 libLLVM 时脚本自己降级为
 # interp/text 两腿对比(仍然要求一致), 所以 CI 任何 lane 都可以挂。
 lib-backends: all
-	@for s in sci linalg optim pde; do \
+	@for s in sci linalg optim pde ml pinn dist complex sig graph; do \
 	  bash tests/$${s}_backends.sh || exit 1; \
 	done
 

@@ -1,0 +1,144 @@
+// pinn_train_demo.lume —— PINN 训练闭环（第二步：损失 + 第三步：Adam 训练）。
+// 跑法（解释器·约 4-5 分钟）：
+//   bin/lume-core examples/pinn_train_demo.lume
+// 跑法（文本 IR 编译后端·约 10 秒·输出与解释器逐字节一致）：
+//   bin/lume-core --compile-text -o /tmp/ptd.exe examples/pinn_train_demo.lume && /tmp/ptd.exe
+//
+// 问题（通用数学·不绑定任何应用领域）：
+//   热方程 u_t = alpha·u_xx，x∈[0,1]，t∈[0,1]，alpha=0.1
+//   初始条件 u(x,0) = sin(pi·x)·边界 Dirichlet 0（两端）
+//   精确解：u(x,t) = sin(pi·x)·exp(-alpha·pi²·t)
+//
+// 三方对照（研究闭环）：
+//   ① PINN   —— 2-H-1 tanh MLP·Adam（数值梯度）·pinn.lume v0.2.0
+//   ② 精确解 —— 上面闭式
+//   ③ 有限差分 —— pde.lume pde_heat_explicit（FTCS·41 点网格·r=0.4）
+// 同一份源在三后端逐字节一致（print 单参 + str()）。纯数学·无领域背景。
+import "../lib/ml.lume" as ml;
+import "../lib/pinn.lume" as pinn;
+import "../lib/pde.lume" as pde;
+
+let PI: float = 3.14159265358979;
+let ALPHA: float = 0.1;
+let HID: int = 8;
+
+// 精确解。
+func u_exact(x: float, t: float): float {
+  return sin(PI * x) * exp(0.0 - ALPHA * PI * PI * t);
+}
+
+// ── 采样集（确定性·全部由算术生成·无随机）──────────────────────
+// 内部配点 4×4（残差项）。
+let XF: float[] = [];
+let TF: float[] = [];
+for (let gx = 1; gx <= 4; gx = gx + 1) {
+  for (let gt = 1; gt <= 4; gt = gt + 1) {
+    XF = push(XF, gx * 1.0 / 5.0);
+    TF = push(TF, gt * 1.0 / 4.0);
+  }
+}
+// 初始条件配点 9 点（x = 0.1..0.9·t=0）。
+let X0: float[] = [];
+let U0: float[] = [];
+for (let g0 = 1; g0 <= 9; g0 = g0 + 1) {
+  X0 = push(X0, g0 * 1.0 / 10.0);
+  U0 = push(U0, u_exact(g0 * 1.0 / 10.0, 0.0));
+}
+// 边界配点 2 端 × 4 个时刻（Dirichlet 0）。
+let XB: float[] = [];
+let TB: float[] = [];
+let GB: float[] = [];
+for (let gb = 1; gb <= 4; gb = gb + 1) {
+  XB = push(XB, 0.0); TB = push(TB, gb * 1.0 / 4.0); GB = push(GB, 0.0);
+  XB = push(XB, 1.0); TB = push(TB, gb * 1.0 / 4.0); GB = push(GB, 0.0);
+}
+
+// ── 网络 + 分阶段 Adam ───────────────────────────────────────
+let STAGE1_ITERS: int = 400;
+let STAGE1_LR: float = 0.03;
+let STAGE2_ITERS: int = 200;
+let STAGE2_LR: float = 0.01;
+
+let P0: float[][] = ml.mlp2_init(2, HID, 7);
+let NPAR: int = 2 * HID + 2 * HID + 1;
+
+print("PINN_VERSION = " + pinn.PINN_VERSION);
+print("问题: u_t = alpha*u_xx, u(x,0)=sin(pi*x), u(0/1,t)=0, alpha=" + str(ALPHA));
+print("网络: 2-" + str(HID) + "-1 tanh MLP（" + str(NPAR) + " 参数）");
+print("采样: 内部 " + str(len(XF)) + " + 初始 " + str(len(X0)) + " + 边界 " + str(len(XB)));
+print("loss(初始)          = " + str(pinn.pinn_heat_loss_packed(P0, ALPHA, XF, TF, X0, U0, XB, TB, GB)));
+
+let P1: float[][] = pinn.pinn_adam_train(P0, ALPHA, XF, TF, X0, U0, XB, TB, GB, STAGE1_ITERS, STAGE1_LR);
+print("loss(阶段1: " + str(STAGE1_ITERS) + " 轮 @ lr=" + str(STAGE1_LR) + ") = " + str(pinn.pinn_heat_loss_packed(P1, ALPHA, XF, TF, X0, U0, XB, TB, GB)));
+let P2: float[][] = pinn.pinn_adam_train(P1, ALPHA, XF, TF, X0, U0, XB, TB, GB, STAGE2_ITERS, STAGE2_LR);
+print("loss(阶段2: " + str(STAGE2_ITERS) + " 轮 @ lr=" + str(STAGE2_LR) + ") = " + str(pinn.pinn_heat_loss_packed(P2, ALPHA, XF, TF, X0, U0, XB, TB, GB)));
+
+// ── 评估 ─────────────────────────────────────────────────────
+// 解包训练后权重（P = [W1(h×2), b1(h), W2(1×h), b2(1)]）。
+let HC: int = len(P2) - 3;
+let W1t: float[][] = [];
+for (let ui = 0; ui < HC; ui = ui + 1) { W1t = push(W1t, P2[ui]); }
+let b1t: float[] = P2[HC];
+let W2t: float[][] = [P2[HC + 1]];
+let b2t: float[] = P2[HC + 2];
+
+// 有限差分参考（pde.lume FTCS·41 点网格·dt=0.0025·r=0.4·稳定）。
+let U0G: float[] = [];
+for (let gi = 0; gi <= 40; gi = gi + 1) {
+  U0G = push(U0G, sin(PI * gi * 1.0 / 40.0));
+}
+let UFD1: float[] = pde.pde_heat_explicit(U0G, 0.0, 1.0, ALPHA, 0.0025, 100, 0.0, 0.0);  // t=0.25
+let UFD2: float[] = pde.pde_heat_explicit(U0G, 0.0, 1.0, ALPHA, 0.0025, 200, 0.0, 0.0);  // t=0.5
+let UFD3: float[] = pde.pde_heat_explicit(U0G, 0.0, 1.0, ALPHA, 0.0025, 300, 0.0, 0.0);  // t=0.75
+let UFD4: float[] = pde.pde_heat_explicit(U0G, 0.0, 1.0, ALPHA, 0.0025, 400, 0.0, 0.0);  // t=1.0
+
+// t=1.0 切片对照表（11 点）。
+print("--- t=1.0 切片: x / 精确 / 有限差分 / PINN ---");
+for (let ex = 0; ex <= 10; ex = ex + 1) {
+  let xv: float = ex * 1.0 / 10.0;
+  print("x=" + str(xv) + "  exact=" + str(u_exact(xv, 1.0)) +
+        "  FD=" + str(UFD4[ex * 4]) +
+        "  PINN=" + str(pinn.mlp2_value(W1t, b1t, W2t, b2t, [xv, 1.0])));
+}
+
+// 误差统计（评估网格 9x4 = 36 点·内部）。
+let emax_fd: float = 0.0;
+let emax_p: float = 0.0;
+let sse: float = 0.0;
+let ssu: float = 0.0;
+for (let ev = 1; ev <= 9; ev = ev + 1) {
+  for (let et = 1; et <= 4; et = et + 1) {
+    let xv2: float = ev * 1.0 / 10.0;
+    let tv2: float = et * 1.0 / 4.0;
+    let ue2: float = u_exact(xv2, tv2);
+    let up2: float = pinn.mlp2_value(W1t, b1t, W2t, b2t, [xv2, tv2]);
+    let errp: float = up2 - ue2;
+    if (errp < 0.0) { errp = 0.0 - errp; }
+    if (errp > emax_p) { emax_p = errp; }
+    sse = sse + errp * errp;
+    ssu = ssu + ue2 * ue2;
+    // FD 在同一网格点（x=ev/10 → 41 点网格下标 ev*4）。
+    let uf2: float = 0.0;
+    if (et == 1) { uf2 = UFD1[ev * 4]; }
+    if (et == 2) { uf2 = UFD2[ev * 4]; }
+    if (et == 3) { uf2 = UFD3[ev * 4]; }
+    if (et == 4) { uf2 = UFD4[ev * 4]; }
+    let errf: float = uf2 - ue2;
+    if (errf < 0.0) { errf = 0.0 - errf; }
+    if (errf > emax_fd) { emax_fd = errf; }
+  }
+}
+print("--- 误差统计（评估网格 9x4 = 36 点·内部）---");
+print("FD   vs 精确: 最大误差 = " + str(emax_fd));
+print("PINN vs 精确: 最大误差 = " + str(emax_p) + "·相对 L2 = " + str(sqrt(sse / ssu)));
+print("--- 结论 ---");
+if (emax_fd < 0.01) {
+  print("  ✅ 有限差分（pde.lume）与精确解一致——数值真值腿可靠");
+} else {
+  print("  ❌ FD 误差超阈——检查 pde.lume 调用");
+}
+if (sqrt(sse / ssu) < 0.1) {
+  print("  ✅ PINN 与精确解相对 L2 < 0.1——训练闭环成立");
+} else {
+  print("  ⚠️ PINN 精度有限（教学实现：小网络+数值梯度）——加大迭代/隐层可再降");
+}

@@ -1,0 +1,340 @@
+// pinn.lume —— 物理信息神经网络（PINN）核心：对网络输入求导（前向模式 AD·Taylor 二阶）。
+// 纯 .lume·零 C 摩擦·三后端一致（解释器 / 文本 IR / LLVM）。
+// 通用数学（不绑定任何应用领域）——PDE 残差是纯函数，调用方决定物理背景。
+//
+// 设计（第一步·对输入求导）：
+//   PINN 计算 PDE 残差需要 ∂u/∂t·∂u/∂x·∂²u/∂x²——即「对网络输入」求导，
+//   不是 ml.lume 现有的「对权重」梯度（softmax 交叉熵那套）。本库用
+//   前向模式自动微分（dual numbers）到二阶：一次前向同时得 (值, 一阶, 二阶)。
+//
+//   Taylor 二阶表示：每个标量是 float[3] = [v, d1, d2]（值·一阶导·二阶导）。
+//   dual = v + d1·ε + d2·ε²（ε² 截断）。运算规则见 d_add / d_mul / d_tanh。
+//
+//   u(x) = W2·tanh(W1·x + b1) + b2（两层 MLP·通用）。对第 j 个输入维：
+//     初始 x[k] = [x[k], (k==j ? 1 : 0), 0]（一阶激活·二阶 0），前向传播得
+//     u[0] = [u, ∂u/∂x_j, ∂²u/∂x_j²]。
+//
+// 语言约束规避（同 ml.lume 实证坑）：
+//   * lume 的 '/' 恒产生 float——所有除法显式 * 1.0；
+//   * let 为函数作用域——每个函数内循环变量名全局唯一；
+//   * list 为值语义——所有「修改」经 push 返回新容器，无原地赋值；
+//   * 本地函数返回绑定的 let 一律显式标注类型。
+//
+// 版本：v0.1.0（2026-11-10）——对输入求导（Jacobian）+ 热方程残差。
+// 版本：v0.2.0（2026-11-11）——PINN 损失（残差+初始+边界）+ 数值梯度 + Adam 训练。
+
+export let PINN_VERSION = "0.2.0";
+
+// ── 前向模式 AD（Taylor 二阶）核心运算 ──────────────────────────
+
+// 常数 dual（导数为 0）。
+export func d_const(v: float): float[] {
+  return [v, 0.0, 0.0];
+}
+
+// 加法：(a0+a1ε+a2ε²)+(b0+b1ε+b2ε²)。
+export func d_add(a: float[], b: float[]): float[] {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
+
+// 乘法：(a0+a1ε+a2ε²)(b0+b1ε+b2ε²) = a0b0 + (a0b1+a1b0)ε + (a0b2+2a1b1+a2b0)ε²。
+export func d_mul(a: float[], b: float[]): float[] {
+  let c0: float = a[0] * b[0];
+  let c1: float = a[0] * b[1] + a[1] * b[0];
+  let c2: float = a[0] * b[2] + 2.0 * a[1] * b[1] + a[2] * b[0];
+  return [c0, c1, c2];
+}
+
+// tanh 的 dual 规则：t = tanh(v)，t' = (1-t²)·d1，t'' = -2t(1-t²)·d1² + (1-t²)·d2。
+export func d_tanh(a: float[]): float[] {
+  let t: float = tanh(a[0]);
+  let s: float = 1.0 - t * t;              // sech²(v) = 1 - tanh²(v)
+  let d1: float = s * a[1];
+  let d2: float = (-2.0 * t * s) * (a[1] * a[1]) + s * a[2];
+  return [t, d1, d2];
+}
+
+// sigmoid 的 dual 规则：σ' = σ(1-σ)·d1，σ'' = σ(1-σ)(1-2σ)·d1² + σ(1-σ)·d2。
+// sigmoid(v) = 1/(1+exp(-v))（自实现·不依赖 ml.lume·避免库间耦合）。
+export func d_sigmoid(a: float[]): float[] {
+  let e: float = exp(0.0 - a[0]);
+  let s: float = 1.0 / (1.0 + e);
+  let s1: float = s * (1.0 - s);
+  let s2: float = s * (1.0 - s) * (1.0 - 2.0 * s);
+  let d1: float = s1 * a[1];
+  let d2: float = s2 * (a[1] * a[1]) + s1 * a[2];
+  return [s, d1, d2];
+}
+
+// 常数乘 dual（标量 × dual）。
+export func d_scale(c: float, a: float[]): float[] {
+  return [c * a[0], c * a[1], c * a[2]];
+}
+
+// 值提取（取 dual 的值分量）。
+export func d_val(a: float[]): float {
+  return a[0];
+}
+
+// ── 网络前向（dual 传播）───────────────────────────────────────
+
+// 全连接层（dual）：z_j = b_j + Σ_k W[j][k]·x_k（x 为 dual 列表·每元素 float[3]）。
+// 返回 dual 列表（float[3] 的 list·即 float[][]）。
+export func d_dense(W: float[][], b: float[], x: float[][]): float[][] {
+  let out: float[][] = [];
+  for (let j = 0; j < len(W); j = j + 1) {
+    let acc: float[] = d_const(b[j]);
+    for (let k = 0; k < len(x); k = k + 1) {
+      let xk: float[] = x[k];
+      let prod: float[] = d_scale(W[j][k], xk);
+      acc = d_add(acc, prod);
+    }
+    out = push(out, acc);
+  }
+  return out;
+}
+
+// 向量激活（dual·tanh）。
+export func d_tanh_vec(z: float[][]): float[][] {
+  let out: float[][] = [];
+  for (let i = 0; i < len(z); i = i + 1) {
+    out = push(out, d_tanh(z[i]));
+  }
+  return out;
+}
+
+// 两层 MLP 前向（dual）：u = W2·tanh(W1·x + b1) + b2。
+// x 为 dual 列表（float[3] 的 list）·返回输出层 dual 列表（float[3] 的 list）。
+export func d_mlp2_forward(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[][]): float[][] {
+  let z1: float[][] = d_dense(W1, b1, x);
+  let a1: float[][] = d_tanh_vec(z1);
+  let z2: float[][] = d_dense(W2, b2, a1);
+  return z2;
+}
+
+// ── 对输入求导（Jacobian）──────────────────────────────────────
+
+// 把实输入 x 转成 dual 列表：第 j 维设一阶激活（d1=1·d2=0），其余导数为 0。
+// 这是「对第 j 个输入维求导」的初始条件。
+export func d_seed(x: float[], j: int): float[][] {
+  let out: float[][] = [];
+  for (let k = 0; k < len(x); k = k + 1) {
+    let d1: float = 0.0;
+    if (k == j) { d1 = 1.0; }
+    out = push(out, [x[k], d1, 0.0]);
+  }
+  return out;
+}
+
+// 两层 MLP 输出对第 j 个输入维的一阶导：∂u/∂x_j。
+export func mlp2_dx(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[], j: int): float {
+  let xs: float[][] = d_seed(x, j);
+  let u: float[][] = d_mlp2_forward(W1, b1, W2, b2, xs);
+  return u[0][1];
+}
+
+// 两层 MLP 输出对第 j 个输入维的二阶导：∂²u/∂x_j²。
+export func mlp2_dxx(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[], j: int): float {
+  let xs: float[][] = d_seed(x, j);
+  let u: float[][] = d_mlp2_forward(W1, b1, W2, b2, xs);
+  return u[0][2];
+}
+
+// 两层 MLP 前向（实值）：u(x)（纯值·用于有限差分对照）。
+export func mlp2_value(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[]): float {
+  let z1: float[] = [];
+  for (let j = 0; j < len(W1); j = j + 1) {
+    let s: float = b1[j];
+    for (let k = 0; k < len(x); k = k + 1) {
+      s = s + W1[j][k] * x[k];
+    }
+    z1 = push(z1, s);
+  }
+  let a1: float[] = [];
+  for (let i = 0; i < len(z1); i = i + 1) {
+    a1 = push(a1, tanh(z1[i]));
+  }
+  let z2: float[] = [];
+  for (let w = 0; w < len(W2); w = w + 1) {
+    let sv: float = b2[w];
+    for (let v = 0; v < len(a1); v = v + 1) {
+      sv = sv + W2[w][v] * a1[v];
+    }
+    z2 = push(z2, sv);
+  }
+  return z2[0];
+}
+
+// ── 热方程 PINN 残差（u_t - α·u_xx）───────────────────────────
+// 输入 xt = [x, t]（第 0 维 = x 空间·第 1 维 = t 时间）。通用·不含领域背景。
+export func pinn_heat_residual(W1: float[][], b1: float[], W2: float[][], b2: float[], alpha: float, xt: float[]): float {
+  // 对 x（第 0 维）二阶导 = u_xx。
+  let xs: float[][] = d_seed(xt, 0);
+  let ux: float[][] = d_mlp2_forward(W1, b1, W2, b2, xs);
+  let u_xx: float = ux[0][2];
+  // 对 t（第 1 维）一阶导 = u_t。
+  let ts: float[][] = d_seed(xt, 1);
+  let ut: float[][] = d_mlp2_forward(W1, b1, W2, b2, ts);
+  let u_t: float = ut[0][1];
+  return u_t - alpha * u_xx;
+}
+
+// ════════════════════════════════════════════════════════════════
+// v0.2.0（2026-11-11）——PINN 损失 + 数值梯度 + Adam 训练。
+// 打包权重格式（与 ml.mlp2_init 一致）：P = [W1(h×d), b1(h), W2(1×h), b2(1)]。
+// 采样集全部由调用方给定（平行数组）——库不绑定任何物理背景：
+//   XF/TF  内部配点 (x_i, t_i)（残差项）
+//   X0/U0  初始条件配点 (x_j, 0) 与目标值 u0(x_j)
+//   XB/TB/GB 边界配点 (x_k, t_k) 与目标值 g(x_k, t_k)
+// ════════════════════════════════════════════════════════════════
+
+// 矩阵置一个元素（值语义·返回新矩阵）。
+export func pinn_mat_set(M: float[][], i: int, j: int, v: float): float[][] {
+  let out: float[][] = [];
+  for (let r = 0; r < len(M); r = r + 1) {
+    let row: float[] = [];
+    for (let c = 0; c < len(M[r]); c = c + 1) {
+      let x: float = M[r][c];
+      if (r == i) {
+        if (c == j) { x = v; }
+      }
+      row = push(row, x);
+    }
+    out = push(out, row);
+  }
+  return out;
+}
+
+// PINN 总损失（三项：内部残差 + 初始条件 + 边界条件·等权和）。
+export func pinn_heat_loss_packed(P: float[][], alpha: float, XF: float[], TF: float[], X0: float[], U0: float[], XB: float[], TB: float[], GB: float[]): float {
+  let hcount: int = len(P) - 3;   // 隐层大小 = W1 行数
+  let W1: float[][] = [];
+  for (let hi = 0; hi < hcount; hi = hi + 1) { W1 = push(W1, P[hi]); }
+  let b1: float[] = P[hcount];
+  let W2: float[][] = [P[hcount + 1]];
+  let b2: float[] = P[hcount + 2];
+  // ① 内部残差项（mean r²）。
+  let lf: float = 0.0;
+  for (let i = 0; i < len(XF); i = i + 1) {
+    let xt: float[] = [XF[i], TF[i]];
+    let r: float = pinn_heat_residual(W1, b1, W2, b2, alpha, xt);
+    lf = lf + r * r;
+  }
+  lf = lf * 1.0 / (len(XF) * 1.0);
+  // ② 初始条件项（mean (u - u0)²）。
+  let l0: float = 0.0;
+  for (let j = 0; j < len(X0); j = j + 1) {
+    let xt: float[] = [X0[j], 0.0];
+    let u: float = mlp2_value(W1, b1, W2, b2, xt);
+    let e: float = u - U0[j];
+    l0 = l0 + e * e;
+  }
+  l0 = l0 * 1.0 / (len(X0) * 1.0);
+  // ③ 边界条件项（mean (u - g)²）。
+  let lb: float = 0.0;
+  for (let k = 0; k < len(XB); k = k + 1) {
+    let xt: float[] = [XB[k], TB[k]];
+    let u: float = mlp2_value(W1, b1, W2, b2, xt);
+    let e: float = u - GB[k];
+    lb = lb + e * e;
+  }
+  lb = lb * 1.0 / (len(XB) * 1.0);
+  return lf + l0 + lb;
+}
+
+// 对打包权重的数值梯度（中心差分·∂L/∂P_ij）。
+// 教学口径：精确反向传播（含 ∂r/∂W 的混合三阶导）手写复杂，数值梯度是
+// 教学实现的合法简化；小网络（~25 参数）下成本可控。
+export func pinn_grad_fd(P: float[][], alpha: float, XF: float[], TF: float[], X0: float[], U0: float[], XB: float[], TB: float[], GB: float[], hstep: float): float[][] {
+  let G: float[][] = [];
+  for (let i = 0; i < len(P); i = i + 1) {
+    let grow: float[] = [];
+    for (let j = 0; j < len(P[i]); j = j + 1) {
+      let Pp: float[][] = pinn_mat_set(P, i, j, P[i][j] + hstep);
+      let Pm: float[][] = pinn_mat_set(P, i, j, P[i][j] - hstep);
+      let lp: float = pinn_heat_loss_packed(Pp, alpha, XF, TF, X0, U0, XB, TB, GB);
+      let lm: float = pinn_heat_loss_packed(Pm, alpha, XF, TF, X0, U0, XB, TB, GB);
+      grow = push(grow, (lp - lm) / (2.0 * hstep));
+    }
+    G = push(G, grow);
+  }
+  return G;
+}
+
+// Adam 训练（iters 轮·lr 学习率·返回训练后的打包权重）。
+// β1=0.9·β2=0.999·eps=1e-8·带 bias correction（β^t 用累乘维护·不依赖 pow）。
+// 纯函数：不打印·进度由调用方分阶段调用并打印损失。
+export func pinn_adam_train(P: float[][], alpha: float, XF: float[], TF: float[], X0: float[], U0: float[], XB: float[], TB: float[], GB: float[], iters: int, lr: float): float[][] {
+  let beta1: float = 0.9;
+  let beta2: float = 0.999;
+  let eps: float = 1e-8;
+  let hstep: float = 1e-5;
+  // 一阶/二阶矩初始为 0（与 P 同形状）。
+  let Mc: float[][] = [];
+  let Vc: float[][] = [];
+  for (let mi = 0; mi < len(P); mi = mi + 1) {
+    let mrow0: float[] = [];
+    let vrow0: float[] = [];
+    for (let mj = 0; mj < len(P[mi]); mj = mj + 1) {
+      mrow0 = push(mrow0, 0.0);
+      vrow0 = push(vrow0, 0.0);
+    }
+    Mc = push(Mc, mrow0);
+    Vc = push(Vc, vrow0);
+  }
+  let Pcur: float[][] = P;
+  let bt1: float = 1.0;   // β1^t（累乘）
+  let bt2: float = 1.0;   // β2^t
+  for (let it = 1; it <= iters; it = it + 1) {
+    let G: float[][] = pinn_grad_fd(Pcur, alpha, XF, TF, X0, U0, XB, TB, GB, hstep);
+    bt1 = bt1 * beta1;
+    bt2 = bt2 * beta2;
+    let bc1: float = 1.0 - bt1;
+    let bc2: float = 1.0 - bt2;
+    let Pnew: float[][] = [];
+    let Mnew: float[][] = [];
+    let Vnew: float[][] = [];
+    for (let pi = 0; pi < len(Pcur); pi = pi + 1) {
+      let prow: float[] = [];
+      let mrow: float[] = [];
+      let vrow: float[] = [];
+      for (let pj = 0; pj < len(Pcur[pi]); pj = pj + 1) {
+        let g: float = G[pi][pj];
+        let m: float = beta1 * Mc[pi][pj] + (1.0 - beta1) * g;
+        let v: float = beta2 * Vc[pi][pj] + (1.0 - beta2) * g * g;
+        let mhat: float = m / bc1;
+        let vhat: float = v / bc2;
+        prow = push(prow, Pcur[pi][pj] - lr * mhat / (sqrt(vhat) + eps));
+        mrow = push(mrow, m);
+        vrow = push(vrow, v);
+      }
+      Pnew = push(Pnew, prow);
+      Mnew = push(Mnew, mrow);
+      Vnew = push(Vnew, vrow);
+    }
+    Pcur = Pnew;
+    Mc = Mnew;
+    Vc = Vnew;
+  }
+  return Pcur;
+}
+
+// 中心差分对照（数值验证 AD 的 ∂u/∂x_j）：(u(x+h·e_j) - u(x-h·e_j)) / (2h)。
+// 返回 [中心差分, AD 值, 绝对差]——自检用（h 应足够小）。
+export func mlp2_dx_fd_check(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[], j: int, h: float): float[] {
+  let xp: float[] = [];
+  let xm: float[] = [];
+  for (let k = 0; k < len(x); k = k + 1) {
+    let dv: float = 0.0;
+    if (k == j) { dv = h; }
+    xp = push(xp, x[k] + dv);
+    xm = push(xm, x[k] - dv);
+  }
+  let up: float = mlp2_value(W1, b1, W2, b2, xp);
+  let um: float = mlp2_value(W1, b1, W2, b2, xm);
+  let fd: float = (up - um) / (2.0 * h);
+  let ad: float = mlp2_dx(W1, b1, W2, b2, x, j);
+  let diff: float = fd - ad;
+  if (diff < 0.0) { diff = 0.0 - diff; }
+  return [fd, ad, diff];
+}

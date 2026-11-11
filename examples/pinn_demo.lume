@@ -1,0 +1,72 @@
+// pinn_demo.lume —— PINN 核心自检：验证「对网络输入求导」（前向模式 AD）数值正确。
+// 跑法：bin/lume-core examples/pinn_demo.lume
+// 对照：中心差分（一阶 (u(x+h)-u(x-h))/2h·二阶 (u(x+h)-2u(x)+u(x-h))/h²）。
+// 同一份源在三后端逐字节一致（lib/pinn.lume 零 C 摩擦·print 单参 + str()）。纯数学·无领域背景。
+import "../lib/ml.lume" as ml;
+import "../lib/pinn.lume" as pinn;
+
+// 二阶中心差分对照：∂²u/∂x_j² ≈ (u(x+h·e_j) - 2u(x) + u(x-h·e_j)) / h²。
+func fd2(W1: float[][], b1: float[], W2: float[][], b2: float[], x: float[], j: int, h: float): float {
+  let xp: float[] = [];
+  let xm: float[] = [];
+  for (let k = 0; k < len(x); k = k + 1) {
+    let dv: float = 0.0;
+    if (k == j) { dv = h; }
+    xp = push(xp, x[k] + dv);
+    xm = push(xm, x[k] - dv);
+  }
+  let up: float = pinn.mlp2_value(W1, b1, W2, b2, xp);
+  let u0: float = pinn.mlp2_value(W1, b1, W2, b2, x);
+  let um: float = pinn.mlp2_value(W1, b1, W2, b2, xm);
+  return (up - 2.0 * u0 + um) / (h * h);
+}
+
+func main(): int {
+  let d: int = 2;   // 输入 = [x, t]
+  let h: int = 3;   // 隐层
+  let P: float[][] = ml.mlp2_init(d, h, 42);
+  // 直接解包（lume 值语义·参数传值·不能拆成函数）：
+  // P = [W1(h×d), b1(h), W2(1×h), b2(1)]。
+  let W1: float[][] = [];
+  for (let i = 0; i < h; i = i + 1) { W1 = push(W1, P[i]); }
+  let b1: float[] = P[h];
+  let W2: float[][] = [P[h + 1]];
+  let b2: float[] = P[h + 2];
+  let xt: float[] = [0.3, 0.2];   // 采样点 (x=0.3·t=0.2)
+  let hstep: float = 1e-5;
+
+  print("PINN_VERSION = " + pinn.PINN_VERSION);
+  print("u(x,t)      = " + str(pinn.mlp2_value(W1, b1, W2, b2, xt)));
+  print("--- 一阶导（对 x·第 0 维）---");
+  let ck0: float[] = pinn.mlp2_dx_fd_check(W1, b1, W2, b2, xt, 0, hstep);
+  print("  中心差分  = " + str(ck0[0]));
+  print("  AD        = " + str(ck0[1]));
+  print("  绝对差    = " + str(ck0[2]));
+  print("--- 一阶导（对 t·第 1 维）---");
+  let ck1: float[] = pinn.mlp2_dx_fd_check(W1, b1, W2, b2, xt, 1, hstep);
+  print("  中心差分  = " + str(ck1[0]));
+  print("  AD        = " + str(ck1[1]));
+  print("  绝对差    = " + str(ck1[2]));
+  print("--- 二阶导（对 x·第 0 维）---");
+  let adxx: float = pinn.mlp2_dxx(W1, b1, W2, b2, xt, 0);
+  let fdxx: float = fd2(W1, b1, W2, b2, xt, 0, hstep);
+  let dxxdiff: float = fdxx - adxx;
+  if (dxxdiff < 0.0) { dxxdiff = 0.0 - dxxdiff; }
+  print("  中心差分  = " + str(fdxx));
+  print("  AD        = " + str(adxx));
+  print("  绝对差    = " + str(dxxdiff));
+  print("--- 热方程 PINN 残差 u_t - alpha*u_xx ---");
+  let alpha: float = 0.1;
+  let res: float = pinn.pinn_heat_residual(W1, b1, W2, b2, alpha, xt);
+  print("  alpha     = " + str(alpha));
+  print("  残差      = " + str(res) + "（随机网络·非零属正常·证明能算）");
+  print("--- 自检结论 ---");
+  if (ck0[2] < 1e-6 && ck1[2] < 1e-6 && dxxdiff < 1e-5) {
+    print("  ✅ 对输入求导（AD）与中心差分一致——Jacobian 正确");
+  } else {
+    print("  ❌ 差值超阈——检查 AD 规则");
+  }
+  return 0;
+}
+
+main();
