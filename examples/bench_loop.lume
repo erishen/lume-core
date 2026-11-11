@@ -1,0 +1,85 @@
+// bench_loop.lume —— 墙 2 profiling：编译后端 vs C 的残余差距拆解（微基准）。
+// 跑法（编译后端）：
+//   bin/lume-core --compile-text -o /tmp/bl.exe examples/bench_loop.lume && /tmp/bl.exe
+// 跑法（解释器·慢 ~20×）：
+//   bin/lume-core examples/bench_loop.lume
+// C 参照：tests/bench_c_ref.c（clang -O2·同 kernel 同工作量·user time 对比）。
+//
+// 三个 kernel 把「编译 lume vs C」的差距拆成三块：
+//   A 标量循环 —— 纯局部 float 算术（串行依赖防折叠）→ 量 codegen 质量。
+//   B list 循环 —— push 写 + 索引读 → 量 Value 装箱/边界检查/无 SIMD 的代价。
+//   C matvec  —— 128×128 稠密矩阵向量积（PINN 稠密层真实形状·严格 FP 无重结合）→
+//               量「墙 3（C kernel 内建）」要解决的真实工作量差距。
+// 严格 FP 语义下 clang 不会对 FP 归约做向量化（需 -ffast-math 重结合），
+// 故 lume 编译后端与 C 参照都在同一标量 FP 起跑线上——差距来源可归因。
+//
+// 实测（2026-11-11·Apple M 系列·user time·两侧校验和逐位一致）：
+//   A 标量:   C 0.42s  vs lume 0.43s  = 1.02× —— codegen 无差距（文本 IR + clang -O2 已达 C 速）
+//   B list:   C 0.01s  vs lume 0.11s  ≈ 11×  —— Value 拆 tag + 边界检查 + push 根持有
+//   C matvec: C 0.15s  vs lume 2.47s  ≈ 16×  —— 嵌套 float[][] 二级寻址逐元素代价
+// 结论（墙 2 判定）：残余差距**全部在 list 元素访问（数据结构层），不在 codegen**——
+//   flat 数值数组原语（unboxed double）或 C kernel 内建（linalg matmul·墙 3）可收 10-16×；
+//   标量/控制流密集的 lume 代码已经免费享受 C 级性能。
+// 解释器参照：全程 7:51（≈ 编译 3.3s user 的 55×——解释开销与 list 开销相乘）。
+// 版本：v0.1.0（2026-11-11·墙 2 测量）
+
+// ── Kernel A：标量循环（n = 2e8）──────────────────────────────
+// 串行依赖链（s 依赖 x·x 自身更新）——防常量折叠与死代码消除。
+func k_scalar(n: int): float {
+  let s: float = 0.0;
+  let x: float = 1.000001;
+  for (let i = 0; i < n; i = i + 1) {
+    s = s + x * 1.0000001 - 0.5;
+    x = x * 0.9999999 + 0.0000001;
+  }
+  return s + x;
+}
+
+// ── Kernel B：list 循环（n = 1e7·写 n 个再读 n 个）────────────
+func k_list(n: int): float {
+  let xs: float[] = [];
+  for (let i = 0; i < n; i = i + 1) {
+    xs = push(xs, i * 0.000001);
+  }
+  let s: float = 0.0;
+  for (let j = 0; j < len(xs); j = j + 1) {
+    s = s + xs[j] * xs[j];
+  }
+  return s;
+}
+
+// ── Kernel C：128×128 matvec × iters 轮（严格 FP 归约）────────
+func k_matvec(iters: int): float {
+  let N: int = 128;
+  // 行主序矩阵（float[][]·确定性生成）+ 向量。
+  let M: float[][] = [];
+  for (let r = 0; r < N; r = r + 1) {
+    let row: float[] = [];
+    for (let c = 0; c < N; c = c + 1) {
+      row = push(row, (r * 31 + c * 17) * 0.0001 - 1.0);
+    }
+    M = push(M, row);
+  }
+  let v: float[] = [];
+  for (let k = 0; k < N; k = k + 1) {
+    v = push(v, (k * 13) * 0.001 - 0.5);
+  }
+  let acc: float = 0.0;
+  for (let it = 0; it < iters; it = it + 1) {
+    let s: float = 0.0;
+    for (let r2 = 0; r2 < N; r2 = r2 + 1) {
+      let dot: float = 0.0;
+      for (let c2 = 0; c2 < N; c2 = c2 + 1) {
+        dot = dot + M[r2][c2] * v[c2];
+      }
+      s = s + dot;
+    }
+    acc = acc + s;
+  }
+  return acc;
+}
+
+// ── 驱动（校验和打印·三后端一致）─────────────────────────────
+print("A=" + str(k_scalar(200000000)));
+print("B=" + str(k_list(10000000)));
+print("C=" + str(k_matvec(20000)));
