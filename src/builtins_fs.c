@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>    /* O_CREAT/O_RDWR for lock_file (musl 需显式·darwin 间接可得) */
 #include <stdlib.h>   /* realpath() / strdup() for the LUME_FS_ROOT allowlist */
 /* Advisory file lock + mkdir portability. On POSIX these wrap flock(2) and
  * mkdir(2); on Windows (mingw-w64) they map to LockFileEx / _mkdir so the

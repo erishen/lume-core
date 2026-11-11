@@ -39,6 +39,7 @@
 #include <sys/stat.h>
 #else
 #include <errno.h>
+#include <fcntl.h>    /* O_CREAT/O_RDWR for lock file (musl 需显式) */
 #include <sys/file.h>
 #include <sys/types.h>
 #include <sys/socket.h>
