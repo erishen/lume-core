@@ -3789,6 +3789,13 @@ Val cg_call(CG *g, Node *n)
             ERRV(g, "line %zu: call to unknown function '%s'", n->line, name);
         }
     }
+    /* pass 1.6 stamps a module-qualified cname (m<idx>_<name>) onto imported
+     * module top-level functions; definitions emit under that cname, so a bare
+     * call inside a module body has to target the same symbol. Entry functions
+     * keep their source name (cname NULL); local functions already carry their
+     * "__lume_" cname through lf_rename_calls and re-resolve to themselves. */
+    if (s->node && s->node->as.func.cname)
+        name = s->node->as.func.cname;
     if (n->as.call.argc != s->arity)
         ERRV(g, "line %zu: '%s' expects %d argument(s), got %d",
             n->line, name, s->arity, n->as.call.argc);

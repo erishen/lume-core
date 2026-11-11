@@ -851,6 +851,31 @@ char *codegen_emit_ir_multi(const char *mod_name, Node **mods,
         s->params = s->node->as.func.param_types;
     }
 
+    /* ---- pass 1.6: module-unique function symbols ----
+     * Top-level functions of imported modules get a module-qualified cname
+     * "m<idx>_<name>" so two modules exporting the same name do not collide
+     * in the flat L_<name> symbol space (blas.mat_mul vs linalg.mat_mul both
+     * used to emit @L_mat_mul). Every signature key above was built from the
+     * SOURCE name (cname was still NULL here), and call sites resolve through
+     * s->node->as.func.cname — so both sides stay consistent without touching
+     * the key builders. Local functions already carry "__lume_" cnames from
+     * the resolver and are skipped. */
+    for (int m = 1; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        int nfn = lume_collect_funcs(mp, NULL, 0);
+        Node **fns = nfn > 0 ? xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
+        if (nfn > 0) lume_collect_funcs(mp, fns, nfn);
+        for (int i = 0; i < nfn; i++) {
+            Node *n = fns[i];
+            if (n->as.func.cname) continue;
+            char cbuf[256];
+            snprintf(cbuf, sizeof cbuf, "m%d_%s", m, n->as.func.name);
+            n->as.func.cname = arena_strdup(cbuf);
+        }
+        free(fns);
+    }
+
     /* ---- pass 1.7: lift the top-level bindings into module globals ----
      * (see the single-file pass for the rationale). Imported module top-level
      * statements run first, inside L_top, so a module function body reads its

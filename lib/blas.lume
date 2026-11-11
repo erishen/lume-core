@@ -10,9 +10,9 @@
 //     老宿主兼容性由它继续承担。
 //   * 实测（examples/bench_matmul.lume·128×128·30 次）：C kernel 0.05s vs
 //     纯 lume 三重循环 0.60s ≈ **12×**（与墙 2 判定一致——差距在 list 元素访问）。
-//   * codegen 已知局限：文本 IR / LLVM 把导出函数平铺为 L_<名>（无模块限定），
-//     本库与 linalg.lume 同名导出（mat_mul）**不能在同一程序里同时 import**
-//     两个库（L_mat_mul 重定义）——解释器按模块别名解析没问题。避开即可。
+//   * codegen 撞名已修（pass 1.6 模块限定 cname·2026-11-11）：本库与 linalg.lume
+//     同名导出（mat_mul）可**同程序共 import**——三后端逐字节一致，由
+//     tests/mangle-collide.lume + collide_backends.sh 门禁。
 //
 // 语言约束（同 pinn.lume）：'/' 恒 float·let 函数作用域（循环变量唯一）·
 // list 值语义（修改经 push 返回新容器）。

@@ -589,6 +589,29 @@ static LLVMModuleRef llvm_codegen_module_core(const char *mod_name, Node **mods,
         }
         free(allfns);
     }
+    /* ---- pass 1.6: module-unique function symbols ----
+     * Mirrors codegen.c's stamp (text backend): top-level functions of
+     * imported modules get a module-qualified cname "m<idx>_<name>" so two
+     * modules exporting the same name do not collide in the flat L_<name>
+     * symbol space. Keys above were built from the SOURCE name (cname was
+     * NULL here); definitions and member-call sites resolve through
+     * s->node->as.func.cname — consistent without touching the key builders.
+     * Local functions already carry "__lume_" cnames and are skipped. */
+    for (int m = 1; m < nmods; m++) {
+        Node *mp = mods[m];
+        if (!mp || mp->type != N_PROGRAM) continue;
+        int nfn = lume_collect_funcs(mp, NULL, 0);
+        Node **fns = nfn > 0 ? (Node **)xmalloc(sizeof(Node *) * (size_t)nfn) : NULL;
+        if (nfn > 0) lume_collect_funcs(mp, fns, nfn);
+        for (int i = 0; i < nfn; i++) {
+            Node *n = fns[i];
+            if (n->as.func.cname) continue;
+            char cbuf[256];
+            snprintf(cbuf, sizeof cbuf, "m%d_%s", m, n->as.func.name);
+            n->as.func.cname = arena_strdup(cbuf);
+        }
+        free(fns);
+    }
     for (int m = 0; m < nmods; m++) {
         Node *mp = mods[m];
         if (!mp || mp->type != N_PROGRAM) continue;

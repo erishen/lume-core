@@ -177,7 +177,7 @@ print(sci.SCI_VERSION);                   // 0.7.0
 | 库 | 版本 | 覆盖 | 回归脚本 |
 | --- | --- | --- | --- |
 | `sci.lume` | 0.7.0 | 信息论、数值积分/插值、多项式、求根；ODE 单步（RK4 / 自适应 / 向量系统 / 隐式 θ / 辛 Verlet）、线性多步（AB1–4 / BDF2）、事件检测、稠密输出 | `sci_backends.sh`、`ode_backends.sh` |
-| `blas.lume` | v0.1.0 | C kernel 背书的稠密线性代数快路径（墙 3·NumPy 模式）：`mat_mul`（直通内建 `matmul`·src/rt.c lume_bi_matmul·三后端共享）与 `mat_vec`；与 `linalg.mat_mul` 纯 lume 三重循环**逐位一致**（k 升序·显式 mul-then-add·FP_CONTRACT OFF）；实测 128×128·30 次 0.05s vs 0.60s ≈ 12×；⚠️ 依赖新内建·legacy 0.12.2 不可 import（不进 lib-compat SHIPPED）·且与 linalg 同名导出不能同程序共 import（codegen 平铺符号局限） | `blas_backends.sh` |
+| `blas.lume` | v0.1.0 | C kernel 背书的稠密线性代数快路径（墙 3·NumPy 模式）：`mat_mul`（直通内建 `matmul`·src/rt.c lume_bi_matmul·三后端共享）与 `mat_vec`；与 `linalg.mat_mul` 纯 lume 三重循环**逐位一致**（k 升序·显式 mul-then-add·FP_CONTRACT OFF）；实测 128×128·30 次 0.05s vs 0.60s ≈ 12×；⚠️ 依赖新内建·legacy 0.12.2 不可 import（不进 lib-compat SHIPPED）·同名导出可与 linalg 同程序共 import（pass 1.6 模块限定 cname 已修） | `blas_backends.sh` |
 | `linalg.lume` | 0.1.0 | 矩阵运算、LU / QR / 特征值 / SVD 分解、线性方程组 | `linalg_backends.sh` |
 | `optim.lume` | 0.2.0 | 梯度下降 / 共轭梯度 / 线性规划单纯形 / 黄金分割 / 非线性最小二乘 | `optim_backends.sh` |
 | `pde.lume` | v0.8.0 | 抛物型（1D/2D 热方程、CN、ADI）、双曲型（1D/2D 波动、线性对流、Burgers）、对流扩散（2D 迎风 + 中心扩散）、椭圆型（Poisson 的 Jacobi → SOR → 几何多重网格、Robin 两点边值）；Dirichlet / Neumann / 周期 / Robin 四类边界 | `pde_backends.sh` |

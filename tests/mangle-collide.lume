@@ -1,0 +1,41 @@
+// mangle-collide.lume —— codegen 撞名修复回归测试（pass 1.6 模块限定 cname）。
+// 同程序共 import 两个导出同名函数的模块（blas.mat_mul / linalg.mat_mul），
+// 验证三后端（解释器 / 文本 IR / LLVM）逐字节一致 + 模块内裸名助手调用
+// （linalg 的 la_copy_row 被 mat_transpose / mat_det / mat_solve / lu_decompose
+// 调用）全部走限定符号。由 tests/collide_backends.sh 驱动。
+import "../lib/blas.lume" as blas;
+import "../lib/linalg.lume" as la;
+
+let A: float[][] = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+let Bm: float[][] = [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]];
+
+// ① 同名导出：两个模块各自的 mat_mul。
+print("blas=" + str(blas.mat_mul(A, Bm)));
+print("linalg=" + str(la.mat_mul(A, Bm)));
+
+// ② 逐位互证：C kernel（blas）vs 纯 lume（linalg）必须完全一致。
+let CB: float[][] = blas.mat_mul(A, Bm);
+let CL: float[][] = la.mat_mul(A, Bm);
+let bd: float = 0.0;
+for (let i = 0; i < len(CB); i = i + 1) {
+  for (let j = 0; j < len(CB[i]); j = j + 1) {
+    let d: float = CB[i][j] - CL[i][j];
+    if (d < 0.0) { d = 0.0 - d; }
+    if (d > bd) { bd = d; }
+  }
+}
+print("mat_mul_diff=" + str(bd));
+
+// ③ 模块内裸名助手路径（la_copy_row）：转置 / 行列式 / 逆 / LU。
+let Sq: float[][] = [[2.0, 1.0], [1.0, 3.0]];
+print("transpose=" + str(la.mat_transpose(A)));
+print("det=" + str(la.mat_det(Sq)));
+print("inv=" + str(la.mat_inv(Sq)));
+print("lu=" + str(la.lu_decompose(Sq)));
+
+// ④ 结论：两个实现必须逐位一致。
+if (bd == 0.0) {
+  print("PASS mangle: blas+linalg co-import, mat_mul bit-exact");
+} else {
+  print("FAIL mangle: blas/linalg mat_mul drift");
+}
