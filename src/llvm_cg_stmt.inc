@@ -792,6 +792,7 @@ static void cg_route_handler(CG *g, Node *fn, int rid)
     char sym[48];
     snprintf(sym, sizeof sym, "L_route_%d", rid);
     LLVMValueRef prev = LLVMGetNamedFunction(g->mod, sym);
+    LLVMValueRef saved_fn = g->fn;
     g->fn = prev ? prev : LLVMAddFunction(g->mod, sym, hfty);
 
     Asgs saved = g->locals;
@@ -852,7 +853,7 @@ static void cg_route_handler(CG *g, Node *fn, int rid)
     free(g->brk); free(g->cnt);
     g->brk = saved_brk; g->nbrk = snbrk; g->cbrk = scbrk;
     g->cnt = saved_cnt; g->ncnt = sncnt; g->ccnt = sccnt;
-    g->fn = NULL;
+    g->fn = saved_fn;
 }
 
 /* Emit one JSON value from a struct field already loaded into `fv`. */

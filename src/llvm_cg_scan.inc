@@ -637,6 +637,11 @@ static Type *infer_node_type(CG *g, Node *n)
             lt->kind == TY_STRING && rt->kind == TY_STRING)
             return type_prim(TY_STRING);
         if (lf || rf) return type_prim(TY_FLOAT);
+        /* `/` is float division even on two integers (the interpreter and
+         * the text backend agree), so the inferred type is float — a plain
+         * int answer here made `let r = 7 / 2; str(r)` print the double's
+         * bit pattern as an int. Mirrors codegen_scan.c's OP_DIV. */
+        if (op == OP_DIV) return type_prim(TY_FLOAT);
         return type_prim(TY_INT);
     }
     case N_TERNARY: {
