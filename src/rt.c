@@ -115,10 +115,12 @@ int64_t lume_print_str(const char *s)
      * only the string-annotated case can land here, and it must print the
      * same bare word the interpreter prints. */
     if (!s) return lume_print_null();
-    char buf[512];
-    int n = snprintf(buf, sizeof buf, "%s\n", s);
-    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
-    return emit(buf);
+    /* No fixed buffer: a printed string can be arbitrarily long (e.g. a
+     * stringify of a large list), and a 512-byte buf silently truncated it
+     * on the compiled backends while the interpreter printed it whole — a
+     * three-backend drift. emit() is unbounded (fputs), so write directly. */
+    int n = emit(s);
+    return n + emit("\n");
 }
 
 /* `null` has no value to pass — it prints the bare word and takes no
