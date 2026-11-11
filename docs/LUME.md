@@ -1,8 +1,9 @@
 # Lume 用户指南
 
 本树(`lume-core`)是 **语言本体**:一份 `.lume` 脚本 + 一个编译器
-(`bin/lume-core`)。这里**没有 HTTP 服务器、没有前端构建、没有 Agent 运行时**——
-宿主树 `lume` 才有那套东西。
+(`bin/lume-core`)。这里**没有前端构建、没有 Agent 运行时**——
+宿主树 `lume` 才有那套东西;语言内建一个极简 HTTP 服务能力
+(`server{}` + `run()`·路由与 SSE 流式),但不是 Web 框架。
 
 - 想知道"这两个仓库分别是什么":见 [README.md](../README.md) 开头的对照表。
 - 写业务/写脚本之前:先读 [PITFALLS.md](PITFALLS.md) 与 [STYLE.md](STYLE.md)。
@@ -93,7 +94,8 @@ make asan             # 用 ASan/UBSan 重编并跑单测
 
 ### 出站 HTTP —— `http_get`
 
-本树没有服务器,但脚本能**主动发起** HTTP/HTTPS 请求:
+脚本除能用内建 `server{}` 块起本地 HTTP 服务(路由 + SSE,见 tests/sse-stream.lume)外,
+也常需要**主动发起** HTTP/HTTPS 请求:
 
 ```lume
 let r = http_get("https://api.github.com/zen", {
