@@ -136,6 +136,7 @@ typedef struct {
      * 接受 text/event-stream 时才这么回 —— 否则同样的路由给浏览器(过代理、
      * 中间层会缓冲)会卡住不显示。 */
     char accept[256];      /* raw Accept header value, or "" */
+    char accept_encoding[256]; /* raw Accept-Encoding header value, or "" */
     /* RFC 7232 conditional headers for the static-file path only. Route
      * responses are dynamic and have no validator, so they ignore these. */
     char inm[256];         /* raw If-None-Match value, or "" */
@@ -736,6 +737,20 @@ static int parse_request(const char *head, size_t hlen, HttpReq *req)
         req->accept[0] = '\0';
     }
 
+    /* Accept-Encoding header: only used to serve a precompressed `.gz`
+     * sibling from the docroot (see accepts_gzip() in the static path). */
+    const char *ae = ci_find(head, body_off, "accept-encoding:");
+    if (ae) {
+        ae += 16;
+        while (*ae == ' ' || *ae == '\t') ae++;
+        size_t alen = strcspn(ae, "\r\n");
+        if (alen >= sizeof req->accept_encoding) alen = sizeof req->accept_encoding - 1;
+        memcpy(req->accept_encoding, ae, alen);
+        req->accept_encoding[alen] = '\0';
+    } else {
+        req->accept_encoding[0] = '\0';
+    }
+
     /* Cookie header: raw value, capped (only lume_sid= is consumed later). */
     const char *ck = ci_find(head, body_off, "cookie:");
     if (ck) {
@@ -823,18 +838,44 @@ static const char *mime_of(const char *path)
 
 /* ---- RFC 7232 validators for the docroot path (P16.2) -------------------
  * Parity with agent-httpd's src/http/static.c: weak ETag W/"<size>-<mtime>"
- * (hex), `Cache-Control: no-cache` (store, but revalidate), Last-Modified as
- * IMF-fixdate, If-None-Match taking precedence over If-Modified-Since. A
- * reload then costs the header block instead of the whole bundle.
+ * (hex), Last-Modified as IMF-fixdate, If-None-Match taking precedence over
+ * If-Modified-Since. A reload then costs the header block instead of the
+ * whole bundle.
+ *
+ * Cache-Control is path-aware: Vite content-hashes the /assets/ files (the
+ * filename is the content address), so those are served `immutable`;
+ * index.html and other non-hashed files keep `no-cache` (store, but
+ * revalidate). A precompressed `.gz` sibling (emitted by the build) is served
+ * when the client accepts gzip, with `Content-Encoding: gzip` +
+ * `Vary: Accept-Encoding`.
  *
  * Deliberately NOT emitted: an `Accept-Ranges` value of "bytes".
  * agent-httpd implements single-range 206 responses and can honestly
  * advertise it; this bridge has no Range handling at all, so it declares
  * `none` instead. Ignoring Range while claiming byte support makes clients
- * retry and re-download behind our back. `Vary: Accept-Encoding` is likewise
- * omitted (no gzip sibling negotiation here). */
+ * retry and re-download behind our back. */
 
 #define STATIC_CACHE_CONTROL "no-cache"
+
+/* Vite content-hashes /assets/ (index-<8hex>.js|css): the name is the
+ * content address, so an immutable cache is safe. Everything else (index.html
+ * and friends) must revalidate. */
+static const char *static_cache_control(const char *rel)
+{
+    if (rel && strncmp(rel, "/assets/", 8) == 0)
+        return "public, max-age=31536000, immutable";
+    return STATIC_CACHE_CONTROL;
+}
+
+/* Client accepts gzip? Conservative token check: "gzip" present and not
+ * explicitly rejected with ;q=0 (browsers send `gzip, deflate, br`). */
+static int accepts_gzip(const char *h)
+{
+    if (!h || !h[0]) return 0;
+    if (!strstr(h, "gzip")) return 0;
+    if (strstr(h, "gzip;q=0")) return 0;
+    return 1;
+}
 
 /* Convert Unix time_t to proleptic-Gregorian UTC fields (Howard Hinnant's
  * civil_from_days). Pure integer arithmetic: no gmtime_r/gmtime_s signature
@@ -1011,6 +1052,24 @@ static int serve_static(SockFd fd, const char *docroot, const char *path,
         return 1;
     }
 
+    /* Precompressed `.gz` sibling: serve it (with Content-Encoding: gzip)
+     * when the client accepts gzip. Validators come from the file actually
+     * served, so the gzip and identity representations have distinct ETags. */
+    char serve[2048];
+    snprintf(serve, sizeof serve, "%s", full);
+    int gz = 0;
+    if (accepts_gzip(req->accept_encoding)) {
+        char gzfull[2048];
+        snprintf(gzfull, sizeof gzfull, "%s.gz", full);
+        LUME_STAT_T gzst;
+        if (LUME_STAT(gzfull, &gzst) == 0 && LUME_ISREG(gzst.st_mode) &&
+            gzst.st_size >= 0 && (size_t)gzst.st_size <= (size_t)STATIC_MAX) {
+            st = gzst;
+            snprintf(serve, sizeof serve, "%s", gzfull);
+            gz = 1;
+        }
+    }
+
     char etag[80], lm[64];
     compute_etag(&st, etag, sizeof etag);
     format_http_date(lm, sizeof lm, (time_t)st.st_mtime);
@@ -1023,14 +1082,19 @@ static int serve_static(SockFd fd, const char *docroot, const char *path,
 
     /* Both validators ride on 304 too (RFC 9111 4.3.4 wants the cache
      * directives the 200 would have carried). Accept-Ranges is a 200-only
-     * entity header, and "none" is the honest value: no Range support here. */
+     * entity header, and "none" is the honest value: no Range support here.
+     * Vary: Accept-Encoding is always present (both representations exist);
+     * Content-Encoding only when a .gz sibling is served. */
     char extra[256];
     snprintf(extra, sizeof extra,
              "ETag: %s\r\n"
              "Cache-Control: %s\r\n"
              "Last-Modified: %s\r\n"
+             "Vary: Accept-Encoding\r\n"
+             "%s"
              "%s",
-             etag, STATIC_CACHE_CONTROL, lm,
+             etag, static_cache_control(rel), lm,
+             gz ? "Content-Encoding: gzip\r\n" : "",
              not_modified ? "" : "Accept-Ranges: none\r\n");
 
     if (not_modified) {
@@ -1038,7 +1102,7 @@ static int serve_static(SockFd fd, const char *docroot, const char *path,
         return 1;
     }
 
-    FILE *fp = fopen(full, "rb");
+    FILE *fp = fopen(serve, "rb");
     if (!fp) {
         send_resp_full(fd, 404, "text/plain; charset=utf-8", "not found", 9,
                        NULL, NULL, head_only);
