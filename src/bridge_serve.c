@@ -38,6 +38,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -110,6 +111,28 @@ typedef int SockFd;
 #define lume_getpid() getpid()
 #endif
 
+/* Best-effort peer address for req.remote_addr. Wrong family/unavailable
+ * socket leaves an empty string; callers treat empty as "unknown". */
+static void fill_peer_addr(SockFd fd, char *out, size_t cap)
+{
+    out[0] = '\0';
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof ss);
+#if defined(_WIN32)
+    int len = (int)sizeof ss;
+#else
+    socklen_t len = sizeof ss;
+#endif
+    if (getpeername(fd, (struct sockaddr *)&ss, &len) != 0) return;
+    if (ss.ss_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)&ss;
+        inet_ntop(AF_INET, &sin->sin_addr, out, (int)cap);
+    } else if (ss.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&ss;
+        inet_ntop(AF_INET6, &sin6->sin6_addr, out, (int)cap);
+    }
+}
+
 /* Static validators (P16.2) need mtime + size. MSVCRT/UCRT spell these
  * _stat / struct _stat and expose _S_IFREG rather than S_ISREG; keep the
  * difference in one place so serve_static() stays platform-neutral. */
@@ -137,6 +160,12 @@ typedef struct {
      * 中间层会缓冲)会卡住不显示。 */
     char accept[256];      /* raw Accept header value, or "" */
     char accept_encoding[256]; /* raw Accept-Encoding header value, or "" */
+    /* Client address: peer socket plus the two proxy headers nginx writes.
+     * Routes get these as remote_addr / x_real_ip / x_forwarded_for so
+     * visitor stats can record a real IP instead of an empty string. */
+    char remote_addr[64];
+    char x_real_ip[256];
+    char x_forwarded_for[1024];
     /* RFC 7232 conditional headers for the static-file path only. Route
      * responses are dynamic and have no validator, so they ignore these. */
     char inm[256];         /* raw If-None-Match value, or "" */
@@ -325,6 +354,9 @@ static Value make_req_map(VM *vm, const HttpReq *r, Value route_params)
     map_set(vm, o, "method", make_string_cstr(vm, r->method));
     map_set(vm, o, "path", make_string_cstr(vm, r->path));
     map_set(vm, o, "query", make_string_cstr(vm, r->query));
+    map_set(vm, o, "remote_addr", make_string_cstr(vm, r->remote_addr));
+    map_set(vm, o, "x_real_ip", make_string_cstr(vm, r->x_real_ip));
+    map_set(vm, o, "x_forwarded_for", make_string_cstr(vm, r->x_forwarded_for));
 
     Value qp = make_map(vm);
     Obj *qpo = AS_OBJ(qp);
@@ -750,6 +782,12 @@ static int parse_request(const char *head, size_t hlen, HttpReq *req)
     } else {
         req->accept_encoding[0] = '\0';
     }
+
+    /* Proxy headers for client IP: exact header-line lookup, not substring. */
+    header_value(head, body_off, "x-real-ip",
+                 req->x_real_ip, sizeof req->x_real_ip);
+    header_value(head, body_off, "x-forwarded-for",
+                 req->x_forwarded_for, sizeof req->x_forwarded_for);
 
     /* Cookie header: raw value, capped (only lume_sid= is consumed later). */
     const char *ck = ci_find(head, body_off, "cookie:");
@@ -1263,6 +1301,7 @@ static void lume_http_serve_internal(const char *host, long port, int backlog, V
 
         HttpReq req;
         memset(&req, 0, sizeof req);
+        fill_peer_addr(cfd, req.remote_addr, sizeof req.remote_addr);
         vm->session_new = false; /* stale flag must not leak across requests */
 
         char head[HEAD_BUF_MAX];
