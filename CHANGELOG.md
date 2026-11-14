@@ -4,7 +4,7 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.14.0] - 2026-11-14
 
 This section covers every commit since 0.13.0 (`825bc1d`): the 42 through
 `feb2866` (20 touching `lib/` — the pure-`.lume` scientific-computing
