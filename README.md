@@ -542,4 +542,4 @@ and the agent answers from the real result — no Python, no MCP stdio process,
 no Node sidecar, no second LLM call.
 
 ## Related Articles
-- [Lume: An Agent DSL Server in a Single C11 Binary](https://erishen.cn/lume-en/)
+- [Inside the Lume C11 Compiler: From a Tree-Walking Interpreter to Dual LLVM Backends](https://erishen.cn/lume_core-en/)

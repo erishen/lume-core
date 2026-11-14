@@ -371,3 +371,6 @@ MCP stdio 子进程、没有 Node 边车、也没有第二次 LLM 调用。
 
 - 宿主树那篇介绍讲的是**服务器形态**的 Lume（agent-httpd、聊天、SQL 工具）：
   [Lume：C11 单二进制的 Agent DSL 服务器](https://erishen.cn/lume/)
+
+## 相关文章
+- [Lume C11编译器内部架构：从树形解释器到双LLVM后端的设计之旅](https://erishen.cn/lume_core/)
