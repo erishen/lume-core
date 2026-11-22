@@ -4,6 +4,29 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [0.14.1] - 2026-11-22
+
+Patch release to carry the two release-pipeline fixes into the downloadable
+GitHub Release tarballs. The `v0.14.0` tag was cut on 11-14 but no release
+asset was ever published (latest stayed at v0.13.1), and the two follow-up
+commits that fix version reporting and tarball contents only lived on `main`.
+Cutting v0.14.1 publishes both fixes and the 0.14.0 feature set as real
+installable assets.
+
+### Fixed
+
+- **Release tarballs now ship the AI self-verification gate.** `release.yml`
+  staged its own tarballs and omitted `scripts/` + `tests/ai-bad`, while
+  `make pack` and `docs/ai-verify.md` promised an installed-mode gate, so an
+  `install.sh` install had no `lume-ai-verify` / `-loop` / `-produce` commands
+  at all. Both staging blocks (matrix + darwin-x64) now copy the five gate
+  scripts plus the must-reject seed set, and "Verify staged tarballs" asserts
+  their presence so a future staging edit cannot silently drop them again.
+- **Binary version reporting aligned with the release tag.** `LUME_CORE_VERSION`
+  was still `0.13.0` at the v0.14.0 tag, so `lume-core --version` and the
+  LSP/MCP `serverInfo` self-reported the wrong version; now bumped to 0.14.1
+  so the binary, tag and CHANGELOG agree.
+
 ## [0.14.0] - 2026-11-14
 
 This section covers every commit since 0.13.0 (`825bc1d`): the 42 through
