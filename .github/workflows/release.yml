@@ -124,6 +124,18 @@ jobs:
           # (曾出现镜像里放着 13KB 旧 peer.lume、源码已是 17KB, 报错却是
           #  "module 'peer' has no export 'config_warnings'")。
           cp -r lib "dist/${{ matrix.asset }}/"
+          # AI self-verification gate (docs/ai-verify.md "Installed mode"):
+          # install.sh installs these as lume-ai-verify / -loop / -produce,
+          # and needs tests/ai-bad as the must-reject seed set. `make pack`
+          # has shipped them all along; this workflow staged the tarball
+          # separately and silently omitted them, so an install.sh install
+          # had no gate at all despite the docs promising one. Keep this
+          # list in sync with make pack's tar arguments.
+          mkdir -p "dist/${{ matrix.asset }}/scripts" "dist/${{ matrix.asset }}/tests"
+          cp scripts/verify-ai-lume.sh scripts/verify-ai-semantics.sh \
+             scripts/ai-verify-loop.sh scripts/ai-gen-programs.sh scripts/ai-produce.sh \
+             "dist/${{ matrix.asset }}/scripts/"
+          cp -r tests/ai-bad "dist/${{ matrix.asset }}/tests/"
           cd dist
           tar -czf "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
           if command -v sha256sum >/dev/null 2>&1; then
@@ -164,6 +176,13 @@ jobs:
           cp bin/lume-core "dist/lume-core-darwin-x64/bin/"
           cp -r examples docs README.md README.zh.md CHANGELOG.md install.sh "dist/lume-core-darwin-x64/"
           cp -r lib "dist/lume-core-darwin-x64/"
+          # Same AI gate payload as the matrix tarballs above — keep both
+          # staging blocks in sync (install.sh serves them interchangeably).
+          mkdir -p "dist/lume-core-darwin-x64/scripts" "dist/lume-core-darwin-x64/tests"
+          cp scripts/verify-ai-lume.sh scripts/verify-ai-semantics.sh \
+             scripts/ai-verify-loop.sh scripts/ai-gen-programs.sh scripts/ai-produce.sh \
+             "dist/lume-core-darwin-x64/scripts/"
+          cp -r tests/ai-bad "dist/lume-core-darwin-x64/tests/"
           cd dist
           tar -czf lume-core-darwin-x64.tar.gz lume-core-darwin-x64
           if command -v sha256sum >/dev/null 2>&1; then
@@ -207,7 +226,21 @@ jobs:
             [ -f "$top/install.sh" ] || { echo "missing install.sh in $pkg"; exit 1; }
             case "$pkg" in
               *-static*) : ;;  # static tarball ships only bin/ + install.sh
-              *) [ -d "$top/examples" ] || { echo "missing examples/ in $pkg"; exit 1; } ;;
+              *)
+                [ -d "$top/examples" ] || { echo "missing examples/ in $pkg"; exit 1; }
+                # install.sh turns these into lume-ai-{verify,verify-loop,produce}
+                # and copies tests/ai-bad as seeds. Assert them here so a staging
+                # edit that drops the gate fails the build instead of shipping
+                # a release whose docs promise commands that do not exist.
+                for gate in verify-ai-lume.sh verify-ai-semantics.sh \
+                            ai-verify-loop.sh ai-gen-programs.sh ai-produce.sh; do
+                  [ -f "$top/scripts/$gate" ] || {
+                    echo "missing scripts/$gate in $pkg"; exit 1; }
+                done
+                [ -d "$top/tests/ai-bad" ] || {
+                  echo "missing tests/ai-bad seeds in $pkg"; exit 1; }
+                echo "==> $pkg: AI gate scripts + seeds present"
+                ;;
             esac
 
             # darwin-x64 is cross-built on an arm64 runner; executing it
