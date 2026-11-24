@@ -1,5 +1,7 @@
 # TODO
 
+> **现状快照（2026-11-24 实测）**：HEAD `828d908` = tag **`v0.14.1`**，与 `origin/main` 同步、ahead 0、工作区干净；核心发版 v0.14.1 完成（ci `45033206420` / Release `45033206354` 均 success，CI 日志实证 AI gate 脚本断言通过）。下方 P1–P19 绝大多数已关闭（多为已落地条目的推理记录），**真正未勾选的 open 项只有 P14 的 spawn 集成（外部 resolve-lume sidecar 迁移）与 P19 的两项 deferred（AEAD 兼容测试 / retention scheduler）**。P14 / P17 / P18 已永久定为 interpreter-only、不进宿主镜像；P16 已闭。最新 CI：core `45033206420` 全绿。
+
 Priorities reflect the 2026-10-15 project review, after the v0.7.0 CI
 closure (asan zero-leak on Linux, Windows CI green without libgnurx).
 Order: highest value per unit of risk first.
