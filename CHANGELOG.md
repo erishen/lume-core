@@ -4,6 +4,23 @@ All notable changes to Lume are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and versions aim for
 [SemVer](https://semver.org/).
 
+## [0.15.0] - 2026-11-26
+
+### Added
+
+- **Gradient boosting regression builtins: `gbdt_fit` / `gbdt_predict`.** A
+  dependency-free squared-error GBDT over regression trees, so a `.lume`
+  pipeline can train and score a signal model without sklearn. `gbdt_fit(X, y,
+  rounds, depth, lr, min_leaf)` returns a GC-owned model map holding pre-order
+  flat tree lists; `gbdt_predict(model, X)` scores a row matrix. Implemented as
+  a self-contained `src/builtins_math_gbdt.inc` (gb_-prefixed helpers, no
+  dependency on either tree's local helper names) and registered in all four
+  core builtin tables (builtins.h / builtins_math.c / interp.c / typecheck.c).
+  Interpreter-only (like `server{}`); no native/LLVM backend parity, no
+  classification and no missing-value handling in this release. Mirrored in
+  the host `lume` tree; both binaries verified on the `y = 2*x1 - x2` smoke
+  test. See `docs/CAPABILITIES.md`.
+
 ## [0.14.1] - 2026-11-22
 
 Patch release to carry the two release-pipeline fixes into the downloadable
