@@ -271,6 +271,10 @@ Value b_el(VM *vm, int argc, Value *args);
 Value b_render(VM *vm, int argc, Value *args);
 Value b_html(VM *vm, int argc, Value *args);
 
+/* ---- GBDT regression (builtins_math_gbdt.inc) ---- */
+Value b_gbdt_fit(VM *vm, int argc, Value *args);
+Value b_gbdt_predict(VM *vm, int argc, Value *args);
+
 /* ---- P14 gated child processes (builtins_spawn.c) ---- */
 Value b_spawn(VM *vm, int argc, Value *args);
 Value b_proc_read(VM *vm, int argc, Value *args);

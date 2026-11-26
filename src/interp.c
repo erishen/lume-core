@@ -1622,6 +1622,8 @@ void bridge_seed_builtins(VM *vm) {
         {"linreg", b_linreg},
         {"pct_change", b_pct_change},
         {"max_drawdown", b_max_drawdown},
+        {"gbdt_fit", b_gbdt_fit},
+        {"gbdt_predict", b_gbdt_predict},
         {"skew", b_skew},
         {"kurtosis", b_kurtosis},
         {"rolling_mean", b_rolling_mean},

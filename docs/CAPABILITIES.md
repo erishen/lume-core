@@ -33,6 +33,7 @@ only / has no auth" claims come from confusing the two.
 | Secrets | `env()` masks credential names from DSL; runtime C reads them with `getenv` directly; `.env.example` documents key names | `lume-core/src/builtins_fs.c:95-120`, `agent-httpd/src/agent/llm.c:16` | Secrets in committed `.lume`/config (prohibited) |
 | Deployment | One statically linked C11 binary, zero dynamic deps beyond libc; release tarball runs on `scratch`/`alpine`; TLS for outbound LLM calls belongs to forked `curl`, **no OpenSSL in the server link** | host `README.md:87`, `agent-httpd/README.md:884`, `agent-httpd/src/agent/llm.c:16` | Python/Node runtime in the backend container |
 | Tooling / validation | 3 backends (interpreter / `--compile-text` / `--compile-llvm`) with `native-consistency` parity, `make check --strict` via `scripts/sync-lang.py`, `-Werror`, asan + Windows + macOS CI legs | `lume-core/Makefile:585`, `lume/scripts/sync-lang.py` | OpenAPI / auto-generated API docs |
+| Gradient boosting | `gbdt_fit(X, y, rounds, depth, lr, min_leaf)` / `gbdt_predict(model, X)` — squared-error GBDT regression, model is a GC-owned map of flat tree lists (2026-11-26) | `lume-core/src/builtins_math_gbdt.inc`, mirrored in `lume/lang/` | Native/LLVM backend parity (interpreter-only, like `server{}`); classification, missing-value handling |
 
 ## "Deliberately not filed" (lume-core P13)
 

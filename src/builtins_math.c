@@ -6,6 +6,7 @@
  *   - builtins_math_basic.inc      基础数值 abs/sqrt/exp/log/ln/pow/.../min/max
  *   - builtins_math_stochastic.inc 随机/分布/采样/special fns/金融路径/BS/假设检验/copula
  *   - builtins_math_quant.inc      量化统计/组合/风险/技术指标/时间序列/交易统计
+ *   - builtins_math_gbdt.inc       GBDT 回归 (gbdt_fit / gbdt_predict),解释器专用
  * rt.c 里的原生运行时镜像 (lume_bi_ 与 native_ 系列) 与本片逐函数对应,勿漂移。
  */
 
@@ -25,3 +26,4 @@ static bool arg_num(VM *vm, Value v, double *out) {
 #include "builtins_math_basic.inc"
 #include "builtins_math_stochastic.inc"
 #include "builtins_math_quant.inc"
+#include "builtins_math_gbdt.inc"

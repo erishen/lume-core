@@ -494,6 +494,8 @@ const char *const LUME_BUILTIN_NAMES[] = {
     "skew", "kurtosis", "rolling_mean", "rolling_stddev", "ewma",
     /* matmul (2026-11-11, wall 3): C-kernel dense matmul, A·B -> float[][] */
     "matmul",
+    /* GBDT regression (2026-11-26, interpreter-only) */
+    "gbdt_fit", "gbdt_predict",
     /* outbound HTTP (2026-10-04, builtins_http.c) */
     "http_get",
     /* HTTP verbs that carry a body (2026-10-05) */
@@ -594,6 +596,8 @@ static const BuiltinSig LUME_BUILTIN_SIG[] = {
     {"pct_change",1,1}, {"max_drawdown",1,1},
     {"skew",1,1}, {"kurtosis",1,1}, {"rolling_mean",2,2}, {"rolling_stddev",2,2},
     {"ewma",2,2},
+    /* gbdt_fit has 5 optional args (2 required); gbdt_predict 2 required */
+    {"gbdt_fit",2,6}, {"gbdt_predict",2,2},
     {"strftime",2,2}, {"replace",3,3}, {"put",3,3},
     /* bounded optional upper (runtime: argc > max rejected) */
     {"sql_query",1,3}, {"sql_write",1,3}, {"sql_tx_query",2,3},
